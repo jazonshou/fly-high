@@ -193,6 +193,24 @@ const SINK_SECONDS = 0.05;
 export const GROUND_WAIT_SECONDS = 10;
 /** Half-side of the square about the car's origin that must be published before it settles, m: the car and a margin. */
 const GROUND_READY_RADIUS = 8;
+
+/**
+ * Recovery's safe spots (land plan, "Recovery"): the car records where it
+ * stands at most once a second, on four wheels, under 25 degrees off level
+ * and with no wheel over water, and only once it has moved this far from the
+ * last spot, so a parked car keeps its history. The ring keeps this many.
+ */
+const SAFE_SPOT_SECONDS = 1;
+const SAFE_SPOT_SPACING = 3;
+const SAFE_SPOT_COUNT = 16;
+const SAFE_SPOT_UP = Math.cos((25 * Math.PI) / 180);
+/** A tyre carrying more than this is down, N (the kerb weight puts about 5.6 kN on each). */
+const WHEEL_DOWN_LOAD = 500;
+/**
+ * A recovery passes over spots the car is still within this of, m: the spot
+ * a second press has already put it on, or the one it is stuck at.
+ */
+const RECOVER_SKIP = 2;
 /** The speed over which the soil's compaction resistance builds from a standstill, m/s: it holds like friction. */
 const COMPACTION_SPEED = 0.05;
 
@@ -310,6 +328,11 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   /** Waiting at the start for the terrain pages under the car (`groundReady`), and for how long, s. */
   private settling = false;
   private groundWait = 0;
+  /** The safe spots, newest at `safeSpotNext - 1`: the body origin's x, y, z and the heading, four to a spot. */
+  private readonly safeSpots = new Float64Array(SAFE_SPOT_COUNT * 4);
+  private safeSpotCount = 0;
+  private safeSpotNext = 0;
+  private safeSpotClock = 0;
 
   readonly engine: Engine;
   readonly transmission: Transmission;
@@ -564,6 +587,113 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     this.afterStep();
     this.state.time += dt;
     this.syncState();
+    this.recordSafeSpot();
+  }
+
+  /** Once a second at most: where the car stands now, if it is a place to recover to. */
+  private recordSafeSpot(): void {
+    this.safeSpotClock += this.dt;
+    if (this.safeSpotClock < SAFE_SPOT_SECONDS) return;
+    if (this.state.crashed || this.rolled || this.engine.flooded) return;
+    for (let w = 0; w < 4; w += 1) if (!(this.wheelLoad[w]! > WHEEL_DOWN_LOAD) || this.waterAt[w] !== 0) return;
+    const q = this.body.orientation;
+    if (rotateVectorInto(this.v3, q, BODY_UP).y < SAFE_SPOT_UP) return;
+    this.safeSpotClock = 0;
+    const at = this.state.position;
+    const spots = this.safeSpots;
+    if (this.safeSpotCount > 0) {
+      const newest = ((this.safeSpotNext + SAFE_SPOT_COUNT - 1) % SAFE_SPOT_COUNT) * 4;
+      const dx = at.x - spots[newest]!;
+      const dz = at.z - spots[newest + 2]!;
+      if (dx * dx + dz * dz < SAFE_SPOT_SPACING * SAFE_SPOT_SPACING) return;
+    }
+    const f = rotateVectorInto(this.v3, q, BODY_FORWARD);
+    const i = this.safeSpotNext * 4;
+    spots[i] = at.x;
+    spots[i + 1] = at.y;
+    spots[i + 2] = at.z;
+    spots[i + 3] = Math.atan2(f.x, f.z);
+    this.safeSpotNext = (this.safeSpotNext + 1) % SAFE_SPOT_COUNT;
+    this.safeSpotCount = Math.min(SAFE_SPOT_COUNT, this.safeSpotCount + 1);
+  }
+
+  /**
+   * R in a car session (land plan, "Recovery"): the car back on its newest
+   * safe spot, upright and stopped, its engine running dry and its box in P
+   * (or first with the clutch open), in the same drive: the setup, range,
+   * locks, tyre pressures and lights stay as they were. A spot the car is
+   * still on is dropped for the one before, so each press steps further
+   * back; the oldest is kept. With no spot yet the car comes upright where
+   * it lies. It is seated on the ground at its next step, through the spawn
+   * gate like a start.
+   */
+  recover(): void {
+    const at = this.state.position;
+    const spots = this.safeSpots;
+    let spot = -1;
+    while (this.safeSpotCount > 0) {
+      const newest = (this.safeSpotNext + SAFE_SPOT_COUNT - 1) % SAFE_SPOT_COUNT;
+      const dx = at.x - spots[newest * 4]!;
+      const dz = at.z - spots[newest * 4 + 2]!;
+      if (this.safeSpotCount === 1 || dx * dx + dz * dz >= RECOVER_SKIP * RECOVER_SKIP) {
+        spot = newest * 4;
+        break;
+      }
+      this.safeSpotNext = newest;
+      this.safeSpotCount -= 1;
+    }
+    let heading = this.headingOf(this.body.orientation);
+    if (spot >= 0) {
+      this.v1.x = spots[spot]!;
+      this.v1.y = spots[spot + 1]!;
+      this.v1.z = spots[spot + 2]!;
+      heading = spots[spot + 3]!;
+    } else {
+      this.v1.x = at.x;
+      this.v1.y = at.y;
+      this.v1.z = at.z;
+    }
+    this.placeOrigin(this.v1, quaternionFromFlightAngles(heading, 0, 0));
+    this.placed = false;
+    this.settling = false;
+    this.groundWait = 0;
+    this.safeSpotClock = 0;
+    this.state.crashed = false;
+    this.rolled = false;
+    this.cabinFlood = 0;
+    this.wadingDepthValue = 0;
+    this.inWater = false;
+    this.waterTurn = -1;
+    this.waterAt.fill(0);
+    this.wheelSubmerged.fill(0);
+    this.engine.reset();
+    this.transmission.reset();
+    this.driveline.omega.fill(0);
+    this.driveline.omega[ENGINE] = IDLE_OMEGA;
+    this.driveline.impulse.fill(0);
+    this.windup = 0;
+    this.axleHeave.fill(0);
+    this.axleHeaveRate.fill(0);
+    this.axleRoll.fill(0);
+    this.axleRollRate.fill(0);
+    this.deflectionX.fill(0);
+    this.deflectionY.fill(0);
+    this.wheelLoad.fill(0);
+    this.wheelSlip.fill(0);
+    this.wheelSlipRatio.fill(0);
+    this.wheelForceX.fill(0);
+    this.wheelForceY.fill(0);
+    this.wheelSinkage.fill(0);
+    this.wheelRut.fill(0);
+    this.absFactor.fill(1);
+    this.tcTorque.fill(0);
+    this.probeTouching.fill(0);
+    this.dacIntegral = 0;
+    this.hillHold = 0;
+    this.hillHoldBrake = 0;
+    this.bumpStopPeak = 0;
+    this.scrapePeak = 0;
+    this.splashPeak = 0;
   }
 
   /**
@@ -917,15 +1047,12 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   /**
    * The water at each wheel's contact, once a step: the wading depth (the
    * highest surface over the lowest contact), which tyres are under it, the
-   * cabin's flooding, and whether the intake has gone under.
-   */
-  /**
-   * The water under the wheels. The authority is asked about one wheel a
-   * step, in turn (all four at a start): in the worker each answer costs a
-   * terrain height sample, about 13 us, and the water a wheel has rolled
-   * towards in the 4 steps (33 ms) since it was last asked is near enough.
-   * Whether a tyre is under the surface is decided every step, from its
-   * contact now.
+   * cabin's flooding, and whether the intake has gone under. The authority
+   * is asked about one wheel a step, in turn (all four at a start or a
+   * recovery): in the worker each answer costs a terrain height sample,
+   * about 13 us, and the water a wheel has rolled towards in the 4 steps
+   * (33 ms) since it was last asked is near enough. Whether a tyre is under
+   * the surface is decided every step, from its contact now.
    */
   private sampleWater(): void {
     const env = this.environment;
@@ -1695,7 +1822,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       // Back on its wheels: all four loaded and the roof up.
       const up = rotateVectorInto(this.v3, this.body.orientation, BODY_UP);
       let loaded = 0;
-      for (let w = 0; w < 4; w += 1) if (this.wheelLoad[w]! > 500) loaded += 1;
+      for (let w = 0; w < 4; w += 1) if (this.wheelLoad[w]! > WHEEL_DOWN_LOAD) loaded += 1;
       if (up.y > 0.8 && loaded === 4) this.rolled = false;
     }
   }
@@ -1730,6 +1857,11 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   touching(part: string): boolean {
     for (let i = 0; i < HULL.length; i += 1) if (HULL[i]!.part === part && this.probeTouching[i] !== 0) return true;
     return false;
+  }
+
+  /** How many safe spots the recovery holds (for tests and probes). */
+  get safeSpotsHeld(): number {
+    return this.safeSpotCount;
   }
 
   /** Whether any tyre carries load. */

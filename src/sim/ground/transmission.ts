@@ -525,7 +525,7 @@ export class Transmission {
     state.locks = this.locks;
   }
 
-  /** A recovery: stopped in P (automatic) or first with the clutch open (manual), 2H. */
+  /** A recovery: stopped in P (automatic) or first with the clutch open (manual), in the range and locks it had. */
   reset(): void {
     this.shiftTime = 0;
     this.lockup = 0;

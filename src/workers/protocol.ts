@@ -95,6 +95,8 @@ export type SimulationCommand =
   | { type: "pause"; paused: boolean }
   | { type: "reset"; spawn: SpawnKind; airborneStartAgl: number }
   | { type: "restartAfterCrash"; airborneStartAgl: number }
+  /** R in a car session: the car back on its newest safe spot, in place. */
+  | { type: "recover" }
   /** Final L0 core from the render atlas; its ArrayBuffer is transferred. */
   | { type: "terrainPage"; page: TerrainPagePublication }
   /** Once-per-world macro fallback; its ArrayBuffer is transferred. */
