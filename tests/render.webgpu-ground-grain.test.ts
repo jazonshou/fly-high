@@ -14,6 +14,7 @@ import { TOKSVIG_ROUGHNESS_GAIN } from "../src/render/webgpu/terrain/MaterialArr
 import {
   DEFAULT_ANISOTROPY_LIMIT,
   GROUND_GRAIN_ANISOTROPY_LIMIT,
+  GROUND_GRAIN_CRUNCH,
   GROUND_GRAIN_GAINS,
   GROUND_GRAIN_RELIEF_FADE,
   GROUND_GRAIN_SCALES,
@@ -310,3 +311,35 @@ describe("the shader reads the grain safely", () => {
   });
 });
 
+describe("the crunch shadows the sward", () => {
+  const plugin = readSource("src/render/webgpu/terrain/TerrainSurfacePlugin.ts");
+
+  it("reads the crunch from the three texels already fetched", () => {
+    // No new fetch: the crunch is the albedo array's fourth channel, and the
+    // composite has exactly the three reads it had before it.
+    expect(plugin).toContain(
+      "let terrainGrainCrunch = terrainGrain0.w + 0.8 * terrainGrain1.w + terrainGrain2.w;",
+    );
+    expect(plugin.split("terrainGroundGrainFetch(\n").length - 1).toBe(3);
+  });
+
+  it("dims the sun through the direct multiplier and the sky through the cavity", () => {
+    // Direct and ambient each once: the sun's share rides the same multiplier
+    // as the canopy and scrub shadows, faded out under runway paint.
+    expect(plugin).toContain("* mix(terrainGrainDirect, 1.0, clamp(terrainRunwayPaved, 0.0, 1.0));");
+    expect(plugin).toContain("terrainCavity *= max(0.25, 1.0 + ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.ambient)}");
+    // Looking down-sun the gaps hide behind what shades them.
+    expect(plugin).toContain("terrainGrainShadowsSeen * terrainGrainCrunch");
+    expect(GROUND_GRAIN_CRUNCH.hotspot).toBeGreaterThan(0);
+    expect(GROUND_GRAIN_CRUNCH.hotspot).toBeLessThan(1);
+  });
+
+  it("puts the most crunch on vegetation and the least on snow", () => {
+    const { gains } = GROUND_GRAIN_CRUNCH;
+    expect(gains.vegetation).toBe(Math.max(gains.vegetation, gains.rock, gains.snow, gains.other));
+    expect(gains.snow).toBe(Math.min(gains.vegetation, gains.rock, gains.snow, gains.other));
+    // Bounded both ways: a gap never goes black, and never brightens past
+    // what a lit top can.
+    expect(plugin).toContain("terrainGrainDirect = max(0.25, 1.0 + ");
+  });
+});
