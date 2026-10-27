@@ -10,6 +10,8 @@ import { CAR_BOW_WAVE_MIN_DEPTH, CarBowWave, carBowWaveOutline } from "../src/re
 import {
   CAR_SOIL,
   CAR_TRACK_MAX_DARKNESS,
+  CAR_DUST_WETNESS,
+  CAR_MUD_WETNESS,
   carDustIntensity,
   carExhaustSoot,
   carMudIntensity,
@@ -164,6 +166,30 @@ describe("what each ground gives off under a tyre", () => {
     const asphalt = SurfaceMaterial.Asphalt;
     expect(carDustIntensity(rolling(15, { wheelSurface: [asphalt, asphalt, asphalt, asphalt] }), 0)).toBeLessThan(0.05);
     expect(carDustIntensity(rolling(15, { wheelLoad: [0, 6_000, 5_300, 5_300] }), 0)).toBe(0);
+  });
+
+  it("reads wetness on the simulator's scale: dust in the dry provinces, mud only where it drives as mud", () => {
+    // The classifier's soil moisture, measured over the perf seed's land:
+    // dry grass at 0.29 in the high desert and 0.41 in the savanna, grass at
+    // 0.57 and forest floor at 0.61 in the temperate province.
+    const on = (material: number, wetness: number): CarVisualState => rolling(12, {
+      wheelSurface: [material, material, material, material],
+      wheelWetness: [wetness, wetness, wetness, wetness],
+    });
+    const dryGrass = SurfaceMaterial.DryGrass;
+    const grass = SurfaceMaterial.Grass;
+    const desert = carDustIntensity(on(dryGrass, 0.29), 0);
+    expect(desert).toBeCloseTo(carDustIntensity(on(dryGrass, 0), 0), 9);
+    expect(carDustIntensity(on(dryGrass, 0.41), 0)).toBeCloseTo(desert, 9);
+    const temperate = carDustIntensity(on(grass, 0.57), 0);
+    expect(temperate).toBeGreaterThan(0);
+    expect(temperate).toBeLessThan(0.5 * carDustIntensity(on(grass, 0.3), 0));
+    // No summer meadow throws mud; the simulator's mud does, from 0.6 to 0.9.
+    expect(carMudIntensity(on(grass, 0.57), 0)).toBe(0);
+    expect(carMudIntensity(on(SurfaceMaterial.ForestFloor, 0.61), 0)).toBeLessThan(0.01);
+    expect(carMudIntensity(on(grass, 0.75), 0)).toBeGreaterThan(0);
+    expect(CAR_MUD_WETNESS).toEqual([0.6, 0.9]);
+    expect(CAR_DUST_WETNESS[1]).toBeGreaterThan(CAR_MUD_WETNESS[0]);
   });
 
   it("flings mud only off soaked soil, more spinning, and throws water only in a ford or off a soaked road", () => {
