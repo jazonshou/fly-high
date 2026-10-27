@@ -215,6 +215,7 @@ import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
 import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
 import { resolveGovernedWork, type GovernedWork } from "./governedWork";
+import { forceRefresh, refreshIntervalAtCadence, syncRefreshInterval } from "./refreshHold";
 import type { FlightRenderingSystem, HudCamera, ScreenPoint, TerrainAuthorityPublisher } from "./types";
 import {
   cadenceDisplayHz,
@@ -3178,8 +3179,36 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       name: "hdr-present",
       phase: "post",
       after: ["volumetric-cloud-integration"],
-      execute: () => this.scene.render(false, false),
+      execute: () => {
+        this.syncRefreshHolds();
+        this.scene.render(false, false);
+      },
+      // G5: every history invalidation also invalidates a held shadow map or
+      // scene depth (origin shift, camera cut or mode change, profile,
+      // atmosphere, resize, capture scale): the next frame draws them fresh.
+      invalidateHistory: () => {
+        forceRefresh(this.atmosphere.shadows.getShadowMap());
+        forceRefresh(this.atmosphereResources.sceneDepth);
+      },
     });
+  }
+
+  /**
+   * G5: the CSM and cloud-depth refresh, the profile's rate at the presented
+   * cadence plus the governor's whole frames. Every frame, so it also lands
+   * on a map `applyProfile` recreated; the setter only writes on a change.
+   */
+  private syncRefreshHolds(): void {
+    const work = this.governedWork;
+    const { tierPresentationTargetMs: tier, presentationTargetMs: shown } = this.governorConfig;
+    syncRefreshInterval(
+      this.atmosphere.shadows.getShadowMap(),
+      refreshIntervalAtCadence(work.shadowRefreshFrames, tier, shown) + work.shadowRefreshExtraFrames,
+    );
+    syncRefreshInterval(
+      this.atmosphereResources.sceneDepth,
+      refreshIntervalAtCadence(work.cloudDepthRefreshFrames, tier, shown) + work.cloudDepthRefreshExtraFrames,
+    );
   }
 
   private updatePresentation(): void {

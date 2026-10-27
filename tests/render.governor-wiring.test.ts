@@ -1,3 +1,4 @@
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FlightRenderer } from "../src/render/FlightRenderer";
@@ -44,6 +45,55 @@ describe("the renderer's governor wiring", () => {
     expect(renderer).toContain("governorConfigForProfile(this.profile, this.presentationCadence)");
     // A pinned renderer never decides, so its signals stay at their first value.
     expect(renderer).toMatch(/this\.pinnedRenderScale === null\s*&& this\.frameIntervalDurations\.length >= this\.governorConfig\.windowFrames\s*\)\s*\{\s*this\.updateGovernor\(\);/u);
+  });
+});
+
+/** Every `.ts` under `dir`, as a path relative to the repository. */
+function sourceFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+    if (statSync(path).isDirectory()) sourceFiles(path, out);
+    else if (path.endsWith(".ts") && !path.endsWith(".d.ts")) out.push(path);
+  }
+  return out;
+}
+
+describe("the CSM and cloud-depth refresh holds (PR B part 2, G5)", () => {
+  it("syncs both intervals immediately before the scene renders, every frame", () => {
+    expect(count(renderer, "this.syncRefreshHolds();")).toBe(1);
+    expect(renderer).toMatch(
+      /name: "hdr-present",[^}]*?execute: \(\) => \{\s*this\.syncRefreshHolds\(\);\s*this\.scene\.render\(false, false\);\s*\}/u,
+    );
+  });
+
+  it("forces both fresh on every history invalidation, from the pass that renders them", () => {
+    expect(renderer).toMatch(
+      /this\.scene\.render\(false, false\);\s*\},\s*invalidateHistory: \(\) => \{\s*forceRefresh\(this\.atmosphere\.shadows\.getShadowMap\(\)\);\s*forceRefresh\(this\.atmosphereResources\.sceneDepth\);\s*\}/u,
+    );
+  });
+
+  it("adds the governor's frames after the profile's rate is converted to the cadence", () => {
+    expect(renderer).toContain(
+      "refreshIntervalAtCadence(work.shadowRefreshFrames, tier, shown) + work.shadowRefreshExtraFrames",
+    );
+    expect(renderer).toContain(
+      "refreshIntervalAtCadence(work.cloudDepthRefreshFrames, tier, shown) + work.cloudDepthRefreshExtraFrames",
+    );
+  });
+
+  it("writes refreshRate nowhere in src but the hold and the two render-once targets", () => {
+    // A per-frame write resets Babylon's counter and renders every frame
+    // (verify F3), so every interval goes through syncRefreshInterval.
+    const allowed = new Set([
+      join("src", "render", "refreshHold.ts"),
+      join("src", "render", "webgpu", "atmosphere", "SkyEnvironmentProbe.ts"),
+      join("src", "render", "webgpu", "atmosphere", "AtmosphereGpuResources.ts"),
+    ]);
+    const writes = /\.refreshRate\s*=(?!=)/u;
+    const writers = sourceFiles("src").filter((path) => writes.test(readSource(path)));
+    expect(writers.sort()).toEqual([...allowed].sort());
+    // The one write in AtmosphereGpuResources is the sky LUT's render-once.
+    expect(count(readSource(join("src", "render", "webgpu", "atmosphere", "AtmosphereGpuResources.ts")), ".refreshRate =")).toBe(1);
   });
 });
 
