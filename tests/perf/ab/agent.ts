@@ -35,8 +35,13 @@ import { FlightRenderer } from "../../../src/render/FlightRenderer";
 import { PERF_COCKPIT_RIG } from "../../../src/render/cameraPresentation";
 import { WebGpuFrameGraph, type FrameGraphPass } from "../../../src/render/webgpu/core/FrameGraph";
 import * as qualityProfile from "../../../src/render/webgpu/core/QualityProfile";
-import { sunDirectionForClock } from "../../../src/render/webgpu/nature/EnvironmentDirector";
-import { INITIAL_VISUAL_STATE, type FlightVisualState, type QualityLevel } from "../../../src/game/types";
+import { WEATHER_PROFILES, sunDirectionForClock } from "../../../src/render/webgpu/nature/EnvironmentDirector";
+import {
+  INITIAL_VISUAL_STATE,
+  type FlightVisualState,
+  type QualityLevel,
+  type WeatherPreset,
+} from "../../../src/game/types";
 import type { RenderingMode } from "../../../src/settings";
 import { AIRCRAFT_KINDS } from "../../../src/sim";
 import { createWorld, sampleTerrain, sampleTerrainHeight } from "../../../src/world";
@@ -68,6 +73,10 @@ import { setGpuPassLabelDecorator } from "../gpuPassLabels";
 import { armGpuPassTiming, collectGpuPassTiming, installGpuPassTiming } from "../gpuPassTiming";
 import { beginGpuWorkWindow, endGpuWorkWindow, installGpuWorkCounters } from "../gpuWorkCounters";
 import { resolveShotPlacement } from "../shotPlacement";
+import { FlightBakeProbe, readBakeStats } from "./bakeProbe";
+import { DetailWatchdogProbe, type DetailWatchdogSample } from "./detailWatchdog";
+import { renderAfterHitch } from "./flightHitch";
+import { agentTerrainSamplers } from "./terrainSamplers";
 import {
   PERF_AB_PROTOCOL,
   type AgentCatalog,
@@ -75,10 +84,14 @@ import {
   type AgentErrors,
   type AgentInfo,
   type CaptureResult,
+  type DetailWatchdogReport,
+  type DetailWorkerFault,
+  type DetailWorkerState,
   type FlightFrame,
   type FlightReport,
   type FlightRequest,
   type FrameSample,
+  type LandStart,
   type ImageComparison,
   type PerfAgent,
   type PrepareReport,
@@ -272,10 +285,6 @@ function graphPassTimings(target: FlightRenderer): readonly { name: string; cpuM
 }
 
 /**
- * Whether vegetation cells are generated on the detail worker or, after a
- * fallback, inline on the main thread (private, as `graphPassTimings`).
- */
-/**
  * Effects (material x defines) the engine compiles, each named by its shader
  * and by the defines that set it apart from the nearest effect of that shader
  * compiled before it: what a mid-flight pipeline compile is FOR.
@@ -354,27 +363,137 @@ function installEffectRecorder(target: FlightRenderer): void {
   };
 }
 
-function detailWorkerState(target: FlightRenderer): FlightReport["detailWorker"] {
-  const detail = (target as unknown as {
-    readonly detail?: {
-      readonly client: unknown;
-      readonly presentationRebuildDiagnostics: {
-        readonly workerFallbacks: number;
-        readonly workerGenerationTimeouts: number;
-        readonly workerBuildTimeouts: number;
-        readonly workerBuildRejections: number;
-      };
-    };
-  }).detail;
-  if (!detail) return null;
-  const diagnostics = detail.presentationRebuildDiagnostics;
+/**
+ * The vegetation runtime's private state, read loosely: this agent runs in
+ * both arms, and a base predates the fields a head adds (each optional here).
+ */
+interface DetailRuntimeInternals {
+  readonly client?: object | null;
+  readonly updateSequence?: number;
+  readonly presentationNowMilliseconds?: () => number;
+  readonly lastUpdateMilliseconds?: number | null;
+  readonly workerPresentationProgressUpdate?: number | null;
+  readonly workerPresentationProgressMilliseconds?: number | null;
+  readonly workerGenerationProgressUpdate?: number | null;
+  readonly workerGenerationProgressMilliseconds?: number | null;
+  readonly workerGenerationAnswered?: boolean;
+  readonly presentationWorkerHeartbeats?: number;
+  readonly pendingPresentationBuild?: { readonly source?: string; readonly buildId?: number } | null;
+  readonly presentationWorkerBuildTimeouts?: number;
+  readonly presentationBuildCancellations?: number;
+  readonly workerHealth?: { readonly active: boolean };
+  readonly presentationRebuildDiagnostics?: {
+    readonly workerFallbacks: number;
+    readonly workerGenerationTimeouts: number;
+    readonly workerBuildTimeouts: number;
+    readonly workerBuildRejections: number;
+    readonly workerRespawns?: number;
+    readonly workerPresentationHeartbeats?: number;
+    readonly workerMaxSilenceMilliseconds?: number;
+    readonly workerBuildMaxLatencyMilliseconds?: number;
+    readonly workerConvergenceStalls?: number;
+  };
+}
+
+function detailRuntime(target: FlightRenderer): DetailRuntimeInternals | null {
+  return (target as unknown as { readonly detail?: DetailRuntimeInternals }).detail ?? null;
+}
+
+/**
+ * Whether vegetation cells are generated on the detail worker or, after a
+ * fallback, inline on the main thread, and what its watchdogs have counted.
+ * Walks the runtime's cells (`presentationRebuildDiagnostics`): once per
+ * stream or leg, never per frame.
+ */
+function detailWorkerState(target: FlightRenderer): DetailWorkerState | null {
+  const detail = detailRuntime(target);
+  const diagnostics = detail?.presentationRebuildDiagnostics;
+  if (!detail || !diagnostics) return null;
+  const {
+    workerRespawns: respawns,
+    workerPresentationHeartbeats: heartbeats,
+    workerMaxSilenceMilliseconds: maxSilenceMs,
+    workerBuildMaxLatencyMilliseconds: buildMaxLatencyMs,
+    workerConvergenceStalls: convergenceStalls,
+  } = diagnostics;
+  // A runtime that restarts a failed worker has no client from the failure
+  // until its next update builds the replacement; its own `workerHealth`
+  // counts that worker as active, with the restart pending.
+  const health = detail.workerHealth;
   return {
-    active: detail.client !== null,
+    active: health?.active ?? detail.client !== null,
     fallbacks: diagnostics.workerFallbacks,
     generationTimeouts: diagnostics.workerGenerationTimeouts,
     buildTimeouts: diagnostics.workerBuildTimeouts,
     buildRejections: diagnostics.workerBuildRejections,
+    ...(respawns !== undefined ? { respawns } : {}),
+    ...(health ? { respawnPending: health.active && detail.client === null } : {}),
+    ...(heartbeats !== undefined ? { heartbeats } : {}),
+    ...(maxSilenceMs !== undefined ? { maxSilenceMs } : {}),
+    ...(buildMaxLatencyMs !== undefined ? { buildMaxLatencyMs } : {}),
+    ...(convergenceStalls !== undefined ? { convergenceStalls } : {}),
   };
+}
+
+/**
+ * The runtime's watchdog clocks after a frame: a few field reads, cheap
+ * enough for every frame (`detailWatchdog.ts` says what is made of them).
+ */
+function detailWatchdogSample(detail: DetailRuntimeInternals): DetailWatchdogSample {
+  const build = detail.pendingPresentationBuild;
+  return {
+    wallMs: performance.now(),
+    nowMs: detail.presentationNowMilliseconds?.() ?? performance.now(),
+    lastUpdateMs: detail.lastUpdateMilliseconds ?? null,
+    updateSequence: detail.updateSequence ?? 0,
+    presentationUpdate: detail.workerPresentationProgressUpdate ?? null,
+    presentationMs: detail.workerPresentationProgressMilliseconds ?? null,
+    generationUpdate: detail.workerGenerationProgressUpdate ?? null,
+    generationMs: detail.workerGenerationProgressMilliseconds ?? null,
+    generationAnswered: detail.workerGenerationAnswered ?? false,
+    heartbeats: detail.presentationWorkerHeartbeats ?? null,
+    workerBuildId: build?.source === "worker" ? build.buildId ?? null : null,
+    client: detail.client ?? null,
+    buildTimeouts: detail.presentationWorkerBuildTimeouts ?? 0,
+    cancellations: detail.presentationBuildCancellations ?? 0,
+  };
+}
+
+/** The probe of the current renderer's runtime; a new renderer gets a new one. */
+let watchdogProbe: { readonly detail: DetailRuntimeInternals; readonly probe: DetailWatchdogProbe } | null = null;
+
+/**
+ * Starts a watchdog window (a stream or a leg) on `target`; the returned
+ * function samples one frame. Null for a build with no detail runtime.
+ */
+function beginDetailWatchdogWindow(target: FlightRenderer): (() => void) | null {
+  const detail = detailRuntime(target);
+  if (!detail) return null;
+  if (watchdogProbe?.detail !== detail) watchdogProbe = { detail, probe: new DetailWatchdogProbe() };
+  const { probe } = watchdogProbe;
+  probe.beginWindow(performance.now());
+  return () => probe.observe(detailWatchdogSample(detail));
+}
+
+function detailWatchdogReport(target: FlightRenderer): DetailWatchdogReport | null {
+  return watchdogProbe && watchdogProbe.detail === detailRuntime(target) ? watchdogProbe.probe.report() : null;
+}
+
+/**
+ * Fails the detail worker on purpose, in either arm: "kill" fires an error
+ * event at the generation client's private Worker (the path a crashed worker
+ * script takes), "hang" terminates it without one (a worker gone silent).
+ */
+function failDetailWorker(target: FlightRenderer, kind: DetailWorkerFault["kind"], frame: number): DetailWorkerFault {
+  const before = detailWorkerState(target);
+  const client = detailRuntime(target)?.client as { readonly worker?: Worker | null } | null | undefined;
+  const worker = client?.worker ?? null;
+  if (worker && kind === "kill") {
+    worker.dispatchEvent(new ErrorEvent("error", { message: "perf-flight: the detail worker was killed" }));
+  } else if (worker) {
+    worker.terminate();
+  }
+  return { kind, frame, delivered: worker !== null, before };
 }
 
 /** Where the scripted flight is; legs continue from it. */
@@ -418,18 +537,21 @@ async function ensureRenderer(
   worldEvolution: WorldEvolution,
   climateProvince: PerfCaptureShotDefinition["climateProvince"],
   landforms: PerfCaptureShotDefinition["landforms"],
+  fresh = false,
 ): Promise<void> {
   if (!config) throw new Error("perf-ab agent: configure() first");
   const forcedKey = climateProvince === undefined && landforms === undefined
     ? null
     : JSON.stringify({ climateProvince: climateProvince ?? null, landforms: landforms ?? null });
-  if (renderer && activeWorldEvolution === worldEvolution && activeForcedKey === forcedKey) return;
+  if (!fresh && renderer && activeWorldEvolution === worldEvolution && activeForcedKey === forcedKey) return;
   // As the capture's W-7 swap: dispose fully BEFORE creating, so two worlds
   // are never resident at once.
   removeGpuErrorListener?.();
   removeGpuErrorListener = null;
   renderer?.dispose();
   renderer = null;
+  // The probe holds the old runtime, and through it the old world.
+  watchdogProbe = null;
   canvas?.remove();
   world = createWorld(PERF_CAPTURE_SEED, {
     ...(config.worldOptions ?? {}),
@@ -452,7 +574,9 @@ async function ensureRenderer(
   renderer = await FlightRenderer.create({
     canvas,
     aircraft: config.aircraft as (typeof AIRCRAFT_KINDS)[number],
-    terrainSample: (x: number, z: number) => sampleTerrain(activeWorld, x, z),
+    // The full sample; with it, for perf:flight alone, the height-only
+    // sampler FlightGame passes (`terrainSamplers.ts`).
+    ...agentTerrainSamplers(activeWorld, config.gameTerrainHeight, sampleTerrain, sampleTerrainHeight),
     world: activeWorld,
     seed: activeWorld.sourceSeedHash,
     quality: config.quality as QualityLevel,
@@ -473,10 +597,15 @@ async function ensureRenderer(
   });
 }
 
-/** One frame: the gate's frame boundary, then the renderer. */
-function renderFrame(state: FlightVisualState): void {
+/**
+ * One frame: the gate's frame boundary, then the renderer. After an emulated
+ * hitch of `hitchMilliseconds` (flight legs only), with the delta FlightGame
+ * would hand it (`flightHitch.ts`).
+ */
+function renderFrame(state: FlightVisualState, hitchMilliseconds: number | null = null): void {
   markGpuDrawGateFrame();
-  requireRenderer().render(state, 1 / 60);
+  if (hitchMilliseconds === null) requireRenderer().render(state, 1 / 60);
+  else renderAfterHitch(requireRenderer(), state, hitchMilliseconds);
   renderCalls += 1;
 }
 
@@ -581,6 +710,9 @@ const agent: PerfAgent = {
     if (!(AIRCRAFT_KINDS as readonly string[]).includes(next.aircraft)) {
       throw new Error(`perf-ab agent: "${next.aircraft}" is not one of ${AIRCRAFT_KINDS.join(", ")}`);
     }
+    if (next.weather != null && !Object.hasOwn(WEATHER_PROFILES, next.weather)) {
+      throw new Error(`perf-ab agent: "${next.weather}" is not one of ${Object.keys(WEATHER_PROFILES).join(", ")}`);
+    }
     config = next;
     installErrorChannels();
     // Order matters: the gate wraps the counters, so a dropped draw is never
@@ -607,7 +739,7 @@ const agent: PerfAgent = {
   async prepareShot(request: PrepareRequest): Promise<PrepareReport> {
     const started = performance.now();
     const { shot } = request;
-    await ensureRenderer(shot.worldEvolution ?? "analytic", shot.climateProvince, shot.landforms);
+    await ensureRenderer(shot.worldEvolution ?? "analytic", shot.climateProvince, shot.landforms, request.freshRenderer);
     const active = requireRenderer();
     const activeWorld = world!;
     const viewportWidth = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;
@@ -635,7 +767,7 @@ const agent: PerfAgent = {
     capability("setPinnedRenderScaleForCapture")(renderScale);
 
     const clock = shot.clock ?? PERF_CAPTURE_DEFAULT_CLOCK;
-    active.setAtmosphere(clock, "clear");
+    active.setAtmosphere(clock, (config!.weather ?? "clear") as WeatherPreset);
     const placement = resolveShotPlacement(activeWorld, shot);
     const airportX = activeWorld.airport?.centerX ?? 0;
     const airportZ = activeWorld.airport?.centerZ ?? 0;
@@ -715,9 +847,11 @@ const agent: PerfAgent = {
     let lastVisibleInstances = -1;
     let frames = request.maxFrames;
     let settled = false;
+    const sampleWatchdog = beginDetailWatchdogWindow(active);
     for (let frame = 0; frame < request.maxFrames; frame += 1) {
       simulationTime += 1 / 60;
       renderFrame({ ...shot.state, simulationTime });
+      sampleWatchdog?.();
       // Let worker results and buffer maps land, and keep the queue from
       // running unboundedly ahead of the CPU adapter.
       await yieldToTasks();
@@ -761,6 +895,8 @@ const agent: PerfAgent = {
       droppedDraws: gate.droppedDraws,
       suppressedPasses: gate.suppressedPasses,
       bakedWhileClosed: gate.bakedWhileClosed,
+      detailWorker: detailWorkerState(active),
+      detailWatchdog: detailWatchdogReport(active),
     };
   },
 
@@ -894,13 +1030,26 @@ const agent: PerfAgent = {
     setGpuDrawsSuppressed(request.suppressDraws);
     const longTaskStart = longTasks.length;
     const frames: FlightFrame[] = [];
+    const sampleWatchdog = beginDetailWatchdogWindow(active);
+    // Null from a build whose renderer does not report its bakes.
+    const bakeStart = readBakeStats(active);
+    const bakeProbe = bakeStart ? new FlightBakeProbe(bakeStart) : null;
+    let fault: DetailWorkerFault | null = null;
+    const dumped: { readonly frame: number; readonly copy: HTMLCanvasElement }[] = [];
     let heapMark = heapUsedBytes();
     for (let frame = 0; frame < request.frames; frame += 1) {
-      simulationTime += 1 / 60;
-      path.yawDegrees += turnRateDegrees / 60;
+      if (frame === request.killDetailWorkerAtFrame) fault = failDetailWorker(active, "kill", frame);
+      if (frame === request.hangDetailWorkerAtFrame) fault = failDetailWorker(active, "hang", frame);
+      // An emulated hitch's frame flies as many sixtieths of a second as the
+      // hitch lasted; on every other frame `steps` is exactly 1, so those
+      // frames are what they were before hitches existed, bit for bit.
+      const hitchMilliseconds = request.hitch?.frame === frame ? request.hitch.milliseconds : null;
+      const steps = hitchMilliseconds === null ? 1 : (hitchMilliseconds / 1_000) * 60;
+      simulationTime += hitchMilliseconds === null ? 1 / 60 : hitchMilliseconds / 1_000;
+      path.yawDegrees += (turnRateDegrees / 60) * steps;
       const heading = headingVectorFromYaw(path.yawDegrees);
-      path.x += (speed * heading.x) / 60;
-      path.z += (speed * heading.z) / 60;
+      path.x += ((speed * heading.x) / 60) * steps;
+      path.z += ((speed * heading.z) / 60) * steps;
       // Terrain following, as a pilot would: never closer than the clearance
       // to the ground under the aircraft or 3 s ahead, climbing at up to
       // 25 m/s and descending at up to 10 m/s toward it.
@@ -911,7 +1060,7 @@ const agent: PerfAgent = {
         path.z + heading.z * speed * 3,
       );
       const target = Math.max(groundHere, groundAhead) + request.clearanceMeters;
-      path.altitude += Math.max(-10 / 60, Math.min(25 / 60, target - path.altitude));
+      path.altitude += Math.max((-10 / 60) * steps, Math.min((25 / 60) * steps, target - path.altitude));
       path.altitude = Math.max(path.altitude, groundHere + 30);
       const state: FlightVisualState = {
         ...shot.state,
@@ -931,9 +1080,24 @@ const agent: PerfAgent = {
       const heapBefore = heapUsedBytes();
       const heapBetweenBytes = heapBefore - heapMark;
       const renderStarted = performance.now();
-      renderFrame(state);
+      renderFrame(state, hitchMilliseconds);
       const renderMs = performance.now() - renderStarted;
       const heapAfter = heapUsedBytes();
+      // Outside both timed windows and both heap windows, as is the dump.
+      sampleWatchdog?.();
+      const bake = bakeProbe ? bakeProbe.observe(readBakeStats(active)!) : undefined;
+      if (request.dumpFrames && frame >= request.dumpFrames.from && frame <= request.dumpFrames.to) {
+        // As capture() reads a frame back, but this frame's own render, not
+        // a second one: in the same task, before the compositor takes it.
+        const raster = capability("getCaptureRenderSize")();
+        const copy = document.createElement("canvas");
+        copy.width = shot.viewportWidth;
+        copy.height = shot.viewportHeight;
+        copy.getContext("2d")!.drawImage(
+          canvas!, 0, 0, raster.width, raster.height, 0, 0, shot.viewportWidth, shot.viewportHeight,
+        );
+        dumped.push({ frame, copy });
+      }
       // The tasks queued behind the frame (worker results, buffer maps,
       // timers) run here; a zero-delay timer is the last of them.
       const betweenStarted = performance.now();
@@ -954,6 +1118,7 @@ const agent: PerfAgent = {
         shaderModulesCreated: creations.shaderModules - shaderModulesBefore,
         shaderCodeChars: creations.shaderCodeChars - shaderCodeBefore,
         effectsCompiled: effectsCompiled.slice(effectsBefore),
+        bake,
       });
       if (frame % request.fenceEvery === request.fenceEvery - 1) {
         await fence();
@@ -973,7 +1138,54 @@ const agent: PerfAgent = {
       visibleInstances: diagnostics.visibleInstances,
       residentTerrainPages: diagnostics.residentTerrainPages,
       detailWorker: detailWorkerState(active),
+      detailWatchdog: detailWatchdogReport(active),
+      detailWorkerFault: fault,
+      ...(request.dumpFrames
+        ? {
+          dumpedFrames: dumped.map(({ frame, copy }) => ({
+            frame,
+            pngBase64: copy.toDataURL("image/png").split(",", 2)[1]!,
+          })),
+        }
+        : {}),
     };
+  },
+
+  landStarts(count: number): readonly LandStart[] {
+    // A Fermat spiral out from the home airport (golden-angle turns, radius
+    // 25 km x sqrt(i + 1), so evenly over the disc), keeping the points over
+    // dry land where a 5 x 5 grid over 3 km has at most 3 samples of water
+    // and at least 13 of forest or grassland: fresh ground with vegetation to
+    // generate, never open sea with nothing to wait on. For the perf seed the
+    // first 20 lie 25-166 km out, from the first 44 points.
+    if (!world) throw new Error("perf-ab agent: no world; prepareShot() first");
+    const activeWorld = world;
+    const homeX = activeWorld.airport?.centerX ?? 0;
+    const homeZ = activeWorld.airport?.centerZ ?? 0;
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+    const starts: LandStart[] = [];
+    for (let index = 0; starts.length < count && index < 32 * count; index += 1) {
+      const distanceMeters = 25_000 * Math.sqrt(index + 1);
+      const x = homeX + distanceMeters * Math.sin(index * goldenAngle);
+      const z = homeZ + distanceMeters * Math.cos(index * goldenAngle);
+      let vegetated = 0;
+      let wet = 0;
+      let centreWet = false;
+      for (let sampleIndex = 0; sampleIndex < 25; sampleIndex += 1) {
+        const sample = sampleTerrain(activeWorld, x + ((sampleIndex % 5) - 2) * 750, z + (Math.floor(sampleIndex / 5) - 2) * 750);
+        const sampleWet = sample.height <= activeWorld.seaLevel || sample.biomeName === "water";
+        if (sampleWet) wet += 1;
+        if (sampleWet && sampleIndex === 12) centreWet = true;
+        if (sample.biomeName === "forest" || sample.biomeName === "grassland") vegetated += 1;
+      }
+      if (!centreWet && wet <= 3 && vegetated >= 13) {
+        starts.push({ x, z, yawDegrees: 0, distanceMeters, vegetatedShare: vegetated / 25 });
+      }
+    }
+    if (starts.length < count) {
+      throw new Error(`perf-ab agent: ${starts.length} vegetated land starts within ${32 * count} tries, not ${count}`);
+    }
+    return starts;
   },
 
   async capture(): Promise<CaptureResult> {

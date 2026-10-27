@@ -43,10 +43,37 @@ import {
 
 type ScheduleMacrotask = (callback: () => void) => void;
 type PostWorkerEvent = (event: DetailWorkerEvent, transferables: Transferable[]) => void;
+type GenerateCommand = Extract<DetailWorkerCommand, { type: "generate" }>;
 
 const DETAIL_PRESENTATION_WORKER_SLICE_UNITS = 4_096;
 const DETAIL_PRESENTATION_WORKER_SLICE_MILLISECONDS = 4;
 const DETAIL_PRESENTATION_WORKER_CLOCK_INTERVAL_UNITS = 64;
+/**
+ * A build that has not finished posts a `presentationProgress` heartbeat
+ * after its first slice and then at most this often, so the main thread's
+ * watchdog can tell a slow build from a hung worker. Ten a second costs a
+ * few small messages and keeps the longest silence of a working build far
+ * inside the watchdog's two-second floor.
+ */
+export const DETAIL_WORKER_HEARTBEAT_MILLISECONDS = 100;
+/**
+ * While a build runs, each generate waits for the build's turn: a fifth of
+ * the last generate's time, but at least one 4 ms slice and at most two.
+ * Slice time past a turn carries into the next one, so over a build the
+ * split is exact however the slices fall: at a 30 ms cell builds get a sixth
+ * of the thread, at a 60 ms cell an eighth.
+ *
+ * Cells keep most of it because a fill is one build after another as cells
+ * arrive, so every slice given to builds is taken from generation: measured
+ * in the liveness scenario, an even split made fills 17-27% slower, and a
+ * fixed half, third or quarter of each cell 8-29% slower. Before this change
+ * a build got one slice per cell (the next cell ran in its timer's 4 ms
+ * clamp), so the two-slice cap still answers a build in about half the
+ * time.
+ */
+export const DETAIL_WORKER_GENERATE_SHARE_MINIMUM_MILLISECONDS = 4;
+export const DETAIL_WORKER_GENERATE_SHARE_MAXIMUM_MILLISECONDS = 8;
+export const DETAIL_WORKER_GENERATE_SHARE_OF_LAST_GENERATE = 0.2;
 
 interface RetainedDetailCell {
   readonly cell: ReturnType<typeof generateDetailCell>;
@@ -63,6 +90,10 @@ interface PendingWorkerPresentationBuild {
   readonly batches: Map<string, WorkerPresentationBatchStorage>;
   readonly iterator: Generator<void, DetailPresentationChunkStatistics, void>;
   canceled: boolean;
+  /** Unfinished slices run, and work units packed, so far. */
+  slices: number;
+  units: number;
+  lastHeartbeatMilliseconds: number;
 }
 
 function nowMilliseconds(): number {
@@ -115,6 +146,18 @@ export class DetailWorkerRuntime {
   private readonly terrainAuthority = new TerrainConsumerAuthority();
   private readonly retainedCells = new Map<number, RetainedDetailCell>();
   private readonly presentationBuilds = new Map<number, PendingWorkerPresentationBuild>();
+  /**
+   * Builds first. Generates that arrive while a presentation build is
+   * running wait here, in arrival order, and run one at a time between its
+   * slices (`runPresentationSlice`), or all at once when it finishes or is
+   * canceled, or before any command that changes what a generate reads.
+   * Before this, one whole generated cell ran between every pair of 4 ms
+   * slices, so a build took (4 ms + a cell) per slice — seconds for a
+   * fresh region.
+   */
+  private readonly deferredGenerates: GenerateCommand[] = [];
+  private sliceMillisecondsSinceGenerate = 0;
+  private lastGenerateMilliseconds = 0;
   private nextCellToken = 1;
 
   constructor(
@@ -122,6 +165,8 @@ export class DetailWorkerRuntime {
     private readonly scheduleMacrotask: ScheduleMacrotask = (callback) => {
       setTimeout(callback, 0);
     },
+    /** Slice and heartbeat clock; a test seam, like the scheduler. */
+    private readonly now: () => number = nowMilliseconds,
   ) {}
 
   get retainedCellCount(): number {
@@ -134,22 +179,30 @@ export class DetailWorkerRuntime {
 
   handleCommand(command: DetailWorkerCommand): void {
     switch (command.type) {
+      // A deferred generate must see exactly the world and terrain it was
+      // posted against, so everything that changes them runs it first.
       case "initialize":
+        this.runDeferredGenerates();
         this.initialize(command);
         return;
       case "airports":
+        this.runDeferredGenerates();
         this.setAirports(command.airports);
         return;
       case "terrainMacro":
+        this.runDeferredGenerates();
         this.terrainAuthority.publishMacro(command.macro);
         return;
       case "terrainPage":
+        this.runDeferredGenerates();
         this.terrainAuthority.publish(command.page);
         return;
       case "terrainAux":
+        this.runDeferredGenerates();
         this.terrainAuthority.publishAuxPage(command.page);
         return;
       case "releaseCell":
+        // No drain: generation never reads a retained cell.
         this.retainedCells.delete(command.token);
         return;
       case "buildPresentation":
@@ -159,8 +212,36 @@ export class DetailWorkerRuntime {
         this.cancelPresentationBuild(command.buildId);
         return;
       case "generate":
-        this.generate(command);
+        if (this.presentationBuilds.size > 0) {
+          this.deferredGenerates.push(command);
+        } else {
+          this.runGenerate(command);
+          this.sliceMillisecondsSinceGenerate = 0;
+        }
     }
+  }
+
+  /** Runs one generate and times it, for the build/generate share. */
+  private runGenerate(command: GenerateCommand): void {
+    const startedAt = this.now();
+    this.generate(command);
+    this.lastGenerateMilliseconds = Math.max(0, this.now() - startedAt);
+  }
+
+  private runDeferredGenerates(): void {
+    while (this.deferredGenerates.length > 0) this.runGenerate(this.deferredGenerates.shift()!);
+    this.sliceMillisecondsSinceGenerate = 0;
+  }
+
+  /** The build's slice time owed before the next deferred generate. */
+  private buildTurnMilliseconds(): number {
+    return Math.min(
+      DETAIL_WORKER_GENERATE_SHARE_MAXIMUM_MILLISECONDS,
+      Math.max(
+        DETAIL_WORKER_GENERATE_SHARE_MINIMUM_MILLISECONDS,
+        DETAIL_WORKER_GENERATE_SHARE_OF_LAST_GENERATE * this.lastGenerateMilliseconds,
+      ),
+    );
   }
 
   private initialize(command: Extract<DetailWorkerCommand, { type: "initialize" }>): void {
@@ -212,7 +293,7 @@ export class DetailWorkerRuntime {
     this.structureSites = airfieldStructureExclusionSites(airports, world.seedHash);
   }
 
-  private generate(command: Extract<DetailWorkerCommand, { type: "generate" }>): void {
+  private generate(command: GenerateCommand): void {
     let retainedToken: number | null = null;
     try {
       if (!this.world || !this.terrainSample) {
@@ -340,6 +421,9 @@ export class DetailWorkerRuntime {
           sink,
         ),
         canceled: false,
+        slices: 0,
+        units: 0,
+        lastHeartbeatMilliseconds: 0,
       };
       this.presentationBuilds.set(command.buildId, task);
       this.schedulePresentationSlice(task);
@@ -358,7 +442,16 @@ export class DetailWorkerRuntime {
 
   private runPresentationSlice(task: PendingWorkerPresentationBuild): void {
     if (task.canceled || this.presentationBuilds.get(task.buildId) !== task) return;
-    const startedAt = nowMilliseconds();
+    const turn = this.buildTurnMilliseconds();
+    if (this.deferredGenerates.length > 0 && this.sliceMillisecondsSinceGenerate >= turn) {
+      // This task is the generate's turn; the slice is the next task. What
+      // the build ran past its turn counts toward the next (one turn at most).
+      this.sliceMillisecondsSinceGenerate = Math.min(turn, this.sliceMillisecondsSinceGenerate - turn);
+      this.runGenerate(this.deferredGenerates.shift()!);
+      this.schedulePresentationSlice(task);
+      return;
+    }
+    const startedAt = this.now();
     let workUnits = 0;
     try {
       while (workUnits < DETAIL_PRESENTATION_WORKER_SLICE_UNITS) {
@@ -367,13 +460,19 @@ export class DetailWorkerRuntime {
         if (result.done) {
           this.presentationBuilds.delete(task.buildId);
           this.publishPresentationBuild(task, result.value);
+          this.runDeferredGeneratesWhenIdle();
           return;
         }
         if (
           workUnits % DETAIL_PRESENTATION_WORKER_CLOCK_INTERVAL_UNITS === 0
-          && nowMilliseconds() - startedAt >= DETAIL_PRESENTATION_WORKER_SLICE_MILLISECONDS
+          && this.now() - startedAt >= DETAIL_PRESENTATION_WORKER_SLICE_MILLISECONDS
         ) break;
       }
+      const endedAt = this.now();
+      this.sliceMillisecondsSinceGenerate += Math.max(0, endedAt - startedAt);
+      task.slices += 1;
+      task.units += workUnits;
+      this.postPresentationHeartbeat(task, endedAt);
       this.schedulePresentationSlice(task);
     } catch (error) {
       this.presentationBuilds.delete(task.buildId);
@@ -382,7 +481,32 @@ export class DetailWorkerRuntime {
         buildId: task.buildId,
         message: error instanceof Error ? error.message : "Detail presentation build failed",
       });
+      this.runDeferredGeneratesWhenIdle();
     }
+  }
+
+  /** A build ended: with none left running, nothing waits for generates. */
+  private runDeferredGeneratesWhenIdle(): void {
+    if (this.presentationBuilds.size === 0) this.runDeferredGenerates();
+  }
+
+  /**
+   * Only an unfinished slice reaches here: the answer and a cancel both
+   * remove the build first, so a build never heartbeats after either, and a
+   * result lost in transport still ends in silence the main thread times.
+   */
+  private postPresentationHeartbeat(task: PendingWorkerPresentationBuild, now: number): void {
+    if (
+      task.slices > 1
+      && now - task.lastHeartbeatMilliseconds < DETAIL_WORKER_HEARTBEAT_MILLISECONDS
+    ) return;
+    task.lastHeartbeatMilliseconds = now;
+    this.post({
+      type: "presentationProgress",
+      buildId: task.buildId,
+      slices: task.slices,
+      units: task.units,
+    });
   }
 
   private publishPresentationBuild(
@@ -416,6 +540,7 @@ export class DetailWorkerRuntime {
     if (!task) return;
     task.canceled = true;
     this.presentationBuilds.delete(buildId);
+    this.runDeferredGeneratesWhenIdle();
   }
 
   private cancelAllPresentationBuilds(): void {
@@ -428,10 +553,27 @@ export class DetailWorkerRuntime {
   }
 }
 
+/**
+ * Slices yield through a self-posted MessageChannel message: a macrotask, so
+ * commands (a cancel above all) still run between slices, but without the
+ * 4 ms clamp a nested `setTimeout(0)` gets, which left the worker idle for
+ * half of every build. Callbacks run in the order they were scheduled.
+ */
+function messageChannelScheduler(): ScheduleMacrotask {
+  const channel = new MessageChannel();
+  const callbacks: Array<() => void> = [];
+  channel.port1.onmessage = () => callbacks.shift()?.();
+  return (callback) => {
+    callbacks.push(callback);
+    channel.port2.postMessage(null);
+  };
+}
+
 if (typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope) {
   const workerScope = self as unknown as DedicatedWorkerGlobalScope;
   const runtime = new DetailWorkerRuntime(
     (event, transferables) => workerScope.postMessage(event, transferables),
+    typeof MessageChannel === "function" ? messageChannelScheduler() : undefined,
   );
   workerScope.addEventListener("message", (event: MessageEvent<DetailWorkerCommand>) => {
     runtime.handleCommand(event.data);

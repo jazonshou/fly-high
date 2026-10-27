@@ -645,6 +645,9 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // this harness renders them with the previous rig. It is the ONLY caller
       // of the override (tests/render.cockpit-rig.test.ts scans for that).
       cockpitRigOverride: PERF_COCKPIT_RIG,
+      // The baselines were made with every sky re-light in one frame; the
+      // time pin also asks for that, this from the first frame on.
+      skyRebake: "sync" as const,
       ...(world.airport ? { runway: world.airport } : {}),
       ...(FAR_SWARD_OVERRIDE !== ""
         ? { terrainFarSwardRead: FAR_SWARD_OVERRIDE as "off" | "cheap" | "soft" }

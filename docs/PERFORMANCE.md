@@ -409,9 +409,9 @@ World detail is deterministic and page-owned rather than attached to transient t
 
 - Default detail cells are 512 m. Terrain biome, climate temperature, slope, moisture, height, and deterministic hashes choose tree and shrub species and rock variants.
 - Near and mid LODs use deterministic far thinning. Velocity-ahead selection reduces pop-in during fast travel.
-- Generation is cooperatively time-sliced to 0.75, 1.25, or 2 ms per update, with hard caps of 8, 16, or 24 cells and resident caps of 128, 384, or 896 cells for the three effective density bands. At least one pending cell is admitted so streaming cannot starve when a dense cell exceeds its target slice.
+- Generation is cooperatively time-sliced to 0.75, 1.25, or 2 ms per update, with hard caps of 8, 16, or 24 cells and resident caps of 128, 384, or 896 cells for the three effective density bands. At least one pending cell is admitted so streaming cannot starve when a dense cell exceeds its target slice (after a worker failure, since 2026-10-25, inline cells wait for credit instead; see the presentation-synthesis item below).
 - Thin-instance batches reuse low-poly procedural species/building topology and shared materials, and are partitioned into deterministic 8×8-cell presentation chunks. Each batch owns its lightweight Babylon `Geometry` because instance streams are geometry-owned; this prevents one chunk from replacing another chunk's GPU buffers. Babylon frustum-culls the resulting conservative prototype-aware bounds independently, so one visible tree no longer submits every offscreen resident instance.
-- Presentation synthesis is a second bounded stage after cell generation. The dedicated detail Worker retains the generated cell object graphs behind non-reused tokens, advances exactly one immutable packed chunk in at most 4,096 synthesis units or 4 ms per macrotask, and transfers exact 32-byte instance streams and bounds to the main thread. The main thread owns only lightweight resident descriptors, validates every token, batch key, byte length, bound and entity/record envelope before adoption, then synchronously publishes the complete result while the old chunk, statistics, mesh identities and GPU buffers remain live. A corrupt, silent, or unavailable Worker fails closed to the bounded inline builder, which retains its 65,536-unit/3 ms update cap; authority-level generation and presentation watchdogs cannot be reset indefinitely by motion. The watchdogs time the WORKER: generation is timed only while the worker holds a request, any answer (current or stale) is progress, the 240-update count applies only after its first answer, and time without updates (a hidden tab, a long main-thread stall) is not charged past 100 ms per gap (see "Flight stutter" below). Exact cell-to-observer lower bounds skip only arrays for which the legacy per-item radial predicate would reject every placement. Frontier targets are reevaluated at their documented 64 m quantum independently of the coarser paging signature; a completed observer-sensitive snapshot farther than the 96 m membership/ground-cover validity envelope is canceled rather than published. If an abnormally slow machine lets the previously published snapshot cross that boundary first, its meshes are disabled fail-closed while retaining their CPU writers and WebGPU buffers; the valid replacement re-enables them only through the normal synchronous commit. This suppression remains explicit pending detail work, so it cannot masquerade as stable capture or shorten GPU resource lifetime. Superseding ordinary observer/cell signatures otherwise drain after the finite snapshot so continuous motion cannot starve publication; representation or floating-origin changes cancel safely, and a rebase translates live, non-suppressed chunks immediately. CPU writers/bounds are pooled at one spare per prototype. Existing GPU buffers update in place when capacity permits; growth and removal use the unchanged submission-safe pool/grace path so an unsent WebGPU bundle can never reference destroyed instance storage. Renderer diagnostics count unfinished detail cells and staged/backlogged chunks, and deterministic capture settling requires that count to reach zero before any shot may be accepted or published as a candidate.
+- Presentation synthesis is a second bounded stage after cell generation. The dedicated detail Worker retains the generated cell object graphs behind non-reused tokens, advances exactly one immutable packed chunk in at most 4,096 synthesis units or 4 ms per macrotask, and transfers exact 32-byte instance streams and bounds to the main thread. The main thread owns only lightweight resident descriptors, validates every token, batch key, byte length, bound and entity/record envelope before adoption, then synchronously publishes the complete result while the old chunk, statistics, mesh identities and GPU buffers remain live. While a build runs the worker posts a `presentationProgress` heartbeat after its first slice and then at most every `DETAIL_WORKER_HEARTBEAT_MILLISECONDS` (100 ms), and cells posted meanwhile wait their turn: each runs once the build has had its share of slices (a fifth of the last cell's time, 4 to 8 ms), and all of them run when the build ends or before any command that changes what a cell reads. The browser worker yields between slices through a self-posted MessageChannel message, which has none of a nested `setTimeout(0)`'s 4 ms clamp. A worker that reports an error or goes silent past a watchdog is replaced at the start of the next update by a new one on the same seed and live world, up to `DETAIL_WORKER_RESPAWN_LIMIT` (2) times per runtime; its cells are requested again, and every chunk keeps its last bytes until they are back. Past that limit, in a world whose terrain pages were transferred to the worker (an eroded world), or when a worker build fails or answers with a malformed result, the runtime fails closed to the bounded inline builder, which retains its 65,536-unit/3 ms update cap; inline cells then run on credit (an update earns one generation time slice, a cell starts only when the credit covers the running average cell cost, and each cell is charged what it took), which bounds the average main-thread time per update, not one cell. Authority-level generation and presentation watchdogs cannot be reset indefinitely by motion: cancel and reissue do not reset them. The watchdogs time the WORKER. The presentation watchdog charges silence: a heartbeat from the build the runtime holds, or an accepted answer, restarts it; it holds still while the demand is the main thread's to finish (a publication streaming, an inline build, an answer already queued); and it resets when the presentation sweep goes idle. Generation is timed only while the worker holds a request, any answer (current or stale) is progress, and its update count applies only after the worker's first answer. Either watchdog expires after 240 charged updates and at least `DETAIL_WORKER_WATCHDOG_MINIMUM_MILLISECONDS` (2,000 ms) of charged time, or after 8,000 ms whatever the count, and time without updates (a hidden tab, a long main-thread stall) is not charged past 100 ms per gap. Worker presentation demand that goes `DETAIL_WORKER_CONVERGENCE_MILLISECONDS` (30,000 ms) without an accepted build is counted and reported as a convergence stall, never failed over. Until 2026-10-25 the presentation watchdog expired after 240 updates OR 8 s counted from the first update with demand, through publication streaming, and every failure was a fallback for the session (see "Flight stutter" and "Medium/balanced choppiness" below). Exact cell-to-observer lower bounds skip only arrays for which the legacy per-item radial predicate would reject every placement. Frontier targets are reevaluated at their documented 64 m quantum independently of the coarser paging signature; a completed observer-sensitive snapshot farther than the 96 m membership/ground-cover validity envelope is canceled rather than published. If an abnormally slow machine lets the previously published snapshot cross that boundary first, its meshes are disabled fail-closed while retaining their CPU writers and WebGPU buffers; the valid replacement re-enables them only through the normal synchronous commit. This suppression remains explicit pending detail work, so it cannot masquerade as stable capture or shorten GPU resource lifetime. Superseding ordinary observer/cell signatures otherwise drain after the finite snapshot so continuous motion cannot starve publication; representation or floating-origin changes cancel safely, and a rebase translates live, non-suppressed chunks immediately. CPU writers/bounds are pooled at one spare per prototype. Existing GPU buffers update in place when capacity permits; growth and removal use the unchanged submission-safe pool/grace path so an unsent WebGPU bundle can never reference destroyed instance storage. Renderer diagnostics count unfinished detail cells and staged/backlogged chunks, and deterministic capture settling requires that count to reach zero before any shot may be accepted or published as a candidate.
 - Per-instance color supplies variation. A lightweight PBR vertex deformation consumes each tree's phase, compliance, height, and stable selection from `instanceWind`, producing asynchronous crown and trunk sway without CPU transform updates.
 - `densityField.ts` owns a 7.2 × 5.4 km forest-fraction field in addition to the continuous stand field. Its 260 m glades reach a 0.02 authored-density floor, thresholded windthrow supplies a genuinely hard edge, and the published edge margin makes generated stems shorter and crowns broader. This changes where and how much forest grows; it deliberately does not change species/stand selection.
 - A floating-origin change immediately translates every live presentation batch by its build-origin delta while the bounded rebuild sweep catches up. The detail shader receives the same offset for pre-world band culling and impostor facing. The shared cascaded-shadow system still receives all eligible chunks rather than only those visible to the main camera.
@@ -444,9 +444,11 @@ The performance overlay exposes:
 - CPU frame time; explicit diagnostic captures also expose labelled GPU timing epochs and sample freshness.
 - Draw calls, triangles, geometries, and textures.
 - Resident terrain pages and visible detail/wildlife thin instances.
-- Active animals and river/lake counts.
+- Active animals and river/lake counts, with WATER GEN ON MAIN THREAD after a hydrology fallback, and (since 2026-10-25) VEG WORKER RESTARTED xN after vegetation worker respawns and VEG GEN ON MAIN THREAD after its fallback.
 - Requested rendering mode, active render scale, cloud step request, and ocean FFT resolution/cascade count.
 - WebGPU adapter label, backend, and render-technique identifier. The fallback reason is always `null` for a successfully created renderer because there is no alternate backend.
+
+The game reads these every 500 ms, and since 2026-10-25 only while the diagnostics setting is on or the terrain viewer's HUD is up (`src/game/diagnosticsCadence.ts`): a read walks every desired detail cell and inventories GPU memory.
 
 ### Gate B frame attribution
 
@@ -1607,6 +1609,8 @@ npm run perf:flight -- --base 264b760 --head main --legs 8
 npm run perf:flight -- --profile --heap-profile --no-minify   # V8 CPU and heap profiles per leg
 node scripts/cpuprofile-spikes.mts <arm>-leg2.cpuprofile        # what the long frames ran
 node scripts/heapprofile-summary.mts <arm>-leg2.heapprofile 30 --frames 240
+npm run perf:flight -- --base origin/main --settle-trials 12 --fail-on-worker-fallback   # fresh-region settles; exit 1 on a head trip
+npm run perf:flight -- --base origin/main --legs 4 --leg-frames 600 --hang-detail-worker 2:300   # does a silent worker recover?
 ```
 
 Both arms start from the same settled shot (`approach-500ft` by default) and
@@ -1618,10 +1622,105 @@ is queued behind the frame (worker results, buffer maps), the JS heap grown
 each new Babylon effect with the defines that set it apart from the nearest
 one compiled before it, at load included (an effect the engine hands back
 from its cache is not listed). Tasks over 50 ms come from the Long Tasks API, and
-each leg reports whether vegetation is still generated on its worker. The
+each leg reports whether vegetation is still generated on its worker (since
+2026-10-25, the detail-worker verdict below). The
 frame's own draws are dropped by default (`gpuDrawGate.ts`; `--draws` keeps
 them), so on SwiftShader a frame costs its CPU work and its compute. CPU
 milliseconds are this host's and only compare the arms; counts are exact.
+
+**Options** (`npm run perf:flight -- --help` prints them; the rows marked
+2026-10-25 were added for the choppiness investigation below):
+
+| Option | What it does |
+| --- | --- |
+| `--base <ref>`, `--head <ref>` | the arms (default: the merge-base of HEAD and origin/main, and the working tree) |
+| `--shot <name>` | the canonical shot to start from (default `approach-500ft`) |
+| `--start <x,z[,yaw]>` | begin the flight here (world metres, yaw in degrees) instead of at the shot's pose |
+| `--legs <n>`, `--leg-frames <n>` | legs per arm (default 6) and frames per leg (default 240, 4 s of flight) |
+| `--speed <m/s>`, `--clearance <m>`, `--bank <deg>` | ground speed (default 120), height kept above the terrain (150), constant bank (0 flies straight) |
+| `--burst-legs` (2026-10-25) | alternate the legs between 250 and 60 m/s instead (ABBA keeps each leg's speed equal in both arms) |
+| `--park-legs` (2026-10-25) | hold still (0 m/s) on odd legs and fly on even ones: a stop on the runway, then the roll |
+| `--camera chase\|cockpit` | default chase |
+| `--weather clear\|breezy\|cloudy` (2026-10-25) | default clear, as the capture; the game's default is breezy |
+| `--quality`, `--mode`, `--aircraft` | renderer settings (default medium, balanced, trainer) |
+| `--draws`, `--fence-every <n>` | keep the frame's own draws (slow on a software adapter); fence to GPU idle every n frames (default 4) |
+| `--base-world <json>`, `--head-world <json>` | options merged into that arm's `createWorld` (a landform or province under test) |
+| `--kill-detail-worker <leg>:<frame>` (2026-10-25) | fail the vegetation worker in both arms before that frame of that leg (legs from 1, frames from 0) with an error event, as a crashed worker script |
+| `--hang-detail-worker <leg>:<frame>` (2026-10-25) | the same, but terminate the worker with no event: a silent worker (a separate run from `--kill-detail-worker`) |
+| `--settle-trials <k>`, `--trial-frames <n>` (2026-10-25) | after the legs, k independent fresh-region settles of n frames (default 600): in each, both arms at once build a new renderer and hold still over the next land start (a spiral out from the home airport that skips the sea), as in the stream to rest |
+| `--emulate-hitch <ms>@<leg>:<frame>` (2026-10-25) | that frame stands for a main thread blocked `<ms>` while the simulation flew on: path and simulation time advance by `<ms>`, render()'s delta is FlightGame's clamp of it (0.1 s at most); every other frame stays 1/60 s |
+| `--frame-dump <from>-<to>` (2026-10-25) | read those frames of the hitch's leg back as each renders (no extra render) and write them as PNGs under `<out>/frames`; needs `--emulate-hitch` and `--draws` |
+| `--gpu swiftshader\|hardware`, `--chromium <path>` | the adapter (default hardware on macOS, SwiftShader elsewhere) and the browser |
+| `--profile`, `--heap-profile`, `--no-minify` | a V8 CPU profile, and a V8 sampling heap profile, per arm per leg; unminified builds so profiles name functions (each moves the timings) |
+| `--fail-on-worker-fallback` (2026-10-25) | exit 1 when the arm built from the commit under test TRIPPED (below) |
+| `--under-test <ref>` (2026-10-25) | the commit `--fail-on-worker-fallback` asks about (default the head; name it when the arms are swapped) |
+| `--out <dir>` | default `tests/perf/artifacts/flight/<timestamp>` |
+
+**The detail-worker verdict** (2026-10-25, `scripts/perfFlightVerdict.mts`).
+The agent samples the vegetation runtime's watchdog clocks after every frame
+(`tests/perf/ab/detailWatchdog.ts`), and `report.md` ends with a table per
+arm and phase (the concurrent stream to rest, each leg, each settle trial)
+and a line per commit:
+
+- **TRIPPED**: by the end of the phase the runtime had timed its worker out,
+  restarted it or fallen back to generating cells on the main thread, or had
+  no worker. The counters are the renderer's, so a trip stays on every later
+  phase of that arm; a settle trial, on a renderer of its own, stands alone.
+- **would-trip**: spans the runtime charged its worker 2,000 ms or more,
+  which trip its 240-update deadline at 120 Hz although the harness runs far
+  slower. On `19543c0` a span is a whole demand episode; on a runtime with
+  heartbeats it is a silence. The count is an estimate, not a bound: on
+  `19543c0` it also counts a clock left set while the presentation sweep
+  was idle, which trips only if demand comes back first (see "Medium/balanced
+  choppiness" below).
+- A worker failed on purpose (`--kill-detail-worker`, `--hang-detail-worker`)
+  is not a trip: its leg and those after it say whether the runtime
+  RECOVERED (restarted it; RECOVERING while the restart is due at its next
+  update) or FELL BACK, and only trips beyond that failure count.
+- With them: the longest charged span on each clock (presentation /
+  generation), accepted worker builds' latency in wall ms, render() p50 and
+  p95, heap allocated per frame, long tasks, frames per second, and head/base
+  ratios for the first leg, the legs after it and the settle trials.
+
+**The bake section** (2026-10-25, `scripts/perfFlightBakes.mts`). The
+renderer spreads two bakes over frames: the sky probe's re-light every 500 m
+of climb, and the ground-cover tile below the blades' fade height. The agent
+reads `FlightRenderer.getBakeStatsForCapture()` after every frame of a leg,
+outside the frame's timed and heap windows (`tests/perf/ab/bakeProbe.ts`),
+and `report.md` ends with a table for each:
+
+- Sky: per arm and leg, over all legs and per settle trial, the sliced re-lights landed, their frames, the worst
+  sliced frame's ms with its work (begin, advance, land, cube, LUT), the
+  sliced frames at or over 1 ms, and the one-frame re-lights (a renderer's
+  first frame, a teleport, an environment change: synchronous by design, so
+  outside the 1 ms target). Each sliced re-light is then followed frame by
+  frame from its begin to the frame after its LUT, with render() and the
+  `flight-presentation` and `hdr-present` passes against their leg medians,
+  because the specular cube's six faces render in the scene pass, outside
+  the refresh's own ms (`report.md` follows the first 6 re-lights and lists
+  the first 40 frames or calls of each list; `report.json` has them all).
+- Ground cover: per arm and leg, over all legs and per settle trial, tile-bake calls, ms per call p50 / p95 /
+  max, calls at or over 2 ms (the 1.5 ms budget and one 32 m step), those
+  with neither a collection during render() nor a pace-floor hold,
+  pace-floor calls and tiles completed, then each call at or over 2 ms with
+  what its frame says.
+- An arm that never reached a bake reads **Not exercised** with how to reach
+  it: a re-light needs about 1,200 frames of climb (`--clearance 1500
+  --speed 250 --legs 2 --leg-frames 720`; wave 2b flew 4 legs and landed
+  two in each job); the tile bakes only below 55 to
+  110 m above the ground, by tier (`--clearance 30 --speed 70
+  --start=<x,z>`). A build without `getBakeStatsForCapture` reads n/a.
+- The page is not cross-origin isolated, so the bake clocks read in 0.1 ms
+  steps, and a reading at a target counts with those over it.
+
+perf:flight builds both arms' renderers with the game's two terrain
+samplers, the full sample and the height alone (`AgentConfig.gameTerrainHeight`,
+`tests/perf/ab/terrainSamplers.ts`), so the ground-cover tile bakes in 32 m
+steps as in the game. A build without `FlightRendererOptions.terrainHeight`
+(before `69746b7`) ignores the second and bakes whole rows on the full
+sample, as its game did; the report's settings line says so. perf:ab never
+passes it, so its renderers and baselines are made as the capture's are
+(`tests/perf-flight-bakes.test.ts`).
 
 **What it found.** Main (6d91220) against the commit before PR #19
 (264b760), 6 x 240 frames: no new CPU cost from the three October PRs
@@ -1644,6 +1743,14 @@ lifts update gaps (`DETAIL_WORKER_WATCHDOG_UPDATE_GAP_ALLOWANCE_MILLISECONDS`);
 a worker that stops answering while frames run still falls back
 (tests/render.webgpu-detail-worker-runtime.test.ts).
 
+*Superseded in part on 2026-10-25.* This fix covered the generation
+watchdog (its gap allowance also lifted update gaps off the presentation
+clock). The presentation watchdog kept its 240 updates OR 8 s from the
+first update with demand, and it was still tripping a working worker; see
+"Medium/balanced choppiness: the vegetation worker's watchdog (2026-10-25)"
+below. A worker that stops answering is now replaced, up to twice, before
+generation falls back.
+
 The same flight, 4 x 240 frames, after the first leg (SwiftShader host,
 trainer, medium/balanced):
 
@@ -1663,16 +1770,26 @@ trainer, medium/balanced):
   (thin instances, shadow defines). The vegetation PBR variant without
   `DETAIL_BAND_FADES` listed here before is compiled at load: until
   `f86a866` the probe's recorder, installed after the renderer loaded, took
-  the engine's cached copy for a compile.
+  the engine's cached copy for a compile. *Closed 2026-10-25* by `6a80b12`
+  (each wildlife batch primes its pipelines at startup): in the Metal flights
+  below every main arm compiled this 123.9 KiB effect mid-flight and no arm
+  of the fix did.
 - 1.7 MB of garbage per frame: the terrain clipmap's node selection and
   buffer writes (~1 MB: per-node objects and string page keys) and the
   wildlife step (~0.5 MB: per-step arrays and vector clones). Young
-  collections absorb it; it is not a stall source on its own.
+  collections absorb it; it is not a stall source on its own. Still open.
 - The sky probe's spherical-harmonics bake runs on the main thread whenever
   the camera's altitude changes by 500 m: 1,536 `evaluateSkyRadiance` calls,
   1.3 ms on this host before PR #22 and 3.6 ms (high sun) to ~9 ms (low sun)
   since. One frame per 500 m of climb; it could be spread over six frames
-  (one cube face each) with identical results.
+  (one cube face each) with identical results. *Sliced 2026-10-25*
+  (`e149d4d`, `8adc324`, `49e666e`, `4dc648a`; below): bit-identical. On
+  the macOS runner (wave 2b, below; main-thread ms) its advance frames cost
+  0.2 to 0.6 ms, but the frame that lands it still runs Babylon's
+  spherical-harmonics converter in one call, 0.5 to 3.9 ms, and the begin
+  frame read up to 2.2 ms: 5 of the 33 sliced frames were at or over 1 ms.
+  Still open: slicing the converter, and the begin frame's work outside its
+  slice.
 
 **The October PRs' steady cost, together.** Each of PRs #19, #20 and #22
 passed the 5% gate alone; together, against 264b760 (CI run 40117858194):
@@ -1893,6 +2010,474 @@ raymarch +8.2%, the bloom composite -5.6%, with identical pixels). Within
 one model, run-to-run spread is about 1%. So attribute a change only between
 parts on the same CPU model, and use the macOS runner's advisory A/B to
 break a tie: it read the same cruise at +0.5% (-0.2% to +1.2%).
+
+## Medium/balanced choppiness: the vegetation worker's watchdog (2026-10-25)
+
+Jason, 2026-10-25: medium/balanced feels much choppier than before. What
+was found is a watchdog that took a busy vegetation worker for a dead one,
+and a failover that then lasted the whole session.
+
+**The cause.** The detail (vegetation) worker generates cells and packs
+their chunks. Its presentation watchdog in `WorldDetailRuntime` failed the
+worker over when a build took too long, and that failover is permanent: the
+worker is disposed and every vegetation cell after it is generated on the
+main thread, a stall every few frames (as in "Flight stutter" above). On
+main (`19543c0`, unchanged at `05f17b4`) that clock
+
+- started at the first update with any worker presentation demand and ran
+  on through main-thread publication streaming and every cancel and reissue,
+  until a build was accepted, and
+- expired after 240 updates OR 8,000 ms of charged time.
+
+240 updates are 2 s on a 120 Hz display, and a fresh region's builds could
+take longer than that: the worker ran a whole queued cell between every
+pair of 4 ms build slices, and yielded between slices through a nested
+`setTimeout(0)`, which clamps to 4 ms. On a machine drawing 9 to 12 frames
+a second while a region settles, the 8 s arm trips instead. 2026-10-24's
+fix had reworked only the generation watchdog (and lifted update gaps off
+both clocks). The evidence:
+
+- A unit model (`tests/render.webgpu-detail-worker-liveness.test.ts`: one
+  worker thread and a 120 Hz main thread in virtual time, cell costs from
+  the cloud host scaled to a Mac) trips `19543c0` when the session parks for
+  3 s after a fill and then flies east: 58 ms into the flight, with the
+  clock 366 updates old (`7d300de`). The trip itself was not seen in a
+  browser, because perf:flight never moved after such a hold, but what it
+  needs was: main's presentation clock left set, unchecked, while the
+  aircraft held still. Settle trial 2 ended with main's clock still open in
+  9 of the 11 main arms that ran settle trials (wave 1 job 1, wave 1.5 jobs
+  0-7), at 7.3 to 12.2 s (151 to 309 updates). In 7 of them it was already
+  past main's own 240 updates or 8 s with no trip, so nothing was checking
+  it, and the first sweep with demand would have found it expired. Main
+  ended both parked legs of wave 1's park-then-fly job with no span open.
+- In the browser, on the macOS runner's GPU (below): main charged its
+  worker 2 s or more 28 times across wave 1's eight jobs (an estimate of
+  its trips at 120 Hz, not a bound; see wave 1), and in wave 1.5 it tripped
+  outright in 4 of 10 arms, all on the 8 s arm, while a region settled at
+  9 to 12 frames a second. The fix and the worker fix alone did neither in
+  22 arms, outside the one leg where the worker was hung on purpose.
+
+Why it showed now is not pinned down. The 240-update deadline is older
+than the October merges: it is on main by 2026-09-22 (`a4c8762`). Near
+home the biome and landform merges left a cell's cost where it was: 95.6
+ms at `c43eb86` and 94.8 ms at `19543c0`, the mean of 64 cells generated on
+the cloud host (a scratch bench, not committed). Away from home it depends
+on the ground, 36 cells each: 150 km south a cell went from 68.9 to 79.4
+ms (+15%), 200 km east from 123.5 to 101.8 ms (-18%, where the trees are
+gone), and a forced dunes or volcanic world (`19543c0` only, 12 km east of
+home) takes 140 to 145 ms.
+
+**The fix** (`git log origin/main..HEAD` on the branch, based on
+`05f17b4`). The worker and its watchdog:
+
+| Commit | Subject |
+| --- | --- |
+| `a6aed08`, `1cebeca` | Teach the detail-worker protocol a build heartbeat before any worker sends it; Post a heartbeat between detail-worker build slices |
+| `e5077a3` | Time detail-worker silence, not slowness, in the presentation watchdog |
+| `7d6809c` | Let detail-worker builds go ahead of queued cells to halve build latency |
+| `2734df2` | Respawn a failed detail worker before falling back to the main thread |
+| `aef41c1` | Reset the worker clocks when the presentation sweep goes idle |
+| `e8a1f47` | Show in the diagnostics panel when the vegetation worker failed |
+
+All but `e8a1f47` are in the build that waves 1 and 1.5 flew (below).
+
+- A build posts a heartbeat after its first slice and then at most every
+  `DETAIL_WORKER_HEARTBEAT_MILLISECONDS` (100 ms).
+- The presentation clock charges only silence. A heartbeat from the build
+  the runtime holds, or an accepted answer, restarts it; it holds still
+  while the demand is the main thread's (a publication streaming, an inline
+  build, an answer queued); it resets when the presentation sweep goes idle.
+  Cancel and reissue still do not reset it, so motion cannot keep a dead
+  worker alive.
+- Both watchdogs expire after 240 charged updates AND at least
+  `DETAIL_WORKER_WATCHDOG_MINIMUM_MILLISECONDS` (2,000 ms), so 240 updates
+  never mean less than 2 s of silence (2 s at 120 and 240 Hz, 4 s at 60
+  Hz), or after 8,000 ms whatever the count. A gap between updates is still
+  charged at most 100 ms.
+- Cells posted while a build runs wait. Each runs once the build has had
+  its turn of slices (a fifth of the last cell's time, 4 to 8 ms), and all
+  run when it ends. The browser worker yields through a self-posted
+  MessageChannel message, which has no clamp. In the unit model, at 30 ms a
+  cell, the longest build fell from 521 to 286 ms while a region's fill took
+  4-6% longer (`7d6809c`); the worker also runs flat out during a build
+  where it used to idle for part of every slice.
+- A worker that errors or goes silent is replaced at the next update by a
+  new one on the same seed and live world, up to `DETAIL_WORKER_RESPAWN_LIMIT`
+  (2) times per runtime, and only then does generation fall back. After a
+  fallback, inline cells run on credit instead of one whole cell every
+  update. A worker in an eroded world (its terrain pages were transferred
+  to it), and a build that fails or answers malformed, still fall back at
+  once (`2734df2`, `1fae8ec`).
+- Demand that goes `DETAIL_WORKER_CONVERGENCE_MILLISECONDS` (30,000 ms)
+  without an accepted build is counted and reported, never failed over.
+- A respawn, a fallback or a convergence stall warns once per kind
+  (`console.warn`, "detail worker ..."), and the diagnostics panel's detail
+  line adds VEG WORKER RESTARTED xN or VEG GEN ON MAIN THREAD.
+
+Main-thread work that also hitched a medium/balanced flight. The last column
+says whether the build that waves 1 and 1.5 flew (`5dd5ecb`: the branch
+through `4ae68b4`, on `19543c0`) had it working, and whether perf:flight
+can show it at all: the harness pins the render scale (the governor never
+steps) and drives `FlightRenderer` without `FlightGame` or the HUD.
+
+| Commit | Subject | What it changes | In waves 1, 1.5 |
+| --- | --- | --- | --- |
+| `e513c6f` | Apply render-scale steps at the next frame's start so no drawn frame is discarded | the governor's step forced a resize after `endFrame`, throwing the drawn frame away | in the build, not exercised: perf:flight pins the render scale |
+| `b0ecd8b` | Poll renderer diagnostics only while something shows them, and skip unchanged airport readouts | a 2 Hz read walked every desired detail cell with the panel closed (it is off by default); now only while the setting is on or the viewer HUD is up (`75d4626`) | in the build, not exercised: the poll is `FlightGame`'s, which perf:flight does not run |
+| `6a80b12` | Prime each wildlife batch's pipelines at startup so the first antler does not hitch | the keratin PBR compiled at the first antler, 35-87 ms on Metal once a session | yes |
+| `73e1cbb` | Cache generated wildlife cells so a cell crossing generates only new cells | a cell crossing regenerated the whole window; 5 km at 250 m/s generates 71 cells instead of 617 (unit test) | no: the renderer turns it on in `69746b7` |
+| `02f875f` | Bake the ground-cover tile in 32 m steps to hold a low frame near its budget | below the gate every frame baked a whole row, 12.6-15.2 ms p50 on the cloud host; in 32 m steps under 1.5 ms, 2.9-3.2 ms there (the pace floor binds) | no: only with the game's height-only sampler (`69746b7`, `904c309`), which perf:flight passed only from `c616c91` (wave 2b, below) |
+| `69746b7` | Read height-only terrain where a consumer needs only the height | the camera clamp, spawned airfields, ground-cover tile and birds stop paying for normals and classification; bit-identical heights | no |
+| `e149d4d`, `8adc324`, `49e666e`, `4dc648a` | Slice the sky irradiance bake so a climb's re-light can spread over frames; Slice the in-flight sky re-light so a climb spreads it over frames; Land the sliced sky re-light's cloud LUT on a frame of its own; Re-light the sky at once after a teleport, not over a sliced rebake | each 500 m of climb re-lit the sky in one frame; now 0.5 ms of sampling a frame, then SH, specular cube and cloud LUT each on a frame of its own. An environment change, a teleport and the capture (`skyRebake: "sync"`) re-light at once | no: `e149d4d`'s sliced bake was in the build, but nothing called it before `8adc324` |
+| `05e9b1d`, `af053f8` | Measure the chase camera's ground speed over simulation time; Divide the chase trail's distance by simulation time only from 1/240 s up | a hitch read as a burst of speed and threw the chase camera back, then forward | no |
+
+Each measured figure in that table comes from its commit's message. The
+remaining commits on the branch are follow-ups and tests (`31c1de0`,
+`fa2ffc8`, `7d300de`, `3e8f908`, `3492803`, `e107d26`, `bc89123`,
+`08eade3`, `6a3d0e2`, `ccbc1e4`, `b9ec5ec`, `f6646e9`, `7a9a190`,
+`41838e9`, `cb0fc03`, `3548966`, `e461321`, `10809fb`), the perf:flight harness
+(`882569a` to `b4d5fa4`, and `4ae68b4`: the probe, the verdict and the
+options marked 2026-10-25 above; `d15d73d` to `908960d`: the bake section
+above and its tests), one comment (`009a7e2`) and this section.
+
+**Where the flights are kept.** Both waves ran a temporary workflow whose
+matrix is in `.github/workflows/perf-flight.yml` at `1c8d792` (wave 1) and
+`01e9aa6` (wave 1.5). Those two commits, and the builds flown (`5dd5ecb`
+and `0058f56`), are on no branch now: the investigation branch was
+rewritten for wave 2. They resolve by SHA only in a clone that still holds
+them, or from the run pages. `5dd5ecb` and `0058f56` are the branch through
+`4ae68b4` and through `fa2ffc8` rebased onto `19543c0`, with the same
+patches to `src`, `tests` and `scripts` up to hunk offsets. The text and
+tables below give every job's arguments. Artifact
+`perf-flight-<job>-<run>-1` holds each job's `report.md` and `report.json`,
+and the artifacts expire 14 days after the runs (about 2026-11-08).
+
+**Wave 1** (CI run 40208129275). macOS runner, `--gpu hardware --draws`,
+medium/balanced, trainer, chase camera, from `approach-500ft` at 250 m/s in
+600-frame legs (`--speed 250 --leg-frames 600`); main is `19543c0`, the fix
+`5dd5ecb`. Jobs 0-2 and 6-8 fly breezy weather (`--weather breezy`), 3-5
+clear. No arm TRIPPED in wave 1 (the runner drew 10 to 41 frames a second,
+so 240 updates took about 6 s or more).
+
+Main's would-trip count is an estimate of its trips at 120 Hz, not a bound.
+It over-counts: main checks its clock only while the presentation sweep
+runs, and the sweep can go idle with the clock still set (the stale epoch
+`aef41c1` removes); the probe charges that time too, and a stale span trips
+only if demand comes back before a sweep without demand clears it. One main
+span (job 1, settle trial 2) reached 8,966 ms without tripping the 8 s arm,
+so main was not checking that clock then. It can also under-count: the
+harness drew 10 to 41 frames a second, and the part of any gap between
+updates past 100 ms is not charged, where a 120 Hz session, with no such
+gaps, would charge the same wall time in full. The fix resets its clock
+when the sweep goes idle, so its count holds no stale spans.
+
+| Job | Flight | Would-trip spans, main / fix | Longest charged span, ms, main / fix | Accepted build latency p50, ms, main / fix |
+| --- | --- | --- | --- | --- |
+| 0 | park then fly (`--park-legs`), 4 legs | 3 / 0 | 2,667 / 465 | 549 / 115 |
+| 1 | 2 legs, then 12 settle trials (`--settle-trials 12 --trial-frames 600`) | 17 / 0 | 8,966 / 616 | 293 / 159 |
+| 2 | far east (`--start 160000,0,90`), 6 legs | 2 / 0 | 3,454 / 634 | 129 / 37 |
+| 3 | forced boreal province (`--base-world` and `--head-world` `{"climateProvince":"boreal"}`), 6 legs | 1 / 0 | 3,306 / 1,110 | 130 / 46 |
+| 4 | kill the worker at leg 2, frame 300 (`--kill-detail-worker 2:300`); 4 legs | 1 / 0 | 3,258 / 669 | 460 / 64 |
+| 5 | hang the worker at leg 2, frame 300 (`--hang-detail-worker 2:300`); 4 legs | 1 / 0 | 3,477 / 479 | 473 / 69 |
+| 6 | near home, 6 legs | 2 / 0 | 4,110 / 553 | 128 / 76 |
+| 7 | as 6 with the arms swapped (`--under-test 5dd5ecb`) | 1 / 0 | 4,454 / 818 | 112 / 51 |
+| 8 | A/A of the fix | - / 0 and 0 | - / 447 and 774 | - / 47 and 63 |
+
+The counts are the verdict's `wouldTrip` summed over the stream to rest,
+the legs and the trials; the longest span is the larger of the two clocks
+(the fix's 1,110 ms is job 3's generation clock; its longest presentation
+span was 884 ms). Job 5 leaves out the hung leg, where both arms' clocks
+ran to the hang's detection (main 7,986 ms, the fix 7,722 ms): that is
+the hang, not a false trip. Latency pools every accepted build of the job;
+main's in jobs 4 and 5 stop at its fallback. Across jobs the fix answered
+builds 1.7 to 7.2 times sooner (3.1 at the median); pooled over jobs 0-7,
+main 149 ms p50 (3,546 builds) and the fix 72 ms (6,062). Jobs 1, 2, 3, 6
+and 7 also passed `--fail-on-worker-fallback`, which changes no
+measurement.
+
+Killed or hung, main FELL BACK to main-thread generation and the fix
+RECOVERED on a new worker (the legs after the first, legs 2 to 4):
+
+| | kill: main | kill: fix | hang: main | hang: fix |
+| --- | --- | --- | --- | --- |
+| render() ms p50 / p95 / p99 | 10.7 / 63.7 / 113.6 | 7.7 / 14.7 / 23.9 | 13.5 / 72.7 / 141.5 | 11.2 / 21.3 / 33.1 |
+| long tasks: count / total ms | 125 / 10,805 | 4 / 205 | 138 / 13,249 | 8 / 566 |
+
+The fix noticed the hung worker on the 240-update arm, after 7,781 ms of
+charged silence (the runtime's `workerMaxSilenceMilliseconds`) and about
+10 s of wall time at 20 frames a second; at 120 Hz that arm takes 2 s.
+
+With no trip and no fault (jobs 0-3, 6 and 7), steady flight is even:
+render() p50 after the first leg, fix over main, 0.95 to 1.05 (the A/A
+read 0.95), p95 0.66 to 1.11. Every main arm compiled the wildlife keratin
+effect (123.9 KiB of WGSL) mid-flight; the fix created no shader module
+except in job 2, where both arms compiled the far east's hydrology water
+and a plain PBR variant. The first leg read the fix 1% to 20% slower in all
+eight jobs (1.15 with the fix as the base), which is why wave 1.5 flew
+both orders.
+
+**Wave 1.5** (CI run 40210471637). Every job: 4 legs of 600 frames at 250
+m/s in breezy weather, then 4 settle trials of 600 frames (`--legs 4
+--leg-frames 600 --speed 250 --weather breezy --settle-trials 4
+--trial-frames 600`), otherwise as wave 1. A third build, the worker fix
+only (`0058f56`: the branch through `fa2ffc8`, the worker commits and the
+harness without the main-thread work), was flown to separate the two
+halves. Under perf:flight the fix differs from it in effect only by the
+wildlife prime (`6a80b12` and its follow-ups): the render-scale step and
+the diagnostics poll are not exercised, and the cell cache, the tile's
+32 m steps and the sliced sky re-light were not switched on in that build
+(table above).
+
+| Job | Base / head | TRIPPED | Would-trip spans, base / head | render() p50 head / base: first leg, legs after it, settle trials |
+| --- | --- | --- | --- | --- |
+| 0 | main / fix | none | 5 / 0 | 1.147, 0.992, 1.012 |
+| 1 | main / fix | none | 8 / 0 | 0.865, 1.019, 1.016 |
+| 2 | main / fix | none | 6 / 0 | 1.214, 1.043, 1.040 |
+| 3 | fix / main | main, in the stream to rest | 0 / 8 | 1.078, 1.085, 1.018 |
+| 4 | fix / main | none | 0 / 9 | 0.883, 1.000, 0.979 |
+| 5 | fix / main | none | 0 / 9 | 1.048, 0.978, 0.994 |
+| 6 | main / worker fix only | main, in the stream to rest | 10 / 0 | 0.860, 0.758, 1.016 |
+| 7 | worker fix only / main | none | 0 / 8 | 0.964, 1.000, 0.981 |
+| 8 | worker fix only / fix | none | 0 / 0 | 0.843, 0.953, 0.985 |
+| 9 | fix / worker fix only | none | 0 / 0 | 0.884, 1.034, 1.013 |
+| 10 | main / main (A/A) | both: the base in trial 4, the head in trial 2 | 9 / 9 | 1.065, 0.951, 0.983 |
+
+Main charged 81 would-trip spans in its 10 arms and TRIPPED in 4. The fix
+(8 arms) and the worker fix only (4 arms) neither tripped nor charged a
+span of 2 s; their longest were 1,242 ms and 1,502 ms. All four trips were
+the 8 s arm: the tripping span read 7,995 to 8,023 ms at the last frame
+before the trip, and none of the four had reached 240 updates (117 to
+190). The 81 over-counts as wave 1's 28 does: in settle trial 2, eight
+main arms (jobs 0-7) ended with a span still open at 7.3 to 12.2 s (up to
+309 updates), six of them past main's own limits with no trip, so main
+was not checking them. Accepted build latency, pooled p50 over every arm of
+each build: main 148 ms, the fix 89 ms, the worker fix only 87 ms.
+
+| Trip | Where, at frames/s | The leg after it (jobs 3, 6) or the trial it tripped in (job 10): render() ms p50 / p95, long tasks | The other arm, same phase |
+| --- | --- | --- | --- |
+| job 3, main (head) | stream to rest, 10.0 | leg 1: 18.0 / 88.6, 47 | fix: 16.7 / 40.8, 20 |
+| job 6, main (base) | stream to rest, 11.9 | leg 1: 17.9 / 99.2, 47 | worker fix only: 15.4 / 43.0, 25 |
+| job 10, main (base) | settle trial 4, 11.8 | trial 4: 22.8 / 196.3, 182 | main, not tripped there: 13.9 / 71.0, 62 |
+| job 10, main (head) | settle trial 2, 9.3 | trial 2: 26.3 / 235.9, 228 | main, not tripped there: 16.8 / 82.0, 80 |
+
+Over legs 2 to 4 the two arms that tripped in the stream to rest read
+render() p50 / p95 / p99 14.0 / 51.6 / 101.0 ms with 98 long tasks (job 3)
+and 15.3 / 51.9 / 108.4 ms with 96 (job 6), against 12.9 / 25.3 / 54.7 ms
+with 22 and 11.6 / 24.4 / 49.4 ms with 19 in the other arm.
+
+The first leg's cost is not settled. Single runs put the fix's first leg
+anywhere from 13% faster to 21% slower than main's, and runs in the same
+arm order spread as widely (jobs 0-2: 0.865 to 1.214), so one run says
+little. The estimates below pool both orders (geometric means of head over
+base, half the difference of the two orders) and leave out job 3, whose
+main fell back in the stream to rest and generated cells on the main thread
+for all four legs, which makes the fix look cheaper. On the first leg, jobs
+0-2, 4 and 5 read the fix over main +5.2% at p50 with one standard error
+of 6.7% (+3.2%, SE 6.1%, with job 3), and wave 1's one matched pair of
+orders, jobs 6 and 7, reads +9%; wave 1 had the fix's first leg slower in
+all eight jobs. A first-leg cost of a few percent is possible and not
+shown. After the first leg the fix reads +1.4% (SE 0.9%; -0.1% with job 3),
+and the settle trials, on fresh renderers that job 3's trip does not
+reach, +1.3% (SE 0.7%): a steady cost of about 1-2% at p50 that may be
+real. Which arm was the head moved the main / fix pairs by 1-3%, but in
+jobs 8 and 9 the head's first leg was 16% and 12% faster than the base's,
+whichever build it was. The fix over the worker fix only, from that one
+pair: -4.0% at p50 after the first leg and -2.3% on the first leg, inside
+the A/A runs' 5-7% (job 10 here, job 8 of wave 1).
+
+**What does not change.** The capture check against the 39 committed
+baselines is the pull request's "Renderer GPU and performance gates" run
+(`perf:capture`, then `git diff --exit-code -- tests/perf/baseline`). The
+evidence before it:
+
+- Still images. perf:capture passes `skyRebake: "sync"` and the capture
+  time pin makes the A/B agent's renderer synchronous, so every re-light
+  lands in one frame as before; the ground-cover tile's bytes are the same
+  at every budget and with either sampler; the height-only sampler equals
+  the full sample's height bit for bit
+  (`tests/render.live-terrain-height.test.ts`); a steady frame keeps the
+  chase camera's old division bit for bit; construction, profile changes
+  and the capture pin keep the forced render-scale path; and the capture
+  respawn ends a pending wildlife prime. Base against head on all 39 shots
+  (CI run 40232422802, `perf:ab --rounds 0 --shots all`, base `05f17b4`,
+  head `0e76d2a`, whose `src` is `08eade3`'s; perf:ab's frames take the
+  capture's pins but are another instant than the baselines'): on the
+  macOS runner's GPU every shot drew the same calls with the same GPU work,
+  and 0.00% to 0.15% of pixels differed, SSIM 1.0000 on every shot.
+  Resident terrain pages differ on every shot there (e.g. 34 → 38), stream
+  leftovers beyond the pages both arms want. On SwiftShader the draw calls
+  and GPU work were identical on all 39 too. The 24 shots of the three parts
+  that ran on EPYC 7763 and 9V45 runners rendered identical frames; the 15
+  of the two parts on EPYC 9V74 runners all differed, from 0.12% to 70.27%
+  (`grove-forest-2m` 70.27%, SSIM 0.7313; `cliff-60m` 55.64%, SSIM 0.8952;
+  `apron-hangar-variety` 23.19%, almost none of it over 8/255), spread over
+  large areas of the terrain, not one object, and their arms' resident
+  terrain pages differed on 13 of those 15 shots against none of the other
+  24. On the cloud host, rounds-0 runs of the two worst shots rendered
+  identical frames A/A (`05f17b4`) and in both orders (`05f17b4` against
+  `009a7e2`, and back), and the macOS runner read 0.02% and 0.05% on them,
+  so the 9V74 frames are most likely that runner's, not the branch's (no
+  A/A ran on a 9V74 runner; "Volcanic land" below found a SwiftShader water
+  frame that did not reproduce run to run). No baseline was re-promoted.
+- Draw-call ceilings. They are pinned per shot as `drawCallCeiling` in
+  `PERF_CAPTURE_SHOTS` (`scripts/perf-capture.mts`; 32 of its 39 shots
+  carry one), with raises in `DRAW_CALL_RAISES`
+  (`scripts/deliveryFloors.mts`), and checked by
+  `tests/delivery-floors.test.ts`. No commit on the branch touches those
+  files or `tests/perf/baseline`, and in the run above no shot's count moved
+  and no ceiling was newly breached (`page-thrash-turn` at 255 / 254 and
+  `cdlod-transition` at 215 / 196 read over their ceilings in both arms,
+  main's as well, at perf:ab's instant). The only new draws are the wildlife
+  prime's zero-matrix instances (they rasterise nothing), which last until
+  each batch's pipelines exist and which a capture respawn ends.
+- Steady GPU work. The branch adds no render pass and no shader, and the
+  run above counted the same GPU work on every shot. Its timed steady cost
+  is the pull request's own perf:ab gate.
+
+### Wave 2: the whole branch on `05f17b4`
+
+Waves 1 and 1.5 flew `5dd5ecb` on the old main, which had neither the
+wildlife cell cache nor the height-only reads, the sliced sky re-light, the
+chase camera's ground speed or the diagnostics line working. The branch
+was then rebased onto `05f17b4` (main after PRs #27 and #29) and flown on
+the macOS runner in two runs. `08eade3`, the build wave 2 flew, has the
+branch head's `src` but for one comment (`009a7e2`); the head adds the
+bake section above, which wave 2b read. The matrices are in
+`.github/workflows/perf-flight.yml` at `0e76d2a` (wave 2) and `f0b1313`
+(wave 2b), two temporary commits that, like waves 1 and 1.5's, were left
+off the branch when it was proposed; the artifacts expire about
+2026-11-08.
+
+Under perf:flight, of the renderer changes: the wildlife cell cache and
+prime are on in every arm of the fix; the camera's ground speed is what an
+`--emulate-hitch` job flies; the height-only reads and the ground-cover
+tile's 32 m steps run in wave 2b, which passes the game's samplers and
+flies low (wave 2 passed neither and flew at 150 m, above the blades' fade
+height, where the tile does not bake); the sliced sky re-light runs in
+wave 2b's climb. The render-scale step, the
+diagnostics poll and the diagnostics line stay outside perf:flight (pinned
+render scale, no `FlightGame`, no HUD).
+
+**Wave 2** (CI run 40232403657). `--gpu hardware --draws`,
+medium/balanced, trainer, chase camera, from `approach-500ft` at 250 m/s
+and 150 m clearance in breezy weather unless the table says otherwise; main
+is `05f17b4`, the fix `08eade3`.
+
+| Job | Flight | Base / head |
+| --- | --- | --- |
+| 0 | near home, 6 legs of 600 frames | main / fix |
+| 1 | as 0 | fix / main |
+| 2 | 2 legs of 300 frames, then 20 settle trials of 600 frames (`--settle-trials 20 --trial-frames 600`) | main / fix |
+| 3 | far east (`--start=160000,0,90`), 4 legs of 600 | main / fix |
+| 4 | kill the worker at leg 2, frame 300 (`--kill-detail-worker 2:300`), 4 legs of 600 | main / fix |
+| 5 | the camera after a hitch: `--speed 60 --legs 2 --leg-frames 60 --emulate-hitch 300@1:20 --frame-dump 18-45`, clear weather | `4ae68b4` (the branch before `e8a1f47`, so without `05e9b1d` and `af053f8`) / fix |
+
+- Trips. Main charged its worker 2 s or more in the stream to rest of
+  every one of its five arms (2,939 to 5,190 ms; jobs 0-4), and in job 2's
+  settle trials it TRIPPED in 1 of 20 (trial 13: the 8 s arm, then a
+  fallback for the trial) and charged 36 would-trip spans in 12 of them, up
+  to 8,710 ms. The fix tripped nowhere and charged no span of 2 s: its
+  longest was 846 ms. Accepted build latency over job 2's settle trials:
+  main p50 / p95 622 / 4,164 ms (458 builds), the fix 366 / 2,219 ms (783).
+- A killed worker (job 4). Main FELL BACK: leg 2 read render() p95 147.5 ms
+  with 109 long tasks and 4,247 KiB of garbage a frame, legs 3 and 4 p95
+  43 to 52 ms. The fix RECOVERED on a new worker: leg 2 p95 32.3 ms with 12
+  long tasks (19.0 and 35.0 ms on the same leg of jobs 0 and 1, with no
+  kill). After the first leg the fix read 0.316 of main's p95 and 0.527 of
+  its garbage.
+- Near home (jobs 0 and 1, both orders; ratios are the fix over main, the
+  geometric mean of the two orders). After the first leg render() p50 is
+  even (1.000), p95 0.926, garbage 1.001; long tasks 42 → 24 in job 0 and
+  28 (main) against 26 in job 1. The first leg reads p50 0.972 but p95
+  1.160: the fix's first-leg p95 was the higher in both orders (34.1
+  against 30.0 ms, 40.0 against 33.8), with 17 against 9 and 24 against 18
+  long tasks. In that leg the fix published 135 to 149 vegetation builds to
+  main's 36 to 64, and the trees arrived two to five times sooner at the
+  median (155 against 310 ms in job 0, 122 against 648 in job 1), which
+  likely puts more publication and draw work into the first leg (10 s of
+  flight, 30 to 36 s of wall time here); the per-pass spike tables do not
+  isolate it. Only one presentation build is ever in flight
+  (`WorldDetailRuntime.pendingPresentationBuild`), so no frame adopts more
+  than one. Over jobs 0-4 (four in main/fix order, one in fix/main) the
+  first leg's p95, fix over main, has a geometric mean of 1.051 (job 2 0.954, job 3 0.908, job
+  4 1.098); wave 2b's first legs, below, read 0.831 and 0.975.
+- Far east (job 3, one order). First leg p50 0.850, p95 0.908; after it
+  p50 0.973, p95 1.143, garbage 1.070. Near home the order alone moved p95
+  after the first leg by about ±15% (0.801 against 1.070), so 1.143 is
+  inside it; the +7% garbage is beyond the ±1% the order moved garbage
+  there, and one run cannot say more.
+- Mid-flight compiles. Main compiled the wildlife PBR (123.9 KiB of WGSL)
+  mid-flight in all five of its arms: in leg 1 of jobs 0, 1, 2 and 4, and
+  in leg 3 of job 3. The fix compiled it nowhere. Far east (job 3), both
+  arms compiled a plain "pbr:" effect in leg 1 and `aerolithHydrologyWater`
+  in leg 3 (both on main before this branch; still open).
+- The camera after a hitch (job 5). Frames 18 and 19 are pixel-identical
+  between the arms. At frame 20, the 300 ms hitch, the base's camera falls
+  back: the aircraft's centre rises about 20 px on screen (the centroid of
+  its near-white pixels, 1280x720 frames) and its wingspan shrinks from
+  about 500 to about 458 px (−9%), then it creeps back over about 25
+  frames. The fix's aircraft moves about 3 px at the hitch (wingspan 493 px
+  against 501) and drifts 3 px more by frame 45, where the base's has
+  caught up.
+
+**Wave 2b** (CI run 40246463673). As wave 2, but main against the branch
+head `009a7e2`, both orders of each flight, and the bake section read in
+the fix's arms (main's build reads n/a):
+
+| Job | Flight | Base / head |
+| --- | --- | --- |
+| 0 | low approach: `--start=10771.39,-27794.70,0 --clearance 30 --speed 70 --legs 4 --leg-frames 600` | main / fix |
+| 1 | as 0 | fix / main |
+| 2 | climb: `--clearance 1500 --speed 250 --legs 4 --leg-frames 720` | main / fix |
+| 3 | as 2 | fix / main |
+
+- Low approach, below the blades' fade height, where the tile bakes on
+  every frame. After the first leg render() p50 0.827, p95 0.863, garbage
+  0.686; the first leg p50 0.796, p95 0.831, garbage 0.755 (fix over main,
+  both orders). After the first leg, render() p50 fell from 18.1 to 15.4 ms
+  in job 0; in job 1 main read 12.7 ms and the fix 10.2. Main charged its
+  worker 2 s or more in its stream to rest in both orders (4,636 and 2,968
+  ms), the fix at most 395 ms there and 961 ms in any phase, and main
+  compiled the wildlife PBR mid-flight in both.
+- Ground cover (the fix's arms, 4,800 calls): p50 1.50 ms, p95 2.5 and
+  1.8 ms, worst 23.1 and 9.4 ms (jobs 0 and 1). Calls at or over 2 ms: 191 of 2,400 in job
+  0 and 95 of 2,400 in job 1, of which 134 and 65 (5.6% and 2.7% of the
+  calls) had neither a collection nor a pace-floor hold; 4 and 7 pace-floor
+  calls; 16 and 18 tiles finished. So the 2 ms target holds at the median
+  (1.5 ms in every leg), but at p95 only in job 1 (1.8 ms; 2.2 in its first
+  leg): job 0's p95 was 2.5 ms (2.1 to 3.7 by leg), and 6.0% of all calls
+  were at or over 2 ms. Both arms also compiled the ground-cover blades'
+  PBR (one pipeline and 122.1 KiB of WGSL, after a 14.5 KiB module the
+  frame before) in the first leg, on first use below the fade height
+  (before this branch; still open).
+- Climb. After the first leg render() p50 1.019, p95 1.007, garbage 0.956;
+  the first leg p50 0.948, p95 0.975, garbage 0.959. Main charged 2 s or
+  more once in its stream to rest (job 2, 2,318 ms) and compiled the
+  wildlife PBR mid-flight in both orders.
+- Sliced sky re-lights (the fix's arms): 4 landed, 2 per job. Their frames
+  read: begin 0.5 to 2.2 ms, advance 0.2 to 0.6 ms, land 0.5 to 3.9 ms
+  (all but at most 0.1 ms of it the converter), cube 0.0 to 0.7 ms, LUT
+  0.1 to 0.4 ms (main-thread ms). 3 of job 2's 20 sliced frames were at or
+  over 1 ms (begin 2.2, land 2.9 and 3.9 ms) and 2 of job 3's 13 (begin
+  1.3, land 1.2). On the cube frame the scene pass also renders the six
+  faces: `hdr-present` read 12.4 and 6.4 ms against leg medians of 6.0 and
+  5.7 in job 2, and 5.6 and 2.0 against 2.5 and 2.0 in job 3; job 2's
+  frame after its first LUT, with no sky work, read 14.6, so these flights
+  cannot separate the faces' cost from the leg's spread. Main does all of
+  it in one frame, which its build does not record; on the cloud host the
+  SH bake alone took 3.6 to about 9 ms ("Flight stutter" above). The 1 ms
+  target held on every advance, cube and LUT frame. It failed on 3 of the
+  4 landing frames (1.2 to 3.9 ms, the converter) and on the first begin
+  frame in each job (2.2 and 1.3 ms).
+
+Still open after wave 2: slicing the spherical-harmonics converter and
+the begin frame's work outside its slice; finding what runs inside the
+ground-cover calls over 2 ms with neither a collection nor a pace-floor
+hold (a step averages about 0.1 ms here, and the clock is already read
+after each one), for example by timing each step; compiling the
+ground-cover blades' PBR, and the far east's plain PBR and hydrology
+water, at load; and the first leg near home, where the fix's sooner trees
+cost p95 in the first 10 s of flight.
 
 ## Capture harness
 

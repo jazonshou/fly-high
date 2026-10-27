@@ -6,6 +6,7 @@ import type {
   WildlifeAgent,
   WildlifeObserver,
   WildlifeSpawn,
+  WildlifeTerrainHeightSampler,
   WildlifeTerrainSample,
   WildlifeTerrainSampler,
   WildlifeVector3,
@@ -98,6 +99,8 @@ export interface WildlifeSimulationStepStatistics {
 export interface WildlifeSimulationContext {
   readonly observer: WildlifeObserver;
   readonly terrainSample: WildlifeTerrainSampler;
+  /** `terrainSample(x, z).height` for less work; the birds use it when given. */
+  readonly terrainHeight?: WildlifeTerrainHeightSampler | undefined;
 }
 
 function cloneVector(vector: Readonly<WildlifeVector3>): WildlifeVector3 {
@@ -320,9 +323,10 @@ export class WildlifeSimulation {
         accelerationZ += observerDz * inverseDistance * avoidance;
       }
 
-      const terrain = context.terrainSample(bird.position.x, bird.position.z);
-      if (Number.isFinite(terrain.height)) {
-        const minimumHeight = terrain.height + 24;
+      const terrainHeight = context.terrainHeight?.(bird.position.x, bird.position.z)
+        ?? context.terrainSample(bird.position.x, bird.position.z).height;
+      if (Number.isFinite(terrainHeight)) {
+        const minimumHeight = terrainHeight + 24;
         if (bird.position.y < minimumHeight) {
           accelerationY += Math.min(12, (minimumHeight - bird.position.y) * 0.3);
         }
