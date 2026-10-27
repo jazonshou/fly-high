@@ -151,6 +151,23 @@ export interface InfrastructureRect {
 export interface InfrastructureRegion {
   readonly key: string;
   readonly segments: readonly InfrastructureSegment[];
+  /** The region's guardrails: drawn from these, and the car's colliders (`guardrailColliders`). */
+  readonly rails?: readonly InfrastructureRail[];
+}
+
+/**
+ * One guardrail run, plain data so it survives the structured clone to the
+ * workers. `points` are world x, z pairs; the rail stands `heightMeters` to
+ * the top of its beam above the ground under each point.
+ *
+ * **The road side is fixed by a vector, not by "left" or "right"** (which
+ * flip between the sim's body frame and Babylon's left-handed world): for
+ * consecutive points a, b with direction (dx, dz) = b - a, the road lies on
+ * the side of n = (dz, -dx). The beam's face looks along n.
+ */
+export interface InfrastructureRail {
+  readonly points: readonly number[];
+  readonly heightMeters: number;
 }
 
 /** What a profile writes: an absolute target height and a weight in [0, 1]. */

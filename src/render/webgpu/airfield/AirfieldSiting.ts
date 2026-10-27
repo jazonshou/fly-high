@@ -59,6 +59,16 @@ export function hangarFootprint(
 }
 
 /**
+ * Ground-sample spacing under a hangar footprint.
+ *
+ * 2 m over 46 x 34 m is 408 samples per hangar. That is the resolution the
+ * relief figures behind `7-10`'s seating rule were measured at, so the rule,
+ * the bridge and the car's hangar colliders agree about what "the ground under
+ * it" means.
+ */
+export const AIRFIELD_GROUND_SAMPLE_STEP_METERS = 2;
+
+/**
  * Runway-local sample positions covering a footprint, at `stepMeters`.
  *
  * **The corners are guaranteed present regardless of step.** A stride that

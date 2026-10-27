@@ -66,6 +66,7 @@ import {
   type InfrastructureRegionsUpdate,
 } from "@/src/world/infrastructureSync";
 import { BoatSimulator } from "@/src/sim/boat/boatSimulator";
+import { CarColliders } from "@/src/sim/ground/carColliders";
 import { GroundVehicleSimulator } from "@/src/sim/ground/groundVehicle";
 import { MarinaHarbour } from "@/src/sim/marina/harbour";
 import { createSurfaceRecoverySpawn, createSurfaceSpawn } from "@/src/game/surfaceSpawn";
@@ -174,6 +175,8 @@ let surfaceVehicle: SurfaceVehicleKind | null = null;
 let surface: SurfaceVehicleSimulator | null = null;
 /** The home marina's structures, lines and contact, for a boat that has them. */
 let harbour: MarinaHarbour | null = null;
+/** The buildings, the marina and the guardrails a car meets, for a car session. */
+let carColliders: CarColliders | null = null;
 /** The car's gearbox and clutch, from the session's settings. */
 let carSetup: CarSetup = DEFAULT_CAR_SETUP;
 const surfaceControls: SurfaceVehicleControls = {
@@ -281,6 +284,10 @@ function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn): v
   } else {
     surfaceEnvironment.water = new CalmWaterSurface(world?.seaLevel ?? 0, terrainHeightSample);
   }
+  // The boat meets the marina through its harbour; the car meets every
+  // airport's buildings, the marina and the roads' guardrails.
+  carColliders = !boat && world ? new CarColliders(world, terrainHeightSample) : null;
+  surfaceEnvironment.colliders = carColliders?.colliders ?? null;
   surface = createSurfaceSimulator(kind, boat ? spawn : { ...spawn, car: carSetup });
   harbour = surface instanceof BoatSimulator && world ? new MarinaHarbour(world, surface) : null;
   if (harbour && spawn.moored && world) harbour.makeFastAtStart(world);
@@ -734,6 +741,7 @@ function applyInfrastructure(update: InfrastructureRegionsUpdate): void {
   const change = applyInfrastructureRegionsUpdate(world, update);
   if (update.reset) terrainAuthority.applyInfrastructureReset();
   else if (change) terrainAuthority.applyInfrastructureChange(change);
+  carColliders?.applyRegions(update);
 }
 
 workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>) => {
@@ -744,6 +752,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       // that structured-cloneable world so worker startup cannot repeat the
       // synchronous airport search or select a different fallback region.
       terrainAuthority.clear();
+      carColliders = null;
       world = command.world;
       applyInfrastructure(command.infrastructure);
       aircraftKind = command.aircraft;
@@ -774,6 +783,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
     if (command.type === "airports") {
       if (world) world = withAirports(world, command.airports);
       if (surfaceEnvironment.world) surfaceEnvironment.world = world;
+      if (world) carColliders?.setAirports(world);
       retargetAutoland();
       return;
     }

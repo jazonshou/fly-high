@@ -13,7 +13,7 @@ import {
   windsockInflation,
 } from "../detail/AirfieldFurniture";
 import type { TowerAttachments, TowerGeometry, TowerPartName } from "../detail/towerGeometry";
-import { towerPlanPosition } from "./AirfieldSiting";
+import { AIRFIELD_GROUND_SAMPLE_STEP_METERS, towerPlanPosition } from "./AirfieldSiting";
 import {
   HANGAR_SITING,
   MINIMUM_SKIRT_METERS,
@@ -38,14 +38,7 @@ import {
  * because that is the frame the root node supplies heading and elevation to.
  */
 
-/**
- * Ground-sample spacing under a hangar footprint.
- *
- * 2 m over 46 x 34 m is 408 samples per hangar. That is the resolution the
- * relief figures behind `7-10`'s seating rule were measured at, so the rule and
- * the bridge agree about what "the ground under it" means.
- */
-export const AIRFIELD_GROUND_SAMPLE_STEP_METERS = 2;
+export { AIRFIELD_GROUND_SAMPLE_STEP_METERS };
 
 /** World-space ground query: terrain height at (x, z), or non-finite on failure. */
 export type AirfieldGroundHeight = (x: number, z: number) => number;

@@ -116,6 +116,49 @@ The hull is spheres on the frame and axles (bumpers, sills, tank guard,
 diffs, tow bar, roof) that meet the ground and the world's colliders with a
 stiff penalty and Coulomb friction; `touching(part)` reports each part.
 
+## What it hits
+
+The worker builds one collider world per car session (`carColliders.ts`)
+from the records the renderer draws from, so what the car hits is what is on
+screen:
+
+- the home marina's structures, the ones the boats' hulls meet;
+- each airport's hangars, as boxes from a metre under the lowest ground under
+  the footprint to the eaves over the highest. The ground comes from the
+  renderer's own 2 m footprint samples (`hangarSite`) and the box turns by
+  the hangar's yaw;
+- each airport's tower base, as a capsule of its plan radius, and its fuel
+  tanks, each a horizontal capsule on its saddles. That makes ten colliders
+  an airport, rebuilt only when the airport list changes;
+- the guardrails of each streamed infrastructure region
+  (`InfrastructureRegion.rails`), one group a region, which come and go with
+  the worker's infrastructure updates.
+
+A guardrail is one box per pair of points. Its face is on the rail's line,
+facing the road along n = (dz, -dx), and the box runs 2 m deep behind it,
+from 1.5 m under the ground to 3 m over. At each bend there is an upright
+capsule behind the face. The collider is bigger than the beam because a
+probe is a point and a box pushes a point out through its nearest face. A
+beam-sized box would throw the bumper over the top or out of the back long
+before the rail had given its half metre, and at a bend the box's end face
+would be the nearest one.
+
+The hull picks its contact law from the collider's material:
+
+| Law | Per-probe spring | Damper | Friction | Notes |
+| --- | --- | --- | --- | --- |
+| Buildings and the marina | 800 kN/m | 20 kN s/m | 0.4 | Rigid. A first touch closing faster than 12 m/s wrecks the car. |
+| Guardrails | 25 kN/m to 0.6 m in | 2 kN s/m | 0.25 | Past 0.6 m a wall-stiff stop joins in (the posts). Coming back out, the springs give back a fifth of their force, as a bent beam does, so a car is not thrown back off it. |
+
+Measured on a straight rail, hands off at the impact:
+
+| Impact | Rail gives | After 4 s |
+| --- | --- | --- |
+| 80 km/h, 20° | 0.41 m | Running along the rail at 0.68 of its speed. 8 mm of lift, under 1° of roll. |
+| 100 km/h, 25° | 0.59 m | Running along it, not wrecked (it closes at 11.5 m/s). |
+| 100 km/h, 30° | 0.64 m | Wrecked: it closes on the rail at 13.6 m/s. |
+| 100 km/h, 90° | 0.75 m | Wrecked, at rest against the rail, on the road side. |
+
 ## Tyres
 
 TMeasy (Rill, Road Vehicle Dynamics, 2011): each direction is a curve of

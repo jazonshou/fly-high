@@ -27,6 +27,7 @@ import { DrivelineSolver, DRIVELINE_DOF, ENGINE } from "./drivelineSolver";
 import { Engine, IDLE_OMEGA, RPM_PER_RAD_S } from "./engine";
 import { roughnessProfile, type RoughnessPoint } from "./roughness";
 import { createSoilContact, DIG_GAIN, DIG_SLIP, soilCurve, soilPatch } from "./soil";
+import { CAR_COLLIDER_MATERIAL } from "./carColliders";
 import { Steering } from "./steering";
 import { createCarSurface, describeSurface, SurfaceCache, type CarSurface } from "./surface";
 import { createGroundPoint, TerrainLatticeCache, type GroundField, type GroundPoint } from "./terrainPatch";
@@ -168,14 +169,63 @@ const DROOP_STOP_DAMPING = 3_000;
 const RIM_DEFLECTION = 0.12;
 const RIM_STIFFNESS = 2_000_000;
 
-/** The hull's contact law: a damped spring along the normal (N/m, N s/m) and sliding friction across it. */
+/**
+ * The hull's contact law: a damped spring along the normal (N/m, N s/m),
+ * sliding friction across it, how far past a probe's radius into a
+ * collider the spring keeps building, m, a stop: past `stop` metres in, a
+ * second damped spring (`stopStiffness`, `stopDamping`) joins the first,
+ * and `rebound`, the part
+ * of the springs' force left as the probe comes back out (1 elastic; under
+ * 1 the contact keeps the rest, as a bent beam does).
+ */
 interface HullContactLaw {
   readonly stiffness: number;
   readonly damping: number;
   readonly friction: number;
+  readonly reach: number;
+  readonly stop: number;
+  readonly stopStiffness: number;
+  readonly stopDamping: number;
+  readonly rebound: number;
 }
-const HULL_GROUND: HullContactLaw = Object.freeze({ stiffness: 250_000, damping: 6_000, friction: 0.55 });
-const HULL_COLLIDER: HullContactLaw = Object.freeze({ stiffness: 800_000, damping: 20_000, friction: 0.4 });
+const HULL_GROUND: HullContactLaw = Object.freeze({
+  stiffness: 250_000,
+  damping: 6_000,
+  friction: 0.55,
+  reach: 0.25,
+  stop: Infinity,
+  stopStiffness: 0,
+  stopDamping: 0,
+  rebound: 1,
+});
+/** Walls, buildings, the marina's structures: rigid. */
+const HULL_COLLIDER: HullContactLaw = Object.freeze({
+  stiffness: 800_000,
+  damping: 20_000,
+  friction: 0.4,
+  reach: 0.25,
+  stop: Infinity,
+  stopStiffness: 0,
+  stopDamping: 0,
+  rebound: 1,
+});
+/**
+ * A W-beam guardrail (`CAR_COLLIDER_MATERIAL.guardrail`): it gives, 0.4 m
+ * at 80 km/h and 20 degrees and 0.6 m at 100 km/h and 25 degrees, so it is
+ * soft and reaches deep, and the beam is smooth along its length. Past
+ * 0.6 m the posts and the beam's tension take over, so a car square on at
+ * any speed stays on the road side (the collider is `GUARDRAIL_DEPTH` deep).
+ */
+const HULL_GUARDRAIL: HullContactLaw = Object.freeze({
+  stiffness: 25_000,
+  damping: 2_000,
+  friction: 0.25,
+  reach: 0.95,
+  stop: 0.6,
+  stopStiffness: 800_000,
+  stopDamping: 20_000,
+  rebound: 0.2,
+});
 /** A probe higher than this above the highest tyre contact is not sampled this step, metres. */
 const HULL_SAMPLE_MARGIN = 0.9;
 /** Closing speed above which an impact wrecks the car, m/s (the plan's 12 m/s). */
@@ -1548,8 +1598,9 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
         const contact = this.colliderContact;
         if (colliders.deepestSphereContact(c, probe.radius, contact) && contact.penetration > 0) {
           const first = this.probeTouching[i] !== 2;
-          this.hullPenetration = Math.min(contact.penetration, probe.radius + 0.25);
-          this.applyHullContact(probe, c, contact.normal, contact.pointVelocity, HULL_COLLIDER, first);
+          const law = contact.material === CAR_COLLIDER_MATERIAL.guardrail ? HULL_GUARDRAIL : HULL_COLLIDER;
+          this.hullPenetration = Math.min(contact.penetration, probe.radius + law.reach);
+          this.applyHullContact(probe, c, contact.normal, contact.pointVelocity, law, first);
           scrape = Math.max(scrape, Math.min(1, this.hullResult));
           this.probeTouching[i] = 2;
           continue;
@@ -1601,7 +1652,15 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     }
     const vn = v.x * normal.x + v.y * normal.y + v.z * normal.z;
     if (firstTouch && -vn > CRASH_IMPACT_SPEED) this.state.crashed = true;
-    let push = stiffness * penetration - damping * vn;
+    let spring = stiffness * penetration;
+    let resist = damping;
+    if (penetration > law.stop) {
+      spring += law.stopStiffness * (penetration - law.stop);
+      resist += law.stopDamping;
+    }
+    // Coming back out, blended in over the first 0.2 m/s so a resting contact does not chatter.
+    if (vn > 0 && law.rebound < 1) spring *= 1 - (1 - law.rebound) * Math.min(1, vn / 0.2);
+    let push = spring - resist * vn;
     if (push < 0) push = 0;
     const tx = v.x - vn * normal.x;
     const ty = v.y - vn * normal.y;
