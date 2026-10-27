@@ -1,14 +1,25 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { CarControlState } from "../src/game/types";
 import { densityField, sandCoverGroundFactor, sandCoverTreeFactor } from "../src/render/webgpu/detail/densityField";
-import { classifyLandCover, landCoverFarDesertWeights, type LandCoverInput } from "../src/render/webgpu/terrain/LandCoverClassifier";
+import {
+  alignSeasonalLandCoverWeights,
+  classifyLandCover,
+  landCoverFarDesertWeights,
+  type LandCoverInput,
+  type LandCoverWeights,
+} from "../src/render/webgpu/terrain/LandCoverClassifier";
 import { SURFACE_MATERIAL_COUNT, SurfaceMaterial } from "../src/render/webgpu/terrain/surfaceMaterials";
 import { GroundVehicleSimulator } from "../src/sim/ground";
 import { roughnessProfile, type RoughnessPoint } from "../src/sim/ground/roughness";
 import {
   createCarSurface,
+  createPaintedSeason,
+  describeSnow,
   describeSurface,
   landCoverInputOf,
+  PACKED_SNOW_METERS,
+  paintedSeason,
+  snowDepthOf,
   SoilModel,
   soilModelOf,
   SurfaceCache,
@@ -23,7 +34,7 @@ import { isPointOnRunway, worldAirportAt } from "../src/world/airport";
 import { sampleTerrain } from "../src/world/terrain";
 import { createWorld } from "../src/world/world";
 import type { TerrainCollisionSample, WorldDefinition } from "../src/world/types";
-import { controls, groundOf, slopeAhead, speedOf, STEP } from "./support/carRig";
+import { controls, FLAT, groundOf, headingOf, slopeAhead, speedOf, STEP } from "./support/carRig";
 
 /**
  * The car off the tarmac (land plan, "Physics tests"): what each surface
@@ -77,7 +88,14 @@ describe("car surfaces", () => {
     expect(gravel.friction).toBeLessThan(0.7);
     expect(gravel.roughness).toBeGreaterThan(0);
     expect(describeSurface(SurfaceMaterial.Sand, 0, s)).toMatchObject({ soft: true, soilModel: SoilModel.DrySand });
-    expect(describeSurface(SurfaceMaterial.Snow, 0, s).soilModel).toBe(SoilModel.Snow);
+    // Snow: Wong's snow soil over its depth, packed hard where it is thin.
+    expect(describeSurface(SurfaceMaterial.Snow, 0, s)).toMatchObject({ soft: true, soilModel: SoilModel.Snow, maxSinkage: 0.2 });
+    expect(describeSnow(0.12, s)).toMatchObject({ soft: true, maxSinkage: 0.12 });
+    expect(describeSnow(PACKED_SNOW_METERS - 0.01, s)).toMatchObject({ soft: false, soilModel: SoilModel.Snow, friction: 0.25, material: SurfaceMaterial.Snow });
+    expect(snowDepthOf(0.4)).toBe(0);
+    expect(snowDepthOf(0.65)).toBeGreaterThan(0.05);
+    expect(snowDepthOf(0.65)).toBeLessThan(0.15);
+    expect(snowDepthOf(0.9)).toBeCloseTo(0.2, 12);
     expect(describeSurface(SurfaceMaterial.Tephra, 0, s).soilModel).toBe(SoilModel.Tephra);
     for (const material of [SurfaceMaterial.Grass, SurfaceMaterial.DryGrass, SurfaceMaterial.ForestFloor, SurfaceMaterial.Shrub]) {
       expect(soilModelOf(material)).toBe(SoilModel.SandyLoam);
@@ -174,6 +192,83 @@ describe("car surfaces", () => {
     point.x += 1.5;
     roughnessProfile(point);
     expect(point.height).not.toBe(first);
+  });
+});
+
+describe("car seasonal snow", () => {
+  it("reads the same cell as snow on a winter day and as loam on a summer one, where the bake paints it so", () => {
+    const at: GroundPoint = { x: 0, z: 0, height: 0, dhdx: 0, dhdz: 0 };
+    const contact: TerrainCollisionSample = { height: 0, normal: { x: 0, y: 1, z: 0 }, isRunway: false, friction: 1 };
+    const out = createCarSurface();
+    for (const province of ["temperate", "boreal"] as const) {
+      const world = createWorld("open-skies", { climateProvince: province });
+      const airport = world.airport!;
+      const ground = worldGround(world);
+      const cache = new SurfaceCache();
+      let found = 0;
+      for (const [dx, dz] of points(0x5eed, 400, 15_000)) {
+        if (found >= 6) break;
+        at.x = airport.centerX + dx;
+        at.z = airport.centerZ + dz;
+        sampleGroundContact(world, at.x, at.z, contact);
+        if (contact.height < world.seaLevel + 5) continue;
+        at.height = contact.height;
+        // Midsummer, the reference day.
+        cache.beginStep(world, 171);
+        expect(cache.lookup(world, ground, at, out)).toBe(true);
+        if (soilModelOf(out.material) !== SoilModel.SandyLoam) continue;
+        // Mid-January: the same cache, the cell forgotten and painted again; the ground has not moved.
+        const classified = cache.classified;
+        expect(cache.beginStep(world, 15)).toBe(false);
+        expect(cache.lookup(world, ground, at, out)).toBe(true);
+        expect(cache.classified).toBe(classified + 1);
+        if (out.material !== SurfaceMaterial.Snow) continue;
+        found += 1;
+        expect(out.soilModel).toBe(SoilModel.Snow);
+        // The bake paints it so: loam in summer, snow in winter.
+        expect(soilModelOf(bakedMaterial(world, at.x, at.z, 171))).toBe(SoilModel.SandyLoam);
+        expect(bakedMaterial(world, at.x, at.z, 15)).toBe(SurfaceMaterial.Snow);
+      }
+      expect(found, province).toBe(6);
+    }
+  });
+
+  /** From rest on flat `material` in 4H at half throttle, held straight: seconds to 10 m/s, then the braking distance from it. */
+  function snowRun(material: Material, snowDepth?: number): { toTen: number; braking: number; sinkage: number } {
+    const sim = new GroundVehicleSimulator(
+      { position: { x: 0, y: 0, z: 0 }, heading: 0, moored: false, car: { gearbox: "automatic", manualClutch: false } },
+      { ground: FLAT, surface: (_at, out) => { if (snowDepth === undefined) describeSurface(material, 0, out); else describeSnow(snowDepth, out); } },
+    );
+    hold(sim, 0.1, { handbrake: 1 });
+    hold(sim, 1, { handbrake: 1, rangePresses: 1 });
+    const sinkage = Math.max(...sim.wheelSinkage);
+    let toTen = Number.NaN;
+    for (let i = 0; i < 30 / STEP && Number.isNaN(toTen); i += 1) {
+      controls(sim, { rangePresses: 1, accelerator: 0.5, steer: Math.max(-1, Math.min(1, 3 * headingOf(sim))) });
+      sim.step(STEP);
+      if (speedOf(sim) > 10) toTen = (i + 1) * STEP;
+    }
+    const start = sim.state.position.z;
+    for (let i = 0; i < 30 / STEP && speedOf(sim) > 0.3; i += 1) {
+      controls(sim, { rangePresses: 1, brake: 1, steer: Math.max(-1, Math.min(1, 3 * headingOf(sim))) });
+      sim.step(STEP);
+    }
+    return { toTen, braking: sim.state.position.z - start, sinkage };
+  }
+
+  it("packs thin snow hard and slippery, and sinks into deep snow to the ground under it", () => {
+    const asphalt = snowRun(SurfaceMaterial.Asphalt);
+    const packed = snowRun(SurfaceMaterial.Snow, 0.02);
+    const deep = snowRun(SurfaceMaterial.Snow, 0.2);
+    // Packed snow holds a quarter of the road's grip: some four times the stopping distance, with ABS.
+    expect(packed.sinkage).toBe(0);
+    expect(packed.toTen).toBeGreaterThan(asphalt.toTen);
+    expect(packed.braking / asphalt.braking).toBeGreaterThan(3);
+    expect(packed.braking / asphalt.braking).toBeLessThan(5);
+    // Deep snow: parked, the tyres press through it to the firm ground, and it drags.
+    expect(deep.sinkage).toBeCloseTo(0.2, 6);
+    expect(deep.toTen).toBeGreaterThan(asphalt.toTen + 1.5);
+    expect(deep.braking / asphalt.braking).toBeGreaterThan(2);
   });
 });
 
@@ -394,15 +489,17 @@ function points(seed: number, count: number, radius: number): Array<[number, num
 }
 
 /**
- * What the L0 splat bake paints at the 4 m texel holding (x, z), restated
- * from PageSplatBake's WGSL as far as the CPU can follow it: the texel
- * centre's canopy closure and grass cover from `densityField` with the
- * bake's drivers (airport clearance, the province raw, no shore term),
- * thinned on sand and shared by four classifier taps a quarter texel out
- * (one canopy under 60 m texels), their weights averaged, then the far-desert
- * share. The bake's erosion and soil-depth channels have no CPU twin.
+ * What the L0 splat bake paints at the 4 m texel holding (x, z) on
+ * `dayOfYear`, restated from PageSplatBake's WGSL as far as the CPU can
+ * follow it: the texel centre's canopy closure and grass cover from
+ * `densityField` with the bake's drivers (airport clearance, the province
+ * raw, no shore term), thinned on sand and shared by four classifier taps a
+ * quarter texel out (one canopy under 60 m texels), their weights averaged,
+ * the far-desert share and the top four, once for each of the season's two
+ * buckets; then the buckets on one basis, cross-faded as the fragment fades
+ * them. The bake's erosion and soil-depth channels have no CPU twin.
  */
-function bakedMaterial(world: WorldDefinition, x: number, z: number): number {
+function bakedMaterial(world: WorldDefinition, x: number, z: number, dayOfYear = 171): number {
   const texel = 4;
   const cx = (Math.floor(x / texel) + 0.5) * texel;
   const cz = (Math.floor(z / texel) + 0.5) * texel;
@@ -424,31 +521,53 @@ function bakedMaterial(world: WorldDefinition, x: number, z: number): number {
   });
   const canopyClosure = field.canopyClosure * sandCoverTreeFactor(centre.sandCover);
   const grassCover = field.grassCover * sandCoverGroundFactor(centre.sandCover);
-  let accumulated = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
-  for (let tap = 0; tap < 4; tap += 1) {
-    const tx = cx + ((tap & 1) === 1 ? 1 : -1) * texel * 0.25;
-    const tz = cz + ((tap & 2) === 2 ? 1 : -1) * texel * 0.25;
-    const sample = sampleTerrain(world, tx, tz);
-    const input: LandCoverInput = {
-      ...landCoverInputOf(world, sample),
-      canopyClosure,
-      grassCover,
-      // The bake samples the sand cover once per texel.
-      sandCover: centre.sandCover,
+  const season = paintedSeason(world, dayOfYear, createPaintedSeason());
+  const bucket = (shift: number): LandCoverWeights => {
+    let accumulated = new Array<number>(SURFACE_MATERIAL_COUNT).fill(0);
+    for (let tap = 0; tap < 4; tap += 1) {
+      const tx = cx + ((tap & 1) === 1 ? 1 : -1) * texel * 0.25;
+      const tz = cz + ((tap & 2) === 2 ? 1 : -1) * texel * 0.25;
+      const sample = sampleTerrain(world, tx, tz);
+      const input: LandCoverInput = {
+        ...landCoverInputOf(world, sample),
+        dayOfYear: season.bakeDayOfYear,
+        seasonalTemperatureShift: shift,
+        canopyClosure,
+        grassCover,
+        // The bake samples the sand cover once per texel.
+        sandCover: centre.sandCover,
+      };
+      const weights = classifyLandCover(input);
+      weights.ids.forEach((id, slot) => {
+        accumulated[id] = accumulated[id]! + (weights.weights[slot] ?? 0) * 0.25;
+      });
+    }
+    accumulated = landCoverFarDesertWeights(accumulated, centre.dryness, texel, centre.sandCover);
+    const ids = accumulated
+      .map((weight, id) => ({ weight, id }))
+      .sort((a, b) => b.weight - a.weight || a.id - b.id)
+      .slice(0, 4);
+    const total = ids.reduce((sum, entry) => sum + Math.max(0, entry.weight), 0);
+    return {
+      ids: ids.map((entry) => entry.id as LandCoverWeights["ids"][number]),
+      weights: ids.map((entry) => (total > 0 ? Math.max(0, entry.weight) / total : 0)),
     };
-    const weights = classifyLandCover(input);
-    weights.ids.forEach((id, slot) => {
-      accumulated[id] = accumulated[id]! + (weights.weights[slot] ?? 0) * 0.25;
-    });
-  }
-  accumulated = landCoverFarDesertWeights(accumulated, centre.dryness, texel, centre.sandCover);
+  };
+  const aligned = alignSeasonalLandCoverWeights(bucket(season.lowShift), bucket(season.highShift));
   let best = 0;
-  for (let id = 1; id < SURFACE_MATERIAL_COUNT; id += 1) if (accumulated[id]! > accumulated[best]!) best = id;
+  let bestWeight = -1;
+  aligned.ids.forEach((id, slot) => {
+    const weight = aligned.lowWeights[slot]! * (1 - season.blend) + aligned.highWeights[slot]! * season.blend;
+    if (weight > bestWeight) {
+      bestWeight = weight;
+      best = id;
+    }
+  });
   return best;
 }
 
 describe("car surface parity", () => {
-  it("maps the worker's material to the splat bake's soil model at least 98% of the time, in every province", () => {
+  it.each([["midsummer", 171], ["midwinter", 15]])("maps the worker's material to the splat bake's soil model at least 98% of the time, in every province, at %s", (_name, day) => {
     const contact: TerrainCollisionSample = { height: 0, normal: { x: 0, y: 1, z: 0 }, isRunway: false, friction: 1 };
     const at: GroundPoint = { x: 0, z: 0, height: 0, dhdx: 0, dhdz: 0 };
     const out = createCarSurface();
@@ -472,10 +591,10 @@ describe("car surface parity", () => {
         at.height = contact.height;
         at.dhdx = -contact.normal.x / contact.normal.y;
         at.dhdz = -contact.normal.z / contact.normal.y;
-        cache.beginStep(world);
+        cache.beginStep(world, day);
         expect(cache.lookup(world, ground, at, out)).toBe(true);
         compared += 1;
-        const baked = bakedMaterial(world, x, z);
+        const baked = bakedMaterial(world, x, z, day);
         if (soilModelOf(out.material) === soilModelOf(baked)) agreed += 1;
       }
       expect(compared).toBeGreaterThan(200);

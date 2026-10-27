@@ -112,6 +112,7 @@ function initialize(infrastructure: InfrastructureRegionsUpdate): void {
     attractMode: false,
     weather: "breezy",
     infrastructure,
+    dayOfYear: 171,
   });
 }
 

@@ -32,6 +32,12 @@ export interface SurfaceVehicleEnvironment {
   world?: WorldDefinition | null;
   /** The world's static colliders (buildings, guardrails); null where none are built. */
   colliders?: ColliderWorld | null;
+  /**
+   * The calendar day the renderer paints the terrain for (its clock's
+   * `dayOfYear`), so the car's seasonal snow is where the snow is drawn.
+   * Absent, the reference day.
+   */
+  dayOfYear?: number;
   /** Positive gravitational acceleration, m/s². */
   gravity: number;
 }
