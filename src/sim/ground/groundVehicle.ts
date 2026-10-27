@@ -772,13 +772,14 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
    * With a world, the painted ground is exact at each tyre and the natural
    * ground comes from the surface cache (`surface.ts`); a change of world or
    * of its streamed infrastructure regions also drops the cached lattice
-   * nodes, since a road's fill or cut moves the ground. The world's lookups
+   * nodes, since a road's fill or cut moves the ground; a new calendar day
+   * (the environment's `dayOfYear`) repaints the cells only. The world's lookups
    * pass numbers through calls, so this path allocates a little; the
    * test rig's surfaces do not.
    */
   private sampleSurfaces(): void {
     const world = this.environment?.world;
-    if (world && !this.fixedSurface && this.surfaceCache.beginStep(world)) this.lattice.clear();
+    if (world && !this.fixedSurface && this.surfaceCache.beginStep(world, this.environment?.dayOfYear)) this.lattice.clear();
     for (let w = 0; w < 4; w += 1) {
       const contact = this.contacts[w]!;
       const surface = this.wheelSurface[w]!;
@@ -787,9 +788,9 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       else describeSurface(SurfaceMaterial.Asphalt, 0, surface);
       this.wheelFrictionScale[w] = 1;
       if (this.wheelSubmerged[w] === 1) {
-        // A bed under water: loam turns to mud, hard ground loses some grip.
-        if (surface.soft) describeSurface(surface.material, 1, surface);
-        else this.wheelFrictionScale[w] = SUBMERGED_FRICTION;
+        // A bed under water: loam turns to mud, hard ground loses some grip; snow keeps its depth.
+        if (!surface.soft) this.wheelFrictionScale[w] = SUBMERGED_FRICTION;
+        else if (surface.material !== SurfaceMaterial.Snow) describeSurface(surface.material, 1, surface);
       }
       this.wheelWet[w] = this.wheelSubmerged[w] === 1 ? 1 : surface.wetness;
       if (!surface.soft) {

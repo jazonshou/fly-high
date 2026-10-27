@@ -2,7 +2,7 @@ import type { CarSetup, ControlState, FlightMode, FlightVisualState, WeatherPres
 import type { AircraftKind } from "@/src/sim";
 import { DEFAULT_CAR_SETUP } from "@/src/sim/surface/types";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
-import type { AirportDefinition, WorldDefinition } from "@/src/world";
+import { TERRAIN_REFERENCE_DAY_OF_YEAR, type AirportDefinition, type WorldDefinition } from "@/src/world";
 import {
   InfrastructureRegionsForwarder,
   type InfrastructureRegionsUpdate,
@@ -106,6 +106,7 @@ export class SimulationClient {
     aircraft: AircraftKind = "trainer",
     surfaceVehicle: SurfaceVehicleKind | null = null,
     carSetup: CarSetup = DEFAULT_CAR_SETUP,
+    dayOfYear = TERRAIN_REFERENCE_DAY_OF_YEAR,
   ) {
     this.worker = new Worker(new URL("../workers/simulation.worker.ts", import.meta.url), {
       type: "module",
@@ -126,6 +127,7 @@ export class SimulationClient {
       weather,
       airborneStartAgl,
       attractMode,
+      dayOfYear,
     });
   }
 
@@ -153,6 +155,11 @@ export class SimulationClient {
   /** The car's gearbox and clutch for its next start; a drive under way keeps the one it began with. */
   setCarSetup(carSetup: CarSetup): void {
     this.send({ type: "carSetup", carSetup });
+  }
+
+  /** The calendar day the renderer paints for, so the car drives the snow that is drawn. */
+  setDayOfYear(dayOfYear: number): void {
+    this.send({ type: "dayOfYear", dayOfYear });
   }
 
   setAttractMode(enabled: boolean): void {

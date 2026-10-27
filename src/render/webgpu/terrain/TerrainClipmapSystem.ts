@@ -89,6 +89,7 @@ import {
   TERRAIN_CHANNEL_SLOT_EDGE,
   TERRAIN_HEIGHT_SLOT_EDGE,
   TERRAIN_PROVISIONAL_AXIS,
+  seasonBakeDayOfYear,
   seasonBucketBlend,
   TERRAIN_NODE_ATTRIBUTE_A,
   TERRAIN_NODE_ATTRIBUTE_B,
@@ -1173,11 +1174,7 @@ export class TerrainClipmapSystem {
     // memory (the atlas is sized for two either way) and quantises the
     // snowline to 15-day steps exactly when the user is looking at it.
     this.surfacePlugin.setSeasonBlend(seasonBucketBlend(dayOfYear).t);
-    const bucketDays = 365 / 24;
-    const offset = Math.round((dayOfYear - TERRAIN_REFERENCE_DAY_OF_YEAR) / bucketDays);
-    let bucketed = TERRAIN_REFERENCE_DAY_OF_YEAR + offset * bucketDays;
-    bucketed = ((bucketed % 365) + 365) % 365;
-    this.seasonDayOfYear = bucketed;
+    this.seasonDayOfYear = seasonBakeDayOfYear(dayOfYear);
   }
 
   /** Caps page admissions per pump. Governor B lowers it under CPU pressure. */
