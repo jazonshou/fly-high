@@ -391,9 +391,14 @@ describe("the roads' surface system", () => {
     settle(system, x0, z0);
     const { writes, bufferBuilds } = system.statistics;
     expect(writes).toBe(system.statistics.ribbonChunks + system.statistics.railChunks);
+    // Within the chunk: nothing written, uploaded or bound again (each drawn layer bound once).
+    const { bindings, draws } = system.statistics;
+    expect(draws).toBeGreaterThan(0);
+    expect(bindings).toBe(draws);
     for (let step = 1; step <= 10; step += 1) system.update(x0 + step * 11, z0 + step * 11);
     expect(system.statistics.writes).toBe(writes);
     expect(system.statistics.uploadRanges).toBe(0);
+    expect(system.statistics.bindings).toBe(bindings);
     // One chunk east: at most the column it brings in, against the whole set before.
     settle(system, x0 + ROAD_RIBBON_CHUNK_METERS, z0);
     const column = 2 * Math.ceil(ultra.roadRibbonRangeMeters / ROAD_RIBBON_CHUNK_METERS) + 1;
@@ -403,8 +408,9 @@ describe("the roads' surface system", () => {
     expect(crossed).toBeLessThanOrEqual(2 * column);
     expect(crossed).toBeLessThan(writes / 4);
     expect(system.statistics.releases).toBeGreaterThan(0);
-    // The buffers made once, each written in place since.
+    // The buffers made once, each written in place since; each layer bound again to its new anchor.
     expect(system.statistics.bufferBuilds).toBe(bufferBuilds);
+    expect(system.statistics.bindings).toBe(bindings + draws);
     // A change in reach: the chunk it touched, nothing else.
     const before = system.statistics.writes;
     system.apply([railRegion], []);

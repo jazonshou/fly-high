@@ -114,6 +114,12 @@ export class RoadStreamController {
   private wanted = new Set<string>();
   private lastWant = "";
   private lastCheckMs = Number.NEGATIVE_INFINITY;
+  /** The observer at the last check that scanned the regions (NaN: none since the last reset). */
+  private checked: RoadStreamObserver = { x: Number.NaN, z: Number.NaN, velocityX: Number.NaN, velocityZ: Number.NaN };
+  /** Bumped by every arrival, failure and flush that had anything to do; as it stood after the last scan. */
+  private stateVersion = 0;
+  private scannedVersion = -1;
+  private scans = 0;
   private readonly listeners = new Set<(change: RoadStreamChange) => void>();
   private primeWaiters: { readonly keys: readonly string[]; readonly resolve: () => void }[] = [];
   /** Regions that failed, by stage key: empty unless one has. */
@@ -146,18 +152,35 @@ export class RoadStreamController {
     return this.wanted.size + this.arrived.length + this.leaving.size;
   }
 
+  /** Region scans `observe` has made. Observation only. */
+  get regionScans(): number {
+    return this.scans;
+  }
+
   /** The live world (a spawned airport's new one shares the terrain, so its regions). */
   setWorld(world: WorldDefinition): void {
     this.world = world;
+    this.scannedVersion = -1;
   }
 
-  /** Feed the observer. Cheap: at most one region scan per `ROAD_STREAM_CHECK_INTERVAL_MS`. */
+  /**
+   * Feed the observer. Cheap: at most one region scan per
+   * `ROAD_STREAM_CHECK_INTERVAL_MS`, and none while the observer is exactly
+   * where and as fast as at the last scan and nothing has arrived, failed or
+   * been flushed since: that scan's answer stands.
+   */
   observe(observer: RoadStreamObserver, nowMs: number): void {
     if (this.disposed) return;
     if (nowMs - this.lastCheckMs < ROAD_STREAM_CHECK_INTERVAL_MS) return;
     this.lastCheckMs = nowMs;
     const worker = this.ensureWorker();
     if (!worker) return;
+    const checked = this.checked;
+    if (this.stateVersion === this.scannedVersion && this.failures.size === 0
+      && observer.x === checked.x && observer.z === checked.z
+      && observer.velocityX === checked.velocityX && observer.velocityZ === checked.velocityZ) return;
+    this.checked = { x: observer.x, z: observer.z, velocityX: observer.velocityX, velocityZ: observer.velocityZ };
+    this.scans += 1;
     const kept = new Set<string>();
     for (const region of roadStreamRegions(observer, ROAD_STREAM_KEEP_MARGIN)) {
       kept.add(roadRegionKey(region.layer, region.rx, region.rz));
@@ -212,6 +235,7 @@ export class RoadStreamController {
       }
     }
     this.wanted = wanted;
+    this.scannedVersion = this.stateVersion;
     const signature = want.map((address) => `${address.layer}:${address.rx}:${address.rz}`).join(",");
     if (signature === this.lastWant && !retryDue) return;
     this.lastWant = signature;
@@ -230,6 +254,8 @@ export class RoadStreamController {
    */
   flush(): RoadStreamChange | null {
     if (this.disposed) return null;
+    if (this.arrived.length === 0 && this.leaving.size === 0) return null;
+    this.stateVersion += 1;
     const install: RoadsWorkerRegionEvent[] = [];
     let segments = 0;
     let taken = 0;
@@ -284,6 +310,7 @@ export class RoadStreamController {
    */
   prime(observer: RoadStreamObserver, radiusMeters: number, timeoutMs: number): Promise<void> {
     this.lastCheckMs = Number.NEGATIVE_INFINITY;
+    this.scannedVersion = -1;
     this.observe(observer, 0);
     if (!this.worker) return Promise.resolve();
     const keys = roadStreamRegions({ ...observer, velocityX: 0, velocityZ: 0 })
@@ -373,6 +400,7 @@ export class RoadStreamController {
 
   private handleEvent(event: RoadsWorkerEvent): void {
     if (this.disposed) return;
+    this.stateVersion += 1;
     if (event.type === "error") {
       if (event.address) {
         this.fail(roadRegionKey(event.address.layer, event.address.rx, event.address.rz), event.message);

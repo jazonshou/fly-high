@@ -207,6 +207,37 @@ describe("the road stream controller", () => {
     controller.dispose();
   });
 
+  it("scans no regions again for an observer where it was while nothing arrives", () => {
+    const worker = new FakeRoadsWorker();
+    const controller = new RoadStreamController(world, () => worker);
+    const still = { x: 3_000, z: 2_000, velocityX: 0, velocityZ: 0 };
+    let nowMs = 0;
+    const check = (observer = still) => {
+      nowMs += ROAD_STREAM_CHECK_INTERVAL_MS;
+      controller.observe(observer, nowMs);
+      return controller.flush();
+    };
+    check();
+    expect(controller.regionScans).toBe(1);
+    const commands = worker.commands.length;
+    for (let k = 0; k < 20; k += 1) expect(check()).toBeNull();
+    expect(controller.regionScans).toBe(1);
+    expect(worker.commands).toHaveLength(commands);
+    // Something arrived: the checks scan until it is installed, and ask for what is left.
+    worker.answer(3);
+    expect(check()!.installed).toHaveLength(3);
+    check();
+    const scans = controller.regionScans;
+    expect(scans).toBeGreaterThan(1);
+    expect(worker.lastWant).toHaveLength(controller.pendingRegions);
+    for (let k = 0; k < 5; k += 1) check();
+    expect(controller.regionScans).toBe(scans);
+    // Moved, however little: scanned.
+    check({ ...still, x: still.x + 0.5 });
+    expect(controller.regionScans).toBe(scans + 1);
+    controller.dispose();
+  });
+
   it("refuses a malformed region as it arrives, and installs the rest", () => {
     const worker = new FakeRoadsWorker();
     const controller = new RoadStreamController(world, () => worker);

@@ -54,6 +54,8 @@ export interface RoadSurfaceWrites {
   readonly indices: readonly RoadSurfaceRange[];
 }
 
+const NO_WRITES: RoadSurfaceWrites = Object.freeze({ grew: false, vertices: [], indices: [] });
+
 /** First fit over free ranges kept sorted by start and coalesced; the end comes back over a freed tail. */
 class RangeAllocator {
   end = 0;
@@ -243,6 +245,7 @@ export class RoadSurfaceSlots {
 
   /** The ranges written since the last take, each array's overlapping and touching ones merged. */
   takeWrites(): RoadSurfaceWrites {
+    if (!this.grew && this.vertexWrites.length === 0 && this.indexWrites.length === 0) return NO_WRITES;
     const writes: RoadSurfaceWrites = {
       grew: this.grew,
       vertices: this.grew ? [] : coalesce(this.vertexWrites),
