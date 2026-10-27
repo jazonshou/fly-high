@@ -71,6 +71,10 @@ class DeferredClient implements HydrologyGenerationClientLike {
   private nextId = 1;
   readonly pending = new Map<number, { request: HydrologyRegionGenerationRequest; onResult: (result: HydrologyRegionGenerationResult) => void }>();
 
+  get queuedCount(): number {
+    return this.pending.size;
+  }
+
   request(request: HydrologyRegionGenerationRequest, onResult: (result: HydrologyRegionGenerationResult) => void): number {
     const id = this.nextId++;
     this.pending.set(id, { request, onResult });
