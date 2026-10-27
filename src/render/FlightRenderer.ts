@@ -4,6 +4,8 @@ import { Constants } from "@babylonjs/core/Engines/constants";
 import { WebGPUEngine } from "@babylonjs/core/Engines/webgpuEngine";
 import { ImageProcessingConfiguration } from "@babylonjs/core/Materials/imageProcessingConfiguration";
 import { Color4 } from "@babylonjs/core/Maths/math.color";
+import { Frustum } from "@babylonjs/core/Maths/math.frustum";
+import { Plane } from "@babylonjs/core/Maths/math.plane";
 import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { ImageProcessingPostProcess } from "@babylonjs/core/PostProcesses/imageProcessingPostProcess";
@@ -69,15 +71,30 @@ import {
 } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
+import { oceanSpectrumSeed, seaSpectrumWindSpeed } from "@/src/sim/water/seaState";
+import type { SeaShelterEllipse } from "@/src/sim/water/types";
 import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
+import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/catalogue";
+import { isAircraftKind, isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
 import {
+  infrastructureIndex,
+  infrastructurePlantExclusions,
   withAirports,
   type AirportDefinition,
   type TerrainSample,
   type WorldDefinition,
 } from "@/src/world";
 import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
+import { homeMarina } from "@/src/world/marina";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
+import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
+import type { OceanHullClip } from "./webgpu/boat/oceanHullClip";
+import type { UndrawnSeaHeave } from "./webgpu/boat/undrawnSeaHeave";
+import { createBoatEffects, type BoatEffects } from "./webgpu/boat/BoatEffects";
+import type { BoatSpraySystem } from "./webgpu/boat/BoatSpraySystem";
+import type { BoatWakeSystem } from "./webgpu/boat/BoatWakeSystem";
+import { resolveBoatLights, type BoatWashLight } from "./webgpu/boat/boatLights";
+import { surfaceVehicleWashLights } from "./webgpu/boat/createBoat";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
 import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiverRegistry";
 import { VolumetricCloudSystem } from "./webgpu/clouds/VolumetricCloudSystem";
@@ -130,6 +147,7 @@ import {
   type WebGpuQualityProfile,
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
+import { MarinaSystem } from "./webgpu/marina/MarinaSystem";
 import {
   SpawnedAirfieldManager,
   spawnedFloodReserve,
@@ -148,6 +166,10 @@ import { windsockHeadingRadians } from "./webgpu/detail/AirfieldFurniture";
 import { WorldDetailRuntime } from "./webgpu/detail";
 import type { DetailSunShadowSnapshot } from "./webgpu/detail/DetailInstanceMaterialPlugin";
 import { GroundCoverSystem } from "./webgpu/detail/GroundCoverSystem";
+import {
+  AsyncPipelineCompiles,
+  type AsyncPipelineCompileStatistics,
+} from "./webgpu/core/AsyncPipelineCompiles";
 import { meanSeasonalSurfaceAlbedo, type TerrainFarSwardRead } from "./webgpu/terrain/TerrainSurfacePlugin";
 import { TerrainClipmapSystem } from "./webgpu/terrain/TerrainClipmapSystem";
 import { TerrainEvolutionRuntime } from "./webgpu/terrain/TerrainEvolutionRuntime";
@@ -375,11 +397,11 @@ export interface ChaseCameraProfile {
 }
 
 export function chaseCameraProfile(
-  aircraft: AircraftKind,
+  vehicle: VehicleKind,
   airspeed: number,
   out: ChaseCameraProfile = { distance: 0, height: 0, fieldOfView: 0, aimAhead: 0 },
 ): ChaseCameraProfile {
-  const { chase } = aircraftSpec(aircraft);
+  const { chase } = isAircraftKind(vehicle) ? aircraftSpec(vehicle) : surfaceVehicleSpec(vehicle);
   out.distance = rampAtSpeed(chase.distance, airspeed);
   out.height = chase.height;
   out.fieldOfView = rampAtSpeed(chase.fieldOfView, airspeed);
@@ -449,6 +471,13 @@ export type TerrainSampleFunction = (x: number, z: number) => TerrainSample;
 export interface FlightRendererOptions {
   canvas: HTMLCanvasElement;
   aircraft: AircraftKind;
+  /**
+   * What the player will drive, when it is not an aircraft: its visual is
+   * built beside the aircraft and takes over whenever the state carries a
+   * surface vehicle's payload. The menu's attract flight stays `aircraft`.
+   * Unset (or an aircraft kind) builds nothing extra.
+   */
+  vehicle?: VehicleKind;
   terrainSample: TerrainSampleFunction;
   /**
    * `terrainSample(x, z).height` alone, bit for bit (`sampleTerrainHeight` of
@@ -460,6 +489,13 @@ export interface FlightRendererOptions {
   terrainHeight?: (x: number, z: number) => number;
   world: WorldDefinition;
   seed: number;
+  /**
+   * The weather the session starts in, so the sea is built for it rather than
+   * rebuilt by the first `setAtmosphere` (D2: the sea's spectrum wind is the
+   * world's prevailing wind times `weatherWindScale`). Unset is Breezy, the
+   * world's own wind.
+   */
+  weather?: WeatherPreset;
   quality: QualityLevel;
   renderingMode: RenderingMode;
   reducedMotion: boolean;
@@ -512,6 +548,33 @@ export interface FlightRendererOptions {
   terrainFarSwardRead?: TerrainFarSwardRead;
 }
 
+/**
+ * What the `?bench=1` benchmark (`src/bench`) reads after every frame, through
+ * `readBenchProbe`. Every field is a number or a reference the renderer
+ * already holds. The governor's state and signals are frozen and replaced on
+ * every decision, so a changed `governorSignals` reference is one decision.
+ */
+export interface RendererBenchProbe {
+  frameIndex: number;
+  governorState: GovernorState;
+  governorSignals: GovernorSignals;
+  governorConfig: GovernorConfig;
+  /** Whole, so the bench never reads a lever field the renderer does not. */
+  workLevers: WorkLeverSettings;
+  /** The scale the engine's level was last resolved from. */
+  appliedRenderScale: number;
+  /**
+   * The engine's raster size. When the pixel cap binds, a governor step moves
+   * `appliedRenderScale` and leaves these alone, so rendered pixels are read
+   * here rather than derived from the scale.
+   */
+  renderWidth: number;
+  renderHeight: number;
+  pinned: boolean;
+  /** GPU milliseconds resolved during this frame; null without timing or a fresh sample. */
+  gpuFrameMs: number | null;
+}
+
 function finiteState(state: FlightVisualState): boolean {
   return [
     state.position.x,
@@ -542,6 +605,23 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly camera: UniversalCamera;
   private readonly graph = new WebGpuFrameGraph();
   private readonly aircraft: AircraftVisual;
+  /** The surface vehicle the session can drive, or null when it is aircraft only. */
+  private readonly surfaceVehicle: VehicleVisual | null;
+  private readonly surfaceVehicleSpec: SurfaceVehicleSpec | null;
+  /** The surface vehicle's lamp washes, riding the aircraft's nav-wash slots. */
+  private readonly surfaceVehicleWashes: readonly BoatWashLight[];
+  /** The spray a boat throws and the wake it leaves; null outside a boat session. */
+  private readonly boatSpray: BoatSpraySystem | null;
+  private readonly boatWake: BoatWakeSystem | null;
+  /** The sea kept out of the boat's hull, posed with it. */
+  private readonly boatHullClip: OceanHullClip | null;
+  /** The swell this tier does not draw, which the drawn boat is lowered by. */
+  private readonly boatHeave: UndrawnSeaHeave | null;
+  /** Whether the surface vehicle, not the aircraft, is the one on screen. */
+  private surfaceActive = false;
+  /** The surface follow's level frame: the bow's heading and world up. */
+  private readonly surfaceRigForward = new Vector3(1, 0, 0);
+  private readonly surfaceRigUp = new Vector3(0, 1, 0);
   private readonly terrain: TerrainClipmapSystem;
   private readonly terrainEvolution: TerrainEvolutionRuntime;
   /** Main-thread copy serving wildlife and inline detail placement. */
@@ -608,6 +688,13 @@ export class FlightRenderer implements FlightRenderingSystem {
    * within 15 km and a disabled mesh otherwise. Tier 0 builds nothing.
    */
   private readonly steam: VolcanicSteamSystem;
+  /**
+   * The home marina, world content in every session like the airfield: its
+   * meshes (near, silhouette, culled by camera distance) and its lamps, which
+   * are home fixtures of `lightPoints` from `marinaLampStart` on.
+   */
+  private readonly marina: MarinaSystem;
+  private readonly marinaLampStart: number;
   private readonly clusteredLighting: ClusteredLightingSystem;
   /**
    * Names of `7-14`'s hangar-face floods, for the per-frame daylight gate.
@@ -680,6 +767,9 @@ export class FlightRenderer implements FlightRenderingSystem {
   private observedGroundSpeedHeldFrames = 0;
   private readonly cameraViewDirection = Vector3.Right();
   private readonly cameraWorld = Vector3.Zero();
+  /** The camera's view-projection and frustum this frame, for the marina's caster gate. */
+  private readonly marinaViewProjection = Matrix.Identity();
+  private readonly marinaFrustum = Array.from({ length: 6 }, () => new Plane(0, 0, 0, 0));
   private readonly frameIntervalDurations: number[] = [];
   private readonly cpuFrameDurations: number[] = [];
   private readonly gpuFrameDurations: number[] = [];
@@ -772,6 +862,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private appliedRenderScale = 1;
   private terrainAuthorityPublisher: TerrainAuthorityPublisher | null = null;
   private readonly atmosphereResources: AtmosphereGpuResources;
+  /** The near-ground scenery's off-frame pipeline compiles; null when Babylon's surface moved. */
+  private readonly pipelineCompiles: AsyncPipelineCompiles | null;
   private readonly passTimingHistory = new PassTimingHistory();
   private governorConfig: GovernorConfig;
   private governorState: GovernorState;
@@ -804,6 +896,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     scene: Scene,
     camera: UniversalCamera,
     aircraft: AircraftVisual,
+    surfaceVehicle: VehicleVisual | null,
+    boatEffects: BoatEffects | null,
     terrain: TerrainClipmapSystem,
     terrainEvolution: TerrainEvolutionRuntime,
     terrainConsumerAuthority: TerrainConsumerAuthority | null,
@@ -825,6 +919,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     stars: StarFieldSystem,
     lightPoints: LightPointSystem,
     steam: VolcanicSteamSystem,
+    marina: MarinaSystem,
+    marinaLampStart: number,
     clusteredLighting: ClusteredLightingSystem,
     hangarFloodNames: readonly string[],
     airfieldLighting: AirfieldLightingSystem | null,
@@ -835,15 +931,28 @@ export class FlightRenderer implements FlightRenderingSystem {
     bloom: BloomPass,
     sharpen: SharpenPass,
     atmosphereResources: AtmosphereGpuResources,
+    pipelineCompiles: AsyncPipelineCompiles | null,
     adapterLabel: string,
   ) {
     this.atmosphereResources = atmosphereResources;
+    this.pipelineCompiles = pipelineCompiles;
     this.domElement = options.canvas;
     this.engine = engine;
     this.gpuUncapturedErrorGuard = gpuUncapturedErrorGuard;
     this.scene = scene;
     this.camera = camera;
     this.aircraft = aircraft;
+    this.surfaceVehicle = surfaceVehicle;
+    this.surfaceVehicleSpec = surfaceVehicle && isSurfaceVehicleKind(surfaceVehicle.kind)
+      ? surfaceVehicleSpec(surfaceVehicle.kind)
+      : null;
+    this.surfaceVehicleWashes = surfaceVehicle && isSurfaceVehicleKind(surfaceVehicle.kind)
+      ? surfaceVehicleWashLights(surfaceVehicle.kind)
+      : [];
+    this.boatSpray = boatEffects?.spray ?? null;
+    this.boatWake = boatEffects?.wake ?? null;
+    this.boatHullClip = boatEffects?.hullClip ?? null;
+    this.boatHeave = boatEffects?.heave ?? null;
     this.terrain = terrain;
     this.terrainEvolution = terrainEvolution;
     this.terrainConsumerAuthority = terrainConsumerAuthority;
@@ -871,6 +980,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.stars = stars;
     this.lightPoints = lightPoints;
     this.steam = steam;
+    this.marina = marina;
+    this.marinaLampStart = marinaLampStart;
     this.clusteredLighting = clusteredLighting;
     this.hangarFloodNames = hangarFloodNames;
     this.airfieldLighting = airfieldLighting;
@@ -1045,6 +1156,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       });
       const scene = new Scene(engine);
       cleanup.push(() => scene.dispose());
+      // The pitch-down freeze: the near-ground scenery (detail and blades,
+      // registered below) compiles its render pipelines off the frame instead
+      // of in the frame it first comes into view. Null when the Babylon
+      // surface it hooks has moved, which leaves Babylon's synchronous path.
+      const pipelineCompiles = AsyncPipelineCompiles.install(scene);
+      if (pipelineCompiles) cleanup.push(() => pipelineCompiles.dispose());
       scene.useRightHandedSystem = true;
       scene.clearColor = new Color4(0.09, 0.19, 0.34, 1);
       scene.performancePriority = ScenePerformancePriority.Intermediate;
@@ -1201,6 +1318,19 @@ export class FlightRenderer implements FlightRenderingSystem {
         if (mesh.metadata?.castsShadow === false) continue;
         atmosphere.shadows.addShadowCaster(mesh, false);
       }
+      const surfaceVehicle = options.vehicle && isSurfaceVehicleKind(options.vehicle)
+        ? createSurfaceVehicleVisual(scene, options.vehicle)
+        : null;
+      if (surfaceVehicle) {
+        cleanup.push(() => surfaceVehicle.dispose());
+        // Built hidden: the menu's attract flight is an aircraft, and the boat
+        // appears only once the state carries its payload.
+        surfaceVehicle.root.setEnabled(false);
+        for (const mesh of surfaceVehicle.meshes) {
+          if (mesh.metadata?.castsShadow === false) continue;
+          atmosphere.shadows.addShadowCaster(mesh, false);
+        }
+      }
       checkpointRendererStartup("aircraft construction", "sync");
       const airportDefinition = options.runway ?? options.world.airport;
       // 3-9: the hangars are the only airport meshes left, and the apron they
@@ -1219,6 +1349,14 @@ export class FlightRenderer implements FlightRenderingSystem {
         for (const mesh of airport.shadowCasters) atmosphere.addShadowCaster(mesh, false);
       }
       checkpointRendererStartup("airport construction", "sync");
+      // The home marina: world content in every session, so aircraft see it
+      // and the boat starts in it. Built here, enabled, so its effects compile
+      // inside the readiness gate below with everything else.
+      const marina = new MarinaSystem(scene, homeMarina(options.world), {
+        castsShadows: profile.marinaCastsShadows,
+      });
+      cleanup.push(() => marina.dispose());
+      checkpointRendererStartup("marina construction", "sync");
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
         terrainSample: liveTerrainSample,
@@ -1226,6 +1364,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         latitudeDegrees: options.world.latitudeDegrees,
         workerWorldSeed: options.world.seed,
         workerWorld: options.world,
+        pipelineWarmUp: pipelineCompiles,
       });
       cleanup.push(() => detail.dispose());
       checkpointRendererStartup("detail runtime construction", "sync");
@@ -1248,9 +1387,19 @@ export class FlightRenderer implements FlightRenderingSystem {
         // realisation or the handoff at the field radius swaps species.
         seedHash: options.world.sourceSeedHash,
         seaLevelMeters: options.world.seaLevel,
+        // Built ground (infrastructure segments with a plant clearance): no
+        // blades, the detail scatter's own gate. None in a world without it.
+        plantExclusions: infrastructurePlantExclusions(infrastructureIndex(options.world)),
+        pipelineWarmUp: pipelineCompiles,
       });
       cleanup.push(() => groundCover.dispose());
       checkpointRendererStartup("ground-cover construction", "sync");
+      // Their draws may wait for a pipeline: a stump or a tuft of grass a
+      // frame late is invisible, a frame stopped for its compile is not.
+      if (pipelineCompiles) {
+        detail.addPbrMaterials((material) => pipelineCompiles.defer(material));
+        groundCover.addPbrMaterials((material) => pipelineCompiles.defer(material));
+      }
       if (evolutionResult.mode === "eroded") {
         detail.publishTerrainMacro(
           terrainMacroGridFromEvolution(evolutionResult.evolution),
@@ -1339,20 +1488,26 @@ export class FlightRenderer implements FlightRenderingSystem {
       checkpointRendererStartup("atmosphere and cloud construction", "sync");
       await clouds.whenReadyAsync(options.signal);
       checkpointRendererStartup("cloud pipeline startup", "async");
+      // The sea's seed and wind come from the world and the weather alone,
+      // the same inputs the sim's sea twin is built from, so a hull floats on
+      // the waves drawn under it.
       const ocean = await SpectralOceanSystem.create(
         scene,
         camera,
         options.world.seaLevel,
         profile,
-        options.seed,
+        oceanSpectrumSeed(options.world),
         atmosphere.snapshot,
         options.world.prevailingWindRadians,
-        options.world.prevailingWindSpeed,
+        seaSpectrumWindSpeed(options.world, options.weather ?? "breezy"),
         options.signal,
         bathymetry,
       );
       checkpointRendererStartup("spectral ocean startup", "async");
       cleanup.push(() => ocean.dispose());
+      // The home marina's calm basin, the one the worker's sea twin floats a
+      // hull on, so the drawn waves inside are the waves the boat rides.
+      ocean.setShelter([homeMarina(options.world).shelter]);
       const waterEnvironment = new WaterEnvironmentField(scene, options.world);
       cleanup.push(() => waterEnvironment.dispose());
       const cloudShadowReceivers = new CloudShadowReceiverRegistry();
@@ -1360,7 +1515,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       // Register each shared PBR material once. Detail and wildlife can render
       // thousands of thin instances without creating receiver-side state.
       cloudShadowReceivers.registerMeshes(aircraft.meshes);
+      if (surfaceVehicle) cloudShadowReceivers.registerMeshes(surfaceVehicle.meshes);
       if (airport) cloudShadowReceivers.registerMeshes(airport.root.getChildMeshes(false));
+      cloudShadowReceivers.registerMeshes(marina.meshes);
       detail.addPbrMaterials((material) => {
         cloudShadowReceivers.registerMaterial(material);
       });
@@ -1376,7 +1533,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       cleanup.push(() => aerialReceivers.dispose());
       aerialReceivers.registerMaterial(terrain.pbrMaterial);
       aerialReceivers.registerMeshes(aircraft.meshes);
+      if (surfaceVehicle) aerialReceivers.registerMeshes(surfaceVehicle.meshes);
       if (airport) aerialReceivers.registerMeshes(airport.root.getChildMeshes(false));
+      aerialReceivers.registerMeshes(marina.meshes);
       detail.addPbrMaterials((material) => {
         aerialReceivers.registerMaterial(material);
       });
@@ -1474,11 +1633,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       const airfieldLighting = airportDefinition
         ? new AirfieldLightingSystem(airportDefinition, obstructionFixtures)
         : null;
+      // The marina's lamps and beacons follow the airfield's in the same one
+      // draw, so they cost none; `setColorRange` writes each block's colours.
+      const marinaLampStart = airfieldLighting?.fixtures.length ?? 0;
       const lightPoints = new LightPointSystem(
         scene,
-        airfieldLighting?.fixtures ?? [],
+        [...(airfieldLighting?.fixtures ?? []), ...marina.lampFixtures],
         1,
       );
+      lightPoints.setColorRange(marinaLampStart, marina.lampColours);
       cleanup.push(() => lightPoints.dispose());
       // Volcanic phase 5: steam over vents. Built before the whenReadyAsync
       // gate below, like the star field, so its effect compiles at load; its
@@ -1497,6 +1660,21 @@ export class FlightRenderer implements FlightRenderingSystem {
           : {}),
       });
       cleanup.push(() => steam.dispose());
+      // Only with a surface vehicle, so an aircraft session builds and
+      // compiles none of it. Before the readiness gate, as the steam is.
+      const boatEffects = surfaceVehicle
+        ? createBoatEffects(scene, {
+          profile,
+          world: options.world,
+          ocean,
+          atmosphere: atmosphere.snapshot,
+          sea: { world: options.world, weather: options.weather ?? "breezy" },
+        })
+        : null;
+      if (boatEffects) {
+        cleanup.push(() => boatEffects.spray.dispose());
+        cleanup.push(() => boatEffects.wake.dispose());
+      }
       // 7-4b: the clustered ILLUMINATION surface, beside the billboards that
       // are the lamps you SEE. Constructed with no definitions on purpose —
       // `ClusteredLightingSystem` then builds NO container, which costs
@@ -1729,6 +1907,8 @@ export class FlightRenderer implements FlightRenderingSystem {
         scene,
         camera,
         aircraft,
+        surfaceVehicle,
+        boatEffects,
         terrain,
         terrainEvolution,
         terrainConsumerAuthority,
@@ -1750,6 +1930,8 @@ export class FlightRenderer implements FlightRenderingSystem {
         stars,
         lightPoints,
         steam,
+        marina,
+        marinaLampStart,
         clusteredLighting,
         hangarFloods.map((flood) => flood.name),
         airfieldLighting,
@@ -1760,6 +1942,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         bloom,
         sharpen,
         atmosphereResources,
+        pipelineCompiles,
         `${info.vendor} ${info.renderer}`.trim(),
       );
       checkpointRendererStartup("renderer finalization", "sync");
@@ -1780,13 +1963,14 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.cameraCut = true;
     const cockpit = mode === "cockpit";
     this.aircraft.setCockpitView(cockpit);
+    this.surfaceVehicle?.setCockpitView(cockpit);
     // A WORLD-ONLY RIG (perf capture) draws no part of the aeroplane in cockpit view. Disabling the
     // visual's ROOT is what does it, rather than walking the meshes: `setCockpitView` and
     // `configureCockpitOnlyParts` both own per-mesh `isVisible`, and a second writer would fight
     // them on the way back out. A disabled root draws nothing beneath it whatever those flags say,
     // and restoring it hands every mesh back in the state its own owner left it in.
     if (!cockpitRigDrawsAircraft(this.cockpitRigOverride)) {
-      this.aircraft.root.setEnabled(!cockpit);
+      this.aircraft.root.setEnabled(!cockpit && !this.surfaceActive);
     }
     this.graph.invalidateHistory("camera mode changed");
   }
@@ -1819,7 +2003,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     // from the beauty pass and the shadow render lists alike; the visual and
     // its registrations are otherwise untouched so leaving the viewer is a
     // pure re-enable.
-    this.aircraft.root.setEnabled(!enabled);
+    this.aircraft.root.setEnabled(!enabled && !this.surfaceActive);
+    this.surfaceVehicle?.root.setEnabled(!enabled && this.surfaceActive);
     this.setCameraMode(enabled ? "freefly" : "chase");
   }
 
@@ -1942,6 +2127,15 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.reducedMotion = reducedMotion;
   }
 
+  /**
+   * The marina's calm basins (boats): the drawn waves inside are scaled down
+   * exactly as the sea twin scales the waves a hull floats on. Pass the world's
+   * marina shelter ellipses; none is the open sea.
+   */
+  setSeaShelter(ellipses: readonly SeaShelterEllipse[]): void {
+    this.ocean.setShelter(ellipses);
+  }
+
   setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void {
     if (!this.atmosphereTracker.update(clock, weather)) return;
     this.environmentState = resolveEnvironmentState({
@@ -1972,6 +2166,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.clouds.setEnvironment(this.environmentState);
     this.clouds.setAtmosphere(this.atmosphere.snapshot);
     this.ocean.setAtmosphere(this.atmosphere.snapshot);
+    this.ocean.setWindSpeed(seaSpectrumWindSpeed(this.worldDefinition, weather));
+    this.boatWake?.setAtmosphere(this.atmosphere.snapshot);
+    this.boatSpray?.setAtmosphere(this.atmosphere.snapshot);
+    this.boatHeave?.setWeather(weather);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
     // The snapshot carries no albedo; the occluded lake reflection's ground
     // bounce is the same `skyHorizon * albedo * 1.15` the light rig built
@@ -1994,7 +2192,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.applyPendingRenderScale();
     const started = performance.now();
     this.captureFrameInterval(started);
-    this.currentState = state;
+    this.currentState = this.presentedState(state);
     this.currentDeltaSeconds = Math.max(1 / 300, Math.min(0.1, deltaSeconds));
     this.frameIndex += 1;
     this.originShifted = this.updateFloatingOrigin(state);
@@ -2174,6 +2372,7 @@ export class FlightRenderer implements FlightRenderingSystem {
    */
   async waitForGpuIdleForCapture(): Promise<void> {
     if (this.disposed || this.deviceLost) return;
+    await this.pipelineCompiles?.whenIdle();
     await this.engine._device.queue.onSubmittedWorkDone();
   }
 
@@ -2198,6 +2397,18 @@ export class FlightRenderer implements FlightRenderingSystem {
     // A/B agent's renderer flies perf:flight too, so it cannot say so at
     // construction.
     this.skyRebakeSynchronous = true;
+    // Likewise every pipeline is built in the frame that draws it, so a
+    // shot's frames draw every mesh, as the baselines' did.
+    this.pipelineCompiles?.setSynchronous(true);
+  }
+
+  /**
+   * The perf probe's read of the off-frame pipeline compiles
+   * (`AsyncPipelineCompiles`): counters since startup, or null when they are
+   * not installed.
+   */
+  getPipelineCompileStatsForCapture(): AsyncPipelineCompileStatistics | null {
+    return this.pipelineCompiles?.statistics ?? null;
   }
 
   /**
@@ -2305,6 +2516,30 @@ export class FlightRenderer implements FlightRenderingSystem {
       width: this.engine.getRenderWidth(),
       height: this.engine.getRenderHeight(),
     };
+  }
+
+  /**
+   * `?bench=1` only: `src/bench` calls this after every frame and nothing in
+   * the game does. Constant time, allocation-free and read-only; it writes
+   * `into` and nothing else. The streaming counters stay in `getDiagnostics`,
+   * because pending detail work walks every desired cell and the terrain's
+   * statistics getter allocates.
+   */
+  readBenchProbe(into: RendererBenchProbe): void {
+    into.frameIndex = this.frameIndex;
+    into.governorState = this.governorState;
+    into.governorSignals = this.lastSignals;
+    into.governorConfig = this.governorConfig;
+    into.workLevers = this.workLeverSettings;
+    into.appliedRenderScale = this.appliedRenderScale;
+    into.renderWidth = this.engine.getRenderWidth();
+    into.renderHeight = this.engine.getRenderHeight();
+    into.pinned = this.pinnedRenderScale !== null;
+    // `captureGpuFrameTiming` stamps a sample with the frame it resolved on,
+    // after `frameIndex` has advanced, so equality means "resolved this frame".
+    into.gpuFrameMs = this.lastGpuTimingFrameIndex === this.frameIndex
+      ? this.lastGpuFrameMilliseconds
+      : null;
   }
 
   /**
@@ -2717,6 +2952,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.scene.dispose(),
       () => this.atmosphere.dispose(),
       () => this.aircraft.dispose(),
+      () => this.surfaceVehicle?.dispose(),
       () => {
         if (typeof window !== "undefined") {
           window.removeEventListener("keydown", this.handleDebugKey);
@@ -2727,10 +2963,14 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.bathymetry.dispose(),
       () => this.wildlife.dispose(),
       () => this.detail.dispose(),
+      () => this.pipelineCompiles?.dispose(),
       () => this.airport?.dispose(),
+      () => this.marina.dispose(),
       () => this.spawnedAirfields?.dispose(),
       () => this.clouds.dispose(),
       () => this.steam.dispose(),
+      () => this.boatSpray?.dispose(),
+      () => this.boatWake?.dispose(),
       () => this.hydrology.dispose(),
       () => this.ocean.dispose(),
       () => this.cloudShadowReceivers.dispose(),
@@ -2786,6 +3026,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
           this.ocean.setWaterEnvironmentField(this.waterEnvironment);
         }
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
+        // The wake lies on the waves this frame's sea is drawn with.
+        this.boatWake?.bindOcean();
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
         // ocean disk is depth-tested away above the waterline), so the sea
         // state and the WATER's own clock cross here — same node, same frame,
@@ -2850,7 +3092,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     Vector3.TransformNormalToRef(Vector3.Up(), this.bodyMatrix, this.up);
     this.forward.normalize();
     this.up.normalize();
-    if (!this.viewerMode) {
+    this.syncActiveVehicle(state);
+    if (!this.viewerMode && this.surfaceActive && this.surfaceVehicle) {
+      this.poseSurfaceVehicle(state, this.surfaceVehicle);
+    } else if (!this.viewerMode) {
       this.aircraft.root.position.set(
         state.position.x - this.originX,
         state.position.y,
@@ -2997,7 +3242,21 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.camera.position.y,
       this.camera.position.z + this.originZ,
     )) {
-      this.lightPoints.setColors(this.airfieldLighting.colourList());
+      this.lightPoints.setColorRange(0, this.airfieldLighting.colourList());
+    }
+    // The home marina: its level of detail from the camera's world distance,
+    // and its beacons on the simulation clock (capture-deterministic, as the
+    // steam is). Its lamps take the airfield's daylight law with the draw.
+    this.camera.getViewMatrix().multiplyToRef(this.camera.getProjectionMatrix(), this.marinaViewProjection);
+    Frustum.GetPlanesToRef(this.marinaViewProjection, this.marinaFrustum);
+    if (this.marina.update(
+      this.camera.position.x + this.originX,
+      this.camera.position.y,
+      this.camera.position.z + this.originZ,
+      state.simulationTime,
+      this.marinaFrustum,
+    )) {
+      this.lightPoints.setColorRange(this.marinaLampStart, this.marina.lampColours);
     }
     // Spawned airfields: the same daylight law for their floods, their PAPIs
     // against the same world camera, and their construction inside its own
@@ -3019,6 +3278,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // clock write per frame; the vent query runs only on a 2 km cell change.
     // simulationTime keeps the plume capture-deterministic (Z-1).
     this.steam.update(this.cameraWorld.x, this.cameraWorld.z, state.simulationTime);
+    this.boatSpray?.update(state);
+    this.boatWake?.update(state);
     this.updateAerialPerspective();
   }
 
@@ -3142,6 +3403,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.clouds.setAerialPerspective(binding);
     this.lightPoints.setAerialPerspective(binding);
     this.steam.setAerialPerspective(binding);
+    this.boatSpray?.setAerialPerspective(binding);
+    this.boatWake?.setAerialPerspective(binding);
     this.refreshSkyProbe(binding);
   }
 
@@ -3231,8 +3494,121 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.skyRefreshFrameIndex = this.frameIndex;
   }
 
+  /**
+   * Swap which visual is on screen when the state's class changes: a surface
+   * vehicle's payload puts the boat up and the aircraft away, and its absence
+   * the reverse. A session without a surface vehicle never gets past the
+   * first comparison, so every aircraft frame is exactly what it was.
+   */
+  private syncActiveVehicle(state: FlightVisualState): void {
+    const active = this.surfaceVehicle !== null && state.vehicle != null;
+    if (active === this.surfaceActive) return;
+    this.surfaceActive = active;
+    const cockpit = this.cameraMode === "cockpit";
+    this.aircraft.root.setEnabled(
+      !active
+      && !this.viewerMode
+      && !(cockpit && !cockpitRigDrawsAircraft(this.cockpitRigOverride)),
+    );
+    this.surfaceVehicle?.root.setEnabled(active && !this.viewerMode);
+    this.surfaceVehicle?.setCockpitView(cockpit);
+    // The sea fills the hull's footprint again while the boat is away.
+    if (!active) this.boatHullClip?.clearPose();
+    // A different vehicle somewhere else: the rig's offsets and the frame
+    // graph's history both belong to the one that was there before.
+    this.cutCamera();
+  }
+
+  /**
+   * The surface vehicle's pose and lamps, and the aircraft's own lights put
+   * out: its cast pools and washes live in the clustered container whoever
+   * is on screen, and a boat at the dock must not be lit by an aeroplane that
+   * is not there. The boat's sidelight washes take over the aircraft's two
+   * nav-wash slots (`boatWashLights` has why); every other slot goes dark.
+   */
+  /**
+   * The state everything that presents the frame reads. A boat rides the sea
+   * twin's every cascade; on a tier that draws fewer it is drawn lowered by
+   * the swell the tier leaves out (`UndrawnSeaHeave`), so its hull, spray,
+   * hull clip and the camera that follows it sit on the sea on screen.
+   */
+  private presentedState(state: FlightVisualState): FlightVisualState {
+    const heave = this.boatHeave;
+    if (!heave?.active || state.vehicle?.kind !== "boat") return state;
+    const { x, y, z, w } = state.orientation;
+    // The bow's heading, forward = (sin h, cos h): body +X turned by the orientation.
+    const heading = Math.atan2(1 - 2 * (y * y + z * z), 2 * (x * z - w * y));
+    const lowered = heave.heaveAt(state.position.x, state.position.z, heading, state.simulationTime);
+    if (lowered === 0) return state;
+    return { ...state, position: { x: state.position.x, y: state.position.y - lowered, z: state.position.z } };
+  }
+
+  private poseSurfaceVehicle(state: FlightVisualState, visual: VehicleVisual): void {
+    visual.root.position.set(
+      state.position.x - this.originX,
+      state.position.y,
+      state.position.z - this.originZ,
+    );
+    visual.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
+    this.boatHullClip?.setPose(visual.root.position, this.bodyQuaternion);
+    visual.update(state, this.currentDeltaSeconds);
+    // The boat's lamp law, from the observer's bearing as the aircraft's is.
+    const toCamera = this.camera.position.subtract(visual.root.position);
+    const bodyForward = Vector3.TransformNormal(Vector3.Right(), this.bodyMatrix);
+    const bodyUp = Vector3.TransformNormal(Vector3.Up(), this.bodyMatrix);
+    const bodyStarboard = Vector3.TransformNormal(Vector3.Forward(true), this.bodyMatrix);
+    const lights = resolveBoatLights({
+      observerAzimuthDegrees: observerAzimuthDegrees(
+        Vector3.Dot(toCamera, bodyForward),
+        Vector3.Dot(toCamera, bodyStarboard),
+      ),
+      sunElevationSine: this.environmentState.sun.direction[1],
+      horizontalLux: horizontalIlluminanceLux(this.environmentState),
+    });
+    visual.setLightState(lights);
+    for (const pool of AIRCRAFT_CAST_POOLS) this.clusteredLighting.setIntensity(pool.name, 0);
+    for (const slot of aircraftWashLights(this.aircraftKind)) {
+      const wash = this.surfaceVehicleWashes.find((candidate) => candidate.driver === slot.driver);
+      if (!wash) {
+        this.clusteredLighting.setIntensity(slot.name, 0);
+        continue;
+      }
+      const at = castPoolWorldPosition(
+        [state.position.x, state.position.y, state.position.z],
+        [bodyForward.x, bodyForward.y, bodyForward.z],
+        [bodyUp.x, bodyUp.y, bodyUp.z],
+        [bodyStarboard.x, bodyStarboard.y, bodyStarboard.z],
+        wash.offset,
+      );
+      this.clusteredLighting.setPosition(slot.name, at[0], at[1], at[2]);
+      this.clusteredLighting.setIntensity(
+        slot.name,
+        wash.intensity * lights[wash.driver] * this.lastDaylightAttenuation,
+      );
+    }
+  }
+
   private updateCamera(state: FlightVisualState): void {
-    const aircraftPosition = this.aircraft.root.position;
+    const followed = this.surfaceActive && this.surfaceVehicle ? this.surfaceVehicle : this.aircraft;
+    const aircraftPosition = followed.root.position;
+    const framing = this.surfaceActive && this.surfaceVehicleSpec
+      ? this.surfaceVehicleSpec
+      : aircraftSpec(this.aircraft.kind);
+    // A boat's exterior views follow its HEADING: the hull pitches several
+    // degrees over the hump and rolls in every wave, and a rig that took either
+    // would bob the whole frame with it. The helm view stays attached. For an
+    // aircraft both are the body axes, the very same vectors as before.
+    const levelFollow = this.surfaceActive && this.cameraMode !== "cockpit";
+    let rigForward = this.forward;
+    let rigUp = this.up;
+    if (levelFollow) {
+      const horizontal = Math.hypot(this.forward.x, this.forward.z);
+      if (horizontal > 1e-4) {
+        this.surfaceRigForward.set(this.forward.x / horizontal, 0, this.forward.z / horizontal);
+      }
+      rigForward = this.surfaceRigForward;
+      rigUp = this.surfaceRigUp;
+    }
     let fieldOfView = 62;
     // One vertical reference for the whole rig. The exterior views adopt only
     // part of the aircraft's bank (`cameraBankFollow`), and the camera's own
@@ -3242,8 +3618,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // removes that exactly, and because the blend starts from wings-level
     // rather than from world up, an unbanked frame is untouched at any pitch.
     cameraRigLiftToRef(
-      this.forward,
-      this.up,
+      rigForward,
+      rigUp,
       cameraBankFollow(this.cameraMode, this.reducedMotion),
       this.cameraRigLift,
     );
@@ -3286,7 +3662,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.desiredCameraTarget.copyFrom(this.desiredCamera)
         .addInPlace(this.forward.scale(200));
     } else if (this.cameraMode === "cockpit") {
-      const eye = aircraftSpec(this.aircraft.kind).cockpitEye;
+      const eye = framing.cockpitEye;
       // The eye is where the pilot's head is — in the LEFT seat where there
       // are two — and the aim point carries the same offset, so the view stays
       // parallel to the body axis. Both are built by one pure function so a
@@ -3314,7 +3690,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       );
     } else if (this.cameraMode === "cinematic") {
       const angle = state.simulationTime * 0.075;
-      const orbit = aircraftSpec(this.aircraft.kind).cinematic;
+      const orbit = framing.cinematic;
       this.desiredCamera.copyFrom(aircraftPosition).addInPlaceFromFloats(
         Math.cos(angle) * orbit.radiusMeters,
         orbit.heightMeters + Math.sin(angle * 0.7) * orbit.heightDriftMeters,
@@ -3322,29 +3698,41 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       );
       this.desiredCameraTarget.copyFrom(aircraftPosition)
         .addInPlace(this.cameraRigLift.scale(1.3));
+      if (this.surfaceActive) {
+        // The orbit circles a boat at the dock as readily as one at sea, so
+        // it keeps clear of the quay, the shore and the water.
+        const orbitFloor = Math.max(
+          this.seaLevel,
+          this.cameraTerrainHeight(
+            this.desiredCamera.x + this.originX,
+            this.desiredCamera.z + this.originZ,
+          ),
+        ) + 1.5;
+        if (this.desiredCamera.y < orbitFloor) this.desiredCamera.y = orbitFloor;
+      }
       fieldOfView = 58;
     } else if (this.cameraMode === "top" || this.cameraMode === "front") {
       // Both aim at the built airframe's centre from a measured distance
       // (`TopFrontViewSpec`): straight down on its plan, or back at its nose.
       // Neither can sit below the aeroplane, so neither samples the terrain;
       // both write into the rig's own vectors, so neither allocates.
-      const framing = aircraftSpec(this.aircraft.kind).topFront;
+      const topFront = framing.topFront;
       if (this.cameraMode === "top") {
         topViewRigOffsetsToRef(
-          this.forward,
-          this.up,
+          rigForward,
+          rigUp,
           this.cameraRigLift,
-          framing,
+          topFront,
           this.desiredCamera,
           this.desiredCameraTarget,
         );
         fieldOfView = TOP_VIEW_FIELD_OF_VIEW_DEGREES;
       } else {
         frontViewRigOffsetsToRef(
-          this.forward,
-          this.up,
+          rigForward,
+          rigUp,
           this.cameraRigLift,
-          framing,
+          topFront,
           this.desiredCamera,
           this.desiredCameraTarget,
         );
@@ -3353,7 +3741,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.desiredCamera.addInPlace(aircraftPosition);
       this.desiredCameraTarget.addInPlace(aircraftPosition);
     } else {
-      const profile = chaseCameraProfile(this.aircraft.kind, state.airspeed);
+      const profile = chaseCameraProfile(followed.kind, state.airspeed);
       // The trail the old absolute-position smoothing used to produce as a
       // lag, now asked for explicitly and along the NOSE rather than along the
       // ground track: the settled framing players know is preserved, without
@@ -3369,10 +3757,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       // keeps a banked airframe centred; this keeps it from sinking in frame.
       // See `CHASE_BANK_HEIGHT_DROP`.
       chaseRigOffsetsToRef(
-        this.forward,
+        rigForward,
         this.cameraRigLift,
         profile.distance,
-        chaseRigHeightForBank(profile.height, this.forward, this.up),
+        chaseRigHeightForBank(profile.height, rigForward, rigUp),
         profile.aimAhead,
         CHASE_AIM_HEIGHT_METERS,
         trail,
@@ -3397,12 +3785,15 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       const cameraGround = Math.max(
         this.cameraTerrainHeight(cameraWorldX, cameraWorldZ),
         this.cameraTerrainHeight(
-          cameraWorldX + this.forward.x * aheadMeters,
-          cameraWorldZ + this.forward.z * aheadMeters,
+          cameraWorldX + rigForward.x * aheadMeters,
+          cameraWorldZ + rigForward.z * aheadMeters,
         ),
       );
-      if (this.desiredCamera.y < cameraGround + 2.5) {
-        this.desiredCamera.y = cameraGround + 2.5;
+      // A boat's rig floats over the sea, which the terrain sample (the
+      // seabed) knows nothing about.
+      const cameraFloor = this.surfaceActive ? Math.max(cameraGround, this.seaLevel) : cameraGround;
+      if (this.desiredCamera.y < cameraFloor + 2.5) {
+        this.desiredCamera.y = cameraFloor + 2.5;
       }
       // Both offsets were produced together above, so the aim point already
       // carries the same trail the camera does and the view direction is
@@ -3454,11 +3845,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     if (this.cameraMode === "top") {
       // The top view looks along world up, so it asks for the nose instead:
       // the aeroplane points up the screen.
-      topViewCameraUpToRef(this.forward, this.desiredCameraUp);
+      topViewCameraUpToRef(rigForward, this.desiredCameraUp);
     } else {
       Vector3.LerpToRef(
         Vector3.UpReadOnly,
-        this.up,
+        rigUp,
         cameraBankFollow(this.cameraMode, this.reducedMotion),
         this.desiredCameraUp,
       );
@@ -3474,7 +3865,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     orthogonalizeCameraUpToRef(
       this.camera.upVector,
       this.cameraViewDirection,
-      this.up,
+      rigUp,
       this.camera.upVector,
     );
     this.camera.setTarget(this.cameraTarget);
@@ -3680,6 +4071,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.detail.addShadowCasters(collect);
     this.wildlife.addShadowCasters(collect);
     this.spawnedAirfields?.addShadowCasters(collect);
+    this.marina.addShadowCasters(collect);
     for (const [id, mesh] of this.dynamicShadowCasters) {
       if (!active.has(id)) this.atmosphere.shadows.removeShadowCaster(mesh, false);
     }
@@ -3706,6 +4098,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.spawnedAirfields?.setFloatingOrigin(this.originX, this.originZ);
     this.lightPoints.setFloatingOrigin(this.originX, this.originZ);
     this.steam.setFloatingOrigin(this.originX, this.originZ);
+    this.marina.setFloatingOrigin(this.originX, this.originZ);
+    this.boatSpray?.setFloatingOrigin(this.originX, this.originZ);
+    this.boatWake?.setFloatingOrigin(this.originX, this.originZ);
     // 7-4b: the clustered ILLUMINATION rebases with the billboards it sits
     // under. A clustered light gets an unrebased origin worse than a billboard
     // does — the inverse-square falloff reads the position too, so it would not
@@ -3751,6 +4146,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // 0 on tier 0 tears the steam's mesh down; a cap above it builds one,
     // compiling at the switch rather than at load.
     this.steam.setMaxWisps(this.profile.volcanicSteamMaxWisps);
+    this.boatSpray?.setCap(this.profile.boatSprayParticleCap);
+    this.boatWake?.setTrailSeconds(this.profile.boatWakeTrailSeconds);
+    this.boatHeave?.setDrawnCascades(this.profile.oceanCascades);
     this.spawnedAirfields?.setLimits(this.profile.spawnedAirfields);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;

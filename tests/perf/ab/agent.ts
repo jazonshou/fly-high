@@ -30,6 +30,7 @@
  */
 
 import { ComputeShader } from "@babylonjs/core/Compute/computeShader";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Logger } from "@babylonjs/core/Misc/logger";
 import { FlightRenderer } from "../../../src/render/FlightRenderer";
 import { PERF_COCKPIT_RIG } from "../../../src/render/cameraPresentation";
@@ -72,7 +73,7 @@ import {
 import { setGpuPassLabelDecorator } from "../gpuPassLabels";
 import { armGpuPassTiming, collectGpuPassTiming, installGpuPassTiming } from "../gpuPassTiming";
 import { beginGpuWorkWindow, endGpuWorkWindow, installGpuWorkCounters } from "../gpuWorkCounters";
-import { resolveShotPlacement } from "../shotPlacement";
+import { boatShotState, resolveShotPlacement } from "../shotPlacement";
 import { FlightBakeProbe, readBakeStats } from "./bakeProbe";
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./detailWatchdog";
 import { renderAfterHitch } from "./flightHitch";
@@ -121,6 +122,14 @@ interface ShotContext {
 
 const errors = { console: [] as string[], logger: [] as string[], gpu: [] as string[], page: [] as string[] };
 const creations = { pipelines: 0, shaderModules: 0, shaderCodeChars: 0 };
+/**
+ * What asked for each render pipeline, in creation order
+ * (`describePipelineSource`): a measured frame reads its own slice.
+ */
+const pipelineSources: string[] = [];
+/** The frame-graph pass executing now, and the mesh Babylon is drawing (`installRenderingMeshNames`). */
+let graphPass: string | null = null;
+let renderingMesh: string | null = null;
 
 let config: AgentConfig | null = null;
 let world: WorldDefinition | null = null;
@@ -182,7 +191,6 @@ function capability<Name extends keyof FlightRenderer>(name: Name): FlightRender
  * they draw into, and every compute pass is unlabelled.
  */
 function installRendererPassNames(): void {
-  let graphPass: string | null = null;
   let computeShader: string | null = null;
   const graph = WebGpuFrameGraph.prototype as unknown as {
     register?: (this: WebGpuFrameGraph, pass: FrameGraphPass) => () => void;
@@ -230,6 +238,55 @@ function installRendererPassNames(): void {
   });
 }
 
+/**
+ * Names the mesh (and its material) whose draw is being encoded, for every
+ * pass that draws meshes: the scene's own render, shadow maps and render
+ * targets all go through `Mesh._processRendering`. A pipeline created inside
+ * one is that mesh's pipeline in that pass.
+ */
+function installRenderingMeshNames(): void {
+  const prototype = Mesh.prototype as unknown as Record<string, unknown>;
+  const original = prototype["_processRendering"];
+  if (typeof original !== "function") return;
+  prototype["_processRendering"] = function (this: Mesh, ...args: unknown[]) {
+    const outer = renderingMesh;
+    const subMesh = args[1] as { getMaterial?: () => { name?: string } | null } | undefined;
+    const material = (args[7] as { name?: string } | undefined) ?? subMesh?.getMaterial?.() ?? null;
+    renderingMesh = material?.name ? `${this.name} (${material.name})` : this.name;
+    try {
+      return (original as (...input: unknown[]) => unknown).apply(this, args);
+    } finally {
+      renderingMesh = outer;
+    }
+  };
+}
+
+/** The Babylon render pass (main, a shadow generator's, a render target's) the engine is encoding. */
+function currentRenderPassName(): string {
+  const engine = renderer
+    ? ((renderer as unknown as { scene?: { getEngine(): unknown } }).scene?.getEngine() as
+      | { currentRenderPassId?: number; _renderPassNames?: readonly (string | undefined)[] }
+      | undefined)
+    : undefined;
+  const id = engine?.currentRenderPassId;
+  if (id === undefined) return "?";
+  return engine?._renderPassNames?.[id] ?? `pass ${id}`;
+}
+
+/**
+ * One render pipeline's origin: the frame-graph pass, Babylon's render pass,
+ * the mesh and material, and the pipeline's formats (Babylon's label).
+ */
+function describePipelineSource(method: string, descriptor: { readonly label?: string } | undefined): string {
+  return [
+    method.endsWith("Async") ? "async" : null,
+    graphPass ?? "(outside frame graph)",
+    currentRenderPassName(),
+    renderingMesh ?? "(no mesh)",
+    descriptor?.label ? `[${descriptor.label}]` : null,
+  ].filter((part) => part !== null).join(" › ");
+}
+
 /** Counts pipeline and shader-module creation all the time: a measured frame should create none. */
 function installCreationCounts(): void {
   const device = (globalThis as unknown as { GPUDevice?: { prototype: Record<string, unknown> } }).GPUDevice;
@@ -247,6 +304,14 @@ function installCreationCounts(): void {
   count("createComputePipeline", "pipelines");
   count("createComputePipelineAsync", "pipelines");
   count("createShaderModule", "shaderModules");
+  for (const name of ["createRenderPipeline", "createRenderPipelineAsync"]) {
+    const original = device.prototype[name];
+    if (typeof original !== "function") continue;
+    device.prototype[name] = function (this: unknown, descriptor: { label?: string } | undefined) {
+      if (pipelineSources.length < 10_000) pipelineSources.push(describePipelineSource(name, descriptor));
+      return (original as (descriptor: unknown) => unknown).call(this, descriptor);
+    };
+  }
   const createShaderModule = device.prototype.createShaderModule;
   if (typeof createShaderModule === "function") {
     device.prototype.createShaderModule = function (this: unknown, descriptor: { code?: string }) {
@@ -282,6 +347,23 @@ function graphPassTimings(target: FlightRenderer): readonly { name: string; cpuM
   const graph = (target as unknown as { graph?: { passTimings?: unknown } }).graph;
   const timings = graph?.passTimings;
   return Array.isArray(timings) ? timings : [];
+}
+
+/**
+ * Draws skipped so far for a pipeline compiling off the frame, and the
+ * warm-ups in progress (meshes drawn wherever they are until their pipelines
+ * are ready); undefined from a build without `getPipelineCompileStatsForCapture`
+ * (read loosely: the arm's own build is read with this branch's agent).
+ */
+function pipelineCompileCounts(target: FlightRenderer): { deferredDraws: number; warmUps: number } | undefined {
+  const read = (target as unknown as { getPipelineCompileStatsForCapture?: () => unknown }).getPipelineCompileStatsForCapture;
+  const stats = read?.call(target) as Record<string, unknown> | null | undefined;
+  const { deferredDraws, warmUpsStarted, warmUpsCompleted, warmUpsAbandoned } = stats ?? {};
+  if (typeof deferredDraws !== "number") return undefined;
+  const warmUps = [warmUpsStarted, warmUpsCompleted, warmUpsAbandoned].every((count) => typeof count === "number")
+    ? (warmUpsStarted as number) - (warmUpsCompleted as number) - (warmUpsAbandoned as number)
+    : 0;
+  return { deferredDraws, warmUps };
 }
 
 /**
@@ -502,7 +584,12 @@ interface FlightPath {
   z: number;
   yawDegrees: number;
   altitude: number;
+  /** The nose's attitude below the horizon, moving toward each leg's `pitchDownDegrees`. */
+  pitchDownDegrees: number;
 }
+
+/** How fast the scripted nose moves toward a leg's pitch: a firm push on the stick. */
+const FLIGHT_PITCH_RATE_DEGREES_PER_SECOND = 30;
 
 let flightPath: FlightPath | null = null;
 
@@ -537,12 +624,14 @@ async function ensureRenderer(
   worldEvolution: WorldEvolution,
   climateProvince: PerfCaptureShotDefinition["climateProvince"],
   landforms: PerfCaptureShotDefinition["landforms"],
+  boat: boolean,
   fresh = false,
 ): Promise<void> {
   if (!config) throw new Error("perf-ab agent: configure() first");
-  const forcedKey = climateProvince === undefined && landforms === undefined
+  // A boat shot is a boundary too: its renderer is built with the speedboat.
+  const forcedKey = climateProvince === undefined && landforms === undefined && !boat
     ? null
-    : JSON.stringify({ climateProvince: climateProvince ?? null, landforms: landforms ?? null });
+    : JSON.stringify({ climateProvince: climateProvince ?? null, landforms: landforms ?? null, ...(boat ? { boat } : {}) });
   if (!fresh && renderer && activeWorldEvolution === worldEvolution && activeForcedKey === forcedKey) return;
   // As the capture's W-7 swap: dispose fully BEFORE creating, so two worlds
   // are never resident at once.
@@ -579,13 +668,17 @@ async function ensureRenderer(
     ...agentTerrainSamplers(activeWorld, config.gameTerrainHeight, sampleTerrain, sampleTerrainHeight),
     world: activeWorld,
     seed: activeWorld.sourceSeedHash,
+    // Every shot renders Clear, so build the sea for Clear's wind (an arm
+    // whose renderer predates the option ignores it).
+    weather: "clear",
     quality: config.quality as QualityLevel,
     renderingMode: config.renderingMode as RenderingMode,
     reducedMotion: false,
     pinnedRenderScale: profile.renderScale,
     // The capture's rig, for the same reason: the cockpit shots were placed
-    // for it (tests/render.cockpit-rig.test.ts lists the callers).
-    cockpitRigOverride: PERF_COCKPIT_RIG,
+    // for it (tests/render.cockpit-rig.test.ts lists the callers). A boat's
+    // helm view is the gameplay one, as the capture's.
+    ...(boat ? { vehicle: "speedboat" as const } : { cockpitRigOverride: PERF_COCKPIT_RIG }),
     ...(activeWorld.airport ? { runway: activeWorld.airport } : {}),
   });
   activeWorldEvolution = worldEvolution;
@@ -722,6 +815,7 @@ const agent: PerfAgent = {
     installGpuPassTiming();
     installGpuDrawGate();
     installRendererPassNames();
+    installRenderingMeshNames();
     installCreationCounts();
     installLongTaskObserver();
     if (next.profileOverride) {
@@ -739,7 +833,13 @@ const agent: PerfAgent = {
   async prepareShot(request: PrepareRequest): Promise<PrepareReport> {
     const started = performance.now();
     const { shot } = request;
-    await ensureRenderer(shot.worldEvolution ?? "analytic", shot.climateProvince, shot.landforms, request.freshRenderer);
+    await ensureRenderer(
+      shot.worldEvolution ?? "analytic",
+      shot.climateProvince,
+      shot.landforms,
+      shot.boat !== undefined,
+      request.freshRenderer,
+    );
     const active = requireRenderer();
     const activeWorld = world!;
     const viewportWidth = shot.viewportWidth ?? PERF_CAPTURE_WIDTH;
@@ -784,20 +884,22 @@ const agent: PerfAgent = {
         )
       : 0;
     const heading = headingVectorFromYaw(yawDegrees);
-    const state: FlightVisualState = {
-      ...INITIAL_VISUAL_STATE,
-      position: { x: positionX, y: altitude, z: positionZ },
-      velocity: {
-        x: shot.airspeedMetersPerSecond * heading.x,
-        y: 0,
-        z: shot.airspeedMetersPerSecond * heading.z,
-      },
-      orientation: orientationFromYawPitchBank(yawDegrees, shot.pitchDownDegrees, 0),
-      airspeed: shot.airspeedMetersPerSecond,
-      altitude,
-      altitudeAgl: altitude - groundHeight,
-      simulationTime,
-    };
+    const state: FlightVisualState = shot.boat
+      ? boatShotState(activeWorld, shot.boat, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
+      : {
+          ...INITIAL_VISUAL_STATE,
+          position: { x: positionX, y: altitude, z: positionZ },
+          velocity: {
+            x: shot.airspeedMetersPerSecond * heading.x,
+            y: 0,
+            z: shot.airspeedMetersPerSecond * heading.z,
+          },
+          orientation: orientationFromYawPitchBank(yawDegrees, shot.pitchDownDegrees, 0),
+          airspeed: shot.airspeedMetersPerSecond,
+          altitude,
+          altitudeAgl: altitude - groundHeight,
+          simulationTime,
+        };
     active.setCameraMode(shot.cameraMode);
     context = {
       shot,
@@ -830,7 +932,7 @@ const agent: PerfAgent = {
       viewport: { width: viewportWidth, height: viewportHeight },
       raster: { width: raster.width, height: raster.height },
       renderScale,
-      position: { x: positionX, y: altitude, z: positionZ },
+      position: { ...state.position },
       yawDegrees,
       elapsedMs: performance.now() - started,
     };
@@ -1014,12 +1116,14 @@ const agent: PerfAgent = {
           z: start.z,
           yawDegrees: start.yawDegrees,
           altitude: sampleTerrainHeight(activeWorld, start.x, start.z) + request.clearanceMeters,
+          pitchDownDegrees: 0,
         }
         : {
           x: shot.state.position.x,
           z: shot.state.position.z,
           yawDegrees: shot.yawDegrees,
           altitude: shot.altitude,
+          pitchDownDegrees: 0,
         };
       active.setCameraMode(request.cameraMode);
     }
@@ -1027,6 +1131,7 @@ const agent: PerfAgent = {
     const speed = request.speedMetersPerSecond;
     const bankRadians = (request.bankDegrees * Math.PI) / 180;
     const turnRateDegrees = ((9.81 * Math.tan(bankRadians)) / Math.max(20, speed)) * (180 / Math.PI);
+    const pitchTargetDegrees = request.pitchDownDegrees ?? 0;
     setGpuDrawsSuppressed(request.suppressDraws);
     const longTaskStart = longTasks.length;
     const frames: FlightFrame[] = [];
@@ -1062,12 +1167,16 @@ const agent: PerfAgent = {
       const target = Math.max(groundHere, groundAhead) + request.clearanceMeters;
       path.altitude += Math.max((-10 / 60) * steps, Math.min((25 / 60) * steps, target - path.altitude));
       path.altitude = Math.max(path.altitude, groundHere + 30);
+      // The nose only: the path still follows the terrain, so a pitched leg
+      // looks at the ground from the clearance without flying into it.
+      const pitchStep = (FLIGHT_PITCH_RATE_DEGREES_PER_SECOND / 60) * steps;
+      path.pitchDownDegrees += Math.max(-pitchStep, Math.min(pitchStep, pitchTargetDegrees - path.pitchDownDegrees));
       const state: FlightVisualState = {
         ...shot.state,
         simulationTime,
         position: { x: path.x, y: path.altitude, z: path.z },
         velocity: { x: speed * heading.x, y: 0, z: speed * heading.z },
-        orientation: orientationFromYawPitchBank(path.yawDegrees, 0, request.bankDegrees),
+        orientation: orientationFromYawPitchBank(path.yawDegrees, path.pitchDownDegrees, request.bankDegrees),
         airspeed: speed,
         altitude: path.altitude,
         altitudeAgl: path.altitude - groundHere,
@@ -1077,6 +1186,8 @@ const agent: PerfAgent = {
       const shaderModulesBefore = creations.shaderModules;
       const shaderCodeBefore = creations.shaderCodeChars;
       const effectsBefore = effectsCompiled.length;
+      const pipelineSourcesBefore = pipelineSources.length;
+      const compilesBefore = pipelineCompileCounts(active);
       const heapBefore = heapUsedBytes();
       const heapBetweenBytes = heapBefore - heapMark;
       const renderStarted = performance.now();
@@ -1108,6 +1219,7 @@ const agent: PerfAgent = {
       for (const timing of graphPassTimings(active)) {
         if (timing.ran) passMs[timing.name] = timing.cpuMilliseconds;
       }
+      const compilesAfter = pipelineCompileCounts(active);
       frames.push({
         renderMs,
         betweenMs,
@@ -1118,10 +1230,20 @@ const agent: PerfAgent = {
         shaderModulesCreated: creations.shaderModules - shaderModulesBefore,
         shaderCodeChars: creations.shaderCodeChars - shaderCodeBefore,
         effectsCompiled: effectsCompiled.slice(effectsBefore),
+        pipelineSources: pipelineSources.slice(pipelineSourcesBefore),
+        pitchDownDegrees: path.pitchDownDegrees,
+        ...(compilesBefore === undefined || compilesAfter === undefined ? {} : {
+          deferredDraws: compilesAfter.deferredDraws - compilesBefore.deferredDraws,
+          pipelineWarmUps: compilesAfter.warmUps,
+        }),
         bake,
       });
       if (frame % request.fenceEvery === request.fenceEvery - 1) {
+        // The wait for the GPU to drain this frame and those since the last
+        // fence: where a pipeline compiled in the GPU process shows.
+        const fenceStarted = performance.now();
         await fence();
+        (frames[frames.length - 1] as { fenceMs?: number }).fenceMs = performance.now() - fenceStarted;
         heapMark = heapUsedBytes();
       }
     }

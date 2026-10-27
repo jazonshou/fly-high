@@ -218,6 +218,29 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "bits and an in-place upload never changes a bake both cover.",
   },
   {
+    // The infrastructure stage's GPU half: the packed index (the
+    // `terrainInfrastructureData` binding), the stage that applies it after
+    // the landforms, and the per-consumer binding that packs it. The profiles
+    // themselves are defined once, CPU and WGSL side by side, in
+    // src/world/infrastructureProfiles.ts.
+    artifact: "terrain-infrastructure-index",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/TerrainInfrastructureKernel.ts"],
+    consumers: ["terrain-geometry", "terrain-material", "water"],
+    ownedSymbols: [
+      "TERRAIN_INFRASTRUCTURE_WGSL",
+      "packTerrainInfrastructure",
+      "TerrainInfrastructureData",
+      "TerrainInfrastructureDataBinding",
+    ],
+    notes:
+      "A transliteration of src/world/infrastructure.ts. The index origin is the "
+      + "landform core centre and points arrive split like the volcanic overlay's, "
+      + "so precision holds anywhere a marina or road can be. The page and sea-depth "
+      + "bakes read its heights; the splat bake reads only its surface paint "
+      + "(terrainInfrastructureSurface), since its heights are already in the atlas.",
+  },
+  {
     artifact: "terrain-page-atlas",
     owner: "terrain-geometry",
     definitionSites: ["src/render/webgpu/terrain/TerrainPageAtlas.ts"],
@@ -1026,6 +1049,47 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ],
     notes:
       "Two toroidal half-float levels: r16float storage where the adapter exposes `texture-formats-tier1`, rgba16float storage on a core-only device such as Firefox (`selectBathymetryStorageFormat`; the sampled `.r` is the same either way). Eroded mode samples the canonical macro authority with its cell-centred 16-texel rim blend, then overlays RESIDENT eroded L0 pages inside the update dispatch (W-6, feathered at macro-facing page borders); `sampleBathymetryTerrainAuthority` stays the documented macro floor. Analytic mode remains bit-compatible via the empty-table sentinel.",
+  },
+  {
+    // Boats (2026-10-26): the sea a hull floats on and the sea on screen are
+    // one authority (ARCHITECTURE.md §3, "The sea"). The spectrum is defined
+    // once, TypeScript and WGSL side by side; the GPU ocean transforms it and
+    // the CPU sea twin sums the same waves; the marina shelter field is one
+    // analytic function both evaluate.
+    artifact: "sea-surface-authority",
+    owner: "water",
+    definitionSites: [
+      "src/sim/water/spectrum.ts",
+      "src/sim/water/spectrumWgsl.ts",
+      "src/sim/water/spectrumConfig.ts",
+      "src/sim/water/seaState.ts",
+      "src/sim/water/seaTwin.ts",
+      "src/sim/water/shelter.ts",
+    ],
+    consumers: ["water", "simulation"],
+    ownedSymbols: [
+      "OCEAN_SPECTRUM_WGSL",
+      "oceanInitialWave",
+      "oceanWaveSeed",
+      "oceanDirectionalSpectrum",
+      "OCEAN_TIME_SIGN",
+      "OCEAN_CHOP_SIGN",
+      "resolveSeaSpectrumConfig",
+      "weatherWindScale",
+      "SeaTwin",
+      "createSeaTwin",
+      "SEA_SHELTER_WGSL",
+      "packSeaShelterEllipses",
+      "seaShelterFactor",
+    ],
+    notes:
+      "Waves are keyed on the wave, not the texel, so every tier draws the same waves in the "
+      + "bands it has and the twin (bands 1-4, 256-point config) matches each. The evolution "
+      + "shader and the twin read one time sign and one chop sign, so both seas travel downwind "
+      + "and gather onto their crests. A weather change "
+      + "rebuilds the GPU h0 and calls SeaTwin.setConfig at the same simulation time. "
+      + "tests/world.sea-twin.test.ts holds the twin to an f64 FFT of the spectrum and "
+      + "tests/gpu/ocean-twin-parity.test.ts holds the drawn displacement and shelter to the twin.",
   },
   {
     // 4-6/4-6b (R-27): the SOLE authority for what the ground is made of,

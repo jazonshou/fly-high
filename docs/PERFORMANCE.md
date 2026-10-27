@@ -127,6 +127,9 @@ audit is why it now carries all four tiers):
 | Vegetation density multiplier | 0.45 | 0.75 | 1.00 | 1.00 |
 | Active-animal budget | 16 | 48 | 128 | 128 |
 | Volcanic steam wisp cap (`volcanicSteamMaxWisps`; 0 = no mesh) | 0 | 128 | 192 | 256 |
+| Boat spray particle cap (`boatSprayParticleCap`; boat sessions only) | 256 | 1,024 | 4,096 | 4,096 |
+| Boat wake trail seconds (`boatWakeTrailSeconds`; boat sessions only) | 12 | 24 | 40 | 40 |
+| Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
 Ultra's material array edge is 512², not §5.3's published 1024²: `3-1`
@@ -2479,6 +2482,126 @@ ground-cover blades' PBR, and the far east's plain PBR and hydrology
 water, at load; and the first leg near home, where the fix's sooner trees
 cost p95 in the first 10 s of flight.
 
+## The nose-down freeze: pipelines built inside the frame (2026-10-27)
+
+Jason, 2026-10-27: "sometimes when I point down towards the ground, the
+plane freezes for a moment."
+
+**The cause (measured).** Babylon 9.21.2 builds a render pipeline the first
+time a draw needs it, inside that draw, with the synchronous
+`GPUDevice.createRenderPipeline`, and the GPU process compiles the shader
+before it runs anything else. Every detail PBR material has a pipeline of
+its own. The near-ground prototypes (clutter stumps, logs, moss and litter,
+rocks, shrubs, and the grass blades) stand inside the near band, which in
+level flight a few hundred feet up is below the bottom of the chase
+camera's view. So the first frame that shows one is the frame the nose goes
+down, and that frame waits for the compile. It happens once per material
+per session, which is why it is only "sometimes". The blades had a second
+one: their placement kernel's compute pipeline, which Babylon's
+`_computeDispatch` builds synchronously at the first dispatch, the frame
+after the first ground-cover tile completes.
+
+**How it was measured.** `npm run perf:flight -- --pitch-down <deg>` flies
+legs 2, 4 and 6 nose-down (pitching at 30 deg/s, the path still terrain
+following); `--draws --fence-every 1` keeps the draws and waits for the GPU
+after every frame, so a compile in the GPU process lands in the frame that
+asked for it. The report's "Pipelines created mid-flight" section names
+what asked for each pipeline: frame-graph pass, Babylon render pass, mesh
+(material), pipeline label, and per frame the draws that waited for an
+off-frame compile. Read the hitches on the macOS runner (Metal), through a
+temporary workflow that ran perf:flight there; SwiftShader shows the same
+pipelines in the same frames, but its fence p50 is ~180 ms with 2.5-3.2 s
+compute spikes in level legs too. Main (`ac2c76c`), macOS runner, CI runs
+40444508520 and 40448084761 (fence p50 21-80 ms on these legs):
+
+| What compiled in the frame | When | That frame on main |
+| --- | --- | --- |
+| clutter stump (`detail-clutter-stump-material`) | 13-15 deg nose-down from 150 m | 717-1,615 ms |
+| moss cushion | level at 60 m | 919-1,737 ms |
+| grass blades' compute pipeline, then their render pipeline | level at 60 m, first blades | 412-576 ms, then 887-1,132 ms |
+| limestone rock | 45 deg nose-down from 60 m | 915-1,169 ms |
+| granite rock | level, far east (x = 160 km) | 690-1,076 ms |
+| far impostor, a new texture-state variant | 30 deg nose-down | fence 140-190 ms |
+
+**The fix** (`src/render/webgpu/core/AsyncPipelineCompiles.ts`):
+
+1. A draw of a registered material (the detail set and the blades) whose
+   pipeline is not built does not build it. It starts
+   `createRenderPipelineAsync` with the descriptor Babylon would have used,
+   which the GPU process compiles without holding the frame (on the macOS
+   runner a new impostor variant then cost a 17 ms fence, not 140-190 ms),
+   and skips that one draw; the pipeline joins Babylon's cache when it
+   lands. The object appears a frame or a few late instead of the frame
+   stopping. A pipeline the device refuses asynchronously is built
+   synchronously at its next draw, so its error reaches the
+   uncaptured-error guard as before. The hooks forward Babylon's named
+   parameters, so a draw allocates nothing for them.
+2. Warm-ups start those compiles as the scenery streams in rather than when
+   it scrolls into view: each detail prototype's first published batch
+   draws wherever it is (`alwaysSelectAsActiveMesh`) until a frame draws it
+   with every pipeline ready, and, while the aircraft is above the blades'
+   fade, ring 0 draws one degenerate blade and the placement kernel's
+   compute pipeline is built with `createComputePipelineAsync`
+   (`precompileComputePipeline`). An out-of-view warm-up draw is clipped and
+   costs its vertex work once.
+3. Captures are unchanged: the capture's time pin calls
+   `setSynchronous(true)`, so a shot's frames build pipelines in the frame as
+   the baselines' did, and `waitForGpuIdleForCapture` waits for compiles in
+   flight. No baseline or draw-call ceiling moves.
+
+Wildlife primes its pipelines at startup already and is not registered;
+hydrology water and the airports are not registered either (seen in none of
+these flights).
+
+**Result** (macOS runner, main `ac2c76c` against the fix's final code, CI
+run 40453621587; a frame is render + the tasks behind it + its fence,
+frame 0 of each leg left out, see below):
+
+| Flight | Worst frame, main → fix | Frames over 500 ms | Pipelines built in a frame | Frame p50 / p95, main → fix |
+| --- | --- | --- | --- | --- |
+| 150 m, 120 m/s, 45 deg nose-down | 1,751 → 316 ms | 1 → 0 | 1 → 0 | 86 / 186 → 80 / 175 ms |
+| 60 m, 80 m/s, 45 deg | 1,127 → 336 ms | 4 → 0 | 3 → 0 | 82 / 138 → 80 / 124 ms |
+| far east (x = 160 km), 60 deg | 1,366 → 299 ms | 1 → 0 | 2 → 0 (one compiled off the frame, one draw waited for it) | 47 / 111 → 47 / 104 ms |
+| 40 m, 70 m/s, 45 deg (three flights) | 752, 1,070, 624 → 215, 325, 122 ms | 3, 4, 4 → 0, 0, 0 | 3 each → 0 | 37 / 63 → 35 / 54, 70 / 160 → 67 / 112, 32 / 44 → 34 / 42 ms |
+
+The earlier runs of the fix agree (40450021534, 40451487474, 40452384017:
+worst nose-down frame 2,264 → 345 ms at 150 m; no pipeline built in a
+frame in any flight). Two frames over 500 ms did show up with the fix in
+two 40 m flights there, 558 and 750 ms. Both were the terrain visibility
+pass (`world-page-visibility`, 462 ms of CPU in one, a 629 ms fence after
+100 ms in the other), with no pipeline, warm-up or waiting draw. That pass
+spikes on main too and in both arms of an A/A of the fix (142-247 ms): it
+is a separate hitch, not this one, and is not addressed here.
+
+What the fix costs in flight was checked, because two runs of the fix had
+more 40+ ms render() frames than main (36 against 20 at 150 m, 38 against
+25 at 40 m). perf:flight now records the warm-ups in progress on every
+frame: in all 15 arms of the fix in the 13 flights since (runs
+40451487474, 40452384017 and 40453621587), none was in progress in any
+measured frame, and one draw waited (the far east's, in the table), so in
+the spike frames the fix did nothing but a check per draw.
+Each pass's p50 and p90 CPU match between the arms. The count of 40+ ms
+frames moves as much between two arms running the same code (main against
+main at 40 m: 32 against 17; the fix against itself: 27 against 28 at
+40 m, 18 against 18 at 150 m), and in the final run it went both ways
+(10 → 24 at 150 m; 22 → 22, 15 → 10, 0 → 1, 14 → 11, 1 → 0). It is this
+runner's noise.
+
+Frame 0 of a leg is not flight: the arm that resumes after the harness
+switches arms waits 0.5-1.9 s at its first fence, in both arms alike and in
+the same alternating legs whether or not the arms differ (run 40444508520,
+main against main plus the probe).
+
+Pinned by `tests/render.webgpu-async-pipeline-compiles.test.ts` (the module
+against stand-ins for Babylon's draw path, and the Babylon 9.21.2 source
+facts it relies on) and `tests/gpu/async-pipeline-compiles.test.ts` (real
+WebGPU draws: a first sight compiles nothing in its frame, a warm-up makes
+first sight draw at once, shadow-map draws wait and land, the blades prime
+both pipelines above the fade). Of the choppiness section's open list
+("compiling ... at load") this covers the ground-cover blades' PBR, and in
+the far east the granite rock, a detail material (perhaps that list's
+"plain PBR"). The far east's hydrology water is not covered.
+
 ## Capture harness
 
 `npm run perf:capture` renders the authoritative `PERF_CAPTURE_SHOTS` list. Entries whose
@@ -3212,3 +3335,280 @@ baseline stays. The before/after of the six trees is a scratch perf:ab render
 
 **Cost: none.** The classifier reads a field the sampler already returns; the
 A/B at `9d5f98e` is in "Terrain and world paging" above.
+
+## The home marina (2026-10-26): no draw ceiling moves
+
+The home marina (`src/world/marinaLayout.ts`, drawn by
+`src/render/webgpu/marina/`) is world content in every session, aircraft
+included: boats start at its dock, and it stands on the coast nearest the
+home airport. It is four meshes and a set of fixtures in the airfield's
+light-point draw:
+
+- `marina-boxes`: one unit cube, a thin instance per deck, pontoon, finger,
+  quay wall, building, roof and life ring, coloured per instance.
+- `marina-posts`: one 10-sided cylinder, a thin instance per pile, lamp post,
+  cleat, fender and beacon tower.
+- `marina-boats`: one low-detail Runabout 21 (T3's surfaces at every third
+  station, 6.6k vertices), a thin instance per moored boat.
+- `marina-silhouette`: one merged mesh of the big shapes (decks, pontoons,
+  walls, buildings, the moored boats as boxes, the beacon towers), drawn
+  instead of the three above at range. No shadow.
+- Lamps and the two entrance beacons are fixtures appended to the airfield's
+  `LightPointSystem` at startup, so they ride its one draw. Their colours are
+  written back (`LightPointSystem.setColorRange`) only on a beacon's flash
+  edge or when the marina is culled, never per frame.
+
+Draws by camera distance from the site (`MARINA_VISUAL`, 40 m hysteresis at
+each switch):
+
+| | Low | Medium / High / Ultra |
+| --- | --- | --- |
+| Under 1.5 km, in view | 3 | 9 (3, plus 3 casters x 2 cascades) |
+| Under 1.5 km, out of view | 0 | 0 |
+| 1.5 to 4 km | 1 | 1 |
+| Beyond 4 km | 0 (lamps dark) | 0 (lamps dark) |
+
+The first frame draws all four once, pinned active, so no pipeline compiles
+in flight. Shadow casting is the profile field `marinaCastsShadows` (off on
+Low). `tests/render.marina.test.ts` holds this table on every tier.
+
+**The shadow casters are dynamic, and that is what keeps every aircraft
+shot's shadows where they were.** Babylon's `CascadedShadowGenerator` fits
+each cascade's depth range to the bounding boxes of every mesh in its render
+list, enabled or not, and has no per-cascade culling. A static caster
+kilometres away therefore stretches every cascade's depth range (shadow
+precision moves on every pixel of every shot) and costs one draw per
+cascade. So the near meshes join through `syncDynamicShadowCasters`
+(`MarinaSystem.addShadowCasters`) only at the detail level and only while the
+site's sphere, grown by the 120 m its shadows can reach
+(`MARINA_VISUAL.shadowReachMeters`: an 8 m beacon tower at a 4 degree sun),
+meets the camera's frustum. Any later far-away static caster must go the same
+way rather than through `atmosphere.addShadowCaster` at startup.
+
+**Measured** (perf:ab `--rounds 0` on SwiftShader, the marina hidden against
+shown at `efb893e`; scratch shots, not committed):
+
+| Shot | Draws | Triangles | Uploads per frame |
+| --- | --- | --- | --- |
+| `boat-moored-dock` (the dock start) | 115 -> 124 | 2.17M -> 2.38M | 162.3k -> 169.2k B |
+| the marina from 150 m, noon and blue hour | 232 -> 241 | 2.09M -> 2.30M | 205.4k -> 212.4k B |
+| the marina from 150 m, night | 234 -> 243 | 2.10M -> 2.31M | 205.5k -> 212.4k B |
+
+The extra uploads are the nine draws' mesh uniforms; the instance buffers are
+static. The marina's buffers are built at start, so inventoried GPU memory
+rises 2.1 MiB in every session (285.95 -> 288.07 MiB on `approach-500ft`,
+against the 495 MiB ceiling).
+
+**No baseline shot draws it**, and none gains a draw: at `3cd965a` against
+`8791f5b`, `approach-500ft` 247, `night` 249, `coast-10km-lowsun` 219,
+`water-25ft` 224 and `apron-hangar-variety` 117 draws in both arms. The four
+`locate: "coast"` shots sit 1.36 km from the marina, inside detail range:
+the water shots face away (no beauty draw, no caster), and
+`coast-10km-lowsun` looks at it from 1.58 km, the silhouette, which is under
+a pixel there. On macOS (gpu-tests run 40274833204 at `1648fc5`, which
+carries the marina, against main `05f17b4`, run 40212321095) every shot that
+moves moves in sea pixels only, from the sea twin, and the 11 shots without
+sea are identical bit for bit. So the marina's own meshes move no baseline
+and no draw ceiling.
+
+**Timing**: `water-25ft`, the shot nearest it, is SAME at 16 rounds (GPU
+-0.1%, -1.9% to +2.0%; CPU +0.7%, -8.6% to +8.5%), `05f17b4` against
+`57cece0`. `perf:flight --speed 0` hovering on it: render p50 9.10 ms base,
+8.60 ms head over the last three legs.
+
+**The light points moved after the water, and that moves aircraft pixels.**
+The marina's entrance beacons, on posts in the basin mouth, rendered nothing:
+at 40 cd, and at 4,000 cd held lit, the frame was identical pixel for pixel.
+`LightPointSystem` drew in group 0 and writes no depth, so the sea, drawn in
+group 1 and alpha-blended over everything behind it, painted over every lamp
+seen against open water. It now draws in the water group at
+`LIGHT_POINT_ALPHA_INDEX` 1.75: after the ocean (0), inland water (1) and the
+wake (1.5), before steam (2) and spray (2.5). Still one draw; no draw count
+moves. The water writes no depth, so it hides no lamp now; in this flat world
+the only lamp it should hide is one low over the sea behind a crest, from a
+boat's eye height, and that lamp now shows through the crest.
+
+What moved, against `a91f993` (perf:ab `--rounds 0`, SwiftShader, draws
+identical on every shot): `night`, `night-moonlit`, `dusk-mesopic`,
+`blue-hour` and `night-beacon-offset` move by one airport light, the red
+light on a mast top above the hangars, at about (593, 255) in the 1280 x 720
+frame. It stands against the far sea line; its top was cut off flat and is
+now round: 17 to 51 pixels over 32/255, max delta 153 to 253, and the rest is
+within those shots' A/A noise. `approach-lights-outboard` moves by noise only
+(max 16/255). The day shots were not rendered: their lamps are
+daylight-attenuated, so a lamp against water moves faintly if at all. The
+Boats PR promotes all 39 shots once from one macOS capture that carries this.
+In `marina-close-night` the green beacon now shows in its flash, and so do
+the pontoon lamps that stood against the basin.
+
+Open: the drawn pontoons stand still while the sim's heave on the sea; they
+follow once the sea twin's heights reach the main thread.
+
+### Promotion 2026-10-27 — the Boats PR's sea (all thirty-nine)
+
+The Boats PR moves the sea in every session, aircraft included, and nothing
+else moves a baseline:
+
+- `91b3269`: the FFT cascades sample at texel centres (a half-texel shift).
+- `94cbbfd` (D1): a light-wind sea is capped at the Pierson-Moskowitz limit,
+  so Clear's sea is smaller and cascade 4 (512-2048 m) is empty.
+- `20f780d` (D2): the sea's wind follows the weather preset. The shots render
+  Clear, 6 m/s; Breezy, the game's default, is unchanged.
+- `ec8fd9f`: waves travel downwind, and the surface gathers onto the crests,
+  where the foam now sits.
+- `d76a5ee`: light points draw after the water (the section above).
+
+The marina's meshes draw in no baseline shot, and the marina's calm basin is
+in none.
+
+**Draw calls unchanged.** At `f2c2d51`, every shot draws exactly what main's
+`ac2c76c` capture draws (gpu-tests run 40442800011). Inventoried GPU memory is
+2.1-2.2 MiB higher on every shot, the marina's static buffers (see the
+section above).
+
+**All thirty-nine baselines promoted 2026-10-27** from the hosted macOS
+runner. Source: PR #31's capture at `f2c2d51` (gpu-tests run 40461650012,
+artifact `perf-capture-40461650012-1`, zip sha256
+`4b2a1699dd488cd7…ed99`). Jason approved the new sea and the downwind
+travel from their before/after frames, both on 2026-10-27. Before
+promotion, the capture failed 32 visual gates on 13 shots, every one with
+sea in view. No frame-delivery gate failed.
+
+Against the capture at `b52a67a`, which had everything but the downwind
+travel and main's choppiness fix (gpu-tests run 40442749997), the shots with
+sea in view move only in sea pixels. The rest differ by 0.04/255 mean or
+less.
+
+Committed baselines → this capture:
+
+| shots | mean abs diff /255 | pixels past 4/255 |
+| --- | --- | --- |
+| `water-25ft`, `water-400ft-glitter`, `water-3m` | 6.1-8.1 | 42-46% |
+| the other shots with sea in view: `forest-line-highsun`, `cdlod-transition`, `motion-banked-turn`, `reference-viewport`, `approach-500ft`, `hills-dusk-glint`, `forest-500ft-sunbehind`, `winter-noon`, `slant-10km`, `dusk-mesopic`, `coast-10km-lowsun`, `cruise-horizon` | 0.62-2.39 | 2.9-22% |
+| everything else (the runner's drift since 2026-10-20) | 0.65 or less | 3.6% or less |
+
+**Why all thirty-nine.** The sea moves twelve shots beyond the three water
+shots, and the rest carry the runner's own drift. Promoting from one capture
+keeps the set consistent, as on 2026-10-13. The four `boat-*` shots stay
+unpinned. They have no committed baseline, and a capture only reports them.
+
+**Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
+delivery.
+
+## In-app benchmark (?bench=1)
+
+`?bench=1` turns the game into a benchmark anyone can run in their own
+browser, on the deployed build:
+`https://jazonshou.github.io/fly-high/?bench=1`. It measures what a player's
+machine does with the shipped game, tier by tier, so the coming tier work
+(the 60 fps cap, the governor's recovery, Auto moving weak machines to Low)
+has a "before" from real computers rather than from SwiftShader. Without the
+flag a player runs nothing new: FlightGame parses the URL once more and
+finds nothing, the bench's code and styles sit in their own chunk that only a
+dynamic `import()` under the flag fetches, and the frame loop is the one
+players run (`tests/bench.inert.test.ts`). A player does download a little
+more: the few game functions the bench calls and players do not (the spawn
+and flight-state builders, the renderer's startup trace) live in modules the
+entry chunk already holds, so the bundler keeps them there, which adds about
+10 KB (4 KB gzipped) to the Pages entry chunk. In the Worker build the same
+code splits FlightGame's client chunk in two, and its page preloads 11 more
+files, about 15 KB (8 KB gzipped) more in all.
+
+**How to run it.** Open the link, plug in the laptop, maximise the window
+(full screen does not survive the reloads between flights), close games and
+video calls, and press **Start benchmark**. The intro first checks the
+machine: WebGPU (missing, no adapter, a software-only adapter or a limit
+short of what the game needs each block the run and offer a device-only
+report instead), the graphics adapter, the screen and the browser's idle
+frame rate. The game then flies itself once per tier, reloading the page
+between flights, and ends on the report. Do not touch anything, and keep the
+tab in front: hiding the tab voids the flight in progress, as does resizing
+the window or moving it to a screen with another pixel ratio; each flight
+gets two tries. Esc, or the run chip's **Stop**, asks before it stops, and
+the report then shows the flights that finished. Progress lives in one
+tab-scoped `sessionStorage` key, `flyhigh.bench.v1`, which **Exit** clears; a
+page that cannot read what the key holds (the game was updated mid-run, say)
+says so and offers **Start over** and **Exit**. The player's settings
+(`aerolith.settings.v3`) are never written, and the report carries their hash
+at the start and the end to show it.
+
+| URL parameter | What it does |
+| --- | --- |
+| `tiers=1,0,2,1` | the tiers to fly, in order (0 Low, 1 Medium, 2 High, 3 Ultra), one to eight; the default flies Medium, Low, High and Medium again |
+| `mode=pinned` | the GPU comparison pass: each tier renders its whole pixel budget at a fixed scale, with per-pass GPU timing on, whatever the governor would do |
+| `hud=0` | flies without the HUD (it is on by default, as a player sees it) |
+| `quick=1` | for development: 20 s flights, and an 8 s settle cap with rest checks 30 frames apart so it can rest inside it; the report says it is non-standard |
+
+**How long it takes.** Each flight is a page load, a 1 s idle frame-rate
+probe, the renderer's start-up, a settle on the runway while the scenery
+streams in, and 75 s of flight. The settle ends when three checks in a row
+find nothing pending and the visible instance count unchanged, or at 20 s;
+checks start at 4 s and are at least a second and 120 frames apart, because
+each one walks the GPU memory inventory and the detail cells, so at 60 Hz the
+earliest end is 10 s. The default four flights take about 7 minutes on a
+typical machine and up to about 9 on one that is slow to start; the intro
+shows the estimate for the chosen tiers. A flight under 5 fps from 3 s to
+20 s stops there, because the rest would take minutes and say nothing new.
+
+**The flight.** A player's first minute, the same on every machine: from the
+runway threshold of the bench world (seed `00762m`), a 15 s roll from 0 to
+60 m/s along the centreline, a 15 s climb-out from 60 to 120 m/s, then a
+terrain-following cruise at 120 m/s and 150 m above the ground. Two windows
+are measured: `ground`, from 3 s into the roll to lift-off, and `air`, from
+30 s to the end. The headline numbers are the air window's.
+
+**What the report says.** Every frame's interval is taken from the
+`requestAnimationFrame` timestamps of the frame loop; the report gives, per
+window, fps (1000 over the mean interval), the interval percentiles, slow
+frames per 240 (over 27.4 ms; 60 ms on Ultra, whose target is 30 fps),
+stutters over 50 and 100 ms, `render()`'s main-thread time, pipelines
+compiled, long tasks, the governor's decisions and shares, and, in pinned
+mode, GPU milliseconds. Each tier gets a plain label, the worse of its two
+windows:
+
+| Label | Meaning |
+| --- | --- |
+| Smooth | p99 interval within the tier's slow-frame threshold, and at most 1 slow frame per 240 |
+| Mostly smooth | at most 6 slow frames per 240 |
+| Choppy | more than that, or the flight stopped early under 5 fps |
+| Limited by browser or display at N fps | the browser or display held frames under 50 Hz (a power saver, a 30 Hz cap), so the tier says nothing about the game |
+| Did not run | voided, failed, skipped or stopped |
+
+The run's verdict checks the run against itself: the default plan flies
+Medium first and last, and **valid** means those two flights' mean fps agree
+within 10% and the window kept its size. The two are compared over the air
+window, or, when either stopped early, over the stretch the early check
+reads (3 s to 20 s), which both flew. **Void** means they did not (a
+throttling laptop, another program, a window resized between them); those
+two are the only rules that void a run, and every number is still in the
+report.
+**Incomplete** is a run that was stopped or whose check flight did not
+finish, and **unchecked** a plan of one flight, or one that does not start
+and end on the same tier. Everything else worth knowing (a display under 50 Hz, a refresh rate
+that moved, a coarse timer, a settle that hit its cap, a battery
+discharging, focus lost, a denied wake lock) is a warning beside the
+numbers, and the first flight in the tab is marked, because it pays the
+cold shader and pipeline caches.
+
+**Where reports go.** **Download report (.json)** saves the full report
+(`fly-high.bench/1`, `fly-high-bench-<vendor>-<time>.json`); it is the one
+to keep. **Open GitHub issue** copies a compact report to the clipboard and
+opens a prefilled issue to paste it into, and **Copy short summary** gives a
+few lines for a chat. A report kept as evidence is committed as
+`docs/evidence/bench-<label>-<ISO>.json`, where the label names the machine
+(for example `bench-rtx3050-laptop-2026-10-26T09-14-03Z.json`), and cited
+from here by that path. **Run the GPU comparison pass** flies the same tiers
+in pinned mode and keeps the shipped run in the same report.
+
+**Merge requirement.** The bench adds one read-only method to the renderer
+(`readBenchProbe`) and exports one pure governor function, and changes
+nothing else a player runs; the 39 reference pictures in
+`tests/perf/baseline` must not move. Before merging, build Pages for the
+base and the head and compare the entry chunk (`assets/index-*.js`): it
+should grow by about 10 KB, and no session chunk or stylesheet should be
+fetched without the flag. The Pages build writes the commit it
+was made from into `index.html` as `<meta name="fly-high-commit">`, which
+the reports name; no bundled file holds it, so a deploy renames no chunk. The Pages deploy waits only for the
+`verify` job, so a green `gpu-tests` run on the pull request (the perf
+capture against those pictures) is a merge requirement for the bench's pull
+request.

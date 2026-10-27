@@ -9,6 +9,7 @@ import { Buffer, VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { BoundingInfo } from "@babylonjs/core/Culling/boundingInfo";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Scene } from "@babylonjs/core/scene";
+import type { PipelineWarmUp } from "@/src/render/webgpu/core/AsyncPipelineCompiles";
 import { createGuardedShadowDepthWrapper } from "@/src/render/webgpu/core/guardedShadowDepthWrapper";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
@@ -41,9 +42,12 @@ import {
   type ImpostorAtlas,
 } from "./ImpostorAtlas";
 import {
+  infrastructureIndex,
+  infrastructurePlantExclusions,
   seasonalWinterFraction,
   withAirports,
   type AirportDefinition,
+  type InfrastructurePlantExclusion,
   type WorldDefinition,
 } from "@/src/world";
 import {
@@ -662,6 +666,13 @@ export interface WorldDetailRuntimeOptions {
     kind: DetailWorkerHealthEvent,
     health: DetailWorkerHealth,
   ) => void;
+  /**
+   * Compiles each prototype's render pipelines when its first batch is
+   * published, wherever that batch is, instead of when it first comes into
+   * view (`AsyncPipelineCompiles`). Omit it and a batch's pipelines are made
+   * at its first draw in view.
+   */
+  readonly pipelineWarmUp?: PipelineWarmUp | null;
 }
 
 /**
@@ -1020,6 +1031,11 @@ export class WorldDetailRuntime {
    * is a different number on any guaranteed-airport world.
    */
   private structureSites: readonly StructureExclusionSite[];
+  /**
+   * Built ground no plant grows on (`infrastructurePlantExclusions`), the
+   * inline path's copy of what the worker derives from the same world.
+   */
+  private plantExclusions: readonly InfrastructurePlantExclusion[];
   /** Governor B lever 2 (1A-6b): tightens the per-frame generation slice. */
   private generationBudgetCap: DetailGenerationBudget | null = null;
   /** Null when generation is inline; the 1B-10 worker client otherwise. */
@@ -1055,6 +1071,11 @@ export class WorldDetailRuntime {
   private cellEpoch = 0;
   /** `4.5-C1`: the tier datum, refreshed from the profile every update. */
   private vegetationCastsShadows = true;
+  /**
+   * Prototypes whose published batches have drawn with every pipeline ready
+   * (`options.pipelineWarmUp`): their later batches need no warm-up.
+   */
+  private readonly pipelineWarmPrototypes = new Set<string>();
   private disposed = false;
 
   readonly cellSizeMeters: number;
@@ -1072,6 +1093,9 @@ export class WorldDetailRuntime {
         this.world.airports ?? (this.world.airport ? [this.world.airport] : []),
         this.world.seedHash,
       )
+      : [];
+    this.plantExclusions = this.world
+      ? infrastructurePlantExclusions(infrastructureIndex(this.world))
       : [];
     this.cellSizeMeters = options.cellSizeMeters ?? DEFAULT_DETAIL_CELL_SIZE_METERS;
     if (
@@ -1543,6 +1567,7 @@ export class WorldDetailRuntime {
     const changed = changedAirports(previous.airports ?? [], next.airports);
     this.world = next;
     this.structureSites = airfieldStructureExclusionSites(next.airports, next.seedHash);
+    this.plantExclusions = infrastructurePlantExclusions(infrastructureIndex(next));
     // Posted BEFORE any regeneration request below can be dispatched, so the
     // worker swaps worlds first; message order does the rest.
     this.client?.setAirports(next.airports);
@@ -2105,6 +2130,7 @@ export class WorldDetailRuntime {
           ...(this.structureSites.length > 0
             ? { structureExclusionSites: this.structureSites }
             : {}),
+          ...(this.plantExclusions.length > 0 ? { plantExclusions: this.plantExclusions } : {}),
         });
         if (credit !== null) {
           recordInlineCellAfterWorkerFailure(credit, this.nowMilliseconds() - cellStartedAt);
@@ -3451,6 +3477,7 @@ export class WorldDetailRuntime {
     for (const batchKey of chunk.batchKeys) {
       if (!nextBatchKeys.has(batchKey)) this.retireBatch(batchKey);
     }
+    this.warmUpPublishedPipelines(nextBatchKeys);
     chunk.batchKeys.clear();
     for (const batchKey of nextBatchKeys) chunk.batchKeys.add(batchKey);
     chunk.revision = nextRevision;
@@ -3483,6 +3510,26 @@ export class WorldDetailRuntime {
     // is already pathologically stale, it must not be enabled for even one
     // frame; the sweep keeps the chunk dirty and rebuilds it.
     this.suppressInvalidPresentationChunks();
+  }
+
+  /**
+   * The freeze this exists for: near-ground prototypes (stumps, rocks, moss,
+   * litter, shrubs) stand inside the near band, below the chase camera's view
+   * in level flight, so the first frame that showed one used to compile its
+   * render pipeline, 0.7-1.7 s on the macOS runner's GPU, the first time the
+   * pilot pointed the nose at the ground (`AsyncPipelineCompiles`). A
+   * prototype's first published batch now draws wherever it is until its
+   * pipelines are ready, which compiles them off the frame as it streams in.
+   */
+  private warmUpPublishedPipelines(batchKeys: ReadonlySet<string>): void {
+    const warmUp = this.options.pipelineWarmUp;
+    if (!warmUp) return;
+    for (const batchKey of batchKeys) {
+      const batch = this.batches.get(batchKey);
+      if (!batch || this.pipelineWarmPrototypes.has(batch.prototypeKey) || !batch.mesh.isEnabled()) continue;
+      const castsShadows = batch.castsShadows && this.vegetationCastsShadows;
+      if (warmUp.warmUp(batch.mesh, castsShadows) === "warm") this.pipelineWarmPrototypes.add(batch.prototypeKey);
+    }
   }
 
   /**

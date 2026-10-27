@@ -22,8 +22,11 @@ import {
   topViewRigOffsetsToRef,
   type MutablePresentationVector,
 } from "../src/render/cameraPresentation";
+import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
+import { createWebGpuBoat } from "../src/render/webgpu/boat/createBoat";
 import { AIRCRAFT_KINDS, type AircraftKind } from "../src/sim";
+import { surfaceVehicleSpec } from "../src/vehicles/catalogue";
 
 /**
  * The top and front views (Jason, 2026-10-25: "a top view and front view, i.e.
@@ -210,7 +213,9 @@ describe("the renderer's top and front branches", () => {
     expect(upStart).toBeGreaterThan(0);
     expect(branch).toContain("topViewRigOffsetsToRef(");
     expect(branch).toContain("frontViewRigOffsetsToRef(");
-    expect(upBranch).toContain("topViewCameraUpToRef(this.forward, this.desiredCameraUp)");
+    // `rigForward` IS `this.forward` for an aircraft; a boat's level follow
+    // hands its heading instead.
+    expect(upBranch).toContain("topViewCameraUpToRef(rigForward, this.desiredCameraUp)");
   });
 
   it("allocate nothing and sample no terrain, every frame either view is on", () => {
@@ -235,7 +240,7 @@ describe("the renderer's top and front branches", () => {
  * NullEngine as the cockpit tests build it (root at the origin, body +X nose,
  * +Y up, +Z starboard, exterior view).
  */
-function builtAirframe(kind: AircraftKind, gear: number) {
+function framingScene() {
   const engine = new NullEngine({
     renderWidth: WIDTH, renderHeight: HEIGHT, textureSize: 256, deterministicLockstep: false, lockstepMaxSteps: 1,
   });
@@ -246,14 +251,12 @@ function builtAirframe(kind: AircraftKind, gear: number) {
   camera.minZ = 0.08;
   camera.maxZ = 20_000;
   scene.activeCamera = camera;
-  const aircraft = createWebGpuAircraft(scene, kind);
-  // Twice, with a long step, so the legs and panels have finished moving.
-  aircraft.update({ ...INITIAL_VISUAL_STATE, gear, flaps: 0 }, 10);
-  aircraft.update({ ...INITIAL_VISUAL_STATE, gear, flaps: 0 }, 10);
-  aircraft.setCockpitView(false);
-  aircraft.root.computeWorldMatrix(true);
+  return { engine, scene, camera };
+}
+
+function drawnPoints(meshes: readonly AbstractMesh[], camera: UniversalCamera): Vector3[] {
   const points: Vector3[] = [];
-  for (const mesh of aircraft.meshes) {
+  for (const mesh of meshes) {
     mesh.computeWorldMatrix(true);
     if (!mesh.isEnabled() || !mesh.isVisible || (mesh.layerMask & camera.layerMask) === 0) continue;
     const local = mesh.getVerticesData(VertexBuffer.PositionKind);
@@ -263,8 +266,34 @@ function builtAirframe(kind: AircraftKind, gear: number) {
       points.push(Vector3.TransformCoordinates(new Vector3(local[i]!, local[i + 1]!, local[i + 2]!), world));
     }
   }
+  return points;
+}
+
+function builtAirframe(kind: AircraftKind, gear: number) {
+  const { engine, scene, camera } = framingScene();
+  const aircraft = createWebGpuAircraft(scene, kind);
+  // Twice, with a long step, so the legs and panels have finished moving.
+  aircraft.update({ ...INITIAL_VISUAL_STATE, gear, flaps: 0 }, 10);
+  aircraft.update({ ...INITIAL_VISUAL_STATE, gear, flaps: 0 }, 10);
+  aircraft.setCockpitView(false);
+  aircraft.root.computeWorldMatrix(true);
+  const points = drawnPoints(aircraft.meshes, camera);
   const dispose = () => {
     aircraft.dispose();
+    scene.dispose();
+    engine.dispose();
+  };
+  return { camera, points, dispose };
+}
+
+/** The Runabout 21 as built, at rest with the outboard trimmed in. */
+function builtBoat() {
+  const { engine, scene, camera } = framingScene();
+  const boat = createWebGpuBoat(scene, "speedboat");
+  boat.root.computeWorldMatrix(true);
+  const points = drawnPoints(boat.meshes, camera);
+  const dispose = () => {
+    boat.dispose();
     scene.dispose();
     engine.dispose();
   };
@@ -424,5 +453,50 @@ describe("the catalogue's top and front framing, on the built airframes at 16:9"
       bottom = Math.max(bottom, y);
     }
     expect((top + bottom) / 2 - 0.5).toBeGreaterThan(0.04);
+  });
+});
+
+describe("the speedboat's top and front framing, on the built boat at 16:9", () => {
+  let built: ReturnType<typeof builtBoat>;
+  beforeAll(() => {
+    built = builtBoat();
+  }, 60_000);
+  afterAll(() => built.dispose());
+  const framing = surfaceVehicleSpec("speedboat").topFront;
+
+  it("fills 60% of the frame with the boat along the axis it fills first", () => {
+    for (const view of ["top", "front"] as const) {
+      const f = frame(built, view, framing);
+      const fill = Math.max(f.width, f.height);
+      expect(fill, `${view}: ${f.width.toFixed(3)} x ${f.height.toFixed(3)}`).toBeGreaterThan(0.58);
+      expect(fill, `${view}: ${f.width.toFixed(3)} x ${f.height.toFixed(3)}`).toBeLessThan(0.62);
+    }
+  });
+
+  it("keeps the whole boat in front of the camera and inside the frame", () => {
+    for (const view of ["top", "front"] as const) {
+      const f = frame(built, view, framing);
+      expect(f.inFront, view).toBe(true);
+      expect(f.left, view).toBeGreaterThan(0.1);
+      expect(f.right, view).toBeLessThan(0.9);
+      expect(f.top, view).toBeGreaterThan(0.1);
+      expect(f.bottom, view).toBeLessThan(0.9);
+    }
+  });
+
+  it("centres the boat: across exactly, and within 2% (top) or 4% (front) up and down", () => {
+    const top = frame(built, "top", framing);
+    const front = frame(built, "front", framing);
+    expect(Math.abs((top.left + top.right) / 2 - 0.5)).toBeLessThan(1e-3);
+    expect(Math.abs((front.left + front.right) / 2 - 0.5)).toBeLessThan(1e-3);
+    expect(Math.abs((top.top + top.bottom) / 2 - 0.5)).toBeLessThan(0.02);
+    expect(Math.abs((front.top + front.bottom) / 2 - 0.5)).toBeLessThan(0.04);
+  });
+
+  it("points the bow up the top view's screen, and at the front view's camera", () => {
+    const top = frame(built, "top", framing);
+    expect(top.noseY).toBeLessThan(top.tailY);
+    const front = frame(built, "front", framing);
+    expect(front.noseDepth).toBeLessThan(front.tailDepth);
   });
 });

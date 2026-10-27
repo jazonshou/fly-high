@@ -5,10 +5,23 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { AircraftKind } from "@/src/sim";
+import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type { AirportDefinition, WorldDefinition } from "@/src/world";
 import type { TerrainMacroGrid, TerrainPagePublication } from "./terrainAuthority";
 
-export type SpawnKind = "airborne" | "runway";
+/** Where an aeroplane starts. */
+export type AircraftSpawnKind = "airborne" | "runway";
+
+/**
+ * Where a flight starts. Aircraft start `"airborne"` or on the `"runway"`; a
+ * boat always starts moored at the home marina's start berth, `"dock"`
+ * (decision D4, 2026-10-26).
+ */
+export type SpawnKind = AircraftSpawnKind | "dock";
+
+export function isAircraftSpawn(kind: SpawnKind): kind is AircraftSpawnKind {
+  return kind === "airborne" || kind === "runway";
+}
 
 /** Airborne starts are configured in metres above the terrain/runway datum. */
 export const DEFAULT_AIRBORNE_START_AGL = 450;
@@ -25,6 +38,12 @@ export type SimulationCommand =
       type: "initialize";
       world: WorldDefinition;
       aircraft: AircraftKind;
+      /**
+       * The session's surface vehicle, or null in an aircraft session. The
+       * menu's attract flight is always `aircraft`; a `"dock"` spawn drives
+       * this one.
+       */
+      surfaceVehicle: SurfaceVehicleKind | null;
       mode: FlightMode;
       spawn: SpawnKind;
       airborneStartAgl: number;

@@ -10,6 +10,7 @@ import {
   normalizeAirborneStartAgl,
 } from "@/src/workers/protocol";
 import { AIRCRAFT_KINDS, type AircraftKind } from "@/src/sim";
+import { VEHICLE_KINDS, type VehicleKind } from "@/src/vehicles/kinds";
 import type { LandformsOption } from "@/src/world";
 
 export type UnitSystem = "aviation" | "metric";
@@ -17,7 +18,17 @@ export type HudMode = "minimal" | "full" | "off";
 export type RenderingMode = RequestedRenderingMode;
 
 export interface GameSettings {
+  /**
+   * The aeroplane: what an aircraft session flies, and what the menu's
+   * attract flight always shows, whatever is selected to drive.
+   */
   aircraft: AircraftKind;
+  /**
+   * What Start drives: one of the aircraft (then equal to `aircraft`) or a
+   * surface vehicle. Saved settings from before vehicles existed carry only
+   * `aircraft`, and migrate to driving it.
+   */
+  vehicle: VehicleKind;
   quality: QualityLevel;
   renderingMode: RenderingMode;
   flightMode: FlightMode;
@@ -84,6 +95,7 @@ export const TIME_OF_DAY_PRESET_CLOCKS: Readonly<
 
 export const DEFAULT_SETTINGS: GameSettings = {
   aircraft: "trainer",
+  vehicle: "trainer",
   quality: "medium",
   renderingMode: "balanced",
   // Full pilot authority is the default. Assistance is an explicit selection.
@@ -139,11 +151,13 @@ export function validateSettings(value: unknown): GameSettings {
     ["dawn", "day", "golden", "night"] as const,
     DEFAULT_SETTINGS.timeOfDay,
   );
+  // Reads the catalogue rather than a second hand-written list: a saved
+  // preference naming an airframe this build does not have falls back to the
+  // default, which is what makes adding or removing one safe.
+  const aircraft = oneOf(source.aircraft, AIRCRAFT_KINDS, DEFAULT_SETTINGS.aircraft);
   return {
-    // Reads the catalogue rather than a second hand-written list: a saved
-    // preference naming an airframe this build does not have falls back to the
-    // default, which is what makes adding or removing one safe.
-    aircraft: oneOf(source.aircraft, AIRCRAFT_KINDS, DEFAULT_SETTINGS.aircraft),
+    aircraft,
+    vehicle: oneOf(source.vehicle, VEHICLE_KINDS, aircraft),
     quality: oneOf(source.quality, ["low", "medium", "high"] as const, DEFAULT_SETTINGS.quality),
     renderingMode: renderingMode(source.renderingMode),
     flightMode: oneOf(
@@ -305,6 +319,66 @@ export function readLandformsFromUrl(url?: string): LandformsOption | undefined 
     const volcanic = names.includes("volcanic");
     if (!dunes && !volcanic) return undefined;
     return { ...(dunes ? { dunes } : {}), ...(volcanic ? { volcanic } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The in-game benchmark's page request (`?bench=1`, src/bench). It flies one
+ * tier per page load and reloads between them, so the URL says which page
+ * this is: the intro (no `run`), step `k` of a run, or the run's report.
+ */
+export interface BenchUrlRequest {
+  /** 1 to 8 quality tiers (0 Low ... 3 Ultra), in flying order. */
+  readonly tiers: readonly number[];
+  readonly mode: "shipped" | "pinned";
+  /** False only for `hud=0`. */
+  readonly hud: boolean;
+  /** `quick=1`: short timings for development; the report says non-standard. */
+  readonly quick: boolean;
+  readonly run: string | null;
+  readonly step: number | "report" | null;
+}
+
+/** Medium first and last, so a run can check itself for drift. */
+export const DEFAULT_BENCH_TIERS: readonly number[] = Object.freeze([1, 0, 2, 1]);
+const MAX_BENCH_TIERS = 8;
+
+/**
+ * A `tiers` list: 1 to 8 entries, each 0 to 3, separated by commas. Null when
+ * it breaks the rule. The bench intro's Advanced field reads its text with
+ * this too, so it never starts a run that `readBenchFromUrl` would replace
+ * with the default.
+ */
+export function parseBenchTiers(text: string): number[] | null {
+  const names = text.split(",").map((name) => name.trim());
+  return names.length <= MAX_BENCH_TIERS && names.every((name) => /^[0-3]$/.test(name)) ? names.map(Number) : null;
+}
+
+/**
+ * `?bench=1` only. URL only and never persisted, like `?world=`: the bench
+ * keeps its progress in its own tab-scoped store (src/bench/store.ts), never
+ * in the settings. Anything but exactly `bench=1` is the normal game. A bad
+ * `tiers` list falls back to the default; a bad `run` or `step` reads as null,
+ * which means the intro page.
+ */
+export function readBenchFromUrl(url?: string): BenchUrlRequest | undefined {
+  const source = url ?? (typeof window !== "undefined" ? window.location.href : "http://local/");
+  try {
+    const params = new URL(source).searchParams;
+    if (params.get("bench") !== "1") return undefined;
+    const tiers = parseBenchTiers(params.get("tiers") ?? "");
+    const run = params.get("run");
+    const step = params.get("step");
+    return {
+      tiers: tiers ?? [...DEFAULT_BENCH_TIERS],
+      mode: params.get("mode") === "pinned" ? "pinned" : "shipped",
+      hud: params.get("hud") !== "0",
+      quick: params.get("quick") === "1",
+      run: run !== null && /^[a-z0-9]{6,16}$/.test(run) ? run : null,
+      step: step === "report" ? "report" : step !== null && /^\d{1,2}$/.test(step) ? Number(step) : null,
+    };
   } catch {
     return undefined;
   }

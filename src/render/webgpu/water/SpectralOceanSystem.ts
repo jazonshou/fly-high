@@ -45,6 +45,15 @@ import {
   type SpectralOceanConfig,
 } from "@/src/render/webgpu/nature/OceanConfig";
 import {
+  packSeaShelterEllipses,
+  SEA_SHELTER_DECLARATIONS_WGSL,
+  SEA_SHELTER_MAX_ELLIPSES,
+  SEA_SHELTER_UNIFORMS,
+  SEA_SHELTER_WGSL,
+} from "@/src/sim/water/shelter";
+import { oceanEffectiveFetchMeters, oceanSpectrumParameters } from "@/src/sim/water/spectrum";
+import type { SeaShelterEllipse } from "@/src/sim/water/types";
+import {
   OCEAN_SPATIAL_DERIVATION_WGSL,
   OCEAN_SPECTRUM_EVOLUTION_WGSL,
   OCEAN_SPECTRUM_INITIALIZATION_WGSL,
@@ -137,6 +146,12 @@ import {
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import type { BathymetryClipmap } from "./BathymetryClipmap";
 import { withoutDispatchTiming } from "../core/GpuTimingPolicy";
+import {
+  OCEAN_HULL_CLIP_DEFINE,
+  OCEAN_HULL_CLIP_UNIFORMS,
+  OCEAN_HULL_CLIP_WGSL,
+  type OceanHullClip,
+} from "../boat/oceanHullClip";
 
 const WATER_SHADER_NAME = "aerolithSpectralWater";
 const MAX_RENDER_CASCADES = 5;
@@ -422,10 +437,38 @@ export function resolveProfileSpectralOceanConfig(
   });
 }
 
-export const WATER_VERTEX_WGSL = /* wgsl */ `
-attribute position: vec3f;
-uniform world: mat4x4f;
-uniform viewProjection: mat4x4f;
+/**
+ * Where a world point falls in a cascade's FFT output.
+ *
+ * FFT sample `n` is the sea at `x = n L / N`, but a filtered texture fetch puts
+ * texel `n`'s value at its CENTRE, `u = (n + 0.5) / N`. Sampling at `x / L`
+ * alone therefore drew every cascade `L / (2 N)` downstream of its own waves:
+ * at tier 1, 45 degrees of phase on each band's shortest waves, and a sea the
+ * physics twin (which sums the same waves exactly) could not match. The fix is
+ * the half texel, in both stages: the displacement the vertex draws and the
+ * slope and foam the fragment shades.
+ */
+const OCEAN_FFT_TEXEL_ALIGNMENT_WGSL = /* wgsl */ `
+fn oceanFftTexelAlignment(size: vec2u) -> vec2f {
+  return 0.5 / vec2f(size);
+}
+`;
+
+/**
+ * The rendered sea's displacement, as one include any vertex shader can call.
+ *
+ * The ocean's own vertex shader is built from it, and so is anything that has
+ * to sit ON the drawn waves (a boat's wake and spray): it includes these two
+ * blocks, lists `OCEAN_SURFACE_UNIFORMS` and `OCEAN_SURFACE_SAMPLERS` in its
+ * ShaderMaterial options, and calls `SpectralOceanSystem.bindSurface(material)`
+ * every frame after `update`. `oceanSurfaceDisplacement(worldXZ)` then returns
+ * exactly the displacement the sea's vertex at that point received: the same
+ * cascades, the same pixel and lattice fades, the same disk centre, the same
+ * marina shelter. `worldXZ` is ABSOLUTE world metres (render position plus the
+ * floating origin), the frame `oceanWorldOrigin` lives in. The sub-26 m ripple
+ * relief (2.8 cm, camera local) is not part of it.
+ */
+export const OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL = /* wgsl */ `
 uniform oceanWorldOrigin: vec2f;
 uniform patchLengths0: vec4f;
 uniform patchLength4: f32;
@@ -435,14 +478,142 @@ uniform cascadeFadeRadius4: f32;
 uniform cascadeMeshFadeRadii0: vec4f;
 uniform cascadeMeshFadeRadius4: f32;
 uniform cascadeFadeCameraHeight: f32;
-uniform oceanWind: vec2f;
-uniform time: f32;
-uniform planarReflectionViewProjection: mat4x4f;
 var displacement0Sampler: sampler; var displacement0: texture_2d<f32>;
 var displacement1Sampler: sampler; var displacement1: texture_2d<f32>;
 var displacement2Sampler: sampler; var displacement2: texture_2d<f32>;
 var displacement3Sampler: sampler; var displacement3: texture_2d<f32>;
 var displacement4Sampler: sampler; var displacement4: texture_2d<f32>;
+${SEA_SHELTER_DECLARATIONS_WGSL}
+`;
+
+/** The shelter uniforms' values with no basin: every slot neutral. */
+const NO_SEA_SHELTER = packSeaShelterEllipses([]);
+
+/** The uniforms `OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL` declares. */
+export const OCEAN_SURFACE_UNIFORMS: readonly string[] = [
+  "oceanWorldOrigin",
+  "patchLengths0",
+  "patchLength4",
+  "cascadeCount",
+  "cascadeFadeRadii0",
+  "cascadeFadeRadius4",
+  "cascadeMeshFadeRadii0",
+  "cascadeMeshFadeRadius4",
+  "cascadeFadeCameraHeight",
+  ...SEA_SHELTER_UNIFORMS,
+];
+
+/** The displacement textures `OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL` declares. */
+export const OCEAN_SURFACE_SAMPLERS: readonly string[] = Array.from(
+  { length: MAX_RENDER_CASCADES },
+  (_, index) => `displacement${index}`,
+);
+
+export const OCEAN_SURFACE_DISPLACEMENT_WGSL = /* wgsl */ `
+${OCEAN_FFT_TEXEL_ALIGNMENT_WGSL}
+${SEA_SHELTER_WGSL}
+
+fn sampleDisplacement(worldXZ: vec2f, patchLength: f32, displacementTexture: texture_2d<f32>, displacementSampler: sampler) -> vec3f {
+  let coordinate = fract(worldXZ / patchLength)
+    + oceanFftTexelAlignment(textureDimensions(displacementTexture));
+  return textureSampleLevel(displacementTexture, displacementSampler, coordinate, 0.0).xyz;
+}
+
+// 2-8: each cascade fades out where its band's longest wavelength falls
+// below two rendered pixels (the distance is computed by the CPU from the
+// camera's fovMode-aware pixel angle). This replaces the hardcoded
+// 0.62/0.82/0.74/0.52/0.36 blend weights, and fading the DISPLACEMENT too
+// removes the vertex-level shimmer where ring spacing exceeds the band's
+// wavelengths. The fade keys on SLANT RANGE — the disk is camera-centred in
+// xz only, and from altitude the sea straight below is already distant.
+fn cascadeFade(slantRange: f32, fadeEndDistance: f32) -> f32 {
+  // wave R floored the end distance. The mesh-Nyquist fade (fix 4) returns 0
+  // for a band the lattice cannot carry ANYWHERE, and smoothstep with equal
+  // edges is undefined in WGSL — a divide by zero in the one place a band is
+  // meant to vanish cleanly. No shipped cascade reaches it (the shortest band
+  // top is 8 m against a 1 m near step), so this is a guard, not a behaviour.
+  let end = max(fadeEndDistance, 0.001);
+  return 1.0 - smoothstep(end * 0.3, end, slantRange);
+}
+
+struct OceanSurfaceFades {
+  // The pixel fades, which the ocean's fragment also shades with.
+  pixel: vec4f,
+  pixel4: f32,
+  // The pixel fades times the lattice fades: what the displacement carries.
+  mesh: vec4f,
+  mesh4: f32,
+}
+
+// vertexRadius is the point's horizontal distance from the disk's centre.
+fn oceanSurfaceFades(vertexRadius: f32) -> OceanSurfaceFades {
+  let slantRange = sqrt(
+    vertexRadius * vertexRadius
+      + uniforms.cascadeFadeCameraHeight * uniforms.cascadeFadeCameraHeight,
+  );
+  let fades = vec4f(
+    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.x),
+    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.y),
+    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.z),
+    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.w),
+  );
+  let fade4 = cascadeFade(slantRange, uniforms.cascadeFadeRadius4);
+  // wave R fix 4: the DISPLACEMENT additionally fades on the lattice's own
+  // Nyquist. A band the radial step cannot carry is not a wave in the vertex
+  // buffer, it is aliasing — and because the disk is camera-centred that
+  // aliasing rode along with the viewer. The fragment keeps the PIXEL fade
+  // (the varyings below): its slope comes from a mip-filtered
+  // textureSampleGrad, whose reconstruction limit is the pixel and not the
+  // lattice, so the band survives there as a correctly filtered normal —
+  // strictly more information than handing it to roughness.
+  //
+  // wave S: the two fades key on DIFFERENT ranges. The pixel fade is a
+  // function of slant range — from altitude the sea straight below is
+  // already distant. The lattice fade is a function of the ring's HORIZONTAL
+  // radius alone: the radial step at a vertex does not change when the camera
+  // climbs. Folding both into one min() evaluated on slant range meant that
+  // from 545 m up (tier 1; 1.3 km at tier 2) every vertex on the disk,
+  // including the ones directly below the aircraft on a 1 m lattice, lost the
+  // 32-128 m swell that carries the wind's peak energy — the sea became a flat
+  // plane wearing a normal map from that altitude on, and the crest glow
+  // term (fed by displacement.y) went with it.
+  let meshFades = fades * vec4f(
+    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.x),
+    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.y),
+    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.z),
+    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.w),
+  );
+  let meshFade4 = fade4 * cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadius4);
+  return OceanSurfaceFades(fades, fade4, meshFades, meshFade4);
+}
+
+fn oceanSurfaceCascadeDisplacement(worldXZ: vec2f, meshFades: vec4f, meshFade4: f32) -> vec3f {
+  var displacement = vec3f(0.0);
+  displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.x, displacement0, displacement0Sampler) * meshFades.x;
+  if (uniforms.cascadeCount > 1.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.y, displacement1, displacement1Sampler) * meshFades.y; }
+  if (uniforms.cascadeCount > 2.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.z, displacement2, displacement2Sampler) * meshFades.z; }
+  if (uniforms.cascadeCount > 3.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.w, displacement3, displacement3Sampler) * meshFades.w; }
+  if (uniforms.cascadeCount > 4.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLength4, displacement4, displacement4Sampler) * meshFade4; }
+  // The marina's calm basin (boats T1): exactly 1 on the open sea, and the
+  // sea twin scales the hull's waves by the same field.
+  return displacement * seaShelterFactor(worldXZ);
+}
+
+// The displacement the sea's own vertex at worldXZ received.
+fn oceanSurfaceDisplacement(worldXZ: vec2f) -> vec3f {
+  let fades = oceanSurfaceFades(length(worldXZ - uniforms.oceanWorldOrigin));
+  return oceanSurfaceCascadeDisplacement(worldXZ, fades.mesh, fades.mesh4);
+}
+`;
+
+export const WATER_VERTEX_WGSL = /* wgsl */ `
+attribute position: vec3f;
+uniform world: mat4x4f;
+uniform viewProjection: mat4x4f;
+${OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL}
+uniform oceanWind: vec2f;
+uniform time: f32;
+uniform planarReflectionViewProjection: mat4x4f;
 // W-8: the environment field (productivity, runoff), sampled HERE because the
 // fragment stage has no free sampler and the field's own lattices are
 // kilometres wide. See WaterEnvironmentField.
@@ -514,27 +685,7 @@ fn oceanWindExposure(worldXZ: vec2f, windVelocity: vec2f) -> f32 {
   return clamp(1.0 - blocked, ${WATER_SHELTER_FLOOR.toFixed(2)}, 1.0);
 }
 
-fn sampleDisplacement(worldXZ: vec2f, patchLength: f32, displacementTexture: texture_2d<f32>, displacementSampler: sampler) -> vec3f {
-  let coordinate = fract(worldXZ / patchLength);
-  return textureSampleLevel(displacementTexture, displacementSampler, coordinate, 0.0).xyz;
-}
-
-// 2-8: each cascade fades out where its band's longest wavelength falls
-// below two rendered pixels (the distance is computed by the CPU from the
-// camera's fovMode-aware pixel angle). This replaces the hardcoded
-// 0.62/0.82/0.74/0.52/0.36 blend weights, and fading the DISPLACEMENT too
-// removes the vertex-level shimmer where ring spacing exceeds the band's
-// wavelengths. The fade keys on SLANT RANGE — the disk is camera-centred in
-// xz only, and from altitude the sea straight below is already distant.
-fn cascadeFade(slantRange: f32, fadeEndDistance: f32) -> f32 {
-  // wave R floored the end distance. The mesh-Nyquist fade (fix 4) returns 0
-  // for a band the lattice cannot carry ANYWHERE, and smoothstep with equal
-  // edges is undefined in WGSL — a divide by zero in the one place a band is
-  // meant to vanish cleanly. No shipped cascade reaches it (the shortest band
-  // top is 8 m against a 1 m near step), so this is a guard, not a behaviour.
-  let end = max(fadeEndDistance, 0.001);
-  return 1.0 - smoothstep(end * 0.3, end, slantRange);
-}
+${OCEAN_SURFACE_DISPLACEMENT_WGSL}
 
 @vertex
 fn main(input: VertexInputs) -> FragmentInputs {
@@ -544,45 +695,14 @@ fn main(input: VertexInputs) -> FragmentInputs {
     vertexRadius * vertexRadius
       + uniforms.cascadeFadeCameraHeight * uniforms.cascadeFadeCameraHeight,
   );
-  let fades = vec4f(
-    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.x),
-    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.y),
-    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.z),
-    cascadeFade(slantRange, uniforms.cascadeFadeRadii0.w),
+  let surfaceFades = oceanSurfaceFades(vertexRadius);
+  let fades = surfaceFades.pixel;
+  let fade4 = surfaceFades.pixel4;
+  let displacement = oceanSurfaceCascadeDisplacement(
+    worldXZ,
+    surfaceFades.mesh,
+    surfaceFades.mesh4,
   );
-  let fade4 = cascadeFade(slantRange, uniforms.cascadeFadeRadius4);
-  // wave R fix 4: the DISPLACEMENT additionally fades on the lattice's own
-  // Nyquist. A band the radial step cannot carry is not a wave in the vertex
-  // buffer, it is aliasing — and because the disk is camera-centred that
-  // aliasing rode along with the viewer. The fragment keeps the PIXEL fade
-  // (the varyings below): its slope comes from a mip-filtered
-  // textureSampleGrad, whose reconstruction limit is the pixel and not the
-  // lattice, so the band survives there as a correctly filtered normal —
-  // strictly more information than handing it to roughness.
-  //
-  // wave S: the two fades key on DIFFERENT ranges. The pixel fade is a
-  // function of slant range — from altitude the sea straight below is
-  // already distant. The lattice fade is a function of the ring's HORIZONTAL
-  // radius alone: the radial step at a vertex does not change when the camera
-  // climbs. Folding both into one min() evaluated on slant range meant that
-  // from 545 m up (tier 1; 1.3 km at tier 2) every vertex on the disk,
-  // including the ones directly below the aircraft on a 1 m lattice, lost the
-  // 32-128 m swell that carries the wind's peak energy — the sea became a flat
-  // plane wearing a normal map from that altitude on, and the crest glow
-  // term (fed by displacement.y) went with it.
-  let meshFades = fades * vec4f(
-    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.x),
-    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.y),
-    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.z),
-    cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadii0.w),
-  );
-  let meshFade4 = fade4 * cascadeFade(vertexRadius, uniforms.cascadeMeshFadeRadius4);
-  var displacement = vec3f(0.0);
-  displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.x, displacement0, displacement0Sampler) * meshFades.x;
-  if (uniforms.cascadeCount > 1.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.y, displacement1, displacement1Sampler) * meshFades.y; }
-  if (uniforms.cascadeCount > 2.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.z, displacement2, displacement2Sampler) * meshFades.z; }
-  if (uniforms.cascadeCount > 3.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLengths0.w, displacement3, displacement3Sampler) * meshFades.w; }
-  if (uniforms.cascadeCount > 4.5) { displacement += sampleDisplacement(worldXZ, uniforms.patchLength4, displacement4, displacement4Sampler) * meshFade4; }
   // wave R fix 3: real relief below the spectrum's finest cascade. 2.8 cm at
   // the 0.42 m octave and 1.0 cm at the 0.16 m octave, world-locked and
   // wind-advected exactly as the fragment's octaves A and B are, so the
@@ -894,9 +1014,12 @@ fn oceanTerrainVisibility(
 // derivative discontinuity at every patch seam that would spike the
 // selected mip there. Slopes filter linearly, so the mip chain is correct
 // by construction (a box-filtered normal is not).
+${OCEAN_FFT_TEXEL_ALIGNMENT_WGSL}
+
 fn sampleSlopeTexture(worldXZ: vec2f, patchLength: f32, source: texture_2d<f32>, sourceSampler: sampler) -> vec4f {
   let unwrapped = worldXZ / patchLength;
-  return textureSampleGrad(source, sourceSampler, fract(unwrapped), dpdx(unwrapped), dpdy(unwrapped));
+  let coordinate = fract(unwrapped) + oceanFftTexelAlignment(textureDimensions(source));
+  return textureSampleGrad(source, sourceSampler, coordinate, dpdx(unwrapped), dpdy(unwrapped));
 }
 
 // 2-8: the variance folded into roughness is the band's MISSING energy —
@@ -910,6 +1033,10 @@ fn cascadeSlopeVariance(sample: vec4f, moment: vec4f, fade: f32) -> f32 {
   return max(moment.x - fade * fade * sample.x * sample.x, 0.0)
     + max(moment.y - fade * fade * sample.y * sample.y, 0.0);
 }
+
+#ifdef ${OCEAN_HULL_CLIP_DEFINE}
+${OCEAN_HULL_CLIP_WGSL}
+#endif
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
@@ -943,6 +1070,10 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     input.oceanCoordinate,
   );
   if (depth <= 0.0) { discard; }
+#ifdef ${OCEAN_HULL_CLIP_DEFINE}
+  // A boat session: no sea inside the hull (boat/oceanHullClip.ts).
+  if (oceanHullClipped(input.worldPosition)) { discard; }
+#endif
   // wave S: the far cat's paws — a mean-one gain on the short-wave slope
   // variance (cascade 0, half of cascade 1, the capillary tail) from two
   // wind-stretched octaves drifting with the gusts. No derivatives, so it
@@ -1615,6 +1746,9 @@ function createInitializationUniforms(
 ): UniformBuffer {
   const cascade = config.cascades[cascadeIndex];
   if (!cascade) throw new RangeError("Missing ocean cascade");
+  // D1's fetch and energy caps ride in on the uniform, so the shader's
+  // spectrum is the sea twin's spectrum term for term.
+  const spectrum = oceanSpectrumParameters(config, cascadeIndex);
   const buffer = new UniformBuffer(engine, undefined, false, `ocean-init-${cascadeIndex}`);
   for (const name of ["resolution", "seed", "cascadeIndex", "padding0"]) buffer.addUniform(name, 1);
   for (const name of ["patchLength", "gravity", "windSpeed", "fetchLength"]) buffer.addUniform(name, 1);
@@ -1628,9 +1762,9 @@ function createInitializationUniforms(
   buffer.updateFloat("patchLength", cascade.patchLengthMeters);
   buffer.updateFloat("gravity", config.gravityMetersPerSecondSquared);
   buffer.updateFloat("windSpeed", config.windSpeedMetersPerSecond);
-  buffer.updateFloat("fetchLength", config.fetchLengthMeters);
+  buffer.updateFloat("fetchLength", spectrum.fetchLength);
   buffer.updateFloat2("windDirection", config.windDirection[0], config.windDirection[1]);
-  buffer.updateFloat("spectrumScale", cascade.spectrumScale);
+  buffer.updateFloat("spectrumScale", spectrum.spectrumScale);
   buffer.updateFloat("directionalSpread", config.directionalSpread);
   buffer.updateFloat("depth", config.representativeDepthMeters);
   buffer.updateFloat("surfaceTension", config.surfaceTensionOverDensity);
@@ -1987,14 +2121,32 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
   private compute: SpectralOceanCompute;
   private mesh: Mesh;
   private readonly material: ShaderMaterial;
+  private hullClip: OceanHullClip | null = null;
   private profile: WebGpuQualityProfile;
   private rebuildAbortController: AbortController | null = null;
   private rebuildGeneration = 0;
   private disposed = false;
   private lastTimeSeconds = 0;
+  /** The spectrum wind the sea should have; the live compute may still be catching up. */
+  private windSpeedMetersPerSecond: number;
   private originX = 0;
   private originZ = 0;
   private cameraWorld = Vector3.Zero();
+  // The values behind OCEAN_SURFACE_UNIFORMS, kept so `bindSurface` can hand
+  // another material exactly what this one draws with.
+  private readonly surfaceOrigin = Vector2.Zero();
+  private readonly surfacePatchLengths0 = new Vector4(64, 64, 64, 64);
+  private surfacePatchLength4 = 64;
+  private surfaceCascadeCount = 1;
+  private readonly surfaceFadeRadii0 = Vector4.Zero();
+  private surfaceFadeRadius4 = 0;
+  private readonly surfaceMeshFadeRadii0 = Vector4.Zero();
+  private surfaceMeshFadeRadius4 = 0;
+  private surfaceCameraHeight = 0;
+  private readonly surfaceShelter: readonly Vector4[] = Array.from(
+    { length: SEA_SHELTER_MAX_ELLIPSES * 2 },
+    (_, index) => Vector4.FromArray(NO_SEA_SHELTER, index * 4),
+  );
   private readonly cloudShadowCenterLocal = Vector2.Zero();
   private readonly cloudShadowSunDirection = Vector3.Up();
   private cloudShadowProjection: CloudShadowProjection | null = null;
@@ -2021,6 +2173,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       windDirectionRadians,
       windSpeedMetersPerSecond,
     );
+    this.windSpeedMetersPerSecond = this.compute.config.windSpeedMetersPerSecond;
     this.mesh = createOceanPresentationMesh(scene, profile);
     this.material = new ShaderMaterial(
       "spectral-ocean-material",
@@ -2044,6 +2197,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
           "cascadeMeshFadeRadii0",
           "cascadeMeshFadeRadius4",
           "cascadeFadeCameraHeight",
+          ...SEA_SHELTER_UNIFORMS,
           "cameraPosition",
           "sunDirection",
           "sunColor",
@@ -2335,8 +2489,10 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     // profile. Settings apply quality and rendering mode back-to-back; using
     // the requested profile could abort the first rebuild and then incorrectly
     // conclude that no replacement is needed.
-    const topologyChanged = profile.oceanResolution !== this.compute.config.resolution
-      || profile.oceanCascades !== this.compute.cascades.length;
+    // A wind change still in flight counts too, or this abort would drop it.
+    const computeChanged = profile.oceanResolution !== this.compute.config.resolution
+      || profile.oceanCascades !== this.compute.cascades.length
+      || this.windSpeedMetersPerSecond !== this.compute.config.windSpeedMetersPerSecond;
     const previousTopology = this.profile.oceanPresentation;
     const nextTopology = profile.oceanPresentation;
     // wave R added nearStepMeters to the comparison: it changes every ring
@@ -2353,7 +2509,29 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       this.mesh.dispose(false, false);
       this.mesh = nextMesh;
     }
-    if (!topologyChanged) return;
+    if (!computeChanged) return;
+    this.rebuildCompute(profile);
+  }
+
+  /**
+   * D2 (boats plan, approved 2026-10-26): the sea's spectrum wind follows the
+   * weather preset (`weatherWindScale`). A new wind is a new initial spectrum
+   * for every cascade, so it rebuilds the compute runtime off the active path
+   * exactly as a quality change does, and the live sea keeps moving until the
+   * replacement is ready.
+   */
+  setWindSpeed(windSpeedMetersPerSecond: number): void {
+    if (this.disposed || windSpeedMetersPerSecond === this.windSpeedMetersPerSecond) return;
+    this.windSpeedMetersPerSecond = windSpeedMetersPerSecond;
+    this.rebuildAbortController?.abort();
+    this.rebuildAbortController = null;
+    if (windSpeedMetersPerSecond === this.compute.config.windSpeedMetersPerSecond
+      && this.profile.oceanResolution === this.compute.config.resolution
+      && this.profile.oceanCascades === this.compute.cascades.length) return;
+    this.rebuildCompute(this.profile);
+  }
+
+  private rebuildCompute(profile: WebGpuQualityProfile): void {
     const generation = ++this.rebuildGeneration;
     const controller = new AbortController();
     this.rebuildAbortController = controller;
@@ -2365,7 +2543,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
         this.compute.config.windDirection[0],
         this.compute.config.windDirection[1],
       ),
-      this.compute.config.windSpeedMetersPerSecond,
+      this.windSpeedMetersPerSecond,
     );
     void nextCompute.initialize(controller.signal, this.lastTimeSeconds).then(() => {
       if (this.disposed || generation !== this.rebuildGeneration) {
@@ -2380,7 +2558,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     }).catch((error: unknown) => {
       nextCompute.dispose();
       if (!isAbortError(error)) {
-        console.error("Unable to rebuild the spectral-ocean quality profile", error);
+        console.error("Unable to rebuild the spectral-ocean compute runtime", error);
       }
     }).finally(() => {
       if (this.rebuildAbortController === controller) this.rebuildAbortController = null;
@@ -2424,13 +2602,76 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       this.seaLevel,
       snappedZ - this.originZ,
     );
-    this.material.setVector2(
-      "oceanWorldOrigin",
-      new Vector2(snappedX, snappedZ),
-    );
+    this.surfaceOrigin.set(snappedX, snappedZ);
     this.material.setFloat("time", timeSeconds);
     this.material.setVector3("cameraPosition", this.camera.position);
     this.updateCascadeFadeRadii();
+  }
+
+  /**
+   * The marina's calm basins (at most four), from the world's marina layout:
+   * the drawn waves inside are scaled by each ellipse's floor, as the sea twin
+   * scales the waves a hull floats on. None is the open sea, exactly.
+   */
+  setShelter(ellipses: readonly SeaShelterEllipse[]): void {
+    const packed = packSeaShelterEllipses(ellipses);
+    this.surfaceShelter.forEach((vector, index) => {
+      vector.set(packed[index * 4]!, packed[index * 4 + 1]!, packed[index * 4 + 2]!, packed[index * 4 + 3]!);
+    });
+    this.writeSurfaceUniforms(this.material);
+  }
+
+  /**
+   * Keep the sea out of a boat's hull (`boat/oceanHullClip.ts`), or stop.
+   * Only a session with a boat sets one, once, at load: the define compiles
+   * the clip in, and without it this material's shader is exactly the one it
+   * was before boats existed.
+   */
+  setHullClip(clip: OceanHullClip | null): void {
+    if (clip === this.hullClip) return;
+    this.hullClip?.detach();
+    this.hullClip = clip;
+    const uniforms = this.material.options.uniforms;
+    for (const name of OCEAN_HULL_CLIP_UNIFORMS) {
+      const index = uniforms.indexOf(name);
+      if (clip && index < 0) uniforms.push(name);
+      else if (!clip && index >= 0) uniforms.splice(index, 1);
+    }
+    this.material.setDefine(OCEAN_HULL_CLIP_DEFINE, clip !== null);
+    clip?.attach(this.material);
+  }
+
+  /**
+   * Binds the sea's displacement to another material that includes
+   * `OCEAN_SURFACE_DISPLACEMENT_DECLARATIONS_WGSL` and lists
+   * `OCEAN_SURFACE_UNIFORMS` and `OCEAN_SURFACE_SAMPLERS`, so its
+   * `oceanSurfaceDisplacement` matches this frame's drawn sea. Call it every
+   * frame after `update`.
+   */
+  bindSurface(material: ShaderMaterial): void {
+    this.writeSurfaceUniforms(material);
+    const fallback = this.compute.cascades[0];
+    if (!fallback) return;
+    for (let index = 0; index < MAX_RENDER_CASCADES; index += 1) {
+      const cascade = this.compute.cascades[index] ?? fallback;
+      material.setTexture(`displacement${index}`, cascade.displacement);
+    }
+  }
+
+  private writeSurfaceUniforms(material: ShaderMaterial): void {
+    material.setVector2("oceanWorldOrigin", this.surfaceOrigin);
+    material.setVector4("patchLengths0", this.surfacePatchLengths0);
+    material.setFloat("patchLength4", this.surfacePatchLength4);
+    material.setFloat("cascadeCount", this.surfaceCascadeCount);
+    material.setVector4("cascadeFadeRadii0", this.surfaceFadeRadii0);
+    material.setFloat("cascadeFadeRadius4", this.surfaceFadeRadius4);
+    material.setVector4("cascadeMeshFadeRadii0", this.surfaceMeshFadeRadii0);
+    material.setFloat("cascadeMeshFadeRadius4", this.surfaceMeshFadeRadius4);
+    material.setFloat("cascadeFadeCameraHeight", this.surfaceCameraHeight);
+    for (let slot = 0; slot < SEA_SHELTER_MAX_ELLIPSES; slot += 1) {
+      material.setVector4(`seaShelterA${slot}`, this.surfaceShelter[slot * 2]!);
+      material.setVector4(`seaShelterB${slot}`, this.surfaceShelter[slot * 2 + 1]!);
+    }
   }
 
   /**
@@ -2471,24 +2712,17 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
         cascade.maximumWavelengthMeters,
       );
     };
-    this.material.setVector4("cascadeFadeRadii0", new Vector4(
-      fadeEnd(0),
-      fadeEnd(1),
-      fadeEnd(2),
-      fadeEnd(3),
-    ));
-    this.material.setFloat("cascadeFadeRadius4", fadeEnd(4));
-    this.material.setVector4("cascadeMeshFadeRadii0", new Vector4(
+    this.surfaceFadeRadii0.set(fadeEnd(0), fadeEnd(1), fadeEnd(2), fadeEnd(3));
+    this.surfaceFadeRadius4 = fadeEnd(4);
+    this.surfaceMeshFadeRadii0.set(
       meshFadeEnd(0),
       meshFadeEnd(1),
       meshFadeEnd(2),
       meshFadeEnd(3),
-    ));
-    this.material.setFloat("cascadeMeshFadeRadius4", meshFadeEnd(4));
-    this.material.setFloat(
-      "cascadeFadeCameraHeight",
-      Math.max(0, this.camera.globalPosition.y - this.seaLevel),
     );
+    this.surfaceMeshFadeRadius4 = meshFadeEnd(4);
+    this.surfaceCameraHeight = Math.max(0, this.camera.globalPosition.y - this.seaLevel);
+    this.writeSurfaceUniforms(this.material);
   }
 
   /**
@@ -2578,14 +2812,14 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
     const lengths = this.compute.config.cascades.map(
       (cascade) => cascade.patchLengthMeters,
     );
-    this.material.setVector4("patchLengths0", {
-      x: lengths[0] ?? 64,
-      y: lengths[1] ?? lengths[0] ?? 64,
-      z: lengths[2] ?? lengths[0] ?? 64,
-      w: lengths[3] ?? lengths[0] ?? 64,
-    });
-    this.material.setFloat("patchLength4", lengths[4] ?? lengths.at(-1) ?? 64);
-    this.material.setFloat("cascadeCount", this.compute.cascades.length);
+    this.surfacePatchLengths0.set(
+      lengths[0] ?? 64,
+      lengths[1] ?? lengths[0] ?? 64,
+      lengths[2] ?? lengths[0] ?? 64,
+      lengths[3] ?? lengths[0] ?? 64,
+    );
+    this.surfacePatchLength4 = lengths[4] ?? lengths.at(-1) ?? 64;
+    this.surfaceCascadeCount = this.compute.cascades.length;
     // 6-4: the Jacobian-to-curvature conversion per cascade. Absent cascades
     // get ZERO rather than a fallback — their stored Jacobian lane holds the
     // identity 1.0, and a zero scale keeps the caustic band exactly inert
@@ -2630,9 +2864,11 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
    */
   shoreRunupSwell(): WaterShoreSwell {
     const config = this.compute.config;
+    // D1: the fetch the drawn sea actually grows over, capped at full
+    // development, so a light wind's run-up matches its light sea.
     return waterOceanShoreSwell(
       config.windSpeedMetersPerSecond,
-      config.fetchLengthMeters,
+      oceanEffectiveFetchMeters(config),
     );
   }
 }

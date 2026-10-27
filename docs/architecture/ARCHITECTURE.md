@@ -161,6 +161,43 @@ never changes that content choice.
 > The contact normal follows the camber too: a flat normal on a cambered
 > surface is the same lie one derivative up.
 
+### The sea (boats, 2026-10-26)
+
+**A hull floats on the sea on screen.** The same rule holds one fluid over:
+the water a boat's hull samples and the water the ocean draws are one
+authority, the `sea-surface-authority` row in `owners.ts`.
+
+- The spectrum is defined once, TypeScript and WGSL side by side
+  (`src/sim/water/spectrum.ts`, `spectrumWgsl.ts`). The GPU ocean transforms
+  it; the CPU `SeaTwin` (`src/sim/water/seaTwin.ts`) sums the same waves. Each
+  wave's phase is keyed on the wave, never on the texel, so every quality tier
+  draws the same waves in the bands it has. The twin carries bands 1-4
+  (8-2048 m); the 0.5-8 m band is ripple a hull's displacement averages away.
+  A tier that does not draw a band the twin floats on hands the presentation
+  `SeaTwin.undrawnHeave` to make up the difference.
+- Session inputs are shared: `resolveSeaSpectrumConfig(world, weather)` builds
+  both, and a weather change rebuilds the GPU h0 and calls `SeaTwin.setConfig`
+  at the same simulation time. The twin's clock is the worker's
+  `state.simulationTime`; the ocean is evolved on the same time.
+- Waves travel downwind and the surface gathers onto their crests. The
+  evolution shader and the twin read the same two signs from `spectrum.ts`
+  (`OCEAN_TIME_SIGN`, `OCEAN_CHOP_SIGN`), so the crest a hull rides is the
+  crest drawn, moving the same way, with the foam on it.
+- A marina basin calms the sea through one analytic field
+  (`src/sim/water/shelter.ts`, at most 4 ellipses, exactly 1 outside them).
+  The ocean's vertex stage multiplies its displacement by it and the twin
+  multiplies its waves by the same packed numbers. There is no texture.
+- No other module may sum, sample or approximate the sea for physics. A new
+  vessel takes the twin through `HullWaterSampler`; a new rendered surface that
+  must sit on the waves includes `OCEAN_SURFACE_DISPLACEMENT_WGSL`.
+- The invariant tests: `tests/world.sea-twin.test.ts` (the twin equals an f64
+  FFT of the spectrum within 0.1 mm, phases hold 1e-6 rad over an hour, the
+  same waves under every tier profile, the shelter equals the shader's in f32,
+  the sea travels downwind with its folds on the crests)
+  and `tests/gpu/ocean-twin-parity.test.ts` (the shipping compute pipeline's
+  displacement texture equals the twin within fp16, and the vertex stage's
+  shelter WGSL equals the twin's).
+
 ## 4. Season and time of day (§1.6)
 
 The rendering inputs are two continuous scalars — `EnvironmentClock

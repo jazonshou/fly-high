@@ -297,16 +297,22 @@ const CPU_CALM_WINDOWS_REQUIRED = 4;
 const GPU_HOT_WINDOWS_REQUIRED = 2;
 const GPU_CALM_WINDOWS_REQUIRED = 4;
 
-type Classification = "gpu-bound" | "cpu-bound" | "pacing-bound" | "balanced" | "unknown";
+export type Classification = "gpu-bound" | "cpu-bound" | "pacing-bound" | "balanced" | "unknown";
 
-interface ResolvedSignals {
+export interface ResolvedSignals {
   readonly gpuMs: number | null;
   readonly synthesised: boolean;
   readonly classification: Classification;
   readonly metric: "gpu" | "interval" | null;
 }
 
-function resolveSignals(
+/**
+ * How a window's signals read: which side bounds the frame, and the GPU
+ * estimate the decision uses. Exported for the `?bench=1` report, which
+ * labels each recorded decision with it; the governor is its only caller in
+ * the game.
+ */
+export function resolveSignals(
   signals: GovernorSignals,
   gpuTargetMs: number,
   presentationTargetMs: number,
