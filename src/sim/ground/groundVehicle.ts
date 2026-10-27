@@ -185,6 +185,14 @@ const CRASH_ROLL_SPEED = 10;
 
 /** Soft ground presses in this fast under a new load, s; it only springs back as the tyre rolls onto fresh soil. */
 const SINK_SECONDS = 0.05;
+
+/**
+ * The start waits at most this long for its terrain pages, s, then settles on
+ * whatever answers: a worker no renderer feeds must not strand the car.
+ */
+export const GROUND_WAIT_SECONDS = 10;
+/** Half-side of the square about the car's origin that must be published before it settles, m: the car and a margin. */
+const GROUND_READY_RADIUS = 8;
 /** The speed over which the soil's compaction resistance builds from a standstill, m/s: it holds like friction. */
 const COMPACTION_SPEED = 0.05;
 
@@ -299,6 +307,9 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private readonly fixedSurface: CarSurfaceField | null;
   private readonly surfaceCache = new SurfaceCache();
   private placed = false;
+  /** Waiting at the start for the terrain pages under the car (`groundReady`), and for how long, s. */
+  private settling = false;
+  private groundWait = 0;
 
   readonly engine: Engine;
   readonly transmission: Transmission;
@@ -532,7 +543,10 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       return;
     }
     this.lattice.setTime(this.state.time);
-    if (!this.placed) this.settleOnGround();
+    if (!this.placed) {
+      if (this.awaitGround(env, dt)) return;
+      this.settleOnGround();
+    }
 
     this.dt = dt;
     this.h = dt / SUBSTEPS;
@@ -550,6 +564,31 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     this.afterStep();
     this.state.time += dt;
     this.syncState();
+  }
+
+  /**
+   * The spawn gate: hold the car still and unsimulated at its start until
+   * the published terrain pages answer all round it (`groundReady`), so it
+   * never settles on the macro grid's or the analytic kernel's height, or
+   * for `GROUND_WAIT_SECONDS` at most. True while it waits.
+   */
+  private awaitGround(env: Readonly<SurfaceVehicleEnvironment> | null, dt: number): boolean {
+    const ready = env?.groundReady;
+    if (!ready || this.fixedGround || this.groundWait >= GROUND_WAIT_SECONDS) {
+      this.settling = false;
+      return false;
+    }
+    const at = this.state.position;
+    if (ready(at.x, at.z, GROUND_READY_RADIUS)) {
+      this.settling = false;
+      // Nothing read before the pages landed may stand.
+      this.lattice.clear();
+      return false;
+    }
+    this.settling = true;
+    this.groundWait += dt;
+    this.state.time += dt;
+    return true;
   }
 
   /** The first step with a ground: seat the car on it at ride height, level with the ground under its wheels. */
@@ -1746,6 +1785,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       tyrePressure: this.controls.tyrePressure,
       tyrePressureBar: this.tyrePressureBar,
       wadingDepth: this.wadingDepthValue,
+      settling: this.settling,
       wheelSteer: [this.steering.left, this.steering.right, 0, 0],
       wheelSpin: Array.from(this.wheelSpin),
       wheelSpinRate: [this.driveline.omega[1]!, this.driveline.omega[2]!, this.driveline.omega[3]!, this.driveline.omega[4]!],

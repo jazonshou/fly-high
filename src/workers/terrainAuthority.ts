@@ -294,6 +294,28 @@ export class TerrainAuthority {
     this.analyticSamples += 1;
   }
 
+  /**
+   * Whether final L0 pages answer everywhere in the square of half-side
+   * `radius` about (x, z), the bicubic stencil's neighbours included: a
+   * vehicle spawning there would settle on the published ground, not on the
+   * macro grid or the analytic fallback. Allocates nothing.
+   */
+  covers(x: number, z: number, radius: number): boolean {
+    const spacing = WORLD_PAGE_BASE_EXTENT_METERS / WORLD_PAGE_HEIGHT_CORE;
+    const r = Math.max(0, radius);
+    // `sampleReadback` reads lattice columns floor(x / spacing) - 1 .. + 2.
+    const tileMinX = Math.floor((Math.floor((x - r) / spacing) - 1) / WORLD_PAGE_HEIGHT_CORE);
+    const tileMaxX = Math.floor((Math.floor((x + r) / spacing) + 2) / WORLD_PAGE_HEIGHT_CORE);
+    const tileMinZ = Math.floor((Math.floor((z - r) / spacing) - 1) / WORLD_PAGE_HEIGHT_CORE);
+    const tileMaxZ = Math.floor((Math.floor((z + r) / spacing) + 2) / WORLD_PAGE_HEIGHT_CORE);
+    for (let tileZ = tileMinZ; tileZ <= tileMaxZ; tileZ += 1) {
+      for (let tileX = tileMinX; tileX <= tileMaxX; tileX += 1) {
+        if (this.findPage(tileX, tileZ) === null) return false;
+      }
+    }
+    return true;
+  }
+
   /** Height from readback or macro, or null for the analytic last resort. */
   sampleHeight(x: number, z: number, analyticHeight?: number): number | null {
     requireFinite(x, "Terrain sample x");

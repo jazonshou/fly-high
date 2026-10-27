@@ -57,6 +57,20 @@ roots of sums. A choice between a computed double and a double argument
 is not. On rolling ground a step costs about 30 to 40 us here, inside the
 plan's 60 us on the tuning box (`tests/sim.car-budget.test.ts`).
 
+## The start
+
+A car starts where the worker puts it, but waits there, still and not
+simulated, until the published L0 terrain pages answer everywhere within
+8 m of it, the bicubic stencil's neighbours included
+(`SurfaceVehicleEnvironment.groundReady`, backed by `TerrainAuthority.covers`
+in the worker). It would otherwise settle on the macro grid's or the
+analytic kernel's height and drop or jump when the page lands. While it
+waits the payload's `settling` is true. It drops any lattice node read
+before the pages landed, then seats itself on the ground at its static ride
+height. A worker no renderer feeds gives up after 10 s
+(`GROUND_WAIT_SECONDS`) and settles on whatever answers; tests and probes
+pass no `groundReady` and never wait (`tests/sim.car-spawn.test.ts`).
+
 ## Contact
 
 Each tyre is a disc sampled at five points round its lower arc and two across

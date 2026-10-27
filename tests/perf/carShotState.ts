@@ -401,6 +401,7 @@ export function buildCarShotState(
     tyrePressure: sand ? "sand" : "road",
     tyrePressureBar: sand ? 1.2 : 2.4,
     wadingDepth,
+    settling: false,
     wheelSteer: [0, 0, 0, 0],
     wheelSpin: [0, 0, 0, 0],
     wheelSpinRate: [spin, spin, spin, spin],

@@ -214,6 +214,11 @@ export interface CarVisualState {
   tyrePressureBar: number;
   /** Water above the ground at the car, metres; 0 when dry. The wading bar. */
   wadingDepth: number;
+  /**
+   * The car is waiting at its start for the terrain under it to stream in,
+   * held still and not simulated (at most `GROUND_WAIT_SECONDS`).
+   */
+  settling: boolean;
   /** Road-wheel steer angle, radians; positive turns the wheel's front to the right. */
   wheelSteer: number[];
   /** Rolling angle, radians, wrapped to [0, 2 pi), and spin rate, rad/s. */
