@@ -48,6 +48,9 @@ function expectedConfig(tier: number, renderScale: number): GovernorConfig {
     // governor steps toward it; a pin replaces it (below).
     scaleFloor: renderScale * Math.sqrt(tier <= 1 ? 0.6 : 0.5625),
     pixelFloorRatio: tier <= 1 ? 0.6 : 0.5625,
+    // PR B part 2 (G6): no confirmed display period, so urgency and the spent
+    // count judge against the target alone.
+    displayLimitMs: 0,
     windowFrames: 120,
     downCooldownFrames: 90,
     upCooldownFrames: 240,
@@ -87,6 +90,10 @@ describe("the governor without a cadence (captures, perf:ab, perf:flight)", () =
       .toBeCloseTo(19.167, 3);
     expect(governorConfigForProfile(resolveWebGpuQualityProfile("high", "ultra")).lateIntervalMs)
       .toBeCloseTo(38.333, 3);
+    // PR B part 2 (G6): a confirmed period sets the display limit, at the paced divisor.
+    const thirtyHz = { frameCapHz: 60, divisor: 1, displayPeriodMs: 1_000 / 30, periodConfirmed: true } as const;
+    expect(governorConfigForProfile(resolveWebGpuQualityProfile("medium", "balanced"), thirtyHz).displayLimitMs)
+      .toBeCloseTo(33.333, 3);
   });
 
   it("pins both scale bounds for a capture, whatever the pixel floor ratio", () => {

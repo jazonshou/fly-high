@@ -106,6 +106,17 @@ export interface GovernorConfig {
   readonly scaleFloor: number;
   /** PR B part 2 (G4): the profile's governor pixel floor ratio, which `scaleFloor` derives from. */
   readonly pixelFloorRatio: number;
+  /**
+   * PR B part 2 (G6): the interval a confirmed display period allows at the
+   * paced divisor (divisor × period), trusted or not; 0 without a confirmed
+   * period. Urgency and the spent count judge the mean against the larger of
+   * this and the presentation target, so a display that cannot show the
+   * target (30 or 50 Hz under the 60 fps setting) does not make the machine
+   * urgent or exhausted. It never moves a target or the on-cadence
+   * classification (the cadence invariant: an observed period never relaxes
+   * anything).
+   */
+  readonly displayLimitMs: number;
   readonly windowFrames: number;
   readonly downCooldownFrames: number;
   readonly upCooldownFrames: number;
@@ -177,6 +188,9 @@ export function governorConfigForProfile(
     // G4: the floor is a share of the capped pixels, applied after the cap.
     scaleFloor: profile.renderScale * Math.sqrt(profile.governorPixelFloorRatio),
     pixelFloorRatio: profile.governorPixelFloorRatio,
+    displayLimitMs: cadence?.periodConfirmed && cadence.displayPeriodMs !== null
+      ? cadence.divisor * cadence.displayPeriodMs
+      : 0,
     windowFrames,
     downCooldownFrames: 90,
     upCooldownFrames: 240,
@@ -612,6 +626,37 @@ export function governorExhausted(state: GovernorState): boolean {
   return state.spentWindows >= EXHAUSTED_AFTER_WINDOWS;
 }
 
+/** PR B part 2 (G6): means closer than this to a threshold are on it (float noise on the vsync lattice). */
+const MEAN_TOLERANCE_MS = 1e-6;
+/** PR B part 2 (G6): a mean interval over this × the reference is urgent (40 fps at 60; the plan's 1.5). */
+const URGENT_MEAN_RATIO = 1.5;
+/** PR B part 2 (G6): a spent window's mean interval is over this × the reference (50 fps at 60). */
+const SPENT_MEAN_RATIO = 1.2;
+
+/**
+ * PR B part 2 (G6): what urgency and the spent count judge a window's mean
+ * against: the presentation target, or the display's own interval where a
+ * confirmed period cannot show it (33.3 ms on a 30 Hz panel at the 60 fps
+ * setting, 20 ms at 50 Hz).
+ */
+function meanReferenceMs(config: GovernorConfig): number {
+  return Math.max(config.presentationTargetMs, config.displayLimitMs);
+}
+
+/** PR B part 2 (G6): a mean interval over 1.5× the reference. A window without a mean is not. */
+function isUrgent(signals: GovernorSignals, config: GovernorConfig): boolean {
+  const mean = signals.intervalMeanMs ?? null;
+  // Strictly over, by more than rounding: vsync puts a window's mean on a
+  // lattice, and half the frames one refresh late is exactly 1.5× at 60 Hz.
+  return mean !== null && mean > URGENT_MEAN_RATIO * meanReferenceMs(config) + MEAN_TOLERANCE_MS;
+}
+
+/** PR B part 2 (G6): a mean interval over 1.2× the reference, which a spent window needs to count. */
+function isSevere(signals: GovernorSignals, config: GovernorConfig): boolean {
+  const mean = signals.intervalMeanMs ?? null;
+  return mean !== null && mean > SPENT_MEAN_RATIO * meanReferenceMs(config) + MEAN_TOLERANCE_MS;
+}
+
 const GPU_BOUND_RATIO = 1.15;
 const DOWN_STEP = 0.05;
 const UP_STEP = 0.025;
@@ -895,6 +940,7 @@ export function nextGovernorDecision(
           insensitiveWindowsRemaining: 0,
           ineffectiveDownSteps: 0,
           restoreScale: null,
+          latchedAtGpuLevel: null,
         }
       : { ...next, insensitiveWindowsRemaining: remaining };
   }
@@ -934,6 +980,7 @@ export function nextGovernorDecision(
             ...next,
             renderScale: restoreScale,
             resolutionInsensitive: true,
+            latchedAtGpuLevel: next.gpuWorkLevel,
             insensitiveWindowsRemaining: config.insensitiveRearmWindows,
             ineffectiveDownSteps: 0,
             restoreScale: null,
@@ -953,13 +1000,19 @@ export function nextGovernorDecision(
   }
 
   const cadenceMet = resolved.classification === "on-cadence";
+  next = { ...next, urgent: !cadenceMet && isUrgent(signals, config) };
   if (next.trial !== null) {
-    if (!cadenceMet) return failTrial(next, next.trial, config);
+    if (!cadenceMet) return failTrial({ ...next, spentWindows: 0 }, next.trial, config);
     next = advanceTrial(next, next.trial, signals);
   }
-  return cadenceMet
-    ? onCadenceDecision(next, signals, config)
-    : offCadenceDecision(next, signals, resolved, config);
+  if (cadenceMet) return onCadenceDecision({ ...next, spentWindows: 0 }, signals, config);
+  const [decided, outcome] = offCadenceDecision(next, signals, resolved, config);
+  // G6: a probe (resolution re-tried with every GPU rung shed) neither resets
+  // nor advances the count; any other window that is not spent resets it.
+  const spentWindows = outcome === "probe"
+    ? next.spentWindows
+    : outcome === "spent" && isSevere(signals, config) ? next.spentWindows + 1 : 0;
+  return Object.freeze({ ...decided, spentWindows });
 }
 
 /**
@@ -1040,21 +1093,34 @@ function onCadenceDecision(
 }
 
 /**
+ * PR B part 2 (G6): what an off-cadence window did, for the spent count.
+ * "shed": a rung or a resolution step. "wait": not yet (a hot count, a
+ * cooldown, a stale latch re-armed). "spent": nothing left to shed for the
+ * side that bound it. "hold": that side has headroom by its own timestamps.
+ * "probe": a resolution step with every GPU rung shed, which holds the count
+ * until its verdict.
+ */
+type OffCadenceOutcome = "shed" | "wait" | "spent" | "hold" | "probe";
+
+/**
  * Off cadence: shed only, never recover. On presented intervals, which is
  * every shipping window, being off cadence is the trigger itself; with GPU
- * timestamps the old millisecond thresholds still apply.
+ * timestamps the old millisecond thresholds still apply. An urgent window
+ * (G6) sheds a rung by itself once the miss has lasted two.
  */
 function offCadenceDecision(
   state: GovernorState,
   signals: GovernorSignals,
   judged: ResolvedSignals,
   config: GovernorConfig,
-): GovernorState {
+): readonly [GovernorState, OffCadenceOutcome] {
   const next: GovernorState = {
     ...state,
     calmStreak: Object.freeze([]),
     offCadenceWindows: state.offCadenceWindows + 1,
   };
+  // G6: once the miss has lasted two windows, an urgent one sheds a rung by itself.
+  const hotRequired = next.urgent && next.offCadenceWindows >= HOT_WINDOWS_REQUIRED ? 1 : HOT_WINDOWS_REQUIRED;
   const spentCpuWindow = judged.classification === "cpu-bound" && next.cpuWorkLevel >= CPU_WORK_MAX_LEVEL
     ? gpuSideOfSpentCpuWindow(signals, config)
     : null;
@@ -1083,7 +1149,10 @@ function offCadenceDecision(
         // Tier 0's last would otherwise be 0.57 → 0.5577, 4%: a resize, a
         // reallocation and a history reset no probe could judge.
         const stepped = next.renderScale - DOWN_STEP;
-        return Object.freeze({
+        // G6: with every GPU rung shed, a step is resolution re-tried after a
+        // latch re-armed, and the spent count waits for its verdict.
+        const outcome: OffCadenceOutcome = next.gpuWorkLevel >= GPU_WORK_MAX_LEVEL ? "probe" : "shed";
+        return [Object.freeze({
           ...next,
           renderScale: stepped - config.scaleFloor < DOWN_STEP / 2 ? config.scaleFloor : stepped,
           framesSinceScaleChange: 0,
@@ -1100,22 +1169,22 @@ function offCadenceDecision(
           cpuHotWindows: 0,
           gpuHotWindows: 0,
           recovery: noteShed(next.recovery, "scale", config),
-        });
+        }), outcome];
       }
-      return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0 });
+      return [Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0 }), "wait"];
     }
     if (spentCpuWindow !== null && next.resolutionInsensitive) {
       // render() p95 is over the GPU target and resolution did not help: a
       // GPU rung would cut what the pilot sees for a cost the main thread
       // carries. The latch holds while this lasts, so the scale is not
       // probed again every time it re-arms.
-      return Object.freeze({
+      return [Object.freeze({
         ...next,
         insensitiveWindowsRemaining: config.insensitiveRearmWindows,
         mode: "cpu-work",
         cpuHotWindows: 0,
         gpuHotWindows: 0,
-      });
+      }), "spent"];
     }
     if (
       (pacing || cpuShedNearGpuTarget(next, signals, config))
@@ -1127,16 +1196,36 @@ function offCadenceDecision(
       // more likely sits on the main thread: the CPU ladder goes before the
       // GPU one. So does a GPU-bound reading that only render() crossing
       // under the GPU target produced (`cpuShedNearGpuTarget`).
-      return shedCpuWork(next, pacing ? "frame-pacing" : "cpu-work", config);
+      return shedCpuWork(next, pacing ? "frame-pacing" : "cpu-work", config, hotRequired);
+    }
+    if (
+      next.gpuWorkLevel >= GPU_WORK_MAX_LEVEL
+      && next.resolutionInsensitive
+      && next.renderScale > config.scaleFloor + 1e-6
+      && (next.latchedAtGpuLevel ?? 0) < GPU_WORK_MAX_LEVEL
+    ) {
+      // G6: the latch was set before the GPU ladder reached its top, so it is
+      // stale: re-arm it now, and let the scale be probed with every rung
+      // shed before this side counts as spent.
+      return [Object.freeze({
+        ...next,
+        resolutionInsensitive: false,
+        insensitiveWindowsRemaining: 0,
+        ineffectiveDownSteps: 0,
+        restoreScale: null,
+        latchedAtGpuLevel: null,
+        mode: pacing ? "frame-pacing" : "gpu-work",
+        cpuHotWindows: 0,
+      }), "wait"];
     }
     if (intervalDomain || gpu > config.gpuTargetMs) {
       // Governor A has no lever (latched, or already at the floor): shed a
       // GPU-cost work lever instead — the R-6 missing actuator.
       const hot = next.gpuHotWindows + 1;
       const mode: GovernorMode = pacing ? "frame-pacing" : "gpu-work";
-      if (hot >= HOT_WINDOWS_REQUIRED && next.gpuWorkLevel < GPU_WORK_MAX_LEVEL) {
+      if (hot >= hotRequired && next.gpuWorkLevel < GPU_WORK_MAX_LEVEL) {
         const level = next.gpuWorkLevel + 1;
-        return Object.freeze({
+        return [Object.freeze({
           ...next,
           gpuWorkLevel: level,
           lastLever: gpuWorkLeverName(level),
@@ -1144,28 +1233,36 @@ function offCadenceDecision(
           cpuHotWindows: 0,
           mode,
           recovery: noteShed(next.recovery, "gpu", config),
-        });
+        }), "shed"];
       }
-      return Object.freeze({ ...next, gpuHotWindows: hot, cpuHotWindows: 0, mode });
+      return [
+        Object.freeze({ ...next, gpuHotWindows: hot, cpuHotWindows: 0, mode }),
+        next.gpuWorkLevel < GPU_WORK_MAX_LEVEL ? "wait" : "spent",
+      ];
     }
-    return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0 });
+    return [Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0 }), "hold"];
   }
 
   // CPU-bound. Once the ladder is spent, a render() p95 that alone explains
   // the miss holds here: the GPU side cannot help.
   const cpu = signals.cpuP95Ms;
   if (intervalDomain || (cpu !== null && cpu > config.gpuTargetMs)) {
-    return shedCpuWork(next, "cpu-work", config);
+    return shedCpuWork(next, "cpu-work", config, hotRequired);
   }
-  return Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0, gpuHotWindows: 0 });
+  return [Object.freeze({ ...next, mode: "holding", cpuHotWindows: 0, gpuHotWindows: 0 }), "hold"];
 }
 
-/** One CPU rung per two hot windows, while the ladder has one left. */
-function shedCpuWork(state: GovernorState, mode: GovernorMode, config: GovernorConfig): GovernorState {
+/** One CPU rung per two hot windows (one once an urgent miss has lasted two), while the ladder has one left. */
+function shedCpuWork(
+  state: GovernorState,
+  mode: GovernorMode,
+  config: GovernorConfig,
+  hotRequired: number,
+): readonly [GovernorState, OffCadenceOutcome] {
   const hot = state.cpuHotWindows + 1;
-  if (hot >= HOT_WINDOWS_REQUIRED && state.cpuWorkLevel < CPU_WORK_MAX_LEVEL) {
+  if (hot >= hotRequired && state.cpuWorkLevel < CPU_WORK_MAX_LEVEL) {
     const level = state.cpuWorkLevel + 1;
-    return Object.freeze({
+    return [Object.freeze({
       ...state,
       cpuWorkLevel: level,
       lastLever: cpuWorkLeverName(level),
@@ -1173,9 +1270,12 @@ function shedCpuWork(state: GovernorState, mode: GovernorMode, config: GovernorC
       gpuHotWindows: 0,
       mode,
       recovery: noteShed(state.recovery, "cpu", config),
-    });
+    }), "shed"];
   }
-  return Object.freeze({ ...state, cpuHotWindows: hot, gpuHotWindows: 0, mode });
+  return [
+    Object.freeze({ ...state, cpuHotWindows: hot, gpuHotWindows: 0, mode }),
+    state.cpuWorkLevel < CPU_WORK_MAX_LEVEL ? "wait" : "spent",
+  ];
 }
 
 function openTrial(
@@ -1334,6 +1434,7 @@ export function observeRenderScaleApplication(
     ...state,
     renderScale: state.restoreScale ?? state.pendingProbe.preStepScale,
     resolutionInsensitive: true,
+    latchedAtGpuLevel: state.gpuWorkLevel,
     insensitiveWindowsRemaining: config.insensitiveRearmWindows,
     ineffectiveDownSteps: 0,
     restoreScale: null,

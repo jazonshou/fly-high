@@ -6,8 +6,11 @@ import {
   type HardwareScalingInputs,
 } from "../src/render/renderScaleLevel";
 import {
+  EXHAUSTED_AFTER_WINDOWS,
+  GPU_WORK_MAX_LEVEL,
   createGovernorState,
   governorConfigForProfile,
+  governorExhausted,
   nextGovernorDecision,
   observeRenderScaleApplication,
   summariseIntervals,
@@ -35,6 +38,10 @@ import {
  * 0.4 Mpx minimum, with its 4% snap, absorbs what is left on a small Low
  * viewport: such a step leaves the level unchanged, and the anti-ratchet
  * latch restores a scale at that same level, so nothing resizes.
+ *
+ * K3 (G6) adds the spent count: a re-armed step the minimum absorbs is a
+ * probe, which neither resets nor advances it, so a Low host that has shed
+ * everything stays exhausted across the re-arm.
  *
  * Every trace here is shipping-shaped: no GPU timestamps, intervals on whole
  * refreshes.
@@ -235,7 +242,7 @@ function pixelPath(replayed: readonly Replayed[]): number[] {
 
 describe("a step the 0.4 Mpx minimum absorbs (G4, red team)", () => {
   it("at 1366×768 on Low: two real steps, then an absorbed one that latches without a resize", () => {
-    const replayed = replay(1366, 768, 40);
+    const replayed = replay(1366, 768, 60);
     expect(pixelPath(replayed)).toEqual([0.544, 0.471, 0.4]);
     // The step to the floor (0.62 → 0.5577) is absorbed: the level stays and
     // the latch restores 0.62, which is at the same level.
@@ -244,19 +251,36 @@ describe("a step the 0.4 Mpx minimum absorbs (G4, red team)", () => {
     expect(replayed[latched]!.resized).toBe(false);
     expect(replayed[latched]!.state.renderScale).toBeCloseTo(0.62, 9);
     expect(replayed[latched]!.megapixels).toBeCloseTo(0.4, 3);
+    // Resolution shown not to help, the GPU ladder takes over. A latch set
+    // before it topped out is stale once it has (G6): re-armed in the next
+    // window, the scale is probed again with every rung shed, and the
+    // minimum absorbs that step too.
+    const topped = replayed.findIndex((each) => each.state.gpuWorkLevel === GPU_WORK_MAX_LEVEL);
+    expect(topped).toBeGreaterThan(latched);
+    expect(replayed[topped + 1]!.state.resolutionInsensitive).toBe(false);
+    expect(replayed[topped + 2]!.state).toMatchObject({ resolutionInsensitive: true, latchedAtGpuLevel: GPU_WORK_MAX_LEVEL });
     // Each 15-window re-arm steps into the same absorbed step and latches
-    // again within its window, at the same level: no resize.
+    // again within its window, at the same level: no resize, ever.
     const config = governorConfigForProfile(low);
     const latches = replayed
       .map((each, index) => (each.state.insensitiveWindowsRemaining === config.insensitiveRearmWindows ? index : -1))
       .filter((index) => index >= 0);
-    expect(latches).toEqual([latched, latched + 15, latched + 30]);
-    expect(replayed.slice(latched).every((each) => each.state.resolutionInsensitive)).toBe(true);
+    expect(latches).toEqual([latched, latched + 15, topped + 2, topped + 17, topped + 32]);
+    expect(replayed.filter((each, index) => index >= latched && !each.state.resolutionInsensitive)).toHaveLength(1);
     expect(replayed.slice(latched).every((each) => each.state.renderScale === replayed[latched]!.state.renderScale)).toBe(true);
     expect(replayed.filter((each) => each.resized)).toHaveLength(2);
     expect(replayed.every((each) => each.megapixels > 0.4 - 1e-9)).toBe(true);
-    // Resolution shown not to help, the GPU ladder takes over.
-    expect(replayed[replayed.length - 1]!.state.gpuWorkLevel).toBeGreaterThan(0);
+    // With nothing left to shed and still a quarter of its frames late (a
+    // mean of 20.8 ms, over 1.2× the target), every window from the fresh
+    // latch on is spent. The re-arm's step is a probe: the count holds
+    // through it, so the governor stays exhausted.
+    const exhausted = replayed.findIndex((each) => governorExhausted(each.state));
+    expect(exhausted).toBe(topped + 2 + EXHAUSTED_AFTER_WINDOWS);
+    expect(replayed.slice(exhausted).every((each) => governorExhausted(each.state))).toBe(true);
+    for (const rearm of [topped + 17, topped + 32]) {
+      expect(replayed[rearm]!.state.spentWindows).toBe(replayed[rearm - 1]!.state.spentWindows);
+      expect(replayed[rearm + 1]!.state.spentWindows).toBe(replayed[rearm - 1]!.state.spentWindows + 1);
+    }
   });
 
   it("at 1280×720 on Low: one real step, snapped onto the minimum, then the absorbed one", () => {
