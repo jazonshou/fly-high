@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { createWorld, worldToRunway } from "../src/world";
 import { DEFAULT_AIRPORT } from "../src/world/airport";
+import { airportRoadFenceOpening, airportRoadHead } from "../src/world/roads/roadNodes";
 import { readSource } from "./support/sourceText";
 import {
   FENCE_LATERAL_OFFSET_METERS,
@@ -185,5 +187,45 @@ describe("the fence does not stand a post in the approach corridor", () => {
         ).toBeGreaterThan(3);
       }
     }
+  });
+});
+
+describe("the fence opens where the access road leaves the home field", () => {
+  const world = createWorld();
+  const airport = world.airport!;
+  const opening = airportRoadFenceOpening(world)!;
+
+  it("stands no post, and runs no rail, across the road's lead-out", () => {
+    const head = airportRoadHead(world)!;
+    // The lead-out runs straight out from the head through the landside run.
+    expect(worldToRunway(airport, head.startX, head.startZ).along).toBeCloseTo(opening.along, 6);
+    expect(worldToRunway(airport, head.exitX, head.exitZ).along).toBeCloseTo(opening.along, 6);
+    expect(worldToRunway(airport, head.exitX, head.exitZ).across).toBeGreaterThan(FENCE_LATERAL_OFFSET_METERS);
+    const stations = perimeterFenceStations(airport, [opening]);
+    for (const station of stations) {
+      if (station.across < FENCE_LATERAL_OFFSET_METERS - 1e-6 || !station.toNext) continue;
+      const end = station.along + station.toNext[0] * FENCE_POST_SPACING_METERS;
+      const lo = Math.min(station.along, end);
+      const hi = Math.max(station.along, end);
+      expect(hi <= opening.along - opening.halfWidthMeters || lo >= opening.along + opening.halfWidthMeters).toBe(true);
+    }
+  });
+
+  it("opens only the road's width, on the landside run alone", () => {
+    const closed = perimeterFenceStations(airport);
+    const open = perimeterFenceStations(airport, [opening]);
+    const missing = closed.length - open.length;
+    // The formation and 2 m either side, in 3 m bays, and a bay either end.
+    expect(missing).toBeGreaterThan(Math.floor((2 * opening.halfWidthMeters) / FENCE_POST_SPACING_METERS));
+    expect(missing).toBeLessThan(Math.ceil((2 * opening.halfWidthMeters) / FENCE_POST_SPACING_METERS) + 3);
+    const key = (station: { along: number; across: number }) => `${station.along.toFixed(3)}:${station.across.toFixed(3)}`;
+    const kept = new Set(open.map(key));
+    for (const station of closed) {
+      if (kept.has(key(station))) continue;
+      expect(station.across).toBeCloseTo(FENCE_LATERAL_OFFSET_METERS, 6);
+      expect(Math.abs(station.along - opening.along)).toBeLessThan(opening.halfWidthMeters + FENCE_POST_SPACING_METERS + 1e-6);
+    }
+    // An eroded world has no roads, so no opening.
+    expect(airportRoadFenceOpening({ ...world, worldEvolution: "eroded" })).toBeNull();
   });
 });

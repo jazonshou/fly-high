@@ -765,6 +765,18 @@ export function fenceApproachGapHalfWidthMeters(): number {
   return AIRFIELD_LIGHTING_PROFILE.approachCrossbarLengthMeters / 2 + 6;
 }
 
+/**
+ * Where a road passes through the perimeter's landside (+across) run: no post
+ * stands, and no rail runs, within `halfWidthMeters` of `along` (runway-local).
+ * The home field's access road (`airportRoadFenceOpening`) is the one there is.
+ */
+export interface FenceOpening {
+  readonly along: number;
+  readonly halfWidthMeters: number;
+}
+
+const NO_FENCE_OPENINGS: readonly FenceOpening[] = Object.freeze([]);
+
 export interface FenceStation {
   readonly along: number;
   readonly across: number;
@@ -783,6 +795,7 @@ export interface FenceStation {
  */
 export function perimeterFenceStations(
   airport: Readonly<AirportDefinition>,
+  openings: readonly FenceOpening[] = NO_FENCE_OPENINGS,
 ): readonly FenceStation[] {
   const halfLength = airport.runwayLength / 2 + airport.endSafetyArea;
   const halfWidth = FENCE_LATERAL_OFFSET_METERS;
@@ -808,6 +821,15 @@ export function perimeterFenceStations(
       // is. Leave that corridor open rather than standing a post in it.
       const onEndRun = Math.abs(spanAcross) > Math.abs(spanAlong);
       if (onEndRun && Math.abs(across) < gapHalfWidth) continue;
+      // A road through the landside run: neither this station's post nor
+      // the rail it runs to the next stands in the opening.
+      if (!onEndRun && across > 0) {
+        const next = along + spanAlong / bays;
+        const lo = Math.min(along, next);
+        const hi = Math.max(along, next);
+        if (openings.some((opening) =>
+          lo < opening.along + opening.halfWidthMeters && hi > opening.along - opening.halfWidthMeters)) continue;
+      }
       stations.push({ along, across, toNext: unit });
     }
   }
@@ -879,9 +901,10 @@ export function buildPerimeterFenceGeometry(
    * function pure for the winding guard, which does not have one.
    */
   heightAt: (along: number, across: number) => number = () => 0,
+  openings: readonly FenceOpening[] = NO_FENCE_OPENINGS,
 ): WindsockPartGeometry {
   const out = { positions: [] as number[], normals: [] as number[], indices: [] as number[] };
-  const stations = perimeterFenceStations(airport);
+  const stations = perimeterFenceStations(airport, openings);
   appendPerimeterFenceStations(out, stations, 0, stations.length, heightAt);
   return {
     positions: new Float32Array(out.positions),
