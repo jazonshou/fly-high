@@ -191,7 +191,6 @@ interface SettleRecord {
   readonly reading: SettleReading;
   readonly renderWidth: number;
   readonly renderHeight: number;
-  readonly appliedScale: number;
   readonly stages: readonly BenchStartupStage[];
 }
 
@@ -448,15 +447,10 @@ export class StepController implements BenchFramePort {
     }
     const outcome = settleOutcome(this.timings, this.settleProgress, elapsedMs);
     if (outcome === null) return;
-    this.endSettle(outcome === "rest", elapsedMs, probe, reading);
+    this.endSettle(outcome === "rest", elapsedMs, reading);
   }
 
-  private endSettle(
-    reachedRest: boolean,
-    elapsedMs: number,
-    probe: Readonly<RendererBenchProbe>,
-    lastReading: SettleReading | null,
-  ): void {
+  private endSettle(reachedRest: boolean, elapsedMs: number, lastReading: SettleReading | null): void {
     const { renderer, instruments, setup } = this.options;
     const diagnostics = lastReading?.diagnostics ?? renderer.getDiagnostics();
     const reading: SettleReading = {
@@ -484,7 +478,6 @@ export class StepController implements BenchFramePort {
       reading,
       renderWidth: size.width,
       renderHeight: size.height,
-      appliedScale: probe.appliedRenderScale,
       stages: setup.startupStages().map((stage) => ({ label: stage.label, kind: stage.kind, ms: stage.milliseconds })),
     };
     // The flight begins with the next frame, and so do its compile events.
@@ -561,7 +554,9 @@ export class StepController implements BenchFramePort {
     const airEnd = this.compilesAtAirEnd ?? atEnd;
     const tier = benchTier(setup.tierIndex);
     const governor = this.trace.summary();
-    const appliedScale = settled?.appliedScale ?? 1;
+    // G4 steps the capped frame, so the cap binds or not at the governor's
+    // ceiling, not at its applied scale; pinned, the ceiling is the pin.
+    const ceilingScale = governor.config?.scaleCeiling ?? setup.pinnedRenderScale ?? this.profile.renderScale;
     const renderWidth = settled?.renderWidth ?? renderer.getCaptureRenderSize().width;
     const renderHeight = settled?.renderHeight ?? renderer.getCaptureRenderSize().height;
     const cssPixels = Math.max(1, setup.cssWidth * setup.cssHeight);
@@ -615,7 +610,7 @@ export class StepController implements BenchFramePort {
         renderWidth,
         renderHeight,
         renderPixels: renderWidth * renderHeight,
-        pixelCapBinds: Math.max(0.1, pixelRatio * appliedScale) >= Math.sqrt(this.scale.maxRenderPixels / cssPixels),
+        pixelCapBinds: Math.max(0.1, pixelRatio * ceilingScale) >= Math.sqrt(this.scale.maxRenderPixels / cssPixels),
         pinnedRenderScale: setup.pinnedRenderScale,
         gpuTiming: this.gpuTiming(),
       },

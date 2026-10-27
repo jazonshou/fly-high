@@ -6,22 +6,26 @@ import {
   type GovernorObservation,
   type ScaleContext,
 } from "../src/bench/governorTrace";
-import { benchTimings } from "../src/bench/plan";
+import { benchProfile, benchTimings } from "../src/bench/plan";
 import {
   CPU_WORK_MAX_LEVEL,
+  EXHAUSTED_AFTER_WINDOWS,
   createGovernorState,
   governorConfigForProfile,
   type GovernorConfig,
   type GovernorSignals,
   type GovernorState,
 } from "../src/render/webgpu/core/AdaptiveGovernor";
-import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
+import { resolveWebGpuQualityProfile, type WebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import type { QualityLevel } from "../src/game/types";
 
 const timings = benchTimings(false);
 
 function setup(quality: QualityLevel, cssWidth = 1920, cssHeight = 1080, devicePixelRatio = 1) {
-  const profile = resolveWebGpuQualityProfile(quality, "balanced");
+  return setupProfile(resolveWebGpuQualityProfile(quality, "balanced"), cssWidth, cssHeight, devicePixelRatio);
+}
+
+function setupProfile(profile: WebGpuQualityProfile, cssWidth: number, cssHeight: number, devicePixelRatio: number) {
   const config = governorConfigForProfile(profile);
   const scale: ScaleContext = {
     cssWidth,
@@ -43,7 +47,7 @@ function probe(config: GovernorConfig, scale: ScaleContext): GovernorObservation
   renderHeight: number;
 } {
   const state = createGovernorState(config);
-  const pixels = pixelsAtScale(state.renderScale, scale);
+  const pixels = pixelsAtScale(state.renderScale, scale, config.scaleCeiling);
   return {
     governorState: state,
     governorSignals: { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null },
@@ -64,7 +68,7 @@ function decide(
   target.governorState = Object.freeze({ ...target.governorState, ...change });
   target.governorSignals = { ...signals };
   target.appliedRenderScale = target.governorState.renderScale;
-  const pixels = pixelsAtScale(target.governorState.renderScale, scale);
+  const pixels = pixelsAtScale(target.governorState.renderScale, scale, target.governorConfig.scaleCeiling);
   target.renderWidth = Math.round(Math.sqrt(pixels));
   target.renderHeight = Math.round(Math.sqrt(pixels));
 }
@@ -125,7 +129,7 @@ describe("governor trace", () => {
     step(32);
     decide(current, { mode: "gpu-resolution", renderScale: 0.95 }, GPU_HOT, scale);
     step(40);
-    decide(current, { mode: "gpu-resolution", renderScale: 0.75 }, GPU_HOT, scale);
+    decide(current, { mode: "gpu-resolution", renderScale: config.scaleFloor }, GPU_HOT, scale);
     step(50);
     decide(current, { mode: "gpu-work", gpuWorkLevel: 1, resolutionInsensitive: true, lastLever: "compute-budget" }, GPU_HOT, scale);
     step(60);
@@ -138,11 +142,13 @@ describe("governor trace", () => {
     expect(summary.decisionsDuringSettle).toBe(1);
     expect(summary.decisions).toHaveLength(6);
     expect(summary.decisions[2]!.slice(0, 6)).toEqual([32, "gpu-resolution", "gpu-bound", 20, 0.95, 0.95]);
-    expect(summary.decisions[2]!.slice(7)).toEqual([1, 0, "terrain-page-requests", false, null, 5, 25, null]);
+    expect(summary.decisions[2]!.slice(7))
+      .toEqual([1, 0, "terrain-page-requests", false, null, 5, 25, null, false, 0, false]);
     expect(summary.decisions[1]!.slice(1, 4)).toEqual(["cpu-work", "cpu-bound", null]);
     expect(summary.flight.decisions).toBe(5);
     expect(summary.flight.events).toEqual({
       scaleDown: 2, scaleUp: 1, cpuShed: 1, cpuRecover: 1, gpuShed: 1, gpuRecover: 1, insensitiveLatched: 1,
+      urgentSheds: 0, exhaustedWindows: 0,
     });
     expect(summary.windows.ground.decisions).toBe(1);
     expect(summary.windows.ground.events.cpuShed).toBe(1);
@@ -168,11 +174,21 @@ describe("governor trace", () => {
     expect(summary.atEnd).toMatchObject({ mode: "balanced", targetScale: 0.775, gpuLevel: 0 });
   });
 
-  it("reads target, applied and rendered apart: a step the pixel cap absorbs is no step (S2)", () => {
-    // Tier 1 at 2560x1440: the 1.5 Mpx cap binds below the 0.75 floor, so no
-    // scale between the floor and the ceiling changes a pixel.
-    const { config, scale, trace } = setup("medium", 2560, 1440, 1);
-    expect(pixelsAtScale(config.scaleFloor, scale)).toBeCloseTo(pixelsAtScale(config.scaleCeiling, scale), 6);
+  it("reads target, applied and rendered apart: a step the cap or the 0.4 Mpx minimum absorbs is no step (S2)", () => {
+    // Pinned (1A-6a), the cap clamps the scale product: Medium at 2560x1440
+    // renders its 1.5 Mpx at any scale down to 0.64. Unpinned (G4), a step
+    // applies to the capped frame, so the cap absorbs none of it.
+    const wide = setup("medium", 2560, 1440, 1);
+    const ceiling = wide.config.scaleCeiling;
+    expect(pixelsAtScale(0.8 * ceiling, wide.scale, null)).toBeCloseTo(pixelsAtScale(ceiling, wide.scale, null), 6);
+    expect(pixelsAtScale(ceiling, wide.scale, ceiling)).toBeCloseTo(1_500_000, 3);
+    expect(pixelsAtScale(0.8 * ceiling, wide.scale, ceiling)).toBeCloseTo(0.64 * 1_500_000, 3);
+
+    // Medium at 800x600 renders 0.355 Mpx at its ceiling, under the 0.4 Mpx
+    // minimum, so no scale between the floor and the ceiling changes a pixel.
+    const { config, scale, trace } = setup("medium", 800, 600, 1);
+    expect(pixelsAtScale(config.scaleFloor, scale, config.scaleCeiling))
+      .toBe(pixelsAtScale(config.scaleCeiling, scale, config.scaleCeiling));
     const current = probe(config, scale);
     trace.observe(0, current);
     decide(current, { mode: "gpu-resolution", renderScale: config.scaleFloor }, GPU_HOT, scale);
@@ -186,14 +202,73 @@ describe("governor trace", () => {
     expect(summary.atEnd!.renderPixels).toBe(summary.atFlightStart!.renderPixels);
   });
 
-  it("tier 0 has no resolution lever: its floor share is null", () => {
-    const { config, scale, trace } = setup("low");
-    expect(config.scaleFloor).toBe(config.scaleCeiling);
+  it("has the resolution lever exactly when the floor's pixels are below the ceiling's", () => {
+    // From each tier's own config, so it holds whatever floor the governor
+    // sets: a floor at the ceiling, or the 0.4 Mpx minimum, leaves none.
+    const viewports = [[1920, 1080, 1], [1366, 768, 1], [800, 600, 1], [1512, 982, 2]] as const;
+    const seen = new Set<boolean>();
+    for (const tierIndex of [0, 1, 2, 3]) {
+      for (const [cssWidth, cssHeight, devicePixelRatio] of viewports) {
+        const { config, scale, trace } = setupProfile(benchProfile(tierIndex), cssWidth, cssHeight, devicePixelRatio);
+        const floorPixels = pixelsAtScale(config.scaleFloor, scale, config.scaleCeiling);
+        const ceilingPixels = pixelsAtScale(config.scaleCeiling, scale, config.scaleCeiling);
+        const available = floorPixels < ceilingPixels;
+        const current = probe(config, scale);
+        for (let frame = 0; frame < 75 * 10; frame += 1) trace.observe(frame / 10, current);
+        const summary = trace.summary();
+        const where = `tier ${tierIndex} at ${cssWidth}x${cssHeight}@${devicePixelRatio}`;
+        expect(summary.scaleLeverAvailable, where).toBe(available);
+        expect(summary.floorPixels, where).toBe(floorPixels);
+        expect(summary.ceilingPixels, where).toBe(ceilingPixels);
+        expect(summary.windows.air.share.atScaleFloor === null, where).toBe(!available);
+        expect(summary.windows.air.share.cpuShed, where).toBe(0);
+        seen.add(available);
+      }
+    }
+    // Both answers occur: High at 1920x1080 has a lever, Medium at 800x600 none.
+    expect([...seen].sort()).toEqual([false, true]);
+  });
+
+  it("records each decision's urgency, spent count and exhaustion, and counts urgent sheds and exhausted windows", () => {
+    const { config, scale, trace } = setup("high");
     const current = probe(config, scale);
-    for (let frame = 0; frame < 75 * 30; frame += 1) trace.observe(frame / 30, current);
-    expect(trace.summary().scaleLeverAvailable).toBe(false);
-    expect(trace.summary().windows.air.share.atScaleFloor).toBeNull();
-    expect(trace.summary().windows.air.share.cpuShed).toBe(0);
+    let frame = 30 * 60;
+    const step = (until: number): void => {
+      for (; frame < until * 60; frame += 1) trace.observe(frame / 60, current);
+    };
+    const late: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: 19, intervalP95Ms: 30 };
+    step(31);
+    // Urgent: a CPU rung, a GPU rung, then a scale step, which urgency does not speed up.
+    decide(current, { urgent: true, cpuWorkLevel: 1 }, late, scale);
+    step(32);
+    decide(current, { urgent: true, gpuWorkLevel: 1 }, late, scale);
+    step(33);
+    decide(current, { urgent: true, renderScale: 0.95 }, late, scale);
+    step(34);
+    // Not urgent: a rung shed at the old pace.
+    decide(current, { urgent: false, cpuWorkLevel: 2 }, late, scale);
+    step(35);
+    // Spent windows in a row, then an on-cadence window that resets the count.
+    for (let spent = 1; spent <= EXHAUSTED_AFTER_WINDOWS + 1; spent += 1) {
+      decide(current, { spentWindows: spent }, late, scale);
+      step(35 + spent);
+    }
+    decide(current, { spentWindows: 0 }, { gpuP95Ms: null, cpuP95Ms: 5, intervalP95Ms: 16.7 }, scale);
+    step(76);
+
+    const { decisions, windows } = trace.summary();
+    expect(decisions.map((decision) => decision.slice(15))).toEqual([
+      [true, 0, false],
+      [true, 0, false],
+      [true, 0, false],
+      [false, 0, false],
+      ...Array.from({ length: EXHAUSTED_AFTER_WINDOWS + 1 }, (_, index) => (
+        [false, index + 1, index + 1 >= EXHAUSTED_AFTER_WINDOWS]
+      )),
+      [false, 0, false],
+    ]);
+    expect(windows.air.events).toMatchObject({ cpuShed: 2, gpuShed: 1, scaleDown: 1, urgentSheds: 2, exhaustedWindows: 2 });
+    expect(windows.ground.events).toMatchObject({ urgentSheds: 0, exhaustedWindows: 0 });
   });
 
   it("a pinned renderer never decides and reads as pinned", () => {

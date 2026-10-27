@@ -3687,11 +3687,14 @@ twice its GPU target, the paced interval less 3.33 ms: 60 ms where 30
 divides the refresh rate and 62.8 ms at 144 Hz),
 stutters over 50 and 100 ms, `render()`'s main-thread time, pipelines
 compiled, long tasks, the governor's decisions and shares, and, in pinned
-mode, GPU milliseconds. Each flight also records its pacing: the frame-rate
-setting and what the build does with it, the cadence at the first and last
-frames (the divisor, the display rate, and whether the rate was confirmed on
-ticks that drew nothing or a faster period than any frame could make), and
-the bench's rAF ticks against the frames the game rendered. Missed refreshes
+mode, GPU milliseconds. Each governor decision records whether its window
+was urgent, the spent count and whether the governor was exhausted; the
+events count urgent sheds and exhausted windows. Each flight also records
+its pacing: the frame-rate setting and what the build does with it, the
+cadence at the first and last frames (the divisor, the display rate, and
+whether the rate was confirmed on ticks that drew nothing or a faster period
+than any frame could make), and the bench's rAF ticks against the frames the
+game rendered. Missed refreshes
 are counted against the paced cadence, and the vsync buckets count paced
 slots. At every setting the game waits for its display probe's quiet lead
 before it creates the renderer (0.3 s, up to 1 s where the first frames come
@@ -3725,15 +3728,17 @@ numbers, and the first flight in the tab is marked, because it pays the
 cold shader and pipeline caches.
 
 **Where reports go.** **Download report (.json)** saves the full report
-(`fly-high.bench/2`, `fly-high-bench-<vendor>-<time>.json`; a `/1` report
-was flown without frame pacing); it is the one
-to keep. **Open GitHub issue** copies a compact report to the clipboard and
-opens a prefilled issue to paste it into, and **Copy short summary** gives a
-few lines for a chat. A report kept as evidence is committed as
-`docs/evidence/bench-<label>-<ISO>.json`, where the label names the machine
-(for example `bench-rtx3050-laptop-2026-10-26T09-14-03Z.json`), and cited
-from here by that path. **Run the GPU comparison pass** flies the same tiers
-in pinned mode and keeps the shipped run in the same report.
+(`fly-high.bench/3`, `fly-high-bench-<vendor>-<time>.json`; a `/2` report
+has no urgency, spent-window or exhaustion fields, judged the pixel cap at
+the applied scale, and its governor shed without urgency, so `/2` and `/3`
+steps are not comparable; a `/1` report was flown without frame pacing); it
+is the one to keep. **Open GitHub issue** copies a compact report to the
+clipboard and opens a prefilled issue to paste it into, and **Copy short
+summary** gives a few lines for a chat. A report kept as evidence is
+committed as `docs/evidence/bench-<label>-<ISO>.json`, where the label names
+the machine (for example `bench-rtx3050-laptop-2026-10-26T09-14-03Z.json`),
+and cited from here by that path. **Run the GPU comparison pass** flies the
+same tiers in pinned mode and keeps the shipped run in the same report.
 
 **Merge requirement.** The bench adds one read-only method to the renderer
 (`readBenchProbe`) and exports one pure governor function, and changes

@@ -25,7 +25,7 @@ import {
   verdictText,
   windowSmoothness,
 } from "../src/bench/report";
-import { BENCH_SCHEMA } from "../src/bench/plan";
+import { BENCH_SCHEMA, BENCH_VERSION } from "../src/bench/plan";
 import { FRAME_PACING_ENABLED } from "../src/game/framePacer";
 import { DEFAULT_SETTINGS } from "../src/settings";
 import type {
@@ -79,15 +79,16 @@ function badValues(value: unknown, path = "$"): string[] {
 const run = defaultRun();
 const full = report(run);
 
-describe("the fly-high.bench/2 report", () => {
+describe(`the ${BENCH_SCHEMA} report`, () => {
   it("has the schema's top-level, run and step keys", () => {
     expect(Object.keys(full)).toEqual([
       "schema", "benchVersion", "createdAt", "build", "run", "device", "display", "profiles", "steps",
       "earlierRuns", "definitions",
     ]);
     expect(full.schema).toBe(BENCH_SCHEMA);
-    expect(BENCH_SCHEMA).toBe("fly-high.bench/2");
-    expect(full.benchVersion).toBe(2);
+    expect(full.benchVersion).toBe(BENCH_VERSION);
+    // The one deliberate literal: a schema bump is a decision, made here.
+    expect(BENCH_SCHEMA).toBe("fly-high.bench/3");
     expect(Object.keys(full.run).sort()).toEqual([
       "finishedAt", "firstLoad", "id", "ignoredParams", "nonStandard", "plan", "repeatability", "settingsKeyUnchanged",
       "startedAt", "status", "tierLabels", "userLabel", "verdict", "voidReasons", "warnings", "workload",
@@ -169,15 +170,17 @@ describe("the fly-high.bench/2 report", () => {
     expect(badValues(parsed)).toEqual([]);
   });
 
-  it("downloads a four-step run in at most 120 KB, with no per-frame array", () => {
+  it("downloads a four-step run in at most 125 KB, with no per-frame array", () => {
     // The plan's 60 KB came before the ground window, the compile split, the
     // long-animation-frame scripts and the detail snapshots. This fixture
-    // measures about 111 KB: 25 KB a step, of which the governor decisions
-    // are 5.6 KB and the per-second table 3.9 KB, and 11 KB of profiles and
-    // device. The download has no paste limit (S4); the bound is there to
-    // catch a per-frame array, which would add about 27 KB a step.
+    // measures about 122 KB: 27 KB a step, of which the governor decisions
+    // are 6.5 KB and the per-second table 3.9 KB, and 14 KB of profiles and
+    // device. `/3`'s urgency, spent and exhaustion slots added 3.3 KB to the
+    // 118.5 KB of `/2`, which left the old 120 KB bound no room. The download
+    // has no paste limit (S4); the bound is there to catch a per-frame array,
+    // which would add about 27 KB a step.
     const text = reportToJson(full);
-    expect(text.length).toBeLessThanOrEqual(120_000);
+    expect(text.length).toBeLessThanOrEqual(125_000);
     for (const step of full.steps) expect(reportToJson(step).length).toBeLessThanOrEqual(30_000);
     // A realistic run, not an empty one: about fifty governor decisions a step.
     expect(full.steps[0]!.result!.governor.decisions.length).toBeGreaterThanOrEqual(40);
@@ -509,11 +512,13 @@ describe("the report page's table and summary", () => {
 
   it("reads the scale floor's share as a dash for a flight that never reached the air window", () => {
     const floor = REPORT_TABLE_COLUMNS.indexOf("At scale floor");
+    // Low at 800x600 renders under the 0.4 Mpx minimum, so it has no
+    // resolution lever whatever the governor's floor (G4).
+    const small = benchStepRecord(1, { tierIndex: 0, cssWidth: 800, cssHeight: 600 });
     const stopped = benchStepRecord(3, { tierIndex: 1, status: "early-stop" });
-    const rows = reportTableRows(report(withSteps(run, [run.steps[0]!, run.steps[1]!, run.steps[2]!, stopped])).steps);
+    const rows = reportTableRows(report(withSteps(run, [run.steps[0]!, small, run.steps[2]!, stopped])).steps);
     expect(rows.map((row) => row.cells[floor])).toEqual([
       expect.stringMatching(/^\d+%$/),
-      // Low has no resolution lever.
       "n/a",
       expect.stringMatching(/^\d+%$/),
       // Every other air cell of the row is a dash too.

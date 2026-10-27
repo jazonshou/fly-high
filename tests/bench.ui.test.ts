@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { noticeText } from "../src/bench/flow";
 import { createBenchVisualState } from "../src/bench/path";
-import { BENCH_SEED, benchGameSettings, benchTimings, describeDuration, estimateBenchDuration } from "../src/bench/plan";
+import { BENCH_SCHEMA, BENCH_SEED, benchGameSettings, benchTimings, describeDuration, estimateBenchDuration } from "../src/bench/plan";
 import { buildReport, compactReportJson, verdictText } from "../src/bench/report";
 import type { BenchBuildInfo, BenchDeviceReport, BenchReport, BenchRunRecord } from "../src/bench/types";
 import { BenchApp, isInsideBenchUi, type BenchView } from "../src/bench/ui/BenchApp";
@@ -560,7 +560,7 @@ describe("the report dialog", () => {
     const markup = reportDialog(valid, { copy: { target: "report", status: "failed", text } });
     expect(markup).toMatch(/<label for="bench-report-fallback">The browser would not let the page copy\./);
     expect(markup).toMatch(/<textarea id="bench-report-fallback" readOnly="" rows="8"/);
-    expect(markup).toContain("&quot;schema&quot;:&quot;fly-high.bench/2&quot;");
+    expect(markup).toContain(`&quot;schema&quot;:&quot;${BENCH_SCHEMA}&quot;`);
     const copied = reportDialog(valid, { copy: { target: "issue", status: "copied", text } });
     expect(copied).toContain('role="status">Report copied. Paste it into the empty block in the GitHub issue.</p>');
     expect(copied).not.toContain("<textarea");

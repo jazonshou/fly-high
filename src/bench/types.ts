@@ -11,7 +11,7 @@ import type { WorldDefinition } from "@/src/world";
 /**
  * The `?bench=1` benchmark's shared contract: what FlightGame sees of a bench
  * session, what the tab-scoped run store holds between page loads, and the
- * `fly-high.bench/2` report.
+ * `fly-high.bench/3` report.
  *
  * Types only. FlightGame imports this file with `import type` and nothing
  * else of src/bench statically, so no bench code reaches a player's bundle.
@@ -406,7 +406,11 @@ export interface BenchCanvas {
   readonly renderWidth: number;
   readonly renderHeight: number;
   readonly renderPixels: number;
-  /** The tier's pixel cap sets the rendered size (always meant to in pinned mode). */
+  /**
+   * The tier's pixel cap binds at the governor's ceiling, the profile's
+   * render scale or the pin (always meant to in pinned mode). Unpinned, the
+   * governor's resolution steps apply to the capped frame (G4).
+   */
   readonly pixelCapBinds: boolean;
   readonly pinnedRenderScale: number | null;
   readonly gpuTiming: BenchGpuTiming;
@@ -636,9 +640,11 @@ export interface BenchGovernorSnapshot {
 /**
  * One decision: [t s, mode, class, proxy ms, target scale, applied scale,
  * rendered pixels, CPU level, GPU level, lever, insensitive, GPU p95, CPU p95,
- * interval p95, late share]. t counts from the flight's first frame, so the
- * settle's decisions read below zero. A tuple, because a run holds up to 128
- * of them per step.
+ * interval p95, late share, urgent, spent windows, exhausted]. t counts from
+ * the flight's first frame, so the settle's decisions read below zero. The
+ * last three are the state the decision left (PR B part 2, G6a): its window
+ * was urgent, the spent windows in a row, and `governorExhausted`. A tuple,
+ * because a run holds up to 128 of them per step.
  */
 export type BenchGovernorDecision = readonly [
   t: number,
@@ -656,6 +662,9 @@ export type BenchGovernorDecision = readonly [
   cpuP95: number | null,
   intervalP95: number | null,
   lateFraction: number | null,
+  urgent: boolean,
+  spentWindows: number,
+  exhausted: boolean,
 ];
 
 export interface BenchGovernorEvents {
@@ -666,6 +675,10 @@ export interface BenchGovernorEvents {
   readonly gpuShed: number;
   readonly gpuRecover: number;
   readonly insensitiveLatched: number;
+  /** PR B part 2 (G6a): decisions that shed a CPU or GPU rung in an urgent window. */
+  readonly urgentSheds: number;
+  /** PR B part 2 (G6a): decisions after which the governor was exhausted. */
+  readonly exhaustedWindows: number;
 }
 
 /**
@@ -673,7 +686,7 @@ export interface BenchGovernorEvents {
  * All null for a window with no frames, which an early stop's air window is.
  */
 export interface BenchGovernorShares {
-  /** Null too where the resolution lever cannot change the pixels: tier 0, a binding pixel cap, pinned. */
+  /** Null too where the resolution lever cannot change the pixels: a floor at the ceiling, the 0.4 Mpx minimum, pinned. */
   readonly atScaleFloor: number | null;
   readonly belowCeiling: number | null;
   readonly cpuShed: number | null;
@@ -910,7 +923,7 @@ export interface BenchDeviceReport {
   };
 }
 
-// --- the report (`fly-high.bench/2`) ----------------------------------------------
+// --- the report (`fly-high.bench/3`) ----------------------------------------------
 
 export type BenchVerdict = "valid" | "void" | "incomplete" | "unchecked";
 
@@ -1041,7 +1054,7 @@ export interface BenchEarlierRun {
 }
 
 export interface BenchReport {
-  readonly schema: "fly-high.bench/2";
+  readonly schema: "fly-high.bench/3";
   readonly benchVersion: number;
   readonly createdAt: string;
   readonly build: BenchBuildInfo;

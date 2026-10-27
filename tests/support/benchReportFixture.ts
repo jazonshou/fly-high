@@ -157,6 +157,8 @@ export function benchStepResult(options: StepFixtureOptions): BenchStepResult {
     maxDevicePixelRatio: profile.maxDevicePixelRatio,
     maxRenderPixels: profile.maxRenderPixels,
   };
+  // The renderer's rule: G4's step on the capped frame, or 1A-6a when pinned.
+  const ceiling = mode === "pinned" ? null : config.scaleCeiling;
 
   // Frames: whole refresh periods with a little jitter, a share of doubled
   // ones that brings the mean to the target, and a long frame now and then.
@@ -180,7 +182,7 @@ export function benchStepResult(options: StepFixtureOptions): BenchStepResult {
     let interval = refreshMs * multiple * (next() < doubled ? 2 : 1) + (next() - 0.5) * 0.4;
     if (frame > 0 && frame % hitchEvery === 0) interval = 30 + next() * 90;
     const compileCount = tS < 2 && next() < 0.2 ? 1 + Math.floor(next() * 3) : next() < 0.002 ? 1 : 0;
-    const pixels = pixelsAtScale(state.renderScale, scale);
+    const pixels = pixelsAtScale(state.renderScale, scale, ceiling);
     const width = Math.round(Math.sqrt(pixels * (cssWidth / cssHeight)));
     const height = Math.round(pixels / width);
     const decide = frame > 0 && frame % decisionEvery === 0;
@@ -244,7 +246,7 @@ export function benchStepResult(options: StepFixtureOptions): BenchStepResult {
   const intervals = flightFrames.map((index) => log.frameTimeMs[index + 1]! - log.frameTimeMs[index]!);
   const refresh = benchRefresh(refreshHz);
   const flightEndMs = flightStartMs + flightS * 1_000;
-  const pixels = pixelsAtScale(config.scaleCeiling, scale);
+  const pixels = pixelsAtScale(config.scaleCeiling, scale, ceiling);
   const renderWidth = Math.round(Math.sqrt(pixels * (cssWidth / cssHeight)));
   const renderHeight = Math.round(pixels / renderWidth);
   const stages = [

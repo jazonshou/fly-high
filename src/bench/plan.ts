@@ -27,10 +27,15 @@ import type {
  * render scale. Pure; the session reads the clock and the location.
  */
 
-/** `/2` records the frame-rate setting and each step's pacing; a `/1` report had no frame cap. */
-export const BENCH_SCHEMA = "fly-high.bench/2";
+/**
+ * `/3` adds urgency, spent windows and exhaustion, and judges the pixel cap
+ * at G4's semantics; its governor sheds faster (G6a urgency), so `/2` steps
+ * are not comparable. `/2` recorded the frame-rate setting and each step's
+ * pacing; a `/1` report had no frame cap.
+ */
+export const BENCH_SCHEMA = "fly-high.bench/3";
 /** Bump when what a step measures, or how, changes. */
-export const BENCH_VERSION = 2;
+export const BENCH_VERSION = 3;
 /** FlightGame's placeholder seed (`00762m`), which has a home airport to roll from. */
 export const BENCH_SEED = 0x51a7e;
 /** Bump with any change to the route in path.ts, and pin the new fingerprint below. */
@@ -262,9 +267,9 @@ const PINNED_SCALE_MIN = 0.1;
 const PINNED_SCALE_MAX = 2;
 
 /**
- * Pinned mode renders the tier's whole pixel budget (1.0 / 1.5 / 2.4 / 4.0
- * Mpx) on every device, whatever its window: a scale 1% past the one at
- * which the pixel cap binds, so the cap, not the scale, sets the size
+ * Pinned mode renders the tier's whole pixel budget (its `maxRenderPixels`)
+ * on every device, whatever its window: a scale 1% past the one at which
+ * the pixel cap binds, so the cap, not the scale, sets the size
  * (`resolveHardwareScalingLevel`). The canvas keeps its own size and aspect.
  */
 export function pinnedRenderScaleFor(
