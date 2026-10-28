@@ -74,7 +74,8 @@ import { setGpuPassLabelDecorator } from "../gpuPassLabels";
 import { armGpuPassTiming, collectGpuPassTiming, installGpuPassTiming } from "../gpuPassTiming";
 import { beginGpuWorkWindow, endGpuWorkWindow, installGpuWorkCounters } from "../gpuWorkCounters";
 import { carShotEffectsHistoryFrames } from "../carShotState";
-import { boatShotState, carShotState, resolveShotPlacement } from "../shotPlacement";
+import { boatShotState, carShotState, resolveShotPlacement, walkShotState } from "../shotPlacement";
+import { walkShotLookPitchRadians } from "../walkShotState";
 import { FlightBakeProbe, readBakeStats } from "./bakeProbe";
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./detailWatchdog";
 import { renderAfterHitch } from "./flightHitch";
@@ -843,7 +844,7 @@ const agent: PerfAgent = {
       shot.worldEvolution ?? "analytic",
       shot.climateProvince,
       shot.landforms,
-      shot.boat ? "speedboat" : shot.car ? "landcruiser" : null,
+      shot.boat ? "speedboat" : shot.car || shot.walk ? "landcruiser" : null,
       request.freshRenderer,
     );
     const active = requireRenderer();
@@ -894,6 +895,8 @@ const agent: PerfAgent = {
       ? boatShotState(activeWorld, shot.boat, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
       : shot.car
       ? carShotState(activeWorld, shot.car, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
+      : shot.walk
+      ? walkShotState(activeWorld, shot.walk, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
       : {
           ...INITIAL_VISUAL_STATE,
           position: { x: positionX, y: altitude, z: positionZ },
@@ -909,6 +912,11 @@ const agent: PerfAgent = {
           simulationTime,
         };
     active.setCameraMode(shot.cameraMode);
+    if (shot.walk) {
+      // As the capture: the character camera behind the walker, turned by the shot's look.
+      active.cutCamera();
+      active.applyCharacterLook({ yaw: 0, pitch: walkShotLookPitchRadians(shot.walk), zoom: 0 });
+    }
     context = {
       shot,
       canonicalShotIndex: request.canonicalShotIndex,
