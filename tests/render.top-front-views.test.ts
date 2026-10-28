@@ -31,6 +31,8 @@ import { chaseCameraProfile } from "../src/render/FlightRenderer";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
 import { createWebGpuBoat } from "../src/render/webgpu/boat/createBoat";
 import { createWebGpuCar } from "../src/render/webgpu/ground/createCar";
+import { createPersonVisual } from "../src/render/webgpu/person";
+import { PERSON } from "../src/vehicles/person";
 import { AIRCRAFT_KINDS, type AircraftKind } from "../src/sim";
 import { surfaceVehicleSpec } from "../src/vehicles/catalogue";
 
@@ -656,3 +658,121 @@ describe("the LandCruiser's chase framing, on the built car at 16:9", () => {
     expect(f.bottom, f.bottom.toFixed(3)).toBeLessThan(0.93);
   });
 });
+
+/**
+ * The walker's figure as built and drawn, standing: its mesh skinned on the
+ * CPU by the skeleton's own matrices after a second of standing still.
+ */
+function builtWalker() {
+  const { engine, scene, camera } = framingScene();
+  const figure = createPersonVisual(scene);
+  const input = {
+    person: STANDING, velocityX: 0, velocityY: 0, velocityZ: 0, turnRate: 0,
+    groundOffset: () => 0, steeringWheel: 0,
+  };
+  for (let frame = 0; frame < 60; frame += 1) figure.update(input, 1 / 60);
+  figure.root.computeWorldMatrix(true);
+  const points: Vector3[] = [];
+  for (const mesh of figure.meshes as Mesh[]) {
+    mesh.computeWorldMatrix(true);
+    if (!mesh.isEnabled() || !mesh.isVisible || !mesh.parent || !mesh.skeleton) continue;
+    const local = mesh.getVerticesData(VertexBuffer.PositionKind)!;
+    const indices = mesh.getVerticesData(VertexBuffer.MatricesIndicesKind)!;
+    const weights = mesh.getVerticesData(VertexBuffer.MatricesWeightsKind)!;
+    const matrices = mesh.skeleton.getTransformMatrices(mesh);
+    const world = mesh.getWorldMatrix();
+    const skinned = new Vector3();
+    for (let i = 0; i * 3 + 2 < local.length; i += 1) {
+      skinned.set(0, 0, 0);
+      for (let k = 0; k < 4; k += 1) {
+        const weight = weights[i * 4 + k]!;
+        if (weight <= 0) continue;
+        const bone = Matrix.FromArray(matrices, indices[i * 4 + k]! * 16);
+        skinned.addInPlace(Vector3.TransformCoordinates(new Vector3(local[i * 3]!, local[i * 3 + 1]!, local[i * 3 + 2]!), bone).scale(weight));
+      }
+      points.push(Vector3.TransformCoordinates(skinned, world));
+    }
+  }
+  const dispose = () => {
+    figure.dispose();
+    scene.dispose();
+    engine.dispose();
+  };
+  return { camera, points, dispose };
+}
+
+const STANDING = {
+  kind: "person", mode: "stand", speed: 0, running: false, grounded: true, slope: 0, waterDepth: 0, submersion: 0,
+  headDepth: -1, swimPitch: 0, landingSpeed: 0, landingAge: 10, surface: 0, boarding: null,
+} as const;
+
+describe("the walker's top, front and cinematic framing, on the built figure standing at 16:9", () => {
+  let built: ReturnType<typeof builtWalker>;
+  beforeAll(() => {
+    built = builtWalker();
+  }, 60_000);
+  afterAll(() => built.dispose());
+
+  it("fills 59% of the front view's height with the walker, centred", () => {
+    const f = frame(built, "front", PERSON.topFront);
+    expect(f.inFront).toBe(true);
+    expect(f.height, f.height.toFixed(3)).toBeGreaterThan(0.57);
+    expect(f.height, f.height.toFixed(3)).toBeLessThan(0.62);
+    expect(Math.abs((f.left + f.right) / 2 - 0.5)).toBeLessThan(0.01);
+    expect(Math.abs((f.top + f.bottom) / 2 - 0.5)).toBeLessThan(0.02);
+  });
+
+  it("stands the top view 1.5 m over the crown, the walker a quarter of the frame across and centred", () => {
+    const crown = built.points.reduce((top, p) => Math.max(top, p.y), 0);
+    const eye = PERSON.topFront.centreUp + PERSON.topFront.topDistanceMeters;
+    expect(eye - crown).toBeGreaterThan(1.45);
+    const f = frame(built, "top", PERSON.topFront);
+    expect(f.inFront).toBe(true);
+    expect(f.width, f.width.toFixed(3)).toBeGreaterThan(0.21);
+    expect(f.width, f.width.toFixed(3)).toBeLessThan(0.27);
+    expect(Math.abs((f.left + f.right) / 2 - 0.5)).toBeLessThan(0.01);
+    expect(Math.abs((f.top + f.bottom) / 2 - 0.5)).toBeLessThan(0.02);
+    // Facing up the screen, as the vehicles' noses do.
+    expect(f.noseY).toBeLessThan(f.tailY);
+  });
+
+  it("keeps the whole walker in the cinematic orbit's frame all the way round, the boots 9% clear of its foot", () => {
+    for (let angle = 0; angle < 2 * Math.PI; angle += 0.25) {
+      for (const drift of [-1, 0, 1]) {
+        const f = orbitFrame(built, PERSON.cinematic, angle, drift);
+        const at = `${angle.toFixed(2)} rad, drift ${drift}`;
+        expect(f.inFront, at).toBe(true);
+        expect(f.top, at).toBeGreaterThan(0.3);
+        expect(f.bottom, at).toBeLessThan(0.91);
+        expect(f.height, at).toBeGreaterThan(0.5);
+        expect(f.height, at).toBeLessThan(0.56);
+      }
+    }
+  });
+});
+
+/** The cinematic orbit as `updateCamera` places it, `angle` round and the height `drift` (-1..1) of its swing, at 58 degrees across. */
+function orbitFrame(built: ReturnType<typeof builtWalker>, orbit: { radiusMeters: number; heightMeters: number; heightDriftMeters: number }, angle: number, drift: number): Framed {
+  const { camera, points } = built;
+  camera.fov = (58 * Math.PI) / 180;
+  camera.position.set(Math.cos(angle) * orbit.radiusMeters, orbit.heightMeters + drift * orbit.heightDriftMeters, Math.sin(angle) * orbit.radiusMeters);
+  camera.upVector.set(0, 1, 0);
+  camera.setTarget(new Vector3(0, 1.3, 0));
+  const view = camera.getViewMatrix(true);
+  const transform = view.multiply(camera.getProjectionMatrix(true));
+  const viewport = camera.viewport.toGlobal(WIDTH, HEIGHT);
+  let left = Infinity;
+  let right = -Infinity;
+  let top = Infinity;
+  let bottom = -Infinity;
+  let inFront = true;
+  for (const p of points) {
+    const s = Vector3.Project(p, Matrix.Identity(), transform, viewport);
+    if (!(Vector3.TransformCoordinates(p, view).z < 0)) inFront = false;
+    left = Math.min(left, s.x / WIDTH);
+    right = Math.max(right, s.x / WIDTH);
+    top = Math.min(top, s.y / HEIGHT);
+    bottom = Math.max(bottom, s.y / HEIGHT);
+  }
+  return { width: right - left, height: bottom - top, left, right, top, bottom, inFront, noseY: 0, tailY: 0, noseDepth: 0, tailDepth: 0 };
+}

@@ -1,7 +1,7 @@
 import type { Scene } from "@babylonjs/core/scene";
 import type { AsyncPipelineCompiles } from "../core/AsyncPipelineCompiles";
 import type { WebGpuQualityProfile } from "../core/QualityProfile";
-import { createStandInPersonVisual } from "./standInFigure";
+import { createFigure } from "./createFigure";
 import type { PersonVisual } from "./types";
 
 export type { PersonAnimationInput, PersonAnimationOutput, PersonVisual } from "./types";
@@ -14,7 +14,5 @@ export interface PersonVisualOptions {
 
 /** The one place the renderer gets the walker's figure from. */
 export function createPersonVisual(scene: Scene, options: PersonVisualOptions = {}): PersonVisual {
-  // The stand-in looks the same on every tier and compiles nothing late.
-  void options;
-  return createStandInPersonVisual(scene);
+  return createFigure(scene, options);
 }

@@ -215,6 +215,8 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["L0 terrain geomorph band", (p: (typeof PROFILES)[number]) => p.vehicleNearTerrainL0BandMeters],
     ["Road ribbon range", (p: (typeof PROFILES)[number]) => p.roadRibbonRangeMeters],
     ["Guardrail draw range", (p: (typeof PROFILES)[number]) => p.barrierDrawRangeMeters],
+    ["Walker's finest figure mesh", (p: (typeof PROFILES)[number]) => p.personFigureFinestLod],
+    ["Walker's shadow cascades", (p: (typeof PROFILES)[number]) => p.personShadowCascades],
     ["Frame target", (p: (typeof PROFILES)[number]) => p.frameTargetMs],
     ["Rendered stems/ha", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.nearStemsPerHectare],
     ["Impostor floor share", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.impostorFloorShare],

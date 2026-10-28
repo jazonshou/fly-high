@@ -114,8 +114,8 @@ const STATURE = 1.76;
  * diving and wading speeds are ESTIMATES. The landing speeds are the plan's
  * equal drops v^2 / 2g: under 1.3 m normal, to 3.3 m a crouch, past it a
  * roll; the mantle's and the landings' durations, the climb height and the
- * swimming turn rate are ESTIMATES for the figure's motions to fit. The camera numbers are
- * starting values for the framing test on the built figure.
+ * swimming turn rate are ESTIMATES for the figure's motions to fit. The
+ * camera numbers are measured on the built figure (at `cinematic` below).
  */
 export const PERSON: PersonSpec = Object.freeze({
   stature: STATURE,
@@ -166,11 +166,18 @@ export const PERSON: PersonSpec = Object.freeze({
     fadeDistance: 0.5,
     fieldOfView: 60,
   }),
-  // Body box: feet at 0, head at 1.76 m, about 0.5 m deep. Aim at mid-height
-  // and fill about 60% of the frame, as the vehicles do; measured again on
-  // the built figure in render.top-front-views.
-  cinematic: Object.freeze({ radiusMeters: 4.5, heightMeters: 1.4, heightDriftMeters: 0.4 }),
-  topFront: Object.freeze({ centreForward: 0, centreUp: 0.88, topDistanceMeters: 4.2, frontDistanceMeters: 4.6 }),
+  // MEASURED on the built figure standing (render.top-front-views): its box
+  // runs 0.13 m behind the feet point to 0.21 m ahead (the boots' toes), 0 to
+  // 1.77 m up and 0.31 m either side (the hands). Both views aim over the
+  // feet point, where the shoulders, nearest the top camera, centre the plan.
+  // The front view fills 59% of the frame's height, as the vehicles fill 60%.
+  // The top view cannot: a plan 0.62 m across would fill 60% of the frame
+  // with the camera 4 cm over the crown, so it stands 1.5 m over it, the
+  // walker a quarter of the frame across with the ground round it. The orbit
+  // aims 1.3 m up whatever it circles, so its radius keeps the boots 10%
+  // clear of the frame's foot and the walker fills 53% of its height.
+  cinematic: Object.freeze({ radiusMeters: 5.4, heightMeters: 1.2, heightDriftMeters: 0.35 }),
+  topFront: Object.freeze({ centreForward: 0, centreUp: 0.88, topDistanceMeters: 2.4, frontDistanceMeters: 7.4 }),
 });
 
 /** Jump take-off speed for `PERSON.jumpHeight`, m/s (2.97 m/s at 0.45 m). */
@@ -203,13 +210,15 @@ export interface BodyPoint {
  * stands 0.80 m above flat ground at kerb ride. The box runs from the tow
  * hitch (2.72 m aft) to the front bumper (2.19 m ahead), 1.87 m wide, from
  * 0.30 m above the ground to the roof at 1.94 m (the published body).
- * The hip point is ESTIMATED from the drawn cockpit eye; the figure build
- * measures it on the drawn seat. The door stand's `up` is not read: the
+ * The hip point is MEASURED on the drawn front seat (the figure build,
+ * `render/webgpu/person/carSeat.ts`): the SAE H-point 0.135 m ahead of the
+ * backrest's face and 0.09 m over the pressed cushion, 1.09 m above the
+ * ground over the seat's middle. The door stand's `up` is not read: the
  * walker stands on the ground at its `forward` and `right`.
  */
 export const CAR_SEATING = Object.freeze({
   cgAboveGround: 0.8,
-  driverHip: Object.freeze({ forward: -0.5, up: 0.15, right: 0.4 }) as BodyPoint,
+  driverHip: Object.freeze({ forward: -0.4, up: 0.29, right: 0.37 }) as BodyPoint,
   doorStand: Object.freeze({ forward: -0.25, up: 0, right: 1.4 }) as BodyPoint,
   bodyBox: Object.freeze({
     kind: "box",

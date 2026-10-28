@@ -486,6 +486,18 @@ export interface WebGpuQualityProfile {
    */
   readonly marinaCastsShadows: boolean;
   /**
+   * The walker's figure (car sessions only): the finest of its three meshes
+   * it draws (0 = 9k triangles within 25 m, 1 = 3k, 2 = 0.8k), and how many
+   * of the nearest shadow cascades it casts into (capped by
+   * `shadowCascades`). Its draws are one plus that: the walking plan's
+   * budget table, 2 on Low and 3 above it while every tier has two
+   * cascades.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly personFigureFinestLod: 0 | 1 | 2;
+  readonly personShadowCascades: number;
+  /**
    * Walking plan, "Underwater view": the sea's underside, drawn instead of the
    * sea while the camera is under it. With the window it is shaded with the
    * sea's own wave normals, the sky probe and the sun bent through them;
@@ -616,6 +628,8 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 150,
       barrierDrawRangeMeters: 300,
       marinaCastsShadows: false,
+      personFigureFinestLod: 1,
+      personShadowCascades: 1,
       underwaterSnellWindow: false,
       underwaterCaustics: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
@@ -732,6 +746,8 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 500,
       barrierDrawRangeMeters: 600,
       marinaCastsShadows: true,
+      personFigureFinestLod: 0,
+      personShadowCascades: 2,
       underwaterSnellWindow: true,
       underwaterCaustics: false,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
@@ -837,6 +853,8 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 800,
       barrierDrawRangeMeters: 900,
       marinaCastsShadows: true,
+      personFigureFinestLod: 0,
+      personShadowCascades: 2,
       underwaterSnellWindow: true,
       underwaterCaustics: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
@@ -944,6 +962,8 @@ function resolveBaseQualityProfile(
     roadRibbonRangeMeters: 1_200,
     barrierDrawRangeMeters: 1_200,
     marinaCastsShadows: true,
+    personFigureFinestLod: 0,
+    personShadowCascades: 3,
     underwaterSnellWindow: true,
     underwaterCaustics: true,
     spawnedAirfields: {
