@@ -1023,6 +1023,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly spawnedAirfields: SpawnedAirfieldManager | null;
   private originShifted = true;
   private cameraCut = true;
+  /** A cut not yet taken by the character camera: on foot it stands behind the walker. */
+  private characterCameraCut = false;
   private frameIndex = 0;
   private renderScale: number;
   /**
@@ -2325,9 +2327,13 @@ export class FlightRenderer implements FlightRenderingSystem {
    * ground speed in the thousands and throw the camera far behind the
    * aeroplane on its first frame. Forgetting the previous position is what
    * makes the trail zero until the aircraft has actually moved again.
+   *
+   * On foot the character camera stands behind the walker again, at its
+   * default pitch (a restart, R back to a safe spot, a capture's new shot).
    */
   cutCamera(): void {
     this.cameraCut = true;
+    this.characterCameraCut = true;
     this.previousAircraftPositionValid = false;
     this.observedGroundSpeed = 0;
     this.observedGroundSpeedHeldFrames = 0;
@@ -4096,7 +4102,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       if (this.lastWalkingDriven !== null) this.cutCamera();
       if (onFoot) this.characterCamera.reset((state.heading * Math.PI) / 180);
       this.lastWalkingDriven = driven;
+    } else if (this.characterCameraCut && onFoot) {
+      this.characterCamera.reset((state.heading * Math.PI) / 180);
     }
+    this.characterCameraCut = false;
     const cockpit = this.cameraMode === "cockpit";
     const visible = !this.viewerMode && walking !== null && (onFoot !== null || seated) && !(seated && cockpit);
     if (visible !== this.personEnabled) {
