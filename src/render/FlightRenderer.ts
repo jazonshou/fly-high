@@ -898,6 +898,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     lookYaw: number;
     lookPitch: number;
     boardingFrom: { forward: number; up: number; right: number; facing: number } | null;
+    boardingDoor: number;
     groundOffset(forward: number, right: number): number;
   } = {
     person: seatedPersonState(),
@@ -909,6 +910,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     lookYaw: 0,
     lookPitch: 0,
     boardingFrom: null,
+    boardingDoor: 0,
     groundOffset: () => 0,
   };
   /** Last frame's aircraft position, for the observed ground speed. */
@@ -1532,7 +1534,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       // The walker lives in car sessions only (the walking plan, D3): built
       // hidden, it appears once the state carries a walking session.
       const person = surfaceVehicle && vehicleClass(surfaceVehicle.kind) === "car"
-        ? createPersonVisual(scene)
+        ? createPersonVisual(scene, { profile, pipelineCompiles })
         : null;
       if (person) {
         cleanup.push(() => person.dispose());
@@ -4055,6 +4057,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       animation.turnRate = -state.angularVelocity.y;
       animation.steeringWheel = 0;
       animation.boardingFrom = null;
+      animation.boardingDoor = 0;
       this.boardingFrom = null;
       const feetX = state.position.x;
       const feetY = state.position.y;
@@ -4105,6 +4108,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       animation.turnRate = 0;
       animation.steeringWheel = state.vehicle?.kind === "car" ? state.vehicle.steeringWheel : 0;
       animation.boardingFrom = this.boardingFrom;
+      // The door the walker uses, as open as the car draws it.
+      const doors = state.walking?.doors;
+      animation.boardingDoor = boarding && doors ? doors[boarding.side === "right" ? 0 : 1] : 0;
       animation.groundOffset = () => 0;
       this.lastFootPose.valid = false;
     }
