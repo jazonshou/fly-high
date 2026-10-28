@@ -2192,7 +2192,8 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   /**
    * PR B: the next frame follows ticks the frame loop skipped on purpose
-   * (the pacer's re-probe of the display when the flight pauses). Its
+   * (the pacer's re-probe of the display when the flight pauses, or one of
+   * the ticks it skips to measure a display that frames hide). Its
    * interval is no frame time, so it is kept out of the diagnostics ring
    * and the governor's window, as a hidden tab's gap is.
    */

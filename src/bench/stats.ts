@@ -189,10 +189,12 @@ export const MIN_REFRESH_SAMPLES = 5;
  * misses frames, where it lands between one and two refresh periods. So the
  * period is the mean of the intervals within [0.8, 1.25] of the 10th
  * percentile: the fastest cadence the loop sustains, with dropped frames and
- * stalls left out. The mean, not the median, because a 1 ms timer (Firefox,
- * Safari) splits a 16.67 ms period into 16s and 17s. Below 1.5 ms is no
- * display's period (a catch-up callback), and 1 s or more is a stall. Null
- * with fewer than five usable intervals.
+ * stalls left out. The mean, not the median, because rAF stamps on a 1 ms
+ * clock would split a 16.67 ms period into 16s and 17s. Firefox 158 stamps
+ * them on a 0.02 ms grid (its 1 ms clock is `performance.now()`), and
+ * Safari's are untested. Below 1.5 ms is no display's period (a catch-up
+ * callback), and 1 s or more is a stall. Null with fewer than five usable
+ * intervals.
  */
 export function estimateRefresh(deltas: ArrayLike<number>, count: number = deltas.length): BenchRefresh | null {
   const usable: number[] = [];

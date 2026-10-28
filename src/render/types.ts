@@ -88,8 +88,8 @@ export interface FlightRenderingSystem {
   setGovernorHold(held: boolean): void;
   /**
    * The next frame follows ticks the frame loop skipped on purpose (the
-   * pacer's re-probe on pause): its interval is left out of diagnostics and
-   * the governor's window.
+   * pacer's re-probe on pause, or a tick it skips to measure the display):
+   * its interval is left out of diagnostics and the governor's window.
    */
   discardNextFrameInterval(): void;
   render(state: FlightVisualState, deltaSeconds: number): void;
