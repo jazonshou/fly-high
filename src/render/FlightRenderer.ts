@@ -96,7 +96,13 @@ import { RoadStreamRuntime } from "./roads/RoadStreamRuntime";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
 import { createPersonVisual, type PersonAnimationInput, type PersonVisual } from "./webgpu/person";
-import { CharacterCamera, type CameraObstacleBox, type CameraWaterBand, type CharacterCameraWater } from "./characterCamera";
+import {
+  CharacterCamera,
+  characterCameraBelowWater,
+  type CameraObstacleBox,
+  type CameraWaterBand,
+  type CharacterCameraWater,
+} from "./characterCamera";
 import { LatticeHeightCache } from "./latticeHeightCache";
 import type { OceanHullClip } from "./webgpu/boat/oceanHullClip";
 import type { UndrawnSeaHeave } from "./webgpu/boat/undrawnSeaHeave";
@@ -1048,6 +1054,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private cameraCut = true;
   /** A cut not yet taken by the character camera: on foot it stands behind the walker. */
   private characterCameraCut = false;
+  /** A cut not yet taken by the camera's water side: it starts on the walker's head's side. */
+  private characterWaterCut = true;
   private frameIndex = 0;
   private renderScale: number;
   /**
@@ -2372,6 +2380,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   cutCamera(): void {
     this.cameraCut = true;
     this.characterCameraCut = true;
+    this.characterWaterCut = true;
     this.previousAircraftPositionValid = false;
     this.observedGroundSpeed = 0;
     this.observedGroundSpeedHeldFrames = 0;
@@ -4319,9 +4328,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         state.simulationTime,
         this.characterWaterSample,
       );
-      if (head.kind === "none") water.below = false;
-      else if (head.depth > head.clearance) water.below = true;
-      else if (head.depth < -head.clearance) water.below = false;
+      // The side follows the walker's own head depth, the drawn sample only
+      // whether there is water at all.
+      const depth = state.vehicle?.kind === "person" ? state.vehicle.headDepth : head.depth;
+      water.below = head.kind !== "none" && characterCameraBelowWater(water.below, this.characterWaterCut, depth);
+      this.characterWaterCut = false;
     }
     const pose = this.characterCamera.update({
       feetX: state.position.x - originX,

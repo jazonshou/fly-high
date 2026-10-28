@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHARACTER_WATER_UNDER_METERS,
   CharacterCamera,
+  characterCameraBelowWater,
   rayBoxDistance,
   type CameraObstacleBox,
   type CharacterCameraFrame,
@@ -166,5 +168,26 @@ describe("lattice height cache", () => {
     expect(asked).toBe(0);
     for (let i = 0; i < 100; i += 1) cache.sample(i * 3, 0);
     expect(cache.size).toBeLessThanOrEqual(64);
+  });
+});
+
+describe("the character camera's side of the water", () => {
+  it("follows the walker's head: under past 0.1 m, up as soon as it is out, held between", () => {
+    // A swimmer floating with its eye 5 cm up: above, whatever the camera was.
+    expect(characterCameraBelowWater(false, false, -0.05)).toBe(false);
+    expect(characterCameraBelowWater(true, false, -0.05)).toBe(false);
+    // Diving: held above until the head is past the band, then under.
+    expect(characterCameraBelowWater(false, false, 0.05)).toBe(false);
+    expect(characterCameraBelowWater(false, false, CHARACTER_WATER_UNDER_METERS + 0.01)).toBe(true);
+    // Coming up: held under until the head is out.
+    expect(characterCameraBelowWater(true, false, 0.05)).toBe(true);
+    expect(characterCameraBelowWater(true, false, -0.001)).toBe(false);
+    // On dry ground the head is the stature above any water.
+    expect(characterCameraBelowWater(true, false, -PERSON.stature)).toBe(false);
+  });
+
+  it("takes the head's side at once on a cut", () => {
+    expect(characterCameraBelowWater(true, true, -0.05)).toBe(false);
+    expect(characterCameraBelowWater(false, true, 0.05)).toBe(true);
   });
 });

@@ -71,6 +71,27 @@ export interface CharacterCameraWater {
   below: boolean;
 }
 
+/** How far under the surface the walker's head goes before the character camera follows it down, metres. */
+export const CHARACTER_WATER_UNDER_METERS = 0.1;
+
+/**
+ * Whether the character camera keeps below the water (`CharacterCameraWater.below`),
+ * from the walker's own head depth (`PersonVisualState.headDepth`). That is
+ * measured from the simulation's water, which the drawn sea follows to
+ * centimetres, so there are no waves to allow for: the camera goes under once
+ * the head is `CHARACTER_WATER_UNDER_METERS` down and comes up as soon as it
+ * is out, holding its side between. A swimmer floating with its eye just above
+ * the surface keeps the camera above, and a pose pinned on the still sea (the
+ * perf shots) is not flipped by a crest passing over it. A cut takes the
+ * head's side at once.
+ */
+export function characterCameraBelowWater(wasBelow: boolean, cut: boolean, headDepth: number): boolean {
+  if (cut) return headDepth > 0;
+  if (headDepth > CHARACTER_WATER_UNDER_METERS) return true;
+  if (headDepth < 0) return false;
+  return wasBelow;
+}
+
 /** What the camera reads back each frame. */
 export interface CharacterCameraPose {
   eyeX: number;
