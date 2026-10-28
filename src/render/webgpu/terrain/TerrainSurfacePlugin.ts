@@ -37,7 +37,11 @@ import {
   type SurfaceMaterialSpec,
 } from "./surfaceMaterials";
 import { TERRAIN_PAGE_HYDROLOGY_ENCODING } from "./TerrainEvolutionContract";
-import { INFRASTRUCTURE_PAINT_ID_OFFSET, INFRASTRUCTURE_TRACK_EARTH_TINT } from "./TerrainInfrastructureKernel";
+import {
+  INFRASTRUCTURE_PAINT_ID_OFFSET,
+  INFRASTRUCTURE_TRACK_EARTH_TINT,
+  INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET,
+} from "./TerrainInfrastructureKernel";
 // W-1: what open ground looks like between one tile and the macro wash is the
 // ground patchwork's question, composed here rather than restated.
 import {
@@ -1525,9 +1529,11 @@ export function terrainSparseSplatGatherWgsl(materialCount: number): string {
   return /* wgsl */ `
 fn terrainSurfaceSparseSplat(atlasPosition: vec2f, blend: f32, paint: ptr<function, f32>) -> vec3f {
   let idScale = f32(${SURFACE_MATERIAL_COUNT - 1});
-  // A road's paint: its material and weight (lanes stored a quarter id up).
+  // A road's paint: its material and weight (lanes stored a fraction of an id
+  // up), and how much of that weight is a track's (a larger fraction).
   var paintId = 0u;
   var paintWeight = 0.0;
+  var earthWeight = 0.0;
   let base = vec2i(floor(atlasPosition));
   let fraction = atlasPosition - floor(atlasPosition);
   let offsets = array<vec2i, 4>(
@@ -1560,9 +1566,12 @@ ${accumulators}
     for (var lane = 0u; lane < 4u; lane = lane + 1u) {
       let idValue = ids[lane] * idScale;
       let materialId = u32(clamp(floor(idValue + 0.5), 0.0, idScale));
-      if (idValue - floor(idValue + 0.5) > ${terrainWgslFloat(INFRASTRUCTURE_PAINT_ID_OFFSET / 2)}) {
+      let painted = idValue - floor(idValue + 0.5);
+      if (painted > ${terrainWgslFloat(INFRASTRUCTURE_PAINT_ID_OFFSET / 2)}) {
         paintId = materialId;
         paintWeight = paintWeight + weights[lane];
+        earthWeight = earthWeight + select(0.0, weights[lane],
+          painted > ${terrainWgslFloat((INFRASTRUCTURE_PAINT_ID_OFFSET + INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET) / 2)});
       }
       let share = select(vec4f(0.0), vec4f(weights[lane]),
         vec4<u32>(0u, 1u, 2u, 3u) == vec4<u32>(materialId & 3u));
@@ -1582,10 +1591,12 @@ ${candidates}
   let secondaryShare = secondaryWeight
     / max(1e-6, max(primaryWeight, 0.0) + secondaryWeight);
   // Which of the two is a road's paint, where most of its id's weight is
-  // painted: 1 the primary, 2 the secondary, 0 neither.
-  *paint = select(0.0, 1.0, paintId == primaryId && paintWeight >= 0.5 * primaryWeight)
+  // painted: 1 the primary, 2 the secondary, 0 neither; negative where most of
+  // the paint is a track's.
+  *paint = (select(0.0, 1.0, paintId == primaryId && paintWeight >= 0.5 * primaryWeight)
     + select(0.0, 2.0, paintId == secondaryId && secondaryWeight > 0.0
-      && paintWeight >= 0.5 * secondaryWeight);
+      && paintWeight >= 0.5 * secondaryWeight))
+    * select(1.0, -1.0, earthWeight > 0.5 * paintWeight);
   return vec3f(f32(primaryId), f32(secondaryId), secondaryShare);
 }
 `;
@@ -2705,7 +2716,8 @@ let terrainHorizonShadow = mix(
 // 4-6: the real classifier's output replaces the provisional lanes wherever a
 // channel page is resident. Where one is not, the co-residency rule applies
 // and the Phase 3 provisional splat is what the fragment gets.
-// Which of its two materials is a road's paint (terrainSurfaceSparseSplat).
+// Which of its two materials is a road's paint, negative for a track's
+// (terrainSurfaceSparseSplat).
 var terrainPaintSlot = 0.0;
 let terrainPageSplat = terrainSurfacePageSplat(
   terrainPageUv, uniforms.terrainSunDirection.w, &terrainPaintSlot);
@@ -3050,8 +3062,8 @@ terrainBlend2 = terrainBlend2 / terrainBlendSum;
 // coarser page) into blotches, and a resolved one into a ragged edge. The
 // paint takes its share of the page's weight as it is, and the natural
 // candidates arbitrate by height among themselves for the rest.
-if (terrainUsePageSplat && !terrainFarSward && terrainPaintSlot > 0.5) {
-  let terrainPaintLower = terrainPaintSlot < 1.5;
+if (terrainUsePageSplat && !terrainFarSward && abs(terrainPaintSlot) > 0.5) {
+  let terrainPaintLower = abs(terrainPaintSlot) < 1.5;
   let terrainPaintActive = select(terrainActive1, terrainActive0, terrainPaintLower);
   let terrainPaintShare = select(0.0,
     select(terrainWeight1, terrainWeight0, terrainPaintLower), terrainPaintActive);
@@ -3069,11 +3081,11 @@ if (terrainUsePageSplat && !terrainFarSward && terrainPaintSlot > 0.5) {
   terrainBlend0 = select(terrainNatural0 * terrainNaturalScale, terrainPaintBlend, terrainPaintLower);
   terrainBlend1 = select(terrainPaintBlend, terrainNatural1 * terrainNaturalScale, terrainPaintLower);
   terrainBlend2 = terrainNatural2 * terrainNaturalScale;
-  // A track's paint is worn earth: the sand layer, browned.
-  if (terrainPaintLower && terrainLowerId == ${SurfaceMaterial.Sand}.0) {
+  // A track's paint is worn earth: its stone, browned.
+  if (terrainPaintSlot < 0.0 && terrainPaintLower) {
     terrainLayer0.albedo = terrainLayer0.albedo * vec3f(${TERRAIN_TRACK_EARTH_TINT});
   }
-  if (!terrainPaintLower && terrainUpperId == ${SurfaceMaterial.Sand}.0) {
+  if (terrainPaintSlot < 0.0 && !terrainPaintLower) {
     terrainLayer1.albedo = terrainLayer1.albedo * vec3f(${TERRAIN_TRACK_EARTH_TINT});
   }
 }
@@ -3227,8 +3239,7 @@ terrainBlend2 = terrainBlend2 / terrainBlendSum;
 #ifdef TERRAIN_SURFACE_PAGE_CHANNELS
 // A track's paint is worn earth here too. (The paint is drawn only where it
 // is the primary: this path samples one page material, a known limit.)
-if (terrainUsePageSplat && !terrainFarSward && terrainPaintSlot > 0.5 && terrainPaintSlot < 1.5
-  && terrainPrimaryId == ${SurfaceMaterial.Sand}.0) {
+if (terrainUsePageSplat && !terrainFarSward && terrainPaintSlot < -0.5 && terrainPaintSlot > -1.5) {
   terrainLayer0.albedo = terrainLayer0.albedo * vec3f(${TERRAIN_TRACK_EARTH_TINT});
 }
 #endif
