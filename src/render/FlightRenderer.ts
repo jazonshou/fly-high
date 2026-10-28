@@ -3431,7 +3431,13 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         const visual = this.currentState;
         const walker = visual?.vehicle?.kind === "person" ? visual.vehicle : null;
         this.underwater?.setBreather(walker && visual ? visual.position : null, walker?.headDepth ?? 0);
-        this.underwater?.update(this.cameraWorld.x, this.cameraWorld.y, this.cameraWorld.z, frame.timeSeconds);
+        this.underwater?.update(
+          this.cameraWorld.x,
+          this.cameraWorld.y,
+          this.cameraWorld.z,
+          frame.timeSeconds,
+          frame.deltaSeconds,
+        );
         this.applyUnderwaterState();
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
         // ocean disk is depth-tested away above the waterline), so the sea

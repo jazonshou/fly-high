@@ -254,7 +254,7 @@ describe("the camera's water", () => {
     expect(sent).toEqual([{ key: "a", region }]);
     // The worker's transfer detaches the region's buffers; the camera keeps its own copy.
     structuredClone(region, { transfer: [region.lakeBoundary.buffer, region.lakeLevels.buffer] });
-    view.update(0, level - 1, 0, 600);
+    view.update(0, level - 1, 0, 600, 1 / 60);
     expect(view.submerged).toBe(true);
     expect(view.camera.kind).toBe("lake");
     publisher.evictHydrology("a");

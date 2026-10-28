@@ -37,9 +37,10 @@ import {
  *  - Beam attenuation `c = a + b`. The shaders carry absorption `a` and
  *    backscatter `b_b`; the total scattering behind `b_b` is pure water's
  *    (half of it scatters backward) plus the particles' (1.83% backward,
- *    Petzold's average). Clear open sea comes out at c = 0.28 / 0.063 /
- *    0.025 per metre in red, green and blue: 40 m in blue, red gone in a few
- *    metres. A silty coast is a few metres in every channel.
+ *    Petzold's average). The view keeps `UNDERWATER_PARTICLE_SHARE` of the
+ *    particles: clear open sea comes out at c = 0.28 / 0.061 / 0.023 per
+ *    metre in red, green and blue, red gone in a few metres and blue
+ *    carrying for tens.
  *  - Diffuse attenuation `K = (a + b_b) / mu`, the light from above dying
  *    with depth (Lee et al. 2005, the shaders' own down path): the sun's
  *    share along its refracted beam, the sky's along the mean cosine of a
@@ -88,7 +89,56 @@ export const UNDERWATER_RIVER_WIDTH_METERS = 20;
 export const UNDERWATER_RIVER_SPEED_METERS_PER_SECOND = 0.8;
 export const UNDERWATER_RIVER_GRADE = 0.002;
 
+/**
+ * The share of the water's particles (phytoplankton, sediment, rock flour)
+ * the view under the water keeps. The sea and the lakes seen from above keep
+ * all of theirs; under the water the view is this much clearer, so a dive
+ * shows what is around it: about 9 m of visibility over the home shelf, 3 m
+ * in the marina basin, 19 m over a tropical shelf and 48 m offshore, against
+ * 3, 1, 7 and 28 m with every particle. Dissolved colour (CDOM) is kept, so a
+ * peaty lake stays brown.
+ */
+export const UNDERWATER_PARTICLE_SHARE = 0.3;
+
+/**
+ * The eye under the water: it adapts to the light left at its depth, up to
+ * this gain (four stops), with this time constant, seconds (95% of the way
+ * in 1.5 s). Just under the surface the gain is 1, the exposure above it.
+ */
+export const UNDERWATER_ADAPTATION_MAX_GAIN = 16;
+export const UNDERWATER_ADAPTATION_SECONDS = 0.5;
+
 type Rgb = [number, number, number];
+
+/** A water's particles cut to the view's share (`UNDERWATER_PARTICLE_SHARE`). */
+function underwaterViewConstituents(water: WaterConstituents): WaterConstituents {
+  return {
+    chlorophyll: water.chlorophyll * UNDERWATER_PARTICLE_SHARE,
+    cdom440: water.cdom440,
+    sediment: water.sediment * UNDERWATER_PARTICLE_SHARE,
+    mineral: water.mineral * UNDERWATER_PARTICLE_SHARE,
+  };
+}
+
+/** The exposure gain the eye settles on with this share of the surface's light left. */
+export function underwaterAdaptationTarget(lightRemaining: number): number {
+  return Math.min(1 / Math.max(lightRemaining, 1 / UNDERWATER_ADAPTATION_MAX_GAIN), UNDERWATER_ADAPTATION_MAX_GAIN);
+}
+
+/** The eye's gain under the water, easing toward its target in log space. */
+export class UnderwaterAdaptation {
+  gain = 1;
+
+  /** Back above the water: the eye is the surface's again. */
+  reset(): void {
+    this.gain = 1;
+  }
+
+  update(target: number, deltaSeconds: number): void {
+    const step = 1 - Math.exp(-Math.max(deltaSeconds, 0) / UNDERWATER_ADAPTATION_SECONDS);
+    this.gain = Math.exp(Math.log(this.gain) + (Math.log(target) - Math.log(this.gain)) * step);
+  }
+}
 
 /** The camera's water as `UnderwaterLight.setWater` takes it. */
 export interface UnderwaterWaterInputs {
@@ -141,7 +191,7 @@ export class UnderwaterLight {
     this.world = world;
     this.field = field;
     this.climate = hydrologyClimateSamplerFor(world);
-    this.setOptics(waterOpticsFromConstituents(oceanConstituents(40, 0.35, 0.5)));
+    this.setOptics(waterOpticsFromConstituents(underwaterViewConstituents(oceanConstituents(40, 0.35, 0.5))));
   }
 
   /** How many times the camera's water type has been resolved. */
@@ -198,7 +248,28 @@ export class UnderwaterLight {
     this.runoff = runoff;
     this.stillHeight = water.stillHeight;
     this.resolves += 1;
-    this.setOptics(waterOpticsFromConstituents(this.constituents(water, productivity, runoff)));
+    this.setOptics(waterOpticsFromConstituents(underwaterViewConstituents(this.constituents(water, productivity, runoff))));
+  }
+
+  /**
+   * The luminance of the light from above left `depth` metres under the still
+   * surface, as a share of its value just under it.
+   */
+  lightRemaining(depth: number): number {
+    const z = Math.max(depth, 0);
+    let surface = 0;
+    let remaining = 0;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const weight = WATER_LUMINANCE_WEIGHTS[channel]!;
+      const sun = this.sunIrradiance[channel]!;
+      const sky = this.skyIrradiance[channel]!;
+      surface += weight * (sun + sky);
+      remaining += weight * (
+        sun * Math.exp(-this.sunDiffuseAttenuation[channel]! * z)
+        + sky * Math.exp(-this.skyDiffuseAttenuation[channel]! * z)
+      );
+    }
+    return surface > 0 ? remaining / surface : 1;
   }
 
   private constituents(water: UnderwaterWaterInputs, productivity: number, runoff: number): WaterConstituents {

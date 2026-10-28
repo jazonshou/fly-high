@@ -26,14 +26,17 @@ surface. The character camera keeps a clearance band either side of it
 One water type for the whole view: the one at the camera, from the same
 chemistry and optics the water shaders colour the surface with (the sea's
 `oceanConstituents` at the camera's depth and province, a lake's or river's
-from hydrology). Per colour channel:
+from hydrology), with 30% of its particles (phytoplankton, sediment, rock
+flour; `UNDERWATER_PARTICLE_SHARE`). The surface seen from above keeps them
+all; under it the view is that much clearer, so a dive shows what is around
+it. Dissolved colour is kept, so a peaty lake stays brown. Per colour
+channel:
 
 - Beam attenuation `c = a + b`, from the shaders' absorption `a` and
   backscatter `b_b`. Pure water scatters half its light backward and
   particles 1.83% (Petzold), so `b = b_w / 0.5 + (b_b - b_bw) / 0.0183`.
-  Clear open sea is c = 0.28 / 0.063 / 0.025 per metre (red, green, blue):
-  40 m of visibility in blue, red gone in a few metres. A silty coast or the
-  marina basin is a few metres in every channel.
+  Clear open sea is c = 0.28 / 0.061 / 0.023 per metre (red, green, blue):
+  red gone in a few metres, blue carrying for tens.
 - Diffuse attenuation `K = (a + b_b) / mu`: the sun's share along its
   refracted beam, the sky's along 0.842, the mean cosine of a uniform sky
   refracted into the 48.6 degree cone.
@@ -49,6 +52,27 @@ pixel toward that light over the metres of water to what it hits, and dims
 what it hits by the light left at its depth:
 `dim = f_sun e^(-K_sun z) C + (1 - f_sun) e^(-K_sky z)`, with `C` the
 caustic gain below. A ray climbing past the surface stops at it.
+
+What a diver sees, `4.8 / c` in green, at the shots' camera spots:
+
+| Water | All the particles (the surface's) | The view's 30% |
+|---|---|---|
+| Marina basin, 3 m deep | 1.0 m | 3.1 m |
+| Home shelf, 13-21 m deep | 3.0 m | 8.8 m |
+| Tropical shelf, 13 m deep | 7.2 m | 19.3 m |
+| Offshore, 91 m deep | 27.5 m | 48.5 m |
+
+## The eye under the water (`UnderwaterAdaptation`)
+
+The eye adapts to the light left at its depth: the luminance of the sun's
+and the sky's light `e^(-K z)` down, as a share of its value just under the
+surface. Its gain eases toward the reciprocal of that share, at most 16
+(four stops), in log space with a 0.5 s time constant: 95% of the way in
+1.5 s. Just under the surface the gain is 1, the exposure above it, and
+back above the water it is 1 again at once. The column multiplies all it
+shows by the gain. It is worked out on the CPU, like rod vision's display
+gain: the one exposure curve stays the tone map's, which a write every frame
+would make every material re-check its defines for.
 
 ## The sea's underside (`OceanUnderside`)
 
@@ -114,11 +138,11 @@ load.
 | Test | What it holds |
 |---|---|
 | `tests/render.camera-water.test.ts` | the camera's side of the sea and of a drawn lake; the sea twin's one-point path; dry ground; the weather |
-| `tests/render.underwater-light.test.ts` | c, K and the upwelling from the shaders' optics; the environment field read on the CPU |
+| `tests/render.underwater-light.test.ts` | c, K and the upwelling from the shaders' optics; the view's visibility at the shots' spots; the light left with depth; the eye's adaptation; the environment field read on the CPU |
 | `tests/render.webgpu-msaa-owner.test.ts` | the column heads the chain and owns the scene target's samples |
 | `tests/render.underwater-bubbles.test.ts` | rise speeds, Boyle, the burst, the breaths, leaving at the surface |
 | `tests/render.webgpu-water-extraction.test.ts` | the sea's composed WGSL hashes unchanged |
-| `tests/gpu/underwater-column.test.ts` | the column on a real adapter |
+| `tests/gpu/underwater-column.test.ts` | the column on a real adapter, and the eye's gain |
 | `tests/gpu/ocean-underside.test.ts` | both underside variants against the textbook Fresnel and Snell values; nothing drawn while primed |
 | `tests/gpu/underwater-caustics.test.ts` | a folded sea's web on the floor; a lake keeps the capillary tail only; nothing past the 24 m gate |
 

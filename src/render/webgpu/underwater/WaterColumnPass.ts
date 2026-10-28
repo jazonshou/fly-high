@@ -49,6 +49,9 @@ const UNDRAWN_DISTANCE_METERS = 1.0e6;
  */
 const RISING_PATH_FLOOR = 0.2;
 
+/** The adapted output stays inside the half-float target (65,504). */
+const HALF_FLOAT_CEILING = 60_000;
+
 /**
  * The water between the camera and everything it sees, while the camera is
  * under the water (walking plan, "Underwater view").
@@ -75,6 +78,13 @@ const RISING_PATH_FLOOR = 0.2;
  * surface curvature (each cascade's stored Jacobian and the capillary tail)
  * focused by the same refracted beam (`WATER_CAUSTIC_WGSL`) the sea lays on
  * its bed when seen from above, so a bed shows one pattern from either side.
+ *
+ * The eye under the water adapts to the light left at its depth
+ * (`UnderwaterAdaptation`): the pass multiplies all it outputs by that gain,
+ * 1 just under the surface. Like rod vision's display gain it is worked out
+ * on the CPU, not an exposure of the shader's own: the one exposure curve
+ * stays the tone map's, which a per-frame write would make every material
+ * re-check its defines for. The scene above the water never sees it.
  */
 export const WATER_COLUMN_FRAGMENT_WGSL = /* wgsl */ `
 varying vUV: vec2f;
@@ -100,6 +110,8 @@ uniform cameraStillDepth: f32;
 uniform cameraSurfaceDepth: f32;
 // 0 draws the scene through untouched (the load-time warm-up), 1 the water.
 uniform waterColumnStrength: f32;
+// The eye's adaptation to the light at the camera's depth (1 just under the surface).
+uniform adaptationGain: f32;
 #ifdef WATER_COLUMN_CAUSTICS
 // Render space to world xz (the floating origin), and the sea's caustic sources.
 uniform worldOrigin: vec2f;
@@ -211,7 +223,8 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
       waterPathRadiance(uniforms.sunUpwelling, uniforms.sunDiffuseAttenuation, mu, s)
       + waterPathRadiance(uniforms.skyUpwelling, uniforms.skyDiffuseAttenuation, mu, s)
     );
-  fragmentOutputs.color = vec4f(mix(scene, max(water, vec3f(0.0)), uniforms.waterColumnStrength), 1.0);
+  let seen = min(max(water, vec3f(0.0)) * uniforms.adaptationGain, vec3f(${HALF_FLOAT_CEILING.toFixed(1)}));
+  fragmentOutputs.color = vec4f(mix(scene, seen, uniforms.waterColumnStrength), 1.0);
   return fragmentOutputs;
 }
 `;
@@ -245,6 +258,7 @@ export class WaterColumnPass {
   private resolvedDepth = false;
   private drawn = false;
   private strength = 1;
+  private adaptationGain = 1;
   private cameraStillDepth = 0;
   private cameraSurfaceDepth = 0;
   private readonly inverseProjection = new Matrix();
@@ -278,6 +292,7 @@ export class WaterColumnPass {
         "cameraStillDepth",
         "cameraSurfaceDepth",
         "waterColumnStrength",
+        "adaptationGain",
         "worldOrigin",
         "sunElevationSine",
         "time",
@@ -412,6 +427,11 @@ export class WaterColumnPass {
     this.seaCascades = sea ? 1 : 0;
   }
 
+  /** The eye's adaptation to the light at its depth (`UnderwaterAdaptation.gain`). */
+  setAdaptation(gain: number): void {
+    this.adaptationGain = Math.max(gain, 0);
+  }
+
   /** 0 passes the scene through untouched (a warm-up draw); 1 is the water. */
   setStrength(strength: number): void {
     this.strength = Math.min(Math.max(strength, 0), 1);
@@ -442,6 +462,7 @@ export class WaterColumnPass {
     effect.setFloat("cameraStillDepth", this.cameraStillDepth);
     effect.setFloat("cameraSurfaceDepth", this.cameraSurfaceDepth);
     effect.setFloat("waterColumnStrength", this.strength);
+    effect.setFloat("adaptationGain", this.adaptationGain);
     if (this.caustics && this.causticSource) {
       this.causticSource.bindCaustics(effect);
       effect.setFloat2("worldOrigin", this.worldOriginX, this.worldOriginZ);
