@@ -61,7 +61,7 @@ import { ROAD_RIBBON_CHUNK_METERS, ROAD_RIBBON_PAD_KIND } from "./roadSurfaceGeo
  * the material the splat paints under it, only sharp. It is shaded as the
  * terrain shades that paint (`TerrainSurfacePlugin`): the ground's macro wash,
  * meso band (tone, hue, tilt and roughness) and, where the tier builds it,
- * ground grain at the same point, each texel's own roughness and cavity, the
+ * ground grain (its tone only on a seal, which is rolled flat) at the same point, each texel's own roughness and cavity, the
  * material's F0, diffuse roughness and grazing reflectance, and the terrain
  * material's lighting gains; neither material has a seasonal tint. So ribbon
  * and paint are one colour, and the ribbon reads as the road sharpening, not
@@ -425,7 +425,10 @@ ${terrainMesoSlopeWgsl("road", "roadSteep", "roadGroundCover.x * roadGroundPatch
 }
 ${terrainMacroWashNoiseWgsl("road", "roadPosition", "roadSurfaceValue")}${terrainMacroWashHueWgsl("road")}roadAlbedo = roadAlbedo * roadMacroVariation * roadMacroHue;
 // The grain, through the terrain's de-tile warp on its major-axis footprint.
-// A road never lies under the sea, so none of it is faded there.
+// A road never lies under the sea, so none of it is faded there. A seal is
+// rolled flat: it takes the grain's tone but not its relief, which drew
+// tufts on the asphalt; the terrain's own pavement (RunwaySurface) has none
+// either, and the asphalt paint under a seal is covered by it.
 if (roadGroundPatchworkOn > 0.5) {
 ${groundGrainReadsWgsl("road", {
   xz: "roadPosition + roadSurfaceDetileWarp(roadPosition, roadFootprint)",
@@ -434,7 +437,9 @@ ${groundGrainReadsWgsl("road", {
   albedo: "roadSurfaceAlbedo",
   shown: "1.0",
 })}  let roadGrainCover = roadGroundCover * (1.0 - smoothstep(0.45, 0.8, roadSlope));
-${groundGrainAlbedoWgsl("road", "roadAlbedo")}${groundGrainReliefWgsl("road")}  roadGroundTilt += roadGrainSlope * roadGrainNormalGain;
+${groundGrainAlbedoWgsl("road", "roadAlbedo")}  if (!roadSealed) {
+${groundGrainReliefWgsl("road")}    roadGroundTilt += roadGrainSlope * roadGrainNormalGain;
+  }
 }
 if (roadSealed && !roadOnPad) {
   let roadLineAt = ${wgslNumber(SEALED.shoulderWidth + LOOK.edgeLineInsetMeters)};

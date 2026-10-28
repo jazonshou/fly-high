@@ -340,7 +340,7 @@ describe("the roads' ribbon carries the grain the paint under it has", () => {
     );
   });
 
-  it("with the terrain's reads, fades, gains and relief", () => {
+  it("with the terrain's reads, fades, gains and relief (a seal's tone only)", () => {
     for (const index of [0, 1, 2]) {
       for (const name of ["Frame", "Level", "Uv"]) {
         expect(fn(ribbon, `roadGroundGrain${name}${index}`)).toBe(asRibbon(fn(terrain, `terrainGroundGrain${name}${index}`)));
@@ -353,8 +353,11 @@ describe("the roads' ribbon carries the grain the paint under it has", () => {
     const reads = (wgsl: string, p: string) => between(wgsl, `let ${p}GrainUv0`, `let ${p}GrainShown`)
       + between(wgsl, `let ${p}GrainShare0`, `${p}GrainLevel2);\n  }\n`);
     expect(reads(ribbon, "road")).toBe(asRibbon(reads(terrain, "terrain")));
-    const composite = (wgsl: string, p: string, end: string) => between(wgsl, `let ${p}GrainToneGain`, end);
-    expect(composite(ribbon, "road", "  roadGroundTilt += roadGrainSlope * roadGrainNormalGain;"))
-      .toBe(asRibbon(composite(terrain, "terrain", "  terrainNormal = normalize(terrainNormal)\n    + vec3f(-terrainGrainSlope.x")));
+    const tone = (wgsl: string, p: string) => between(wgsl, `let ${p}GrainToneGain`, `* ${p}GrainClump));`);
+    expect(tone(ribbon, "road")).toBe(asRibbon(tone(terrain, "terrain")));
+    const relief = (wgsl: string, p: string) => between(wgsl, "  // Relief from the two finer scales", `${p}GrainLevel1);\n  }\n`);
+    expect(relief(ribbon, "road")).toBe(asRibbon(relief(terrain, "terrain")));
+    // A seal takes the tone and not the relief: it is rolled flat, as the terrain's pavement is.
+    expect(ribbon).toMatch(/if \(!roadSealed\) \{\n  \/\/ Relief from the two finer scales/);
   });
 });

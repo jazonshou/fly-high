@@ -54,7 +54,8 @@ import { DRAWN_FRAME_CAMERA, buildDrawnFrame } from "../support/terrainDrawnFram
  * carry where the paint has them or it reads as a strip laid over them. So
  * with the grain, the paint is drawn again with its grain switched off, and
  * the ribbon again from arrays without the layer: band by band down each
- * road, what the grain does to the ribbon is what it does to the paint.
+ * road, what the grain does to the ribbon is what it does to the paint (on a
+ * seal its tone; the seal is rolled flat).
  */
 
 const CANVAS = 256;
@@ -403,7 +404,10 @@ describe("the road ribbon against the terrain's paint", () => {
           const mismatch = spreadAboutMean(bands.map((band) => onRibbon.get(band)! - onPaint.get(band)!));
           console.log(`${name}: the grain moves the paint's bands ${(grainSpread * 100).toFixed(2)}% rms, the ribbon's by ${(mismatch * 100).toFixed(2)}% rms more or less`);
           expect(grainSpread, `${name}: no grain on the paint to compare`).toBeGreaterThan(0.01);
-          expect(mismatch, `${name}: the ribbon does not carry the paint's grain`).toBeLessThan(0.3 * grainSpread);
+          // A seal takes the grain's tone and not its relief (it is rolled
+          // flat), so the paint's relief is left over there; gravel takes both.
+          const share = name === "sealed" ? 0.75 : 0.3;
+          expect(mismatch, `${name}: the ribbon does not carry the paint's grain`).toBeLessThan(share * grainSpread);
         }
       }
       system.dispose();
