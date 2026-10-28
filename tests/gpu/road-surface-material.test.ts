@@ -9,7 +9,7 @@ import { RawTexture2DArray } from "@babylonjs/core/Materials/Textures/rawTexture
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
-import { Scene } from "@babylonjs/core/scene";
+import { Scene, ScenePerformancePriority } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
 import type { RoadSurfaceRegion } from "../../src/render/webgpu/roads/RoadSurfaceIndex";
 import { RoadSurfaceSystem, type RoadSurfaceTerrain } from "../../src/render/webgpu/roads/RoadSurfaceSystem";
@@ -25,6 +25,10 @@ import { DRAWN_FRAME_CAMERA, buildDrawnFrame, drawnFrameGround } from "../suppor
  * lookup, its fragment stage the terrain's material arrays), and draw where
  * the roads are and nowhere else, seen straight down over a real terrain
  * frame's lookup; then again after a change written into the buffers in place.
+ * The engine and scene run as the flight renderer's do: off compatibility mode
+ * (each draw replayed from a recorded bundle) with materials frozen after
+ * their first ready draw, so a change that only a re-recorded draw shows is
+ * seen here as it is in flight.
  */
 
 const CANVAS = 128;
@@ -65,11 +69,15 @@ describe("the roads' ribbon and rail materials on the GPU", () => {
     console.error = (...args: unknown[]) => { capture(...args); error(...args); };
     try {
       await engine.initAsync();
+      engine.compatibilityMode = false;
       const device = (engine as unknown as { _device: GPUDevice })._device;
       device.addEventListener("uncapturederror", (event) => {
         errors.push(String((event as GPUUncapturedErrorEvent).error.message));
       });
       const scene = new Scene(engine);
+      scene.performancePriority = ScenePerformancePriority.Intermediate;
+      // The flight renderer's sky covers the frame; here the clear is what the probes read.
+      scene.autoClear = true;
       scene.clearColor = new Color4(CLEAR[0] / 255, CLEAR[1] / 255, CLEAR[2] / 255, 1);
       const camera = new FreeCamera("top", new Vector3(DRAWN_FRAME_CAMERA.x, 400, DRAWN_FRAME_CAMERA.z), scene);
       camera.mode = Camera.ORTHOGRAPHIC_CAMERA;
