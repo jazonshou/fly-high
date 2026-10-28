@@ -17,8 +17,8 @@ import { isCarSpawn, isSurfaceSpawn } from "../src/workers/protocol";
 /**
  * The walker's side of the shared vehicle seam (the walking build's
  * interface step): the spec's published numbers, the person payload through
- * `surfaceVisualState`, and the stand-in walker the session is built on
- * until the real controller replaces it.
+ * `surfaceVisualState`, and the walker the session gets from
+ * `createPersonSimulator` (its own laws in tests/person.walker.test.ts).
  */
 
 const STEP = 1 / 120;
@@ -81,7 +81,7 @@ describe("foot spawn", () => {
   });
 });
 
-describe("stand-in walker", () => {
+describe("walker", () => {
   it("walks where the move vector points at the walk speed, turned to face it", () => {
     const walker = createPersonSimulator({ position: { x: 0, y: 10, z: 0 }, heading: 0 });
     walker.setEnvironment(flatEnvironment(10));
@@ -117,14 +117,16 @@ describe("stand-in walker", () => {
     expect(payload(walker).grounded).toBe(true);
   });
 
-  it("floats with the mouth at the surface in water deeper than the swim depth", () => {
+  it("floats with the eye just over the surface in water deeper than the swim depth", () => {
     const walker = createPersonSimulator({ position: { x: 0, y: -3, z: 0 }, heading: 0 });
     walker.setEnvironment(flatEnvironment(-3, 0));
     walker.setControls(controls({}));
     for (let i = 0; i < 600; i += 1) walker.step(STEP);
     const person = payload(walker);
     expect(person.mode).toBe("swim");
-    expect(walker.state.position.y).toBeCloseTo(-PERSON.swimDepthFraction * PERSON.stature, 2);
+    // The feet point is the eye less the eye height; the eye rides 5 cm over the surface.
+    expect(person.headDepth).toBeCloseTo(-0.05, 2);
+    expect(walker.state.position.y).toBeCloseTo(0.05 - PERSON.eyeHeight, 2);
     expect(person.waterDepth).toBeGreaterThan(1);
   });
 
