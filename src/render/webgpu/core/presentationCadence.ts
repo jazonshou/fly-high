@@ -5,9 +5,11 @@
  * governor read it, and the `?bench=1` benchmark records it.
  *
  * INVARIANT THIS FILE OWNS: a slow machine can never relax its own target.
- * Only an explicit 30 fps choice, or a display period measured on ticks that
- * drew nothing, may raise the slowest interval the cadence allows; a period
- * merely observed from rendered frames never does.
+ * Only an explicit 30 fps choice, or a confirmed display period, may raise
+ * the slowest interval the cadence allows. The pacer confirms a period only
+ * on evidence render cost cannot stretch: ticks that drew nothing, or drawn
+ * ticks faster than the period held before, which no frame's cost can make.
+ * A period merely observed from rendered frames never raises it.
  *
  * Class P: pure types and numbers. No Babylon import, Node-testable.
  */

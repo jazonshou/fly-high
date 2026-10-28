@@ -8,6 +8,8 @@ import {
   FramePacer,
   IDLE_PROBE_LEAD_MS,
   IDLE_PROBE_LEAD_TICKS,
+  IDLE_PROBE_MAX_LEAD_MS,
+  IDLE_PROBE_MIN_LEAD_TICKS,
   nominalHz,
   REPROBE_TICKS,
   startIdleProbe,
@@ -274,6 +276,39 @@ describe("misses, gaps and resets", () => {
     expect(flight.pacer.currentCadence).toBe(cadence);
   });
 
+  it("draws the tick after a reset, even in the middle of a check round", () => {
+    // 60 Hz, then 144 Hz under frames of two refreshes: read as 72 Hz and
+    // drawn every tick at the 60 setting, so the pacer skips one tick in
+    // every few to check. A reset after any tick of that round still draws
+    // the next one.
+    const run = (resetAfter: number): { firstSkip: number | null; drewAfterReset: boolean | null } => {
+      const pacer = new FramePacer({ pace60: true });
+      let vsync = 1_000;
+      for (let tick = 0; tick < IDLE_PROBE_LEAD_TICKS; tick += 1) {
+        pacer.probe(vsync, tick + 1 < IDLE_PROBE_LEAD_TICKS);
+        vsync += 1_000 / 60;
+      }
+      vsync += 100;
+      let firstSkip: number | null = null;
+      let drewAfterReset: boolean | null = null;
+      for (let tick = 0; tick < 1_200; tick += 1) {
+        const fast = tick >= 600;
+        const result = pacer.tick(vsync, "60");
+        if (tick === resetAfter + 1) drewAfterReset = result.render;
+        if (!result.render) firstSkip ??= tick;
+        vsync += (fast && result.render ? 2 : 1) * (1_000 / (fast ? 144 : 60));
+        if (tick === resetAfter) pacer.reset();
+      }
+      return { firstSkip, drewAfterReset };
+    };
+    const { firstSkip } = run(-2);
+    expect(firstSkip).not.toBeNull();
+    expect(firstSkip!).toBeGreaterThanOrEqual(600);
+    for (let after = firstSkip! - 1; after < firstSkip! + 40; after += 1) {
+      expect(run(after).drewAfterReset, `reset after tick ${after}`).toBe(true);
+    }
+  });
+
   it("returns the same result object on every tick", () => {
     const pacer = new FramePacer({ pace60: true });
     const first = pacer.tick(0, "60");
@@ -365,6 +400,20 @@ describe("confirmation", () => {
     for (let tick = 0; tick < 600; tick += 1) {
       expect(unpaced.tick(1_000 + tick * period, "display", tick >= 300).afterReprobe).toBe(false);
     }
+  });
+
+  it("re-measures a paused flight after a reset, where the display changed while the tab was hidden", () => {
+    // Paused at 120 Hz: the re-probe reads 120. The tab hides while paused
+    // (a reset), the window moves to a 60 Hz display, and the tab shows
+    // again, still paused: the pause's own re-probe has run, so the reset
+    // starts another.
+    const pacer = new FramePacer({ pace60: true });
+    const before = fly(120, "60", { pacer, ticks: 600, paused: (tick) => tick >= 400 });
+    expect(pacer.currentCadence).toEqual(cadenceOf(60, 2, 120, true));
+    pacer.reset();
+    const after = fly(60, "60", { pacer, startMs: before.endMs + 2_000, ticks: 600, paused: (tick) => tick < 100 });
+    expect(pacer.currentCadence).toEqual(cadenceOf(60, 1, 60, true));
+    expect(after.renderedTicks.filter((tick) => tick >= 100)).toHaveLength(500);
   });
 
   it("does not skip a paused frame where it would not pace anyway", () => {
@@ -464,7 +513,7 @@ describe("the startup idle probe", () => {
   function host() {
     const frames = new Map<number, (nowMs: number) => void>();
     let nextHandle = 1;
-    let timer: (() => void) | null = null;
+    const timers = new Map<number, () => void>();
     const cleared: unknown[] = [];
     const fake: IdleProbeHost = {
       requestAnimationFrame: (callback) => {
@@ -476,9 +525,9 @@ describe("the startup idle probe", () => {
       cancelAnimationFrame: (handle) => {
         frames.delete(handle);
       },
-      setTimeout: (callback) => {
-        timer = callback;
-        return "timer";
+      setTimeout: (callback, milliseconds) => {
+        timers.set(milliseconds, callback);
+        return `timer ${milliseconds}`;
       },
       clearTimeout: (handle) => {
         cleared.push(handle);
@@ -489,7 +538,18 @@ describe("the startup idle probe", () => {
       frames.clear();
       for (const [, callback] of pending) callback(nowMs);
     };
-    return { fake, frames, step, fireTimer: () => timer?.(), cleared };
+    return { fake, frames, step, fireTimer: (milliseconds: number) => timers.get(milliseconds)?.(), cleared };
+  }
+
+  /** Whether `idle`'s lead has settled, once pending callbacks have run. */
+  async function settledOf(idle: { readonly lead: Promise<void> }): Promise<boolean> {
+    let settled = false;
+    void idle.lead.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    return settled;
   }
 
   it("hands every tick to the pacer and settles its lead after 24 ticks", async () => {
@@ -511,18 +571,50 @@ describe("the startup idle probe", () => {
     idle.stop();
   });
 
-  it("settles its lead after 300 ms even when no frame comes", async () => {
+  it("settles its lead after 300 ms once 13 ticks have come, and after 1 s even when no frame comes", async () => {
+    expect([IDLE_PROBE_LEAD_MS, IDLE_PROBE_MIN_LEAD_TICKS, IDLE_PROBE_MAX_LEAD_MS]).toEqual([300, 13, 1_000]);
+    const ticked = host();
+    const quick = startIdleProbe(new FramePacer(), ticked.fake);
+    for (let tick = 0; tick < IDLE_PROBE_MIN_LEAD_TICKS; tick += 1) ticked.step(tick * (1_000 / 48));
+    expect(await settledOf(quick)).toBe(false);
+    ticked.fireTimer(IDLE_PROBE_LEAD_MS);
+    expect(await settledOf(quick)).toBe(true);
+    quick.stop();
+    // A hidden tab gets no frames.
     const { fake, fireTimer } = host();
     const idle = startIdleProbe(new FramePacer(), fake);
-    let settled = false;
-    void idle.lead.then(() => {
-      settled = true;
-    });
-    expect(IDLE_PROBE_LEAD_MS).toBe(300);
-    fireTimer();
-    await Promise.resolve();
-    expect(settled).toBe(true);
+    fireTimer(IDLE_PROBE_LEAD_MS);
+    expect(await settledOf(idle)).toBe(false);
+    fireTimer(IDLE_PROBE_MAX_LEAD_MS);
+    expect(await settledOf(idle)).toBe(true);
     idle.stop();
+  });
+
+  it("waits past 300 ms for 13 ticks with no gap, where the first frame came late or a stall cut the lead", async () => {
+    // Fewer than 13 quiet ticks confirm nothing, and renderer creation then
+    // leaves no clean run: under frames of two refreshes the flight would
+    // read half the rate, unconfirmed, until the first pause.
+    for (const before of [0, 3, 12]) {
+      const { fake, step, fireTimer } = host();
+      const pacer = new FramePacer({ pace60: true });
+      const probe = vi.spyOn(pacer, "probe");
+      const idle = startIdleProbe(pacer, fake);
+      let now = 1_000;
+      for (let tick = 0; tick < before; tick += 1, now += 1_000 / 60) step(now);
+      // The main thread stalls, or the first frame comes late: 260 ms.
+      now += 260;
+      fireTimer(IDLE_PROBE_LEAD_MS);
+      for (let tick = 0; tick < IDLE_PROBE_MIN_LEAD_TICKS - 1; tick += 1, now += 1_000 / 60) step(now);
+      expect(await settledOf(idle), `${before} ticks before`).toBe(false);
+      step(now);
+      expect(await settledOf(idle), `${before} ticks before`).toBe(true);
+      expect(probe.mock.calls.slice(-2).map(([, quiet]) => quiet)).toEqual([true, false]);
+      // Renderer creation misses every other refresh.
+      for (let tick = 0; tick < 60; tick += 1) step((now += 1_000 / 30));
+      idle.stop();
+      pacer.tick(now + 100, "60");
+      expect(pacer.currentCadence, `${before} ticks before`).toEqual(cadenceOf(60, 1, 60, true));
+    }
   });
 
   it("stops: no more frames, the timer cleared, the lead settled, twice without harm", async () => {
@@ -534,26 +626,29 @@ describe("the startup idle probe", () => {
     idle.stop();
     idle.stop();
     expect(frames.size).toBe(0);
-    expect(cleared).toContain("timer");
+    expect(cleared).toEqual(expect.arrayContaining([`timer ${IDLE_PROBE_LEAD_MS}`, `timer ${IDLE_PROBE_MAX_LEAD_MS}`]));
     await expect(idle.lead).resolves.toBeUndefined();
     step(16);
     expect(probe).toHaveBeenCalledTimes(1);
   });
 
-  it("counts the ticks after a lead its 300 ms cut short as busy, never as the display's", async () => {
-    // Ten quiet ticks of 60 Hz, then renderer creation misses every other refresh.
-    const { fake, step, fireTimer } = host();
-    const pacer = new FramePacer({ pace60: true });
-    const idle = startIdleProbe(pacer, fake);
-    let now = 1_000;
-    for (let tick = 0; tick < 10; tick += 1, now += 1_000 / 60) step(now);
-    fireTimer();
-    await idle.lead;
-    for (let tick = 0; tick < 40; tick += 1, now += 1_000 / 30) step(now);
-    idle.stop();
-    pacer.tick(now + 100, "60");
-    expect(pacer.currentCadence?.periodConfirmed).toBe(false);
-    expect(pacer.currentCadence?.displayPeriodMs).toBe(1_000 / 60);
+  it("reads a lead its 300 ms cut to 13-15 ticks whole, and the ticks after it as busy, never as the display's", async () => {
+    // A 48 or 50 Hz display, or a first frame 50 ms late at 60 Hz: the
+    // estimates fall every 8 deltas, so none reads the run while it is 12
+    // long or more. Then renderer creation misses every other refresh.
+    for (const quiet of [13, 14, 15]) {
+      const { fake, step, fireTimer } = host();
+      const pacer = new FramePacer({ pace60: true });
+      const idle = startIdleProbe(pacer, fake);
+      let now = 1_000;
+      for (let tick = 0; tick < quiet; tick += 1, now += 1_000 / 60) step(now);
+      fireTimer(IDLE_PROBE_LEAD_MS);
+      await idle.lead;
+      for (let tick = 0; tick < 40; tick += 1, now += 1_000 / 30) step(now);
+      idle.stop();
+      pacer.tick(now + 100, "60");
+      expect(pacer.currentCadence, `${quiet} quiet ticks`).toEqual(cadenceOf(60, 1, 60, true));
+    }
   });
 
   it("confirms the period before the game's first tick, so a gap after it loses nothing", () => {

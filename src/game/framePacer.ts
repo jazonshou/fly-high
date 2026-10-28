@@ -10,10 +10,12 @@ import type { FrameRateSetting } from "@/src/settings";
  * uses N = round(rate/30). "Match display" draws every refresh, as the game
  * always did. A tick that does not draw only asks for the next frame.
  *
- * The display period is measured from the ticks themselves, and only clean
- * evidence may confirm it: runs of ticks that nothing asked to draw (the
- * startup probe's quiet lead, a re-probe while paused or when the pause
- * menu turns pacing on), and ticks the pacer skipped with time to spare. A
+ * The display period is measured from the ticks themselves, and only
+ * evidence render cost cannot stretch may confirm it: clean evidence, which
+ * is runs of ticks that nothing asked to draw (the startup probe's quiet
+ * lead, a re-probe while paused or when the pause menu turns pacing on) and
+ * ticks the pacer skipped with time to spare or to measure the display, or
+ * a faster period on drawn ticks than any frame could make (see below). A
  * skipped tick draws nothing, so the next comes one refresh later: those
  * deltas are the period, and a ring of them one slower refresh apart is a
  * display that slowed down. Render cost cannot stretch either, so a slow
@@ -41,12 +43,16 @@ import type { FrameRateSetting } from "@/src/settings";
  * over every tick, along which jitter cancels: it says which rate near the
  * clean evidence the display runs at, common or not (112, 175 and 222 Hz
  * panels exist), may snap a reading to a common rate, and, when it keeps
- * contradicting the held rate, withdraws its confirmation. Faster periods
- * aside, it moves no rate where no clean evidence is near; before any, it
- * gives only an unconfirmed first reading.
+ * contradicting the held rate, withdraws its confirmation and has the pacer
+ * skip a few ticks to measure the display, since a load that hides a new
+ * rate's skips may never lighten. Faster periods aside, it moves no rate
+ * where no clean evidence is near; before any, it gives only an unconfirmed
+ * first reading. Busy probe ticks miss vsyncs at random, so no fit runs over
+ * them at all.
  *
  * Pure, with no DOM: `startIdleProbe` takes the browser's frame and timer
- * functions as a host. A tick allocates nothing.
+ * functions as a host. A tick allocates nothing beyond V8's boxing of
+ * doubles.
  */
 
 /**
@@ -63,9 +69,9 @@ const RING_SIZE = 64;
 const MIN_SAMPLES = 16;
 /**
  * Clean deltas before they can confirm the period: a probe's run, or skips.
- * Fewer than the all ring needs, so the startup probe's 24-tick lead
- * confirms on its own: a busy renderer creation after it may leave no
- * other clean run.
+ * Fewer than the all ring needs, so the startup probe's lead (13 to 24
+ * quiet ticks, read when it ends) confirms on its own: a busy renderer
+ * creation after it may leave no other clean run.
  */
 const MIN_CLEAN_SAMPLES = 12;
 /** Below this a delta is no display's period (a catch-up callback). */
@@ -124,8 +130,9 @@ const SPAN_TICKS = 4;
 /**
  * Clean evidence this close to the adopted period confirms it rather than
  * proposing another rate. Clean skips are single deltas, so their mean
- * keeps a stamp's jitter (2% at 120 Hz with 1.5 ms of it); common rates
- * are 10% apart or the same rate.
+ * keeps a stamp's jitter (2% at 120 Hz with 1.5 ms of it). Common rates
+ * closer than this (48 and 50, 72 and 75, 165, 170 and 180 Hz) are told
+ * apart on the grid (see `estimate`).
  */
 const CONFIRMS_TOLERANCE = 0.1;
 /**
@@ -144,8 +151,9 @@ const FIT_PASSES = 2;
 /** A tick further than this share of a period from the line is misplaced: the fit leaves it out. */
 const FIT_KEEP = 0.4;
 /**
- * A probe-run delta past this many medians is a stall of whole periods. A
- * single period with 1.5 ms of jitter either side reaches 1.72 at 240 Hz.
+ * A probe-run delta past this many periods of the first pass's line is a
+ * stall of whole periods. A single period with 1.5 ms of jitter either side
+ * reaches 1.72 at 240 Hz.
  */
 const STALL_PERIODS = 1.75;
 /** The same in a run's median deltas, which jitter may bias by 8%. */
@@ -200,8 +208,16 @@ const MIN_BAND_SHARE = 0.5;
 export const REPROBE_TICKS = 24;
 /** The startup probe's lead before the renderer is created: this many ticks... */
 export const IDLE_PROBE_LEAD_TICKS = 24;
-/** ...or this long, whichever comes first. */
+/** ...or this long, whichever comes first... */
 export const IDLE_PROBE_LEAD_MS = 300;
+/**
+ * ...once the last this many came with no gap (`GAP_MS`) between them: a
+ * run of `MIN_CLEAN_SAMPLES` quiet deltas, which a late first frame or a
+ * stall would otherwise cut short...
+ */
+export const IDLE_PROBE_MIN_LEAD_TICKS = MIN_CLEAN_SAMPLES + 1;
+/** ...or at the latest after this long: a hidden tab gets no frames at all. */
+export const IDLE_PROBE_MAX_LEAD_MS = 1_000;
 
 export const COMMON_REFRESH_RATES_HZ = [
   30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 170, 180, 200, 240, 360,
@@ -343,7 +359,11 @@ const DREW = 0;
 const FORCED = 1;
 /** The pacer skipped it with time to spare: the next delta is the display's too. */
 const CLEAN_SKIP = 2;
-/** The pacer skipped it by a hair, its stamp may have decided that: the next delta is no sample. */
+/**
+ * The pacer skipped it by a hair, its stamp may have decided that: the next
+ * delta is no sample of the held period, only one slower refresh where a
+ * ring of them agrees (see `slowSkipPeriod`).
+ */
 const CLOSE_SKIP = 3;
 /** A check skip (see `tick`): clean whatever its stamp, so its delta is a refresh with the stamps' jitter (see `gridNear`). */
 const CHECK_SKIP = 4;
@@ -507,9 +527,11 @@ export class FramePacer {
   /**
    * Forget the timing (a hidden tab, a gap): the next tick draws. The adopted
    * period, its confirmation and the last cadence are kept, and so is the
-   * last probe run's period, which is what confirmed it.
+   * last probe run's period, which is what confirmed it. A paused flight
+   * re-probes on its next tick: the display may have changed meanwhile.
    */
   reset(): void {
+    this.endForcedRun();
     this.allCount = 0;
     this.allHead = 0;
     this.skipCount = 0;
@@ -521,6 +543,22 @@ export class FramePacer {
     this.previousIdle = DREW;
     this.candidateCount = 0;
     this.contradictions = 0;
+    this.wasPaused = false;
+    // A check skip waits for drawn ticks again.
+    this.checkCountdown = CHECK_EVERY_TICKS;
+  }
+
+  /**
+   * Reads the probe or re-probe run that just ended, wherever the estimates
+   * fell in it: a lead of 12-15 quiet ticks, or a run a gap cut short, has
+   * no estimate while it is 12 deltas long or more.
+   */
+  private endForcedRun(): void {
+    if (this.forcedRun >= MIN_CLEAN_SAMPLES) {
+      const run = this.forcedRunPeriod();
+      if (run !== null) this.forcedPeriodMs = run;
+    }
+    this.forcedRun = 0;
   }
 
   private startReprobe(): void {
@@ -531,6 +569,18 @@ export class FramePacer {
     // The re-probe measures what a check would have.
     this.checkSkipsLeft = 0;
     this.checkBudget = CHECK_SKIPS;
+  }
+
+  /**
+   * Spends the check skips left for this rate (see `tick`): the tick after
+   * a drawn one, every `CHECK_EVERY_TICKS` drawn ticks, draws nothing, so
+   * the next delta is one refresh of the display.
+   */
+  private startChecks(): void {
+    if (this.checkSkipsLeft > 0 || this.checkBudget === 0) return;
+    this.checkSkipsLeft = this.checkBudget;
+    this.checkBudget = 0;
+    this.checkCountdown = 1;
   }
 
   /** Clean evidence turned out stale: only new evidence may confirm again. */
@@ -558,6 +608,7 @@ export class FramePacer {
       return;
     }
     const kind = this.previousIdle;
+    if (kind !== FORCED) this.endForcedRun();
     this.all[this.allHead] = delta;
     this.allKinds[this.allHead] = kind;
     this.allHead = (this.allHead + 1) % RING_SIZE;
@@ -791,6 +842,18 @@ export class FramePacer {
     scratch.sort();
     const median = scratch[Math.ceil(0.5 * count) - 1]!;
     return this.bandMean(count, median) ?? median;
+  }
+
+  /**
+   * Whether the all ring holds a delta after a busy probe tick. Those miss
+   * vsyncs at random, by up to 90 refreshes, so a grid fit's phase wraps
+   * along them and no fit over them says anything: two fits both near no
+   * coherence (0.02 on a 175 Hz display's own grid, 0.17 on 180 Hz's) would
+   * hold the ticks "as well" as each other.
+   */
+  private holdsBusy(): boolean {
+    for (let index = 0; index < this.allCount; index += 1) if (this.allKinds[index] === BUSY) return true;
+    return false;
   }
 
   /** How many of the all ring's deltas follow a clean skip and sit within `STALL_TOLERANCE` of `periodMs`. */
@@ -1061,6 +1124,8 @@ export class FramePacer {
     // Once a rate was confirmed, the held period is the reference even when
     // its confirmation was withdrawn: only clean evidence moves it.
     const reference = clean ?? (this.held ? adopted : null);
+    // Until the busy probe ticks leave the ring, it holds no grid to fit.
+    const busy = this.holdsBusy();
     let period: number | null;
     let confirmed: boolean;
     let faster = false;
@@ -1091,22 +1156,18 @@ export class FramePacer {
           this.confirmed = false;
           this.candidateCount = 0;
           this.contradictions = 0;
-          if (this.checkSkipsLeft === 0 && this.checkBudget > 0) {
-            this.checkSkipsLeft = this.checkBudget;
-            this.checkBudget = 0;
-            this.checkCountdown = 1;
-          }
+          this.startChecks();
           if (this.checkSkipsLeft > 0) return;
           // The checks are spent and settled nothing: read the ticks.
         }
       } else if (adopted === null) {
         // The first rate: the clean one, as every tick places it.
-        period = this.gridPeriod(clean!, this.allCount) ?? clean;
+        period = busy ? clean : this.gridPeriod(clean!, this.allCount) ?? clean;
         confirmed = true;
       } else {
-        const fit = this.gridFit(adopted, this.allCount);
+        const fit = busy ? null : this.gridFit(adopted, this.allCount);
         const fitQuality = this.fitQuality;
-        const disagrees = this.allCount >= MIN_SAMPLES
+        const disagrees = !busy && this.allCount >= MIN_SAMPLES
           && (fit === null || Math.abs(fit - adopted) > CONTRADICTS_RATIO * adopted);
         const off = clean === null ? 0 : Math.abs(clean - adopted) / adopted;
         if (off > CONFIRMS_TOLERANCE || (disagrees && off > CONTRADICTS_RATIO)) {
@@ -1119,6 +1180,8 @@ export class FramePacer {
           if (skips === null) {
             // A probe or re-probe run: consecutive idle ticks, a fit already.
             period = clean;
+          } else if (busy) {
+            period = null;
           } else {
             const other = slow === null && this.checkedSkips
               ? this.gridNear(clean!, this.allCount)
@@ -1135,8 +1198,13 @@ export class FramePacer {
             // The skips must still come, a period of `clean` apart: a ring
             // of them that stopped is a display that changed since, whose
             // ticks may sit on any multiple of its own grid, `clean`'s too.
+            // Check skips of a spent round need not: they measured the
+            // display once the held rate came into question, and a rate
+            // drawn every tick skips no other.
+            const checked = this.checkedSkips && this.checkSkipsLeft === 0 && this.checkBudget === 0;
             period = other !== null && otherQuality >= fitQuality + margin
-              && (slow !== null || this.freshSkips(clean!) >= (this.confirmed || !this.held ? FRESH_SKIPS : MIN_CLEAN_SAMPLES))
+              && (slow !== null || checked
+                || this.freshSkips(clean!) >= (this.confirmed || !this.held ? FRESH_SKIPS : MIN_CLEAN_SAMPLES))
               ? other : null;
             // Where none stands, ticks that leave the adopted grid contradict
             // it here too: skips read 6% fast (a band cuts their tail) stay
@@ -1149,22 +1217,29 @@ export class FramePacer {
           // held: every tick may snap the adopted rate to a common one, never
           // move it, and a grid that keeps disagreeing contradicts it.
           period = adopted;
-          if (!isCommonRate(this.rateHz!)) {
+          if (!busy && !isCommonRate(this.rateHz!)) {
             // An unsnapped rate (a first reading) gives way to the nearest
             // common one whose grid every tick holds as well, fitted there.
             const common = nominalHzWithin(clean ?? adopted, SEED_SNAP_TOLERANCE);
             const snappedFit = common === null ? null : this.gridFit(1_000 / common, this.allCount);
             if (snappedFit !== null && nominalHzWithin(snappedFit, SNAP_TOLERANCE) === common
               && this.fitQuality >= fitQuality - QUALITY_MARGIN / 3) period = 1_000 / common!;
-          } else if (clean !== null && nominalHzWithin(clean, SEED_SNAP_TOLERANCE) !== this.rateHz) {
+          } else if (!busy && clean !== null && nominalHzWithin(clean, SEED_SNAP_TOLERANCE) !== this.rateHz) {
             // A common rate as close to the clean one as 170 is to 165 Hz
             // gives way, by agreement, to the clean one where every tick sits
             // clearly more on its grid. A grid seeded 3% off slides two
             // periods along 64 ticks, so the adopted rate's own fit cannot.
+            // So does a common rate 3.5-8% off (48 and 50, 72 and 75, 170 and
+            // 180 Hz) where the clean evidence reads the very rate the ticks
+            // land on, from skips that still come: stale 176 Hz skips of a
+            // 165 Hz display that dropped to 60 Hz seed 180 Hz, whose grid
+            // holds the 60 Hz ticks.
             const near = this.gridPeriod(clean, this.allCount);
+            const nearHz = near === null ? 0 : nominalHz(near);
             if (
-              near !== null && this.fitQuality >= fitQuality + QUALITY_MARGIN
-              && isCommonRate(nominalHz(near)) && sameRate(nominalHz(near), this.rateHz!)
+              near !== null && this.fitQuality >= fitQuality + QUALITY_MARGIN && isCommonRate(nearHz)
+              && (sameRate(nearHz, this.rateHz!) || (nominalHzWithin(clean, SNAP_TOLERANCE) === nearHz
+                && (skips === null || this.freshSkips(clean) >= FRESH_SKIPS)))
             ) {
               period = near;
             }
@@ -1173,26 +1248,29 @@ export class FramePacer {
           // rate held too slow sets the clean margin too narrow, and its
           // skips then show early stamps' shifts. A probe run's idle ticks
           // confirm it whatever the grid.
-          confirmed = this.confirmed || (clean !== null && (skips === null || !disagrees));
+          confirmed = this.confirmed || (clean !== null && (skips === null || (!busy && !disagrees)));
           contradicted = disagrees;
         }
       }
     } else {
       // Nothing clean yet: the rendered ticks give a first, unconfirmed rate.
       const observed = this.measure(this.all, this.allCount, MIN_SAMPLES);
-      period = observed === null ? null : this.gridPeriod(observed, this.allCount) ?? observed;
+      period = observed === null || busy ? observed : this.gridPeriod(observed, this.allCount) ?? observed;
       confirmed = false;
     }
     this.contradictions = contradicted ? this.contradictions + 1 : 0;
     if (this.contradictions >= CONTRADICTING_ESTIMATES && this.confirmed) {
       // Every tick keeps showing another grid: the clean evidence is stale
       // (the display changed under a load that hides it) or was wrong. Hold
-      // the rate, withdraw the confirmation, and wait for fresh evidence.
-      // A faster candidate is what such ticks would show: it stays.
+      // the rate, withdraw the confirmation, and skip a tick now and then
+      // to measure the display: a load that hides the new rate's skips may
+      // never lighten. A faster candidate is what such ticks would show: it
+      // stays.
       this.contradictions = 0;
       this.forgetCleanEvidence();
       this.confirmed = false;
       if (!this.candidateFaster) this.candidateCount = 0;
+      this.startChecks();
       return;
     }
     if (period === null) return;
@@ -1289,7 +1367,9 @@ export interface IdleProbeHost {
 export interface IdleProbe {
   /**
    * Settles after `IDLE_PROBE_LEAD_TICKS` probe ticks or `IDLE_PROBE_LEAD_MS`,
-   * whichever comes first, or when the probe stops. It never rejects.
+   * whichever comes first, once the last `IDLE_PROBE_MIN_LEAD_TICKS` came
+   * with no gap between them; after `IDLE_PROBE_MAX_LEAD_MS` whatever came;
+   * or when the probe stops. It never rejects.
    */
   readonly lead: Promise<void>;
   /** Stops probing. Safe to call more than once. */
@@ -1314,6 +1394,10 @@ function browserHost(): IdleProbeHost {
 export function startIdleProbe(pacer: FramePacer, host: IdleProbeHost = browserHost()): IdleProbe {
   let handle: number | null = null;
   let ticks = 0;
+  /** Ticks since the last gap, which ends the pacer's run of them. */
+  let runTicks = 0;
+  let lastMs = Number.NEGATIVE_INFINITY;
+  let timedOut = false;
   let settled = false;
   let settle: () => void = () => undefined;
   const lead = new Promise<void>((resolve) => {
@@ -1322,10 +1406,16 @@ export function startIdleProbe(pacer: FramePacer, host: IdleProbeHost = browserH
       resolve();
     };
   });
-  const timer = host.setTimeout(() => settle(), IDLE_PROBE_LEAD_MS);
+  const timer = host.setTimeout(() => {
+    timedOut = true;
+    if (runTicks >= IDLE_PROBE_MIN_LEAD_TICKS) settle();
+  }, IDLE_PROBE_LEAD_MS);
+  const deadline = host.setTimeout(() => settle(), IDLE_PROBE_MAX_LEAD_MS);
   const step = (nowMs: number): void => {
     ticks += 1;
-    if (ticks >= IDLE_PROBE_LEAD_TICKS) settle();
+    runTicks = nowMs - lastMs < GAP_MS ? runTicks + 1 : 1;
+    lastMs = nowMs;
+    if (runTicks >= IDLE_PROBE_MIN_LEAD_TICKS && (timedOut || ticks >= IDLE_PROBE_LEAD_TICKS)) settle();
     // Once the lead settles, renderer creation may start before the next
     // tick: from the tick that settles it on, the delta to the next is busy.
     pacer.probe(nowMs, !settled);
@@ -1338,6 +1428,7 @@ export function startIdleProbe(pacer: FramePacer, host: IdleProbeHost = browserH
       if (handle !== null) host.cancelAnimationFrame(handle);
       handle = null;
       host.clearTimeout(timer);
+      host.clearTimeout(deadline);
       settle();
     },
   };

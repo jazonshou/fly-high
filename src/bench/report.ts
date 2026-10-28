@@ -71,7 +71,8 @@ const DEFINITIONS: Readonly<Record<string, string>> = Object.freeze({
     + "every refresh on a build with 60 fps pacing switched off. Shipped mode defaults to the players' setting, pinned "
     + "mode to Match display; a run that behaves otherwise is non-standard.",
   pacing: "The frame pacer's cadence at the flight's first and last frames (it draws every divisor-th refresh of displayHz; "
-    + "confirmed when measured on ticks that drew nothing), and the bench's rAF ticks against the frames rendered.",
+    + "confirmed when measured on ticks that drew nothing or on drawn ticks faster than the rate held before, which "
+    + "render cost cannot make), and the bench's rAF ticks against the frames rendered.",
   spread: "|a - b| / min(a, b) of the first and last flights' mean fps on the same tier, over the air window, or over the early check's stretch when either stopped early. Over 10% voids the run.",
   rafHz: "The browser's frame rate with nothing to draw, which is not always the panel's refresh rate.",
   heap: "performance.memory, coarse outside a flagged Chromium; null and stale when it never changed.",

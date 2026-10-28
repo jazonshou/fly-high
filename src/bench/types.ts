@@ -776,7 +776,10 @@ export interface BenchCadence {
   readonly divisor: number;
   /** The nominal display rate the pacer measured; null before it measured one. */
   readonly displayHz: number | null;
-  /** Measured on ticks that drew nothing, so render cost cannot have stretched it. */
+  /**
+   * Measured on evidence render cost cannot stretch: ticks that drew
+   * nothing, or drawn ticks faster than the rate held before.
+   */
   readonly confirmed: boolean;
 }
 
