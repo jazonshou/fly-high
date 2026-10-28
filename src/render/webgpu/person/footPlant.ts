@@ -147,12 +147,13 @@ export class FootPlanter {
       foot.px = x * c + z * s;
       foot.pz = -x * s + z * c;
       foot.py -= dy;
-      foot.yaw -= turnRight;
+      // Not `-=` on `.yaw` and `.ay`: the WGSL lint (render.webgpu-nature, 51b) reads them as swizzles.
+      foot.yaw = foot.yaw - turnRight;
       const ax = foot.ax - dx;
       const az = foot.az - dz;
       foot.ax = ax * c + az * s;
       foot.az = -ax * s + az * c;
-      foot.ay -= dy;
+      foot.ay = foot.ay - dy;
       const sx = foot.stepFromX - dx;
       const sz = foot.stepFromZ - dz;
       foot.stepFromX = sx * c + sz * s;
