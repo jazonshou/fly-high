@@ -1,4 +1,5 @@
 import type { CinematicOrbitSpec, TopFrontViewSpec } from "@/src/aircraft/catalogue";
+import type { ColliderBox } from "@/src/sim/colliders";
 
 /**
  * The walker (the walking plan, 2026-10-27, and Jason's answers D1-D6): one
@@ -157,3 +158,32 @@ export function personJumpSpeed(gravity = 9.80665, spec: PersonSpec = PERSON): n
 export function toblerFactor(slope: number): number {
   return Math.exp(-3.5 * (Math.abs(slope + 0.05) - 0.05));
 }
+
+/** A point in a vehicle's body frame, metres from its centre of gravity: +X forward, +Y up, +Z right. */
+export interface BodyPoint {
+  readonly forward: number;
+  readonly up: number;
+  readonly right: number;
+}
+
+/**
+ * Where the walker meets the LandCruiser 76 (right-hand drive): the driver's
+ * hip point, the standing spot outside each front door (mirrored in `right`
+ * for the left door), and the body as one box the walker walks round while
+ * the car is parked. Body frame from the car's centre of gravity, which
+ * stands 0.80 m above flat ground at kerb ride. The box runs from the tow
+ * hitch (2.72 m aft) to the front bumper (2.19 m ahead), 1.87 m wide, from
+ * 0.30 m above the ground to the roof at 1.94 m (the published body).
+ * The hip point is ESTIMATED from the drawn cockpit eye; the figure build
+ * measures it on the drawn seat.
+ */
+export const CAR_SEATING = Object.freeze({
+  cgAboveGround: 0.8,
+  driverHip: Object.freeze({ forward: -0.5, up: 0.15, right: 0.4 }) as BodyPoint,
+  doorStand: Object.freeze({ forward: -0.25, up: 0, right: 1.4 }) as BodyPoint,
+  bodyBox: Object.freeze({
+    kind: "box",
+    center: Object.freeze({ x: -0.265, y: 0.32, z: 0 }),
+    halfExtents: Object.freeze({ x: 2.455, y: 0.82, z: 0.935 }),
+  }) as ColliderBox,
+});
