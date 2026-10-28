@@ -186,7 +186,7 @@ export function terrainPageSplatWgsl(): string {
     // cover over the bound site index) once per texel; see bakeSplat.
     TERRAIN_LANDFORM_WGSL,
     // The infrastructure include, for the paint built ground wears
-    // (`terrainInfrastructureSurface`, once per texel; see bakeSplat). Its
+    // (`terrainInfrastructureSurfaceOver`, once per texel; see bakeSplat). Its
     // heights are already in the atlas the bake reads.
     TERRAIN_INFRASTRUCTURE_WGSL,
     // 6-8: the appended table's base index, derived from the kernel's own

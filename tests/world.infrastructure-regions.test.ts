@@ -18,6 +18,8 @@ import {
   infrastructureIndexChanges,
   changeInfrastructureRegions,
   infrastructureChangeTouches,
+  infrastructureBin,
+  infrastructureBinKey,
   type InfrastructureIndex,
   type InfrastructureRegion,
   type InfrastructureSegment,
@@ -264,6 +266,27 @@ describe("streamed infrastructure regions", () => {
     expect(infrastructureChangeTouches(change, {
       minX: airport.centerX + 30_000, minZ: airport.centerZ, maxX: airport.centerX + 90_000, maxZ: airport.centerZ + 60_000,
     })).toBe(false);
+    // Rectangles of every size round the change's bins, against a walk of every bin each covers.
+    let near = 0;
+    for (let k = 0; k < 400; k += 1) {
+      const size = [3, 70, 300, 1_400, 6_000][k % 5]!;
+      const x = airport.centerX + 1_000 + ((k * 7_919) % 2_600) - size / 2;
+      const z = airport.centerZ - 1_800 + ((k * 104_729) % 2_200) - size / 2;
+      const rect = { minX: x, minZ: z, maxX: x + size, maxZ: z + size };
+      for (const plants of [false, true]) {
+        const keys = plants ? change.plantBins : change.bins;
+        let expected = false;
+        for (let binX = infrastructureBin(rect.minX); binX <= infrastructureBin(rect.maxX); binX += 1) {
+          for (let binZ = infrastructureBin(rect.minZ); binZ <= infrastructureBin(rect.maxZ); binZ += 1) {
+            if (keys.has(infrastructureBinKey(binX, binZ))) expected = true;
+          }
+        }
+        expect(infrastructureChangeTouches(change, rect, plants)).toBe(expected);
+        if (expected) near += 1;
+      }
+    }
+    expect(near).toBeGreaterThan(100);
+    expect(near).toBeLessThan(700);
     // Removing them touches the same bins.
     const removal = changeInfrastructureRegions(world, [], regions().map((region) => region.key))!;
     expect([...removal.bins].sort()).toEqual([...change.bins].sort());

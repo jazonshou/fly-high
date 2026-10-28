@@ -1164,10 +1164,44 @@ export function installInfrastructureRegions(
   return changeInfrastructureRegions(world, install, remove)?.rects ?? [];
 }
 
+/** The bin range a change's key set covers, inclusive. */
+interface InfrastructureBinBox {
+  readonly minX: number;
+  readonly maxX: number;
+  readonly minZ: number;
+  readonly maxZ: number;
+}
+
+/** Each change's key sets' bin ranges, found on the first test against them (the sets never change). */
+const CHANGE_BIN_BOXES = new WeakMap<ReadonlySet<number>, InfrastructureBinBox>();
+
+function changeBinBox(keys: ReadonlySet<number>): InfrastructureBinBox {
+  let box = CHANGE_BIN_BOXES.get(keys);
+  if (!box) {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const key of keys) {
+      const binX = infrastructureBinKeyX(key);
+      const binZ = infrastructureBinKeyZ(key);
+      if (binX < minX) minX = binX;
+      if (binX > maxX) maxX = binX;
+      if (binZ < minZ) minZ = binZ;
+      if (binZ > maxZ) maxZ = binZ;
+    }
+    box = { minX, maxX, minZ, maxZ };
+    CHANGE_BIN_BOXES.set(keys, box);
+  }
+  return box;
+}
+
 /**
  * Whether a change can have touched the world rectangle: one of its bins (or,
- * with `plants`, its plant bins) meets it. Walks whichever is fewer, the
- * rectangle's bins or the change's.
+ * with `plants`, its plant bins) meets it. A rectangle outside the range its
+ * bins cover is answered at once: a change is one flush's regions, and its
+ * consumers ask this of every cell and page they hold. Otherwise it walks
+ * whichever is fewer, the rectangle's bins or the change's.
  */
 export function infrastructureChangeTouches(
   change: InfrastructureChange,
@@ -1180,6 +1214,8 @@ export function infrastructureChangeTouches(
   const x1 = infrastructureBin(rect.maxX);
   const z0 = infrastructureBin(rect.minZ);
   const z1 = infrastructureBin(rect.maxZ);
+  const box = changeBinBox(keys);
+  if (x1 < box.minX || x0 > box.maxX || z1 < box.minZ || z0 > box.maxZ) return false;
   if ((x1 - x0 + 1) * (z1 - z0 + 1) <= keys.size) {
     for (let binX = x0; binX <= x1; binX += 1) {
       for (let binZ = z0; binZ <= z1; binZ += 1) if (keys.has(infrastructureBinKey(binX, binZ))) return true;
@@ -1324,6 +1360,13 @@ export function infrastructureNear(
  */
 export const INFRASTRUCTURE_SURFACE_FEATHER_METERS = 1;
 
+/**
+ * Most a painted segment's box reaches either side of a sample
+ * (`sampleInfrastructureSurface`'s `texelMeters`): half a bin, so the box
+ * meets at most two bins along each axis.
+ */
+export const INFRASTRUCTURE_SURFACE_BOX_HALF_METERS = INFRASTRUCTURE_BIN_METERS / 2;
+
 /** Where a segment paints the ground: which material, and how much of it. */
 export interface InfrastructureSurfaceSample {
   surface: InfrastructureSurface | null;
@@ -1333,36 +1376,77 @@ export interface InfrastructureSurfaceSample {
 /**
  * The painted surface at a point: the segment with the most coverage wins
  * (the later one on a tie, as in composition). What a tyre rolls on, and what
- * the splat bake paints (its twin is `terrainInfrastructureSurface`).
+ * the splat bake paints (its twin is `terrainInfrastructureSurfaceOver`).
+ *
+ * `texelMeters` is the ground the sample stands for: 0 (a tyre's point), or
+ * the splat bake's texel. A segment narrower than it would paint the whole
+ * texel or none of it as the texel's centre fell, so it is averaged instead
+ * over a box the texel's width (at most a bin) across it: the share of the
+ * texel the segment covers. A segment as wide as the texel or wider samples
+ * at the point, exactly as with 0. The point's own bin is searched first, in
+ * order, then the box's other bins for narrow segments only, which win there
+ * only on more coverage (a segment listed in both keeps its own bin's turn).
  */
 export function sampleInfrastructureSurface(
   index: InfrastructureIndex,
   x: number,
   z: number,
   out: InfrastructureSurfaceSample,
+  texelMeters = 0,
 ): InfrastructureSurfaceSample {
   out.surface = null;
   out.coverage = 0;
   if (index.segments.length === 0) return out;
+  const half = Math.min(0.5 * texelMeters, INFRASTRUCTURE_SURFACE_BOX_HALF_METERS);
   const binX = infrastructureBin(x);
   const binZ = infrastructureBin(z);
-  if (binX < index.binMinX || binX > index.binMaxX || binZ < index.binMinZ || binZ > index.binMaxZ) return out;
+  surfaceInBin(index, binX, binZ, x, z, texelMeters, half, true, out);
+  if (!(half > 0)) return out;
+  const x0 = Math.max(index.binMinX, infrastructureBin(x - half));
+  const x1 = Math.min(index.binMaxX, infrastructureBin(x + half));
+  const z0 = Math.max(index.binMinZ, infrastructureBin(z - half));
+  const z1 = Math.min(index.binMaxZ, infrastructureBin(z + half));
+  for (let boxX = x0; boxX <= x1; boxX += 1) {
+    for (let boxZ = z0; boxZ <= z1; boxZ += 1) {
+      if (boxX === binX && boxZ === binZ) continue;
+      surfaceInBin(index, boxX, boxZ, x, z, texelMeters, half, false, out);
+    }
+  }
+  return out;
+}
+
+/** One bin's segments over `out`: every painted one in the point's `own` bin, the narrow ones elsewhere. */
+function surfaceInBin(
+  index: InfrastructureIndex,
+  binX: number,
+  binZ: number,
+  x: number,
+  z: number,
+  texelMeters: number,
+  half: number,
+  own: boolean,
+  out: InfrastructureSurfaceSample,
+): void {
+  if (binX < index.binMinX || binX > index.binMaxX || binZ < index.binMinZ || binZ > index.binMaxZ) return;
   const list = index.bins.get(infrastructureBinKey(binX, binZ));
-  if (!list) return out;
+  if (!list) return;
   for (let i = 0; i < list.length; i += 1) {
     const packed = index.segments[list[i]!]!;
     const surface = packed.segment.surface;
     if (surface === undefined) continue;
+    const halfWidth = packed.segment.halfWidth;
+    const narrow = 2 * halfWidth < texelMeters;
+    if (!own && !narrow) continue;
     const { along, across } = infrastructureSegmentLocal(packed, x, z, LOCAL);
     const distance = infrastructureCapsuleDistance(along, across, packed.length);
-    const coverage = Math.min(1, Math.max(0,
-      0.5 + (packed.segment.halfWidth - distance) / INFRASTRUCTURE_SURFACE_FEATHER_METERS));
-    if (coverage > 0 && coverage >= out.coverage) {
+    const coverage = narrow
+      ? Math.max(0, Math.min(halfWidth, distance + half) - Math.max(-halfWidth, distance - half)) / (2 * half)
+      : Math.min(1, Math.max(0, 0.5 + (halfWidth - distance) / INFRASTRUCTURE_SURFACE_FEATHER_METERS));
+    if (coverage > 0 && (own ? coverage >= out.coverage : coverage > out.coverage)) {
       out.surface = surface;
       out.coverage = coverage;
     }
   }
-  return out;
 }
 
 /** Metres over which plants return past a segment's plant-free reach. */

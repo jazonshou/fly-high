@@ -7,6 +7,7 @@ import {
 } from "@/src/render/webgpu/core/GpuBufferInventory";
 import {
   INFRASTRUCTURE_BIN_METERS,
+  INFRASTRUCTURE_SURFACE_BOX_HALF_METERS,
   INFRASTRUCTURE_SURFACE_FEATHER_METERS,
   infrastructureBin,
   infrastructureBinKeyX,
@@ -470,6 +471,7 @@ export const TERRAIN_INFRASTRUCTURE_WGSL = /* wgsl */ `
 
 const K_INFRA_CELL: f32 = ${TERRAIN_LANDFORM_CELL_METERS}.0;
 const K_INFRA_SURFACE_FEATHER: f32 = ${INFRASTRUCTURE_SURFACE_FEATHER_METERS}.0;
+const K_INFRA_SURFACE_BOX_HALF: f32 = ${INFRASTRUCTURE_SURFACE_BOX_HALF_METERS}.0;
 
 /** What a profile reads of a segment (frame, shape, params). */
 struct TerrainInfrastructureSegment {
@@ -506,15 +508,25 @@ fn terrainInfraBinHash(binX: i32, binZ: i32) -> u32 {
   return h ^ (h >> 15u);
 }
 
+/** A split point's offset from the anchor bin's corner. */
+fn terrainInfraFromCorner(base: vec4f, local: vec2f) -> vec2f {
+  let corner = terrainInfrastructureData[2u];
+  return terrainInfraOffset(bitcast<vec2<i32>>(corner.xy), bitcast<vec2f>(corner.zw), base, local);
+}
+
+/** The bin an offset from the anchor bin's corner falls in, as an offset from the anchor bin. */
+fn terrainInfraBinOf(fromCorner: vec2f) -> vec2<i32> {
+  return vec2<i32>(floor(fromCorner / bitcast<f32>(terrainInfrastructureData[1u].w)));
+}
+
 /** The bin a split point falls in: (first list entry, count), (0, 0) where no segment is listed. */
 fn terrainInfraBin(base: vec4f, local: vec2f) -> vec2u {
+  return terrainInfraBinList(terrainInfraBinOf(terrainInfraFromCorner(base, local)));
+}
+
+/** A bin's list (an offset from the anchor bin): (first list entry, count), (0, 0) where no segment is listed. */
+fn terrainInfraBinList(bin: vec2<i32>) -> vec2u {
   let header = terrainInfrastructureData[0u];
-  let header1 = terrainInfrastructureData[1u];
-  let corner = terrainInfrastructureData[2u];
-  let binSize = bitcast<f32>(header1.w);
-  let fromCorner = terrainInfraOffset(
-    bitcast<vec2<i32>>(corner.xy), bitcast<vec2f>(corner.zw), base, local);
-  let bin = vec2<i32>(floor(fromCorner / binSize));
   var slot = terrainInfraBinHash(bin.x, bin.y) & header.y;
   for (var probe = 0u; probe < header.w; probe = probe + 1u) {
     let entry = terrainInfrastructureData[header.z + slot];
@@ -588,27 +600,66 @@ fn terrainInfrastructure(localX: f32, localZ: f32, height: f32) -> f32 {
 }
 
 /**
- * sampleInfrastructureSurface at a point LOCAL to the bound kernel page:
- * (splat material id, coverage), or (-1, 0) where nothing is painted. The
- * most coverage wins, the later segment on a tie.
+ * sampleInfrastructureSurface at a point LOCAL to the bound kernel page, for
+ * a ground \`texelMeters\` wide (0: the point; the splat bake's texel): (splat
+ * material id, coverage), or (-1, 0) where nothing is painted. The most
+ * coverage wins, the later segment on a tie. A segment narrower than the
+ * texel paints the share of a box the texel's width (at most a bin) it
+ * covers; the box's other bins add their narrow segments, winning only on
+ * more coverage.
  */
-fn terrainInfrastructureSurface(localX: f32, localZ: f32) -> vec2f {
+fn terrainInfrastructureSurfaceOver(localX: f32, localZ: f32, texelMeters: f32) -> vec2f {
   var best = vec2f(-1.0, 0.0);
   if (terrainInfrastructureData[0u].x == 0u) { return best; }
   let base = terrainKernelPages[kPageIndex].landformBase;
   let local = vec2f(localX, localZ);
-  let entry = terrainInfraBin(base, local);
+  let half = min(0.5 * texelMeters, K_INFRA_SURFACE_BOX_HALF);
+  let fromCorner = terrainInfraFromCorner(base, local);
+  let own = terrainInfraBinOf(fromCorner);
+  best = terrainInfraSurfaceBin(terrainInfraBinList(own), base, local, texelMeters, half, true, best);
+  if (half > 0.0) {
+    let low = terrainInfraBinOf(fromCorner - vec2f(half));
+    let high = terrainInfraBinOf(fromCorner + vec2f(half));
+    for (var boxX = low.x; boxX <= high.x; boxX = boxX + 1) {
+      for (var boxZ = low.y; boxZ <= high.y; boxZ = boxZ + 1) {
+        if (boxX == own.x && boxZ == own.y) { continue; }
+        best = terrainInfraSurfaceBin(
+          terrainInfraBinList(vec2<i32>(boxX, boxZ)), base, local, texelMeters, half, false, best);
+      }
+    }
+  }
+  return best;
+}
+
+/** sampleInfrastructureSurface's surfaceInBin: every painted segment of the point's \`own\` bin, the narrow ones elsewhere. */
+fn terrainInfraSurfaceBin(
+  entry: vec2u, base: vec4f, local: vec2f, texelMeters: f32, half: f32, own: bool, best: vec2f,
+) -> vec2f {
+  var result = best;
   for (var i = 0u; i < entry.y; i = i + 1u) {
     let first = terrainInfraSegmentFirst(entry.x + i);
     let surface = (terrainInfrastructureData[first + 2u].w >> 20u) & 0xffu;
     if (surface == 0u) { continue; }
-    let position = terrainInfraLocal(first, base, local);
     let shape = terrainInfraFloats(first + 2u);
+    let narrow = 2.0 * shape.y < texelMeters;
+    if (!own && !narrow) { continue; }
+    let position = terrainInfraLocal(first, base, local);
     let distance = terrainInfraCapsuleDistance(position.x, position.y, shape.x);
-    let coverage = kSaturate(0.5 + (shape.y - distance) / K_INFRA_SURFACE_FEATHER);
-    if (coverage > 0.0 && coverage >= best.y) { best = vec2f(f32(surface - 1u), coverage); }
+    var coverage: f32;
+    if (narrow) {
+      coverage = max(0.0, min(shape.y, distance + half) - max(-shape.y, distance - half)) / (2.0 * half);
+    } else {
+      coverage = kSaturate(0.5 + (shape.y - distance) / K_INFRA_SURFACE_FEATHER);
+    }
+    let wins = select(coverage > result.y, coverage >= result.y, own);
+    if (coverage > 0.0 && wins) { result = vec2f(f32(surface - 1u), coverage); }
   }
-  return best;
+  return result;
+}
+
+/** terrainInfrastructureSurfaceOver at the point itself. */
+fn terrainInfrastructureSurface(localX: f32, localZ: f32) -> vec2f {
+  return terrainInfrastructureSurfaceOver(localX, localZ, 0.0);
 }
 `;
 
