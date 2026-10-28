@@ -1164,10 +1164,44 @@ export function installInfrastructureRegions(
   return changeInfrastructureRegions(world, install, remove)?.rects ?? [];
 }
 
+/** The bin range a change's key set covers, inclusive. */
+interface InfrastructureBinBox {
+  readonly minX: number;
+  readonly maxX: number;
+  readonly minZ: number;
+  readonly maxZ: number;
+}
+
+/** Each change's key sets' bin ranges, found on the first test against them (the sets never change). */
+const CHANGE_BIN_BOXES = new WeakMap<ReadonlySet<number>, InfrastructureBinBox>();
+
+function changeBinBox(keys: ReadonlySet<number>): InfrastructureBinBox {
+  let box = CHANGE_BIN_BOXES.get(keys);
+  if (!box) {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const key of keys) {
+      const binX = infrastructureBinKeyX(key);
+      const binZ = infrastructureBinKeyZ(key);
+      if (binX < minX) minX = binX;
+      if (binX > maxX) maxX = binX;
+      if (binZ < minZ) minZ = binZ;
+      if (binZ > maxZ) maxZ = binZ;
+    }
+    box = { minX, maxX, minZ, maxZ };
+    CHANGE_BIN_BOXES.set(keys, box);
+  }
+  return box;
+}
+
 /**
  * Whether a change can have touched the world rectangle: one of its bins (or,
- * with `plants`, its plant bins) meets it. Walks whichever is fewer, the
- * rectangle's bins or the change's.
+ * with `plants`, its plant bins) meets it. A rectangle outside the range its
+ * bins cover is answered at once: a change is one flush's regions, and its
+ * consumers ask this of every cell and page they hold. Otherwise it walks
+ * whichever is fewer, the rectangle's bins or the change's.
  */
 export function infrastructureChangeTouches(
   change: InfrastructureChange,
@@ -1180,6 +1214,8 @@ export function infrastructureChangeTouches(
   const x1 = infrastructureBin(rect.maxX);
   const z0 = infrastructureBin(rect.minZ);
   const z1 = infrastructureBin(rect.maxZ);
+  const box = changeBinBox(keys);
+  if (x1 < box.minX || x0 > box.maxX || z1 < box.minZ || z0 > box.maxZ) return false;
   if ((x1 - x0 + 1) * (z1 - z0 + 1) <= keys.size) {
     for (let binX = x0; binX <= x1; binX += 1) {
       for (let binZ = z0; binZ <= z1; binZ += 1) if (keys.has(infrastructureBinKey(binX, binZ))) return true;
