@@ -318,6 +318,10 @@ uniform windSpeed: f32;
 uniform time: f32;
 uniform regionOpacity: f32;
 uniform environmentValid: f32;
+// The share of the camera's distance this surface veils itself over when the
+// camera is below it: 1, or 0 while the underwater view's water column is on
+// (the column fades that path itself). Above the surface it is never read.
+uniform belowVeilScale: f32;
 // W-7: the optical water type — see the ocean fragment's declaration. Inland
 // water is where the type varies most (a peat tarn, a glacial lake and a
 // silty river are three different spectra), which W-8 supplies per vertex.
@@ -815,20 +819,22 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     downwelling,
   );
   color = mix(color, foamColor, foam);
+  let cameraDistance = distance(uniforms.cameraPosition, input.worldPosition);
   if (cameraBelow) {
     color = applyUnderwaterBeerLambert(
       color,
-      distance(uniforms.cameraPosition, input.worldPosition),
+      cameraDistance * uniforms.belowVeilScale,
       optics,
       downwelling,
     );
   }
   // 1C-4: rivers and lakes fade on the same shared curve as the terrain
-  // around them — inland water no longer punches through the haze.
+  // around them — inland water no longer punches through the haze. Seen from
+  // below the path is water, so under the water column it is no haze at all.
   color = applyAerialPerspective(
     color,
     input.worldPosition.y,
-    distance(uniforms.cameraPosition, input.worldPosition),
+    select(cameraDistance, cameraDistance * uniforms.belowVeilScale, cameraBelow),
     -view,
   );
   let alpha = max(waterShorelineAlpha(depth), foam);
@@ -1116,6 +1122,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
   /** wave R fix 8: null when no world wind was supplied (see the option). */
   private worldWindSpeedMetersPerSecond: number | null = null;
   private waterPublisher: HydrologyWaterPublisher | null = null;
+  private underwaterColumnActive = false;
 
   constructor(
     scene: Scene,
@@ -1197,6 +1204,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
           "time",
           "regionOpacity",
           "environmentValid",
+          "belowVeilScale",
           "waterAbsorption",
           "waterBackscatter",
           "hydrologyHorizonField",
@@ -1237,6 +1245,7 @@ export class HydrologySystem implements PlanarReflectionReceiver {
     this.worldWindSpeedMetersPerSecond = windSpeedMetersPerSecond ?? null;
     this.material.setFloat("time", 0);
     this.material.setFloat("regionOpacity", 1);
+    this.material.setFloat("belowVeilScale", 1);
     this.material.setMatrix("planarReflectionViewProjection", Matrix.Identity());
     this.material.setFloat("planarReflectionPlaneHeight", this.generationConfig.seaLevel);
     this.material.setFloat("planarReflectionStrength", 0);
@@ -1455,6 +1464,19 @@ export class HydrologySystem implements PlanarReflectionReceiver {
    */
   setGroundBounceAlbedo(albedoLuminance: number): void {
     this.material.setFloat("groundBounceAlbedo", resolveHydrologyGroundBounce(albedoLuminance));
+  }
+
+  /**
+   * Whether the underwater view's water column is fading the camera's view
+   * (walking plan, "Underwater view"). While it is, a lake or river seen from
+   * below leaves the water between it and the camera to the column instead of
+   * veiling itself over the same path (and hazing it as if it were air).
+   * Surfaces seen from above never read it.
+   */
+  setUnderwaterColumnActive(active: boolean): void {
+    if (active === this.underwaterColumnActive) return;
+    this.underwaterColumnActive = active;
+    this.material.setFloat("belowVeilScale", active ? 0 : 1);
   }
 
   update(

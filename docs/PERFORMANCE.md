@@ -138,6 +138,8 @@ audit is why it now carries all four tiers):
 | Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
 | Walker's finest figure mesh (`personFigureFinestLod`; car sessions only; 0 = 9k triangles within 25 m, 1 = 3k, 2 = 0.8k) | 1 | 0 | 0 | 0 |
 | Walker's shadow cascades (`personShadowCascades`; the nearest ones, capped by the tier's cascades) | 1 | 2 | 2 | 3 |
+| Underwater Snell's window (`underwaterSnellWindow`; car sessions, camera submerged; off = a flat underside) | no | yes | yes | yes |
+| Underwater caustics (`underwaterCaustics`; car sessions, camera submerged) | no | no | yes | yes |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
 Ultra's material array edge is 512², not §5.3's published 1024²: `3-1`

@@ -160,7 +160,7 @@ export class UnderwaterView {
     if (column && this.columnCamera) {
       column.setCameraDepth(sample.stillDepth, sample.depth);
       const position = this.columnCamera.position;
-      column.setWorld(timeSeconds, cameraX - position.x, cameraZ - position.z);
+      column.setWorld(timeSeconds, cameraX - position.x, cameraZ - position.z, sample.kind === "sea");
     }
   }
 
