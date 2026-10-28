@@ -1957,6 +1957,13 @@ export class FlightRenderer implements FlightRenderingSystem {
           terrainHeight: liveTerrainHeight,
           drawnCascades: profile.oceanCascades,
           waterEnvironment,
+          underside: {
+            camera,
+            sea: ocean,
+            environmentCube: skyProbe.texture,
+            snellWindow: profile.underwaterSnellWindow,
+            pipelineCompiles,
+          },
         })
         : null;
       if (underwater) cleanup.push(() => underwater.dispose());
@@ -2133,7 +2140,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       if (!standaloneSharpen(profile)) sharpen.setEnabled(camera, false);
       // The underwater water column: built with the chain, out of it until
       // the camera goes under (`applyUnderwaterState`).
-      underwater?.buildColumn(camera, engine, profile.msaaSamples);
+      underwater?.buildColumn(camera, engine, profile.msaaSamples, {
+        source: ocean,
+        enabled: profile.underwaterCaustics,
+      });
 
       checkpointRendererStartup("presentation systems construction", "sync");
 
@@ -3416,7 +3426,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         // The wake and the car's bow wave lie on the waves this frame's sea is drawn with.
         this.boatWake?.bindOcean();
         this.carBowWave?.bindOcean();
-        // Which side of the drawn water the camera is on, at the time the sea is drawn at.
+        // Which side of the drawn water the camera is on, at the time the sea is drawn at,
+        // and the walker's breath under it.
+        const visual = this.currentState;
+        const walker = visual?.vehicle?.kind === "person" ? visual.vehicle : null;
+        this.underwater?.setBreather(walker && visual ? visual.position : null, walker?.headDepth ?? 0);
         this.underwater?.update(this.cameraWorld.x, this.cameraWorld.y, this.cameraWorld.z, frame.timeSeconds);
         this.applyUnderwaterState();
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
@@ -4902,6 +4916,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.boatWake?.setTrailSeconds(this.profile.boatWakeTrailSeconds);
     this.boatHeave?.setDrawnCascades(this.profile.oceanCascades);
     this.underwater?.setDrawnCascades(this.profile.oceanCascades);
+    this.underwater?.setProfile(this.profile);
     this.carParticles?.setCap(this.profile.vehicleParticleBudget);
     this.carTracks?.setCap(this.profile.tyreTrackSegments);
     this.roadSurface?.setRanges(this.profile);
