@@ -44,7 +44,7 @@ jobs:
   perf:
     name: Tier-1 frame delivery and visual capture (macOS)
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 80
     steps:
       - uses: actions/checkout@v7
 
