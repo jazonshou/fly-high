@@ -41,8 +41,9 @@ import { createWorld } from "@/src/world/world";
  * draws, none and no lookup refresh while nothing is in reach; the set moves
  * only as the camera crosses a chunk edge, and a crossing writes only the
  * chunks it brings into reach; a frame writes its budget's share, nearest
- * first; and the ribbons' lifts keep every road under the pad it meets and
- * every class under the ones above it.
+ * first; the ribbon's bounds, which culling reads, are where it is drawn; and
+ * the ribbons' lifts keep every road under the pad it meets and every class
+ * under the ones above it.
  */
 
 const world = createWorld();
@@ -382,6 +383,34 @@ describe("the roads' surface system", () => {
     system.dispose();
   });
 
+  it("bounds the ribbon where its roads are drawn, as each frame's culling reads it", () => {
+    const system = new RoadSurfaceSystem(scene, terrain, ultra);
+    system.apply(regions, []);
+    // Far from the drawn origin, so a box left in the mesh's own frame is far from the roads.
+    const originX = head.startX - 5_000;
+    const originZ = head.startZ + 3_000;
+    system.setFloatingOrigin(originX, originZ);
+    const ribbon = system.meshes[0]!;
+    // As frames do: the update, then the world matrix and the bounds the culling reads.
+    for (let step = 0; step === 0 || system.pendingWork > 0; step += 1) {
+      expect(step).toBeLessThan(1_000);
+      system.update(head.startX, head.startZ);
+      ribbon.computeWorldMatrix();
+      ribbon.getBoundingInfo();
+    }
+    const box = ribbon.getBoundingInfo().boundingBox;
+    const x = head.startX - originX;
+    const z = head.startZ - originZ;
+    expect(box.minimumWorld.x).toBeLessThan(x);
+    expect(box.maximumWorld.x).toBeGreaterThan(x);
+    expect(box.minimumWorld.z).toBeLessThan(z);
+    expect(box.maximumWorld.z).toBeGreaterThan(z);
+    const span = 2 * (ultra.roadRibbonRangeMeters + ROAD_RIBBON_CHUNK_METERS);
+    expect(box.maximumWorld.x - box.minimumWorld.x).toBeLessThan(span);
+    expect(box.maximumWorld.z - box.minimumWorld.z).toBeLessThan(span);
+    system.dispose();
+  });
+
   it("writes again only the chunks a crossing brings into reach, or a change reaches", () => {
     const system = new RoadSurfaceSystem(scene, terrain, ultra);
     system.apply(regions, []);
@@ -391,14 +420,15 @@ describe("the roads' surface system", () => {
     settle(system, x0, z0);
     const { writes, bufferBuilds } = system.statistics;
     expect(writes).toBe(system.statistics.ribbonChunks + system.statistics.railChunks);
-    // Within the chunk: nothing written, uploaded or bound again (each drawn layer bound once).
-    const { bindings, draws } = system.statistics;
+    // Within the chunk: nothing written, uploaded, bound or recorded again (each drawn layer bound once).
+    const { bindings, draws, drawResets } = system.statistics;
     expect(draws).toBeGreaterThan(0);
     expect(bindings).toBe(draws);
     for (let step = 1; step <= 10; step += 1) system.update(x0 + step * 11, z0 + step * 11);
     expect(system.statistics.writes).toBe(writes);
     expect(system.statistics.uploadRanges).toBe(0);
     expect(system.statistics.bindings).toBe(bindings);
+    expect(system.statistics.drawResets).toBe(drawResets);
     // One chunk east: at most the column it brings in, against the whole set before.
     settle(system, x0 + ROAD_RIBBON_CHUNK_METERS, z0);
     const column = 2 * Math.ceil(ultra.roadRibbonRangeMeters / ROAD_RIBBON_CHUNK_METERS) + 1;
@@ -417,6 +447,26 @@ describe("the roads' surface system", () => {
     settle(system, x0 + ROAD_RIBBON_CHUNK_METERS, z0);
     expect(system.statistics.writes - before).toBeGreaterThan(0);
     expect(system.statistics.writes - before).toBeLessThanOrEqual(2);
+    system.dispose();
+  });
+
+  it("records a layer's draw again exactly when the index range it draws changes", () => {
+    // Off compatibility mode the engine replays a draw with the index count
+    // it was recorded with (the GPU test shows the roads it would miss).
+    const system = new RoadSurfaceSystem(scene, terrain, ultra);
+    system.apply([...regions, railRegion], []);
+    const drawn = () => system.meshes.map((mesh) => mesh.subMeshes?.[0]?.indexCount ?? 0);
+    const { cx, cz } = roadRibbonChunkOf(head.startX, head.startZ);
+    let changes = 0;
+    for (let step = 0; step < 80; step += 1) {
+      const before = drawn();
+      const { drawResets } = system.statistics;
+      system.update((cx + step / 16) * ROAD_RIBBON_CHUNK_METERS + 5, (cz - step / 32) * ROAD_RIBBON_CHUNK_METERS + 5);
+      const changed = drawn().filter((count, layer) => count !== before[layer]).length;
+      expect(system.statistics.drawResets - drawResets).toBe(changed);
+      changes += changed;
+    }
+    expect(changes).toBeGreaterThan(4);
     system.dispose();
   });
 

@@ -99,6 +99,8 @@ export interface RoadSurfaceStatistics {
   readonly bufferBuilds: number;
   /** Ranges uploaded in the last update. */
   readonly uploadRanges: number;
+  /** Draw caches reset for a new index range (each re-records the layer's draw). */
+  readonly drawResets: number;
   /** Times a layer was bound to the lookup, the atlas or an anchor it was not bound to already. */
   readonly bindings: number;
   /** Main-thread time of the last update, milliseconds. */
@@ -159,6 +161,7 @@ export class RoadSurfaceSystem {
   private releases = 0;
   private bufferBuilds = 0;
   private uploadRanges = 0;
+  private drawResets = 0;
   /** Steps taken in this update (index steps, chunks built or written), and whether its budget is spent. */
   private frameWork = 0;
   private overBudget = false;
@@ -207,6 +210,7 @@ export class RoadSurfaceSystem {
       chunkBuilds: this.index.builds,
       bufferBuilds: this.bufferBuilds,
       uploadRanges: this.uploadRanges,
+      drawResets: this.drawResets,
       bindings: this.bindings,
       updateMilliseconds: this.updateMilliseconds,
     };
@@ -451,8 +455,15 @@ export class RoadSurfaceSystem {
     const subMesh = mesh.subMeshes?.[0];
     if (subMesh) {
       // Past the end the indices are all zero: nothing to draw there.
-      subMesh.indexCount = slots.indexEnd;
       subMesh.verticesCount = slots.vertexEnd;
+      if (subMesh.indexCount !== slots.indexEnd) {
+        subMesh.indexCount = slots.indexEnd;
+        // Off compatibility mode the engine replays a draw from the bundle it
+        // recorded, index count and all, until its draw cache is reset:
+        // without this a new range draws the old one (the first in reach).
+        mesh.resetDrawCache();
+        this.drawResets += 1;
+      }
     }
     if (layer.boundsDirty && layer.role === "ribbon") this.bound(layer);
     layer.boundsDirty = false;
@@ -474,10 +485,14 @@ export class RoadSurfaceSystem {
       maximum[2] = Math.max(maximum[2]!, slot.maximum[2] + offsetZ);
     }
     if (!(minimum[0]! <= maximum[0]!)) return;
-    layer.mesh.setBoundingInfo(new BoundingInfo(
+    const info = new BoundingInfo(
       new Vector3(minimum[0], minimum[1]! - 2, minimum[2]),
       new Vector3(maximum[0], maximum[1]! + 2, maximum[2]),
-    ));
+    );
+    // A new info's world box is its local one until the world matrix next
+    // changes (Babylon only swaps it in), and culling reads the world box.
+    info.update(layer.mesh.computeWorldMatrix(true));
+    layer.mesh.setBoundingInfo(info);
   }
 
   private placeLayer(layer: Layer): void {

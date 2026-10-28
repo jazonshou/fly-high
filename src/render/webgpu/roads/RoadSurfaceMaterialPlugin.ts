@@ -16,7 +16,7 @@ import {
   TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS,
   TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS,
 } from "../terrain/TerrainSurfacePlugin";
-import { INFRASTRUCTURE_SURFACE_MATERIAL, INFRASTRUCTURE_TRACK_EARTH_TINT } from "../terrain/TerrainInfrastructureKernel";
+import { INFRASTRUCTURE_TRACK_EARTH_TINT } from "../terrain/TerrainInfrastructureKernel";
 import { SURFACE_MATERIALS, SurfaceMaterial } from "../terrain/surfaceMaterials";
 import { ROAD_RIBBON_CHUNK_METERS, ROAD_RIBBON_PAD_KIND } from "./roadSurfaceGeometry";
 
@@ -130,8 +130,7 @@ function material(id: number): { readonly inversePeriod: string; readonly refere
 const SEALED = roadClass(ROAD_CLASS.airport);
 const ASPHALT = material(SurfaceMaterial.Asphalt);
 const GRAVEL = material(SurfaceMaterial.Gravel);
-// A track's earth is the terrain's: the sand layer, browned (as its splat paint is).
-const EARTH = material(INFRASTRUCTURE_SURFACE_MATERIAL.track);
+// A track's earth is the terrain's: the gravel, browned (as its splat paint is).
 const EARTH_TINT = INFRASTRUCTURE_TRACK_EARTH_TINT.map((tint, channel) => tint * ROAD_RIBBON_LOOK.rutTint[channel]!);
 const LOOK = ROAD_RIBBON_LOOK;
 
@@ -266,9 +265,6 @@ let roadSealed = roadClassId > 1.5
 var roadTexel: RoadSurfaceTexel;
 if (roadSealed) {
   roadTexel = roadSurfaceTexel(${SurfaceMaterial.Asphalt}, ${ASPHALT.inversePeriod}, ${ASPHALT.reference},
-    roadPosition, roadDdx, roadDdy, roadDetailWeight);
-} else if (roadClassId < 0.5) {
-  roadTexel = roadSurfaceTexel(${INFRASTRUCTURE_SURFACE_MATERIAL.track}, ${EARTH.inversePeriod}, ${EARTH.reference},
     roadPosition, roadDdx, roadDdy, roadDetailWeight);
 } else {
   roadTexel = roadSurfaceTexel(${SurfaceMaterial.Gravel}, ${GRAVEL.inversePeriod}, ${GRAVEL.reference},
