@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PERSON_SURFACE_COLLIDER_BASE, PERSON_SURFACE_WATER } from "../src/game/types";
 import { SurfaceMaterial } from "../src/render/webgpu/terrain/surfaceMaterials";
 import { ColliderWorld } from "../src/sim/colliders";
+import { guardrailColliders } from "../src/sim/ground/carColliders";
 import {
   LandingKind,
   landingKind,
@@ -11,6 +12,7 @@ import {
   walkSlopeLimitTan,
 } from "../src/sim/person/walkerLaws";
 import { PERSON, toblerFactor } from "../src/vehicles/person";
+import { ROAD_RAIL_HEIGHT_METERS } from "../src/world/roads/roadRails";
 import {
   environment,
   flat,
@@ -250,6 +252,54 @@ describe("walker on the ground", () => {
     expect(closest).toBeGreaterThan(0.25 + PERSON.capsuleRadius - 1e-6);
     // Round the trunk and on past it.
     expect(subject.state.position.x).toBeGreaterThan(4);
+  });
+
+  it("meets a guardrail as its rail alone: held at the face, climbed with a jump, free in the strip behind", () => {
+    const ground = flat();
+    const colliders = new ColliderWorld();
+    // A rail along +Z at x = 3, its face toward +X (the road), the car's box 2 m deep behind it.
+    const rail = { points: [3, -30, 3, 0, 3, 30], heightMeters: ROAD_RAIL_HEIGHT_METERS };
+    for (const collider of guardrailColliders(rail, () => 0)) colliders.addStatic(collider.shape, { material: collider.material });
+    const env = environment(ground, { colliders });
+    const R = PERSON.capsuleRadius;
+
+    const fromRoad = walker({ x: 6, y: 0, z: 0.5 }, -Math.PI / 2, ground);
+    run(fromRoad, env, 3, { moveX: -1 });
+    expect(fromRoad.state.position.x).toBeGreaterThan(3 + R - 0.02);
+    expect(fromRoad.state.position.x).toBeLessThan(3 + R + 0.05);
+    // A jump at it climbs onto the rail; walking on drops into the strip behind.
+    let top = 0;
+    run(fromRoad, env, STEP, { moveX: -1, jumpPresses: 1 });
+    expect(fromRoad.mode).toBe("mantle");
+    run(fromRoad, env, PERSON.mantleSeconds, { moveX: -1, jumpPresses: 1 }, (s) => {
+      top = Math.max(top, s.state.position.y);
+    });
+    expect(top).toBeCloseTo(ROAD_RAIL_HEIGHT_METERS, 1);
+    run(fromRoad, env, 3, { moveX: -1, jumpPresses: 1 });
+    expect(fromRoad.state.position.y).toBe(0);
+    expect(fromRoad.state.position.x).toBeLessThan(1);
+
+    // Inside the car's box, behind the rail: free along it, held only at the rail's back.
+    const behind = walker({ x: 2, y: 0, z: -10 }, 0, ground);
+    run(behind, env, 3, { moveZ: 1 });
+    expect(behind.state.position.z).toBeGreaterThan(-10 + 3 * PERSON.walkSpeed - 0.5);
+    run(behind, env, 3, { moveX: 1 });
+    expect(behind.state.position.x).toBeLessThan(3 - 0.15 - R + 0.02);
+    expect(behind.state.position.x).toBeGreaterThan(3 - 0.15 - R - 0.05);
+  });
+
+  it("climbs a 0.9 m wall with a jump at it, and not a 1.2 m one", () => {
+    for (const [height, climbs] of [[0.9, true], [1.2, false]] as const) {
+      const ground = flat();
+      const colliders = new ColliderWorld();
+      colliders.addStatic({ kind: "box", center: { x: 5, y: height / 2, z: 0 }, halfExtents: { x: 2, y: height / 2, z: 3 } });
+      const env = environment(ground, { colliders });
+      const subject = walker({ x: 0, y: 0, z: 0 }, Math.PI / 2, ground);
+      run(subject, env, 3, { moveX: 1 });
+      run(subject, env, 2.5, { moveX: 1, jumpPresses: 1 });
+      expect(subject.state.position.y, `${height} m`).toBeCloseTo(climbs ? height : 0, 3);
+      expect(subject.state.position.x > 3, `${height} m`).toBe(climbs);
+    }
   });
 });
 

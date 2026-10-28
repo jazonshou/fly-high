@@ -47,8 +47,14 @@ export interface PersonSpec {
   /** Ledges a swimmer can mantle onto: height above the water and reach, metres. */
   readonly mantleHeight: number;
   readonly mantleReach: number;
-  /** Seconds a mantle takes, from the water to standing on the ledge. */
+  /** Seconds a mantle takes, from the water (or the foot of a climb) to standing on the ledge. */
   readonly mantleSeconds: number;
+  /**
+   * The highest ledge over the feet that a jump at it climbs (a mantle on
+   * land: a guardrail, a low wall, a pontoon from the shore), metres. A jump
+   * alone clears only `jumpHeight`.
+   */
+  readonly climbHeight: number;
   /**
    * Landings (never damage: D5): from `landingHardSpeed` m/s a hard landing,
    * a crouch of `landingHardSeconds`; from `landingRollSpeed` a roll of
@@ -107,9 +113,9 @@ const STATURE = 1.76;
  * walking stops being mechanically possible (Alexander 1989). Run, swimming,
  * diving and wading speeds are ESTIMATES. The landing speeds are the plan's
  * equal drops v^2 / 2g: under 1.3 m normal, to 3.3 m a crouch, past it a
- * roll; the mantle's and the landings' durations and the swimming turn rate
- * are ESTIMATES for the figure's motions to fit. The camera numbers are
- * measured on the built figure (at `cinematic` below).
+ * roll; the mantle's and the landings' durations, the climb height and the
+ * swimming turn rate are ESTIMATES for the figure's motions to fit. The
+ * camera numbers are measured on the built figure (at `cinematic` below).
  */
 export const PERSON: PersonSpec = Object.freeze({
   stature: STATURE,
@@ -134,6 +140,7 @@ export const PERSON: PersonSpec = Object.freeze({
   mantleHeight: 0.6,
   mantleReach: 0.7,
   mantleSeconds: 1.0,
+  climbHeight: 1.0,
   landingHardSpeed: 5,
   landingRollSpeed: 8,
   landingHardSeconds: 0.4,

@@ -232,7 +232,13 @@ describe("the camera's water", () => {
 
   it("hears the drawn lakes before the worker, which keeps the buffers it is sent", () => {
     const level = SEA + 80;
-    const view = new UnderwaterView({ world: WORLD, weather: "clear", terrainHeight: () => level - 4, drawnCascades: 5 });
+    const view = new UnderwaterView({
+      world: WORLD,
+      weather: "clear",
+      terrainHeight: () => level - 4,
+      drawnCascades: 5,
+      waterEnvironment: null,
+    });
     const sent: { key: string; region: unknown }[] = [];
     const evicted: string[] = [];
     const publisher = view.hydrologyPublisher({
