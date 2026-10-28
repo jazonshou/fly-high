@@ -127,7 +127,12 @@ const MANTLE_WADE_DEPTH = 0.4;
 const GROUND_READY_RADIUS = 4;
 /** The safe spot moves on after this far of safe standing, m. */
 const SAFE_SPACING = 0.5;
-/** On a deck this far above the water, it is asked one step in `HIGH_WATER_STEPS`. */
+/**
+ * In and by the water, the water is asked one step in `WATER_STEPS` and
+ * carried between by the surface's vertical velocity and slope; on a deck
+ * this far above it, one step in `HIGH_WATER_STEPS`.
+ */
+const WATER_STEPS = 4;
 const HIGH_ABOVE_WATER = 1;
 const HIGH_WATER_STEPS = 16;
 /** Water shallower than this over the feet is dry for footsteps, m. */
@@ -278,7 +283,14 @@ export class Walker implements PersonSimulator {
   private swimPitch = -0;
   private surfacing = false;
   private lastWaterHeight = -Infinity;
-  private waterSkip = 0;
+  /** Steps since the water was last asked; `HIGH_WATER_STEPS` asks it on the next. */
+  private waterAge = HIGH_WATER_STEPS;
+  private askedTime = -0;
+  private askedX = -0;
+  private askedZ = -0;
+  private askedHeight = -0;
+  private askedSlopeX = -0;
+  private askedSlopeZ = -0;
 
   // Mantle.
   private readonly mantleFrom: Vec3 = { x: -0, y: -0, z: -0 };
@@ -378,6 +390,7 @@ export class Walker implements PersonSimulator {
     this.swimPitch = 0;
     this.surfacing = false;
     this.sliding = false;
+    this.waterAge = HIGH_WATER_STEPS;
     this.safe.x = position.x;
     this.safe.y = position.y;
     this.safe.z = position.z;
@@ -1078,9 +1091,14 @@ export class Walker implements PersonSimulator {
   }
 
   /**
-   * The water at the feet: asked where it can be wet, and on a deck well
-   * above it only one step in `HIGH_WATER_STEPS`. The focus goes to the sea
-   * twin first, so its local expansion is round the walker.
+   * The water at the feet: asked where it can be wet, one step in
+   * `WATER_STEPS` (on a deck well above it, one in `HIGH_WATER_STEPS`), and
+   * carried between. The focus goes to the sea twin first, so its local
+   * expansion is round the walker; asked every fourth step, a walker beside
+   * a parked car in the same sea pays the twin's exact sum (about 0.2 ms) a
+   * quarter as often. As for the car, the sea stands only over ground below
+   * its still level, where the ocean is drawn: above it the terrain owns
+   * the swash.
    */
   private sampleWater(): void {
     const environment = this.environment!;
@@ -1088,7 +1106,9 @@ export class Walker implements PersonSimulator {
     const water = this.water;
     const authority = environment.water;
     const bed = this.bed;
+    let bedKnown = false;
     if (authority.isDry) {
+      bedKnown = true;
       const point = this.point;
       point.x = position.x;
       point.z = position.z;
@@ -1098,13 +1118,17 @@ export class Walker implements PersonSimulator {
       bed.height = point.height;
       if (authority.isDry(bed)) {
         water.kind = "none";
-        this.waterSkip = 0;
+        this.waterAge = HIGH_WATER_STEPS;
         this.waterAt();
         return;
       }
     }
-    if (this.regime === Regime.ground && position.y > this.lastWaterHeight + HIGH_ABOVE_WATER && this.waterSkip > 0) {
-      this.waterSkip -= 1;
+    const steps = this.regime === Regime.ground && position.y > this.lastWaterHeight + HIGH_ABOVE_WATER
+      ? HIGH_WATER_STEPS
+      : WATER_STEPS;
+    if (this.waterAge < steps - 1) {
+      this.waterAge += 1;
+      this.carryWater();
       this.waterAt();
       return;
     }
@@ -1117,9 +1141,28 @@ export class Walker implements PersonSimulator {
       focusable.setFocus(focus);
     }
     authority.sample(position.x, position.z, water);
+    if (bedKnown && water.kind === "sea" && bed.height >= water.stillHeight) water.kind = "none";
     this.lastWaterHeight = water.kind === "none" ? -Infinity : water.height;
-    this.waterSkip = HIGH_WATER_STEPS - 1;
+    this.waterAge = 0;
+    this.askedTime = this.state.time;
+    this.askedX = position.x;
+    this.askedZ = position.z;
+    this.askedHeight = water.height;
+    const up = water.normal.y;
+    this.askedSlopeX = up > 0.05 ? -water.normal.x / up : 0;
+    this.askedSlopeZ = up > 0.05 ? -water.normal.z / up : 0;
     this.waterAt();
+  }
+
+  /** The last answer carried to now: the surface rises and falls, and slopes under a walker who moves. */
+  private carryWater(): void {
+    const water = this.water;
+    if (water.kind === "none") return;
+    const position = this.state.position;
+    water.height = this.askedHeight
+      + water.velocity.y * (this.state.time - this.askedTime)
+      + this.askedSlopeX * (position.x - this.askedX)
+      + this.askedSlopeZ * (position.z - this.askedZ);
   }
 
   /** Depth over the feet, the head's depth and how much of the body is under, from this step's sample. */
