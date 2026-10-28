@@ -5,6 +5,7 @@ import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/cata
 import { isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
 import { BoatVoice, boatSoundTargets } from "./boatVoice";
 import { CarVoice, carSoundTargets } from "./carVoice";
+import { PersonVoice } from "./personVoice";
 
 export interface AudioLevels {
   master: number;
@@ -50,6 +51,8 @@ export class FlightAudio {
   private boatVoice: BoatVoice | null = null;
   /** The car's own layer, built the first time a car's state arrives. */
   private carVoice: CarVoice | null = null;
+  /** The walker's footsteps, breathing and strokes, built the first time a walker's state arrives. */
+  private personVoice: PersonVoice | null = null;
   private enabled = false;
   private desiredEnabled = false;
   private activationGeneration = 0;
@@ -138,6 +141,13 @@ export class FlightAudio {
     } else {
       this.carVoice?.silence();
     }
+    const person = state.vehicle?.kind === "person" ? state.vehicle : null;
+    if (person && this.master && this.noiseBuffer) {
+      this.personVoice ??= new PersonVoice(context, this.master, this.noiseBuffer);
+      this.personVoice.update(person, this.levels);
+    } else {
+      this.personVoice?.silence();
+    }
     const windAmount = Math.min(1, Math.max(0, (state.airspeed - 15) / 75));
     this.windGain?.gain.setTargetAtTime(this.levels.wind * windAmount * 0.12, now, 0.1);
     const groundSpeed = Math.hypot(state.velocity.x, state.velocity.z);
@@ -165,6 +175,17 @@ export class FlightAudio {
     if (state.vehicle?.kind === "car") this.carVoice?.peaks.observe(state.vehicle);
   }
 
+  /**
+   * A foot struck as the drawn figure reports it, at once rather than at the
+   * next `update`, so the step lands with the foot. `strength` 0..1.
+   */
+  footstep(state: FlightVisualState, strength: number): void {
+    const context = this.context;
+    if (!context || !this.enabled || state.vehicle?.kind !== "person" || !this.master || !this.noiseBuffer) return;
+    this.personVoice ??= new PersonVoice(context, this.master, this.noiseBuffer);
+    this.personVoice.step(state.vehicle, strength, this.levels);
+  }
+
   suspend(): void {
     this.desiredEnabled = false;
     const generation = ++this.activationGeneration;
@@ -184,6 +205,7 @@ export class FlightAudio {
     this.boatVoice = null;
     this.carVoice?.dispose();
     this.carVoice = null;
+    this.personVoice = null;
     this.stallOscillator?.stop();
     this.windSource?.stop();
     this.engineOscillators = [];

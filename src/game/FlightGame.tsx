@@ -872,6 +872,7 @@ export function FlightGame() {
         setDiagnostics,
       );
       const characterLook = { yaw: 0, pitch: 0, zoom: 0 };
+      const footsteps = { count: 0, strength: 0 };
       const renderLoop = (now: number) => {
         if (disposed || rendererTerminal) return;
         const deltaSeconds = Math.min(0.1, Math.max(1 / 240, (now - lastFrame) / 1_000));
@@ -896,6 +897,7 @@ export function FlightGame() {
           renderer.render(frameState, deltaSeconds);
           const view = renderer.characterView();
           input.setCharacterView(view.heading, view.pitch);
+          if (renderer.consumeFootsteps(footsteps).count > 0) audio.footstep(frameState, footsteps.strength);
         } catch (renderError) {
           console.error("Flight renderer stopped after an unrecoverable frame error", renderError);
           const reason = renderError instanceof Error ? renderError.message : "Unknown rendering error";

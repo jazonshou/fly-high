@@ -21,12 +21,9 @@ import {
 import { flightAnglesOf, surfaceVisualState } from "../surface/visualState";
 import type { Quaternion, Vec3 } from "../types";
 import { createWaterSurfaceSample } from "../water/types";
-import type { PersonSimulator } from "./types";
+import { PARKED_CAR_COLLIDER_GROUP, PARKED_CAR_COLLIDER_MATERIAL, type PersonSimulator } from "./types";
 
-/** Collider group of the parked car's body box (the airports' is 6,001, the marina's 7,001). */
-export const PARKED_CAR_COLLIDER_GROUP = 8_001;
-/** Its material id: a vehicle's body, a wall to the walker. */
-export const PARKED_CAR_COLLIDER_MATERIAL = 201;
+export { PARKED_CAR_COLLIDER_GROUP, PARKED_CAR_COLLIDER_MATERIAL };
 
 /** The parked car falls asleep after this long at rest. */
 const SLEEP_AFTER_SECONDS = 1;

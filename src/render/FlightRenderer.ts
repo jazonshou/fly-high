@@ -226,7 +226,7 @@ import {
 import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
 import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
-import type { FlightRenderingSystem, ScreenPoint, TerrainAuthorityPublisher } from "./types";
+import type { FlightRenderingSystem, FootstepEvents, ScreenPoint, TerrainAuthorityPublisher } from "./types";
 import {
   type TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
@@ -848,6 +848,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** The car's cockpit view as last applied: on foot the car is seen from outside in every view. */
   private carCockpitView = false;
   private readonly characterCamera = new CharacterCamera();
+  /** The figure's foot strikes since the last `consumeFootsteps`. */
+  private readonly footsteps: FootstepEvents = { count: 0, strength: 0 };
   private readonly characterLook = { yaw: 0, pitch: 0, zoom: 0 };
   private walkerGround: LatticeHeightCache | null = null;
   private lastWalkingDriven: "car" | "person" | null = null;
@@ -2251,6 +2253,14 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   /** The character camera's heading and pitch, radians: the walker moves and swims relative to them. */
+  consumeFootsteps(out: FootstepEvents): FootstepEvents {
+    out.count = this.footsteps.count;
+    out.strength = this.footsteps.strength;
+    this.footsteps.count = 0;
+    this.footsteps.strength = 0;
+    return out;
+  }
+
   characterView(): { readonly heading: number; readonly pitch: number } {
     return this.characterCamera;
   }
@@ -4119,7 +4129,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       : 0;
     animation.lookPitch = onFoot ? this.characterCamera.pitch : 0;
     person.setFirstPersonView(cockpit);
-    person.update(animation as PersonAnimationInput, this.currentDeltaSeconds);
+    const output = person.update(animation as PersonAnimationInput, this.currentDeltaSeconds);
+    if (output.footStrikes > 0) {
+      this.footsteps.count += output.footStrikes;
+      this.footsteps.strength = Math.max(this.footsteps.strength, output.strikeStrength);
+    }
   }
 
   /**
