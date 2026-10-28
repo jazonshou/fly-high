@@ -100,6 +100,7 @@ import type { UndrawnSeaHeave } from "./webgpu/boat/undrawnSeaHeave";
 import { createBoatEffects, type BoatEffects } from "./webgpu/boat/BoatEffects";
 import type { CarBowWave } from "./webgpu/ground/CarBowWave";
 import { createCarEffects, type CarEffects } from "./webgpu/ground/CarEffects";
+import { UnderwaterView } from "./webgpu/underwater/UnderwaterView";
 import type { CarParticleSystem } from "./webgpu/ground/CarParticleSystem";
 import type { CarTrackSystem } from "./webgpu/ground/CarTrackSystem";
 import type { BoatSpraySystem } from "./webgpu/boat/BoatSpraySystem";
@@ -691,6 +692,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly carParticles: CarParticleSystem | null;
   private readonly carTracks: CarTrackSystem | null;
   private readonly carBowWave: CarBowWave | null;
+  /** The view from under the water, where the walker can dive; null outside a car session. */
+  private readonly underwater: UnderwaterView | null;
   /** Whether the surface vehicle, not the aircraft, is the one on screen. */
   private surfaceActive = false;
   /** The surface follow's level frame: the bow's heading and world up. */
@@ -1025,6 +1028,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     surfaceVehicle: VehicleVisual | null,
     boatEffects: BoatEffects | null,
     carEffects: CarEffects | null,
+    underwater: UnderwaterView | null,
     terrain: TerrainClipmapSystem,
     terrainEvolution: TerrainEvolutionRuntime,
     terrainConsumerAuthority: TerrainConsumerAuthority | null,
@@ -1085,6 +1089,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.carParticles = carEffects?.particles ?? null;
     this.carTracks = carEffects?.tracks ?? null;
     this.carBowWave = carEffects?.bowWave ?? null;
+    this.underwater = underwater;
     this.terrain = terrain;
     this.terrainEvolution = terrainEvolution;
     this.terrainConsumerAuthority = terrainConsumerAuthority;
@@ -1096,6 +1101,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean = ocean;
     this.waterEnvironment = waterEnvironment;
     this.hydrology = hydrology;
+    // The drawn lakes and rivers for the camera's water, before any worker's.
+    if (underwater) hydrology.setWaterPublisher(underwater.hydrologyPublisher(null));
     this.bathymetry = bathymetry;
     this.dynamicAllocations = bathymetry.storageFormat === "r16float"
       ? DYNAMIC_ALLOCATIONS
@@ -1894,6 +1901,16 @@ export class FlightRenderer implements FlightRenderingSystem {
         cleanup.push(() => carEffects.tracks.dispose());
         cleanup.push(() => carEffects.bowWave.dispose());
       }
+      // Only with a car, where the walker can dive.
+      const underwater = surfaceVehicle && vehicleClass(surfaceVehicle.kind) === "car"
+        ? new UnderwaterView({
+          world: options.world,
+          weather: options.weather ?? "breezy",
+          terrainHeight: liveTerrainHeight,
+          drawnCascades: profile.oceanCascades,
+        })
+        : null;
+      if (underwater) cleanup.push(() => underwater.dispose());
       // 7-4b: the clustered ILLUMINATION surface, beside the billboards that
       // are the lamps you SEE. Constructed with no definitions on purpose —
       // `ClusteredLightingSystem` then builds NO container, which costs
@@ -2135,6 +2152,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         surfaceVehicle,
         boatEffects,
         carEffects,
+        underwater,
         terrain,
         terrainEvolution,
         terrainConsumerAuthority,
@@ -2331,7 +2349,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.terrainAuthorityPublisher = publisher;
     if (publisher) this.terrainEvolution.publishMacroOnce(publisher);
     // The drawn lakes and rivers, for the car's water.
-    this.hydrology.setWaterPublisher(hydrologyWaterPublisher(this.surfaceVehicle?.kind, publisher));
+    const workerWater = hydrologyWaterPublisher(this.surfaceVehicle?.kind, publisher);
+    this.hydrology.setWaterPublisher(this.underwater ? this.underwater.hydrologyPublisher(workerWater) : workerWater);
     const needsEvolvedConsumers = this.terrainConsumerAuthority !== null;
     this.terrain.setCollisionPagePublisher(
       publisher || needsEvolvedConsumers
@@ -2429,6 +2448,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.boatWake?.setAtmosphere(this.atmosphere.snapshot);
     this.boatSpray?.setAtmosphere(this.atmosphere.snapshot);
     this.boatHeave?.setWeather(weather);
+    this.underwater?.setWeather(weather);
     this.carParticles?.setAtmosphere(this.atmosphere.snapshot);
     this.carBowWave?.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
@@ -3241,6 +3261,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.carParticles?.dispose(),
       () => this.carTracks?.dispose(),
       () => this.carBowWave?.dispose(),
+      () => this.underwater?.dispose(),
       () => this.hydrology.dispose(),
       () => this.ocean.dispose(),
       () => this.cloudShadowReceivers.dispose(),
@@ -3319,6 +3340,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         // The wake and the car's bow wave lie on the waves this frame's sea is drawn with.
         this.boatWake?.bindOcean();
         this.carBowWave?.bindOcean();
+        // Which side of the drawn water the camera is on, at the time the sea is drawn at.
+        this.underwater?.update(this.cameraWorld.x, this.cameraWorld.y, this.cameraWorld.z, frame.timeSeconds);
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
         // ocean disk is depth-tested away above the waterline), so the sea
         // state and the WATER's own clock cross here — same node, same frame,
@@ -4716,6 +4739,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.boatSpray?.setCap(this.profile.boatSprayParticleCap);
     this.boatWake?.setTrailSeconds(this.profile.boatWakeTrailSeconds);
     this.boatHeave?.setDrawnCascades(this.profile.oceanCascades);
+    this.underwater?.setDrawnCascades(this.profile.oceanCascades);
     this.carParticles?.setCap(this.profile.vehicleParticleBudget);
     this.carTracks?.setCap(this.profile.tyreTrackSegments);
     this.roadSurface?.setRanges(this.profile);
