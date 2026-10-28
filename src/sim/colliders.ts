@@ -114,10 +114,12 @@ const SLOT_BITS = 20;
 const SLOT_COUNT = 1 << SLOT_BITS;
 const SLOT_MASK = SLOT_COUNT - 1;
 const MAX_GENERATION = 2047;
-// Packs a signed bin coordinate pair into one exact double; ±2^20 bins of
-// 32 m reach far past any world the game streams.
-const BIN_OFFSET = 1 << 20;
-const BIN_STRIDE = 1 << 21;
+// Packs a signed bin coordinate pair into one small integer, 15 bits each:
+// a Smi in every V8 build (31-bit with pointer compression), so a bin lookup
+// passes no heap number to the map. Bins 2^15 apart (1,049 km) share a key,
+// which only adds far candidates that every query's bounds test drops.
+const BIN_KEY_BITS = 15;
+const BIN_KEY_MASK = (1 << BIN_KEY_BITS) - 1;
 
 const IDENTITY: Quaternion = Object.freeze({ x: 0, y: 0, z: 0, w: 1 });
 const ZERO: Vec3 = Object.freeze({ x: 0, y: 0, z: 0 });
@@ -149,7 +151,7 @@ function binIndex(coordinate: number): number {
 }
 
 function binKey(ix: number, iz: number): number {
-  return (ix + BIN_OFFSET) * BIN_STRIDE + (iz + BIN_OFFSET);
+  return ((ix & BIN_KEY_MASK) << BIN_KEY_BITS) | (iz & BIN_KEY_MASK);
 }
 
 function shapePointCount(shape: ColliderShape): number {
