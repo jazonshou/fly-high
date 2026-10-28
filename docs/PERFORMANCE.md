@@ -2623,6 +2623,73 @@ both pipelines above the fade). Of the choppiness section's open list
 the far east the granite rock, a detail material (perhaps that list's
 "plain PBR"). The far east's hydrology water is not covered.
 
+## Roads at jet speed: coarse pages and the road index (2026-10-28)
+
+The land PR's roads stream round the observer: the gravel window reaches
+12 km, tracks 5 km, both leaning 20 s ahead along the velocity, in 2 km
+regions. A 250 m/s leg at 3,000 ft over road country (from 7271, -37795,
+heading 135) cost about 3 ms more per frame with roads streaming than
+without (the same build with road streaming switched off). On the SwiftShader host,
+with draws off, the GPU compute fell from 3.0-3.8 frames/s to 0.7-1.1, and
+the vegetation's build latency p95 rose from 1.5 s to 14 s. The road code
+itself was 0.6 ms of the 3. The rest was what each change asks of the
+terrain pages.
+
+**The coarse pages.** Each road change rebuilds in place every resident
+page whose domain it touches (`TerrainClipmapSystem.infrastructureChanged`).
+A page of level 5 or more spans 16 km or more, so nearly every region
+installed or dropped lies inside one. Flown on fake producers (every
+rebuild finishing at once), a 90 s leg rebuilt pages 480 times for roads
+against 209 fresh pages, and 405 of those rebuilds were levels 5-9. Those
+are pages where a 7 m gravel road covers under 5% of a 128 m texel. While
+the observer moves faster than `ROAD_DEFERRED_MIN_SPEED` (50 m/s), those
+rebuilds are pooled into one change. They go ahead once it slows or stops,
+or has travelled `ROAD_DEFERRED_MAX_TRAVEL` (8 km). A capture holds its
+aircraft still at the pose's speed, so it still waits for every page. On
+the same leg the road rebuilds fall to 99 (23 of them levels 5-9), and the
+page work overall from 689 to 308 pages.
+
+**The road index.** The jet's window grows to 13,941 segments in 4,125
+bins. That overflowed the streamed pack minimum (8,192 table slots take
+4,096 bins): a fresh 18 ms pack early in the leg, then a table rehash every
+20 s as dropped bins filled it. The minimums are now 24,576 segments,
+16,384 slots and 131,072 list entries, about 2.7 MB on the GPU. A rehash
+marks the table dirty once, instead of each entry and then the table. On a
+300 s leg of the real road changes (Node), that's 1 rehash and no fresh
+pack, against 13 rehashes of 2-9 ms and one fresh pack before. The update
+p99 is 0.8 ms, against 2.6 ms before.
+
+**Measured** with `npm run perf:flight -- --base b0875d0 --legs 4
+--leg-frames 360 --speed 250 --clearance 914 --start 7271,-37795,135`
+(SwiftShader, draws off; the head had the deferral and the single dirty
+mark, not yet the larger minimums). The three legs after the first:
+
+| | b0875d0 | deferred |
+| --- | --- | --- |
+| render() ms p50 / p95 / p99 / max | 12.5 / 24.6 / 31.1 / 51.2 | 11.0 / 21.6 / 26.9 / 42.8 |
+| frame CPU ms mean / p95 | 14.35 / 25.3 | 12.77 / 22.2 |
+| long tasks (over 50 ms) | 1 | 0 |
+| GPU compute, frames/s a leg | 0.9-1.1 | 2.6-2.8 |
+| vegetation build latency p95 | 14.3-15.3 s | 3.8-7.7 s |
+| world-page-visibility pass, mean ms | 5.96 | 5.00 |
+
+The report's "JS heap allocated per frame" reads 919 KiB in the base and
+1,533 KiB in the head. It is net of collections, and the base collected
+more than twice as often (187 falls of over 1 MiB against 83), while it
+waited about a second a frame on the GPU fence. Frames with no collection
+allocate the same in both arms: a median of 1,733 KiB and 1,761 KiB.
+
+Pinned by `tests/render.webgpu-terrain-roads-rebuild.test.ts` (fast and
+moving: only levels under 5 rebuild; slowed: each coarse page once for both
+changes; held still at speed: no wait; 8 km on: the wait ends) and
+`tests/render.infrastructure-gpu-bins.test.ts` (a copy kept only by the
+ranges each update returns matches the pack after every relayout and
+rehash).
+
+Still open: the rest of the gap to roads off (the vegetation's build
+latency p95 is 3.8-7.7 s against 1.5-1.8 s; a road change marks its cells
+stale and rebuilds them), and taking a large change over two frames.
+
 ## Capture harness
 
 `npm run perf:capture` renders the authoritative `PERF_CAPTURE_SHOTS` list. Entries whose

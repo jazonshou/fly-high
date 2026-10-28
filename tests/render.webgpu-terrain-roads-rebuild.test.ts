@@ -4,6 +4,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveWebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import { terrainPageAirportDomain, type TerrainWorldRect } from "@/src/render/webgpu/terrain/AirportReach";
 import {
+  ROAD_DEFERRED_MAX_TRAVEL,
+  ROAD_DEFERRED_MIN_LEVEL,
+  ROAD_DEFERRED_MIN_SPEED,
   TerrainClipmapSystem,
   type TerrainComputeFactory,
 } from "@/src/render/webgpu/terrain/TerrainClipmapSystem";
@@ -201,6 +204,103 @@ describe("TerrainClipmapSystem.infrastructureChanged", () => {
         `road region ${region.key} (${region.segments.length} segments): ${rebuilt.size} of ${resident.length} `
         + `resident height pages rebuilt in place, ${new Set(rebaked.map((dispatch) => dispatch.key)).size} channel pages re-baked`,
       );
+    } finally {
+      system.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it("keeps the coarsest pages waiting while the observer flies fast, and rebuilds each once when it slows", async () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const clock = { frame: 0 };
+    const recording = recordingFactory(clock);
+    const system = new TerrainClipmapSystem(
+      scene, world, resolveWebGpuQualityProfile("medium", "balanced"), { computeFactory: recording.factory },
+    );
+    // Faster than a car, over the road head: a jet passing. It creeps a
+    // centimetre and a half a frame, so the pages it streams stay put.
+    const fast = ROAD_DEFERRED_MIN_SPEED + 200;
+    const observer = { x: head.startX, y: 900, z: head.startZ, velocityX: fast, velocityZ: 0 };
+    const fly = async (frames: number) => {
+      for (let step = 0; step < frames; step += 1) {
+        if (observer.velocityX !== 0) observer.x += 0.015;
+        await pump(system, clock, 1, observer);
+      }
+    };
+    const settle = async (settled: number) => {
+      for (let step = 0; step < 200 && system.statistics.pendingPages > settled; step += 1) await fly(1);
+      expect(system.statistics.pendingPages).toBe(settled);
+    };
+    const inPlaceSince = (frame: number) => recording.heights
+      .filter((dispatch) => dispatch.frame > frame && dispatch.inPlace)
+      .map((dispatch) => dispatch.key);
+    const levelOf = (key: string) => Number(key.split(":")[0]);
+    try {
+      await fly(120);
+      const settled = system.statistics.pendingPages;
+      const reached = system.atlases.height.residency.entries
+        .filter((slot) => slot.lifecycle.state === "resident" && clearance(slot.address) <= 0)
+        .map((slot) => keyOf(slot.address));
+      const coarse = reached.filter((key) => levelOf(key) >= ROAD_DEFERRED_MIN_LEVEL);
+      expect(coarse.length).toBeGreaterThan(0);
+      expect(reached.length).toBeGreaterThan(coarse.length);
+
+      // ---- the road arrives and leaves at speed: only the finer pages -----
+      const arrived = clock.frame;
+      system.infrastructureChanged(changeInfrastructureRegions(world, [region])!);
+      await settle(settled);
+      system.infrastructureChanged(changeInfrastructureRegions(world, [], [region.key])!);
+      await settle(settled);
+      await fly(20);
+      const atSpeed = inPlaceSince(arrived);
+      expect(atSpeed.length).toBeGreaterThan(0);
+      for (const key of atSpeed) expect(levelOf(key), `page ${key} rebuilt at speed`).toBeLessThan(ROAD_DEFERRED_MIN_LEVEL);
+
+      // ---- it slows: both changes' coarse rebuilds, once each -------------
+      const slowed = clock.frame;
+      observer.velocityX = 0;
+      await fly(1);
+      expect(system.statistics.pendingPages).toBeGreaterThan(settled);
+      await settle(settled);
+      const after = inPlaceSince(slowed);
+      for (const key of after) expect(levelOf(key), `page ${key}`).toBeGreaterThanOrEqual(ROAD_DEFERRED_MIN_LEVEL);
+      expect([...after].sort()).toEqual([...new Set(after)].sort());
+      const residentNow = new Set(system.atlases.height.residency.entries
+        .filter((slot) => slot.lifecycle.state === "resident")
+        .map((slot) => keyOf(slot.address)));
+      for (const key of coarse) if (residentNow.has(key)) expect(after, `page ${key} rebuilt once slow`).toContain(key);
+
+      // ---- held still at speed, as a capture holds its aircraft: no wait -
+      const coarseSince = (frame: number) => inPlaceSince(frame).filter((key) => levelOf(key) >= ROAD_DEFERRED_MIN_LEVEL);
+      observer.velocityX = fast;
+      await pump(system, clock, 2, observer);
+      const held = clock.frame;
+      system.infrastructureChanged(changeInfrastructureRegions(world, [region])!);
+      await pump(system, clock, 1, observer);
+      expect(system.statistics.pendingPages).toBeGreaterThan(settled);
+      for (let step = 0; step < 200 && system.statistics.pendingPages > settled; step += 1) {
+        await pump(system, clock, 1, observer);
+      }
+      expect(system.statistics.pendingPages).toBe(settled);
+      expect(coarseSince(held).length).toBeGreaterThan(0);
+
+      // ---- flying on, the wait ends after ROAD_DEFERRED_MAX_TRAVEL --------
+      await fly(2);
+      const again = clock.frame;
+      system.infrastructureChanged(changeInfrastructureRegions(world, [], [region.key])!);
+      await settle(settled);
+      expect(coarseSince(again)).toEqual([]);
+      const travelled = clock.frame;
+      observer.x += ROAD_DEFERRED_MAX_TRAVEL - 100;
+      // Still short of it: nothing queued for the coarse pages.
+      await fly(40);
+      expect(coarseSince(travelled)).toEqual([]);
+      const arrivedFar = clock.frame;
+      observer.x += 200;
+      await fly(200);
+      expect(coarseSince(arrivedFar).length).toBeGreaterThan(0);
     } finally {
       system.dispose();
       scene.dispose();

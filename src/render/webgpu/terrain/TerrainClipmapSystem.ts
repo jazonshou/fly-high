@@ -360,6 +360,39 @@ const NO_SLOTS: readonly TerrainAtlasSlot[] = Object.freeze([]);
 export const AIRPORT_INVALIDATION_SLOTS_PER_FRAME = 64;
 
 /**
+ * The coarsest pages wait for road changes while the observer flies on
+ * (`infrastructureChanged`). A page from this level up spans 16 km or more
+ * and paints a 7 m gravel road over 5% of a 128 m texel, yet nearly every
+ * region the road stream installs or drops lies inside one, so at jet speed
+ * they were rebuilt again and again: on a 90 s leg at 250 m/s from the home
+ * field, levels 5-9 were rebuilt 405 times, twice the 209 fresh pages of
+ * every level (fake producers, so every rebuild finished at once).
+ * Their rebuild is pooled while the observer is faster than
+ * `ROAD_DEFERRED_MIN_SPEED` and moved since the last frame, and goes ahead
+ * once it slows or stops, or has travelled `ROAD_DEFERRED_MAX_TRAVEL` since
+ * the oldest change waiting. Finer pages rebuild as before; so does every
+ * page under a car or a boat, and under a capture's aircraft, which holds
+ * still at its pose's speed.
+ */
+export const ROAD_DEFERRED_MIN_LEVEL = 5;
+/** Ground speed above which coarse rebuilds for roads wait, m/s: past a car's top speed. */
+export const ROAD_DEFERRED_MIN_SPEED = 50;
+/** Travel after which the waiting coarse rebuilds go ahead anyway, metres. */
+export const ROAD_DEFERRED_MAX_TRAVEL = 8_000;
+/** An observer that moved less than this since the last frame is holding still (a capture's), metres. */
+const ROAD_DEFERRED_STILL_METERS = 0.01;
+
+/** Road changes' coarse rebuilds waiting while the observer flies on: their bins together, and the latest version. */
+interface DeferredRoadRebuild {
+  readonly bins: Set<number>;
+  version: number;
+  readonly fromX: number;
+  readonly fromZ: number;
+}
+
+const NO_PLANT_BINS: ReadonlySet<number> = new Set();
+
+/**
  * One change to the ground the pages bake, still being tested against the
  * slots: an airport-list change (`setAirports`), or a change to the streamed
  * infrastructure regions (`infrastructureChanged`), which share the airport
@@ -787,6 +820,10 @@ export class TerrainClipmapSystem {
   private readonly infrastructureDomain: TerrainMutableWorldRect = { minX: 0, minZ: 0, maxX: 0, maxZ: 0 };
   /** Changes whose invalidation scan has not finished, oldest first. */
   private readonly airportInvalidations: AirportInvalidation[] = [];
+  /** Road changes' rebuilds of levels from `ROAD_DEFERRED_MIN_LEVEL`, waiting while the observer flies on. */
+  private deferredRoadRebuild: DeferredRoadRebuild | null = null;
+  /** Whether the last update's observer had moved since the one before. */
+  private observerMoved = false;
 
   constructor(
     private readonly scene: Scene,
@@ -1089,7 +1126,10 @@ export class TerrainClipmapSystem {
       residentPages: this.heightAtlas.residency.residentCount,
       residencyReasons: this.residencyReasons,
       // Pages owed an in-place rebuild (an airport or a road changed under
-      // them) are pending too: a capture waits for the ground it shows.
+      // them) are pending too: a capture waits for the ground it shows. The
+      // coarse pages a fast observer's road changes left waiting are not:
+      // nothing settles at that speed anyway, and they are queued the frame
+      // it slows.
       pendingPages: this.heightAtlas.residency.generatingCount
         + (this.provinceField?.pending ? 1 : 0)
         + this.airportInvalidations.length
@@ -1486,6 +1526,11 @@ export class TerrainClipmapSystem {
    * touch is bit-identical either way, because outside the change's bins the
    * stage's answer is the same. Cheap: one queued test per slot, spread like
    * an airport change's.
+   *
+   * While the observer flies faster than `ROAD_DEFERRED_MIN_SPEED`, pages
+   * from `ROAD_DEFERRED_MIN_LEVEL` up are left out of the scan and pooled,
+   * every change's bins together, until it slows or has travelled
+   * `ROAD_DEFERRED_MAX_TRAVEL`; then they are scanned as one change.
    */
   infrastructureChanged(change: InfrastructureChange): void {
     if (this.disposed) return;
@@ -1493,9 +1538,77 @@ export class TerrainClipmapSystem {
     if (change.bins.size === 0) return;
     const domain = this.infrastructureDomain;
     this.airportListVersion += 1;
+    const version = this.airportListVersion;
+    if (!this.deferringRoadRebuilds()) {
+      this.flushDeferredRoadRebuild();
+      this.airportInvalidations.push({
+        version,
+        reaches: (address) => infrastructureChangeTouches(change, terrainPageAirportDomain(address, domain)),
+        heightSlots: null,
+        channelSlots: null,
+        cursor: 0,
+      });
+      return;
+    }
     this.airportInvalidations.push({
-      version: this.airportListVersion,
-      reaches: (address) => infrastructureChangeTouches(change, terrainPageAirportDomain(address, domain)),
+      version,
+      reaches: (address) => address.level < ROAD_DEFERRED_MIN_LEVEL
+        && infrastructureChangeTouches(change, terrainPageAirportDomain(address, domain)),
+      heightSlots: null,
+      channelSlots: null,
+      cursor: 0,
+    });
+    const deferred = this.deferredRoadRebuild ??= {
+      bins: new Set(),
+      version,
+      fromX: this.streamingObserver.positionX,
+      fromZ: this.streamingObserver.positionZ,
+    };
+    for (const key of change.bins) deferred.bins.add(key);
+    deferred.version = version;
+  }
+
+  /**
+   * Whether the observer is flying fast enough that coarse pages wait for
+   * road changes (`ROAD_DEFERRED_MIN_LEVEL`): its speed, and moving at all,
+   * since a capture holds an aircraft still at its pose's speed and must
+   * wait for every page its roads reach.
+   */
+  private deferringRoadRebuilds(): boolean {
+    const observer = this.streamingObserver;
+    return this.observerMoved && Math.hypot(observer.velocityX, observer.velocityZ) > ROAD_DEFERRED_MIN_SPEED;
+  }
+
+  /**
+   * Queue the coarse rebuilds the road changes left waiting, as one change
+   * (their bins together, the latest version), once the observer has slowed
+   * or come `ROAD_DEFERRED_MAX_TRAVEL` from where the oldest was made.
+   */
+  private stepDeferredRoadRebuild(): void {
+    const deferred = this.deferredRoadRebuild;
+    if (!deferred) return;
+    const observer = this.streamingObserver;
+    const travelled = Math.hypot(observer.positionX - deferred.fromX, observer.positionZ - deferred.fromZ);
+    if (this.deferringRoadRebuilds() && travelled < ROAD_DEFERRED_MAX_TRAVEL) return;
+    this.flushDeferredRoadRebuild();
+  }
+
+  private flushDeferredRoadRebuild(): void {
+    const deferred = this.deferredRoadRebuild;
+    if (!deferred) return;
+    this.deferredRoadRebuild = null;
+    // Never added to again, as infrastructureChangeTouches' box cache needs.
+    const change: InfrastructureChange = {
+      version: deferred.version,
+      rects: [],
+      bins: deferred.bins,
+      plantBins: NO_PLANT_BINS,
+    };
+    const domain = this.infrastructureDomain;
+    this.airportInvalidations.push({
+      version: deferred.version,
+      reaches: (address) => address.level >= ROAD_DEFERRED_MIN_LEVEL
+        && infrastructureChangeTouches(change, terrainPageAirportDomain(address, domain)),
       heightSlots: null,
       channelSlots: null,
       cursor: 0,
@@ -1591,6 +1704,10 @@ export class TerrainClipmapSystem {
     this.stepMaterialArrayBuild();
     this.frameIndex = frameIndex;
     this.drainDeferredDisposals();
+    this.observerMoved = Math.hypot(
+      observer.x - this.streamingObserver.positionX,
+      observer.z - this.streamingObserver.positionZ,
+    ) > ROAD_DEFERRED_STILL_METERS;
     this.streamingObserver = {
       positionX: observer.x,
       positionY: observer.y ?? 0,
@@ -1598,6 +1715,7 @@ export class TerrainClipmapSystem {
       velocityX: observer.velocityX,
       velocityZ: observer.velocityZ,
     };
+    this.stepDeferredRoadRebuild();
     this.provinceField?.update(observer.x, observer.z);
     const residentPage = createResidentInvariantPageLookup(this.heightAtlas.residency);
     const selection = selectTerrainNodeSets({
@@ -1670,6 +1788,7 @@ export class TerrainClipmapSystem {
     this.heightAirportRebuilds.clear();
     this.channelAirportRebuilds.clear();
     this.airportInvalidations.length = 0;
+    this.deferredRoadRebuild = null;
     for (const mesh of this.casterMeshes) mesh.dispose(false, false);
     this.casterMeshes = [];
     this.beautyMesh.dispose(false, false);
