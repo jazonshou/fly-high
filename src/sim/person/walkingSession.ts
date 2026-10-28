@@ -461,9 +461,10 @@ export class WalkingSession {
       return;
     }
     const p = boarding.progress;
+    // The figure's hand times itself to these (the figure build's timing).
     const open = boarding.action === "getIn"
-      ? Math.min(ramp(p, 0.05, 0.25), 1 - ramp(p, 0.75, 0.95))
-      : Math.min(ramp(p, 0, 0.2), 1 - ramp(p, 0.75, 0.95));
+      ? Math.min(ramp(p, 0, 0.25), 1 - ramp(p, 0.8, 1))
+      : Math.min(ramp(p, 0, 0.2), 1 - ramp(p, 0.75, 1));
     this.doors[0] = boarding.side === "right" ? open : 0;
     this.doors[1] = boarding.side === "left" ? open : 0;
   }

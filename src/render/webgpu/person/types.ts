@@ -26,6 +26,20 @@ export interface PersonAnimationInput {
   groundOffset(forward: number, right: number): number;
   /** The car's steering-wheel angle while seated, radians, for the hands. */
   readonly steeringWheel: number;
+  /**
+   * Where the camera aims relative to the facing, radians (yaw positive to
+   * the right, pitch positive up), for the head turn. Absent: straight ahead.
+   */
+  readonly lookYaw?: number;
+  readonly lookPitch?: number;
+  /**
+   * Getting in: where the walker stood when it began, in the seat frame the
+   * root is posed at while boarding (metres along the car's forward, up and
+   * right axes from the driver's hip point), and its facing relative to the
+   * car's (radians, positive turned right). The figure walks from there to
+   * the door over progress 0..0.25. Null otherwise.
+   */
+  readonly boardingFrom?: { readonly forward: number; readonly up: number; readonly right: number; readonly facing: number } | null;
 }
 
 /** What one `update` reports back: foot strikes since the last frame, for footsteps. */
