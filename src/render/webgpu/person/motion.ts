@@ -15,7 +15,9 @@ import { BIND_POSITIONS, BONE, SIDES } from "./skeleton";
 
 /**
  * The walker's motion: from the sim's `PersonVisualState` and the root's own
- * movement to the skeleton's pose, every frame, allocating nothing.
+ * movement to the skeleton's pose, every frame, with no per-frame object,
+ * array or closure (V8 still boxes some doubles at the helpers it does not
+ * inline: about 190 B a frame, measured over tests/support/personMotionCourse.ts).
  *
  * FAMILIES. The sim's modes fall into families that share a body: on the
  * ground (stand, walk, run, wade: one gait whose speed, run share and depth
@@ -29,7 +31,8 @@ import { BIND_POSITIONS, BONE, SIDES } from "./skeleton";
  *
  * WHAT IS PUBLISHED and what is not: the walking and running joint curves,
  * cadence and stride (`gaitData.ts`, `gait.ts`); the swimming, landing,
- * boarding and seated poses are ESTIMATES (`actions.ts`, `carSeat.ts`).
+ * climbing, boarding and seated poses are ESTIMATES (`actions.ts`,
+ * `carSeat.ts`, the climb's pelvis curves here).
  */
 export interface MotionInput {
   readonly person: PersonVisualState;
