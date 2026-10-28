@@ -120,14 +120,15 @@ load.
 | `tests/render.webgpu-water-extraction.test.ts` | the sea's composed WGSL hashes unchanged |
 | `tests/gpu/underwater-column.test.ts` | the column on a real adapter |
 | `tests/gpu/ocean-underside.test.ts` | both underside variants against the textbook Fresnel and Snell values; nothing drawn while primed |
+| `tests/gpu/hydrology-below-veil.test.ts` | a lake from above drawn byte for byte as before, column on or off; from below its own veil only while the column is off |
 | `tests/gpu/underwater-caustics.test.ts` | a folded sea's web on the floor; a lake keeps the capillary tail only; nothing past the 24 m gate |
 
 ## Known limits
 
-- A lake's or river's surface seen from below keeps its own path: the
-  hydrology shader veils it with `applyUnderwaterBeerLambert` over the
-  camera's distance, and the column fades that same distance again. There
-  is no lake underside variant yet.
+- There is no lake or river underside variant: seen from below, inland
+  water keeps its own surface shading. While the column is on it leaves the
+  water between itself and the camera to the column (`belowVeilScale` 0:
+  no veil of its own, no haze), so that path is faded once.
 - No light shafts and no suspended particles.
 - The bubbles keep `personVoice`'s breathing rhythm but are not tied to
   its sound.
