@@ -24,25 +24,37 @@ import { readSource } from "./support/sourceText";
  * still happens before the derivation reads it.
  */
 
-const CHAIN = ["scotopic", "bloom", "toneMap"] as const;
+const CHAIN = ["waterColumn", "scotopic", "bloom", "toneMap"] as const;
 
 describe("MSAA beauty-target ownership", () => {
-  it("gives the samples to the first ATTACHED pass, in all eight states", () => {
+  it("gives the samples to the first ATTACHED pass, in all sixteen states", () => {
     for (const samples of [1, 4]) {
-      for (const scotopic of [true, false]) {
-        for (const bloom of [true, false]) {
-          const assigned = firstPassSampleAssignment(samples, scotopic, bloom);
-          const attached = { scotopic, bloom, toneMap: true };
-          // The tone map is always attached, so there is always exactly one
-          // owner and it is always the first attached member of the chain.
-          const expectedOwner = CHAIN.find((name) => attached[name])!;
-          for (const name of CHAIN) {
-            expect(
-              assigned[name],
-              `${name} with scotopic=${scotopic} bloom=${bloom} samples=${samples}`,
-            ).toBe(name === expectedOwner ? samples : 1);
+      for (const waterColumn of [true, false]) {
+        for (const scotopic of [true, false]) {
+          for (const bloom of [true, false]) {
+            const assigned = firstPassSampleAssignment(samples, scotopic, bloom, waterColumn);
+            const attached = { waterColumn, scotopic, bloom, toneMap: true };
+            // The tone map is always attached, so there is always exactly one
+            // owner and it is always the first attached member of the chain.
+            const expectedOwner = CHAIN.find((name) => attached[name])!;
+            for (const name of CHAIN) {
+              expect(
+                assigned[name],
+                `${name} with water=${waterColumn} scotopic=${scotopic} bloom=${bloom} samples=${samples}`,
+              ).toBe(name === expectedOwner ? samples : 1);
+            }
           }
         }
+      }
+    }
+  });
+
+  it("leaves the water column out unless it is attached", () => {
+    // Every session but a car's, and a car's above the water.
+    for (const scotopic of [true, false]) {
+      for (const bloom of [true, false]) {
+        expect(firstPassSampleAssignment(4, scotopic, bloom))
+          .toEqual(firstPassSampleAssignment(4, scotopic, bloom, false));
       }
     }
   });
@@ -50,11 +62,13 @@ describe("MSAA beauty-target ownership", () => {
   it("never hands the samples to more than one pass", () => {
     // Two multisampled targets is the waste `1B-11` exists to prevent, and it
     // is silent: the frame is correct and a whole target's cost is doubled.
-    for (const scotopic of [true, false]) {
-      for (const bloom of [true, false]) {
-        const assigned = firstPassSampleAssignment(4, scotopic, bloom);
-        const holders = CHAIN.filter((name) => assigned[name] > 1);
-        expect(holders, `scotopic=${scotopic} bloom=${bloom}`).toHaveLength(1);
+    for (const waterColumn of [true, false]) {
+      for (const scotopic of [true, false]) {
+        for (const bloom of [true, false]) {
+          const assigned = firstPassSampleAssignment(4, scotopic, bloom, waterColumn);
+          const holders = CHAIN.filter((name) => assigned[name] > 1);
+          expect(holders, `water=${waterColumn} scotopic=${scotopic} bloom=${bloom}`).toHaveLength(1);
+        }
       }
     }
   });
@@ -62,10 +76,12 @@ describe("MSAA beauty-target ownership", () => {
   it("is a no-op at 1x, so a single-sample tier cannot be misconfigured", () => {
     // Bloom ships at tier 1 where msaaSamples is 1, so this is the state that
     // actually renders today: every assignment is 1 regardless of the chain.
-    for (const scotopic of [true, false]) {
-      for (const bloom of [true, false]) {
-        const assigned = firstPassSampleAssignment(1, scotopic, bloom);
-        expect(Object.values(assigned)).toEqual([1, 1, 1]);
+    for (const waterColumn of [true, false]) {
+      for (const scotopic of [true, false]) {
+        for (const bloom of [true, false]) {
+          const assigned = firstPassSampleAssignment(1, scotopic, bloom, waterColumn);
+          expect(Object.values(assigned)).toEqual([1, 1, 1, 1]);
+        }
       }
     }
   });

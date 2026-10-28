@@ -793,6 +793,64 @@ const OCEAN_SURF_ALBEDO_WGSL =
 /** 2-9: Gate 2B's declared crest-SSS tuning knob. */
 const OCEAN_CREST_SSS_INTENSITY_WGSL = "0.55";
 
+/**
+ * The sea fragment's `oceanConstituents`, exported so the view from under the
+ * water fades and dims with the same water its surface is coloured by.
+ */
+export const OCEAN_CONSTITUENTS_WGSL = /* wgsl */ `
+// W-8 — THE SEA'S OWN CHEMISTRY, from the two things a sea pixel knows
+// cheaply: its depth and its province.
+//
+// Case 1 water (open ocean) is chlorophyll and nothing else; Case 2 water (a
+// shelf, an estuary, a surf zone) adds the land's runoff and whatever the
+// waves lift off the bottom. Depth carries most of that on its own — this
+// world's bed reaches only ~110 m, so the shelf IS the coast — and the
+// environment field carries the rest: a cold wet coast makes green water and a
+// warm dry one blue, from the same climate fields the forests are placed by.
+fn oceanConstituents(depth: f32, province: vec2f) -> WaterConstituents {
+  let coastal = 1.0 - smoothstep(
+    ${OCEAN_COASTAL_DEPTH_NEAR.toFixed(1)},
+    ${OCEAN_COASTAL_DEPTH_FAR.toFixed(1)},
+    depth,
+  );
+  // Resuspension: the surf zone stirs the bed it is breaking over.
+  let surf = 1.0 - smoothstep(
+    ${OCEAN_SURF_DEPTH_NEAR.toFixed(1)},
+    ${OCEAN_SURF_DEPTH_FAR.toFixed(1)},
+    depth,
+  );
+  // W-8c: the contrast curve. It re-shapes the INDEX, not the optics — the
+  // concentrations still go through the same published spectra — and it is
+  // exactly the identity at mid-province, so the world's middle does not move.
+  let productivity = smoothstep(
+    ${OCEAN_PROVINCE_CONTRAST_LOW.toFixed(2)},
+    ${OCEAN_PROVINCE_CONTRAST_HIGH.toFixed(2)},
+    province.x,
+  );
+  let runoff = smoothstep(
+    ${OCEAN_PROVINCE_CONTRAST_LOW.toFixed(2)},
+    ${OCEAN_PROVINCE_CONTRAST_HIGH.toFixed(2)},
+    province.y,
+  );
+  // W-8b widened the province's authority. The first cut ran 0.45 + 1.7p on
+  // chlorophyll, which put a dry subtropical coast and a rain-fed temperate one
+  // within 60% of each other in hue — measurable, but not something a player
+  // would call a different sea. The real spread is far larger: an arid coast
+  // with no river feeding it is oligotrophic (chlorophyll under 0.3) while a
+  // wet forested one runs a spring bloom at 3-5, and CDOM tracks runoff even
+  // harder because it IS runoff.
+  return WaterConstituents(
+    mix(${OCEAN_OPEN_CHLOROPHYLL}, ${OCEAN_COASTAL_CHLOROPHYLL}, coastal)
+      * (0.22 + 2.6 * productivity * productivity),
+    mix(${OCEAN_OPEN_CDOM}, ${OCEAN_COASTAL_CDOM}, coastal)
+      * (0.18 + 2.4 * runoff * runoff),
+    (${OCEAN_COASTAL_SEDIMENT} * coastal * coastal
+      + ${OCEAN_SURF_SEDIMENT} * surf * surf)
+      * (${OCEAN_SEDIMENT_LOAD_BASE} + ${OCEAN_SEDIMENT_LOAD_RUNOFF} * runoff * runoff),
+    0.0,
+  );
+}`;
+
 export const WATER_FRAGMENT_WGSL = /* wgsl */ `
 varying worldPosition: vec3f;
 varying oceanCoordinate: vec2f;
@@ -881,59 +939,7 @@ ${WATER_DEPTH_OPTICS_WGSL}
 // W-8: the constituent model (one text, both water surfaces). It needs the
 // WaterOptics struct the depth include declares, so it is composed after it.
 ${WATER_CONSTITUENT_WGSL}
-
-// W-8 — THE SEA'S OWN CHEMISTRY, from the two things a sea pixel knows
-// cheaply: its depth and its province.
-//
-// Case 1 water (open ocean) is chlorophyll and nothing else; Case 2 water (a
-// shelf, an estuary, a surf zone) adds the land's runoff and whatever the
-// waves lift off the bottom. Depth carries most of that on its own — this
-// world's bed reaches only ~110 m, so the shelf IS the coast — and the
-// environment field carries the rest: a cold wet coast makes green water and a
-// warm dry one blue, from the same climate fields the forests are placed by.
-fn oceanConstituents(depth: f32, province: vec2f) -> WaterConstituents {
-  let coastal = 1.0 - smoothstep(
-    ${OCEAN_COASTAL_DEPTH_NEAR.toFixed(1)},
-    ${OCEAN_COASTAL_DEPTH_FAR.toFixed(1)},
-    depth,
-  );
-  // Resuspension: the surf zone stirs the bed it is breaking over.
-  let surf = 1.0 - smoothstep(
-    ${OCEAN_SURF_DEPTH_NEAR.toFixed(1)},
-    ${OCEAN_SURF_DEPTH_FAR.toFixed(1)},
-    depth,
-  );
-  // W-8c: the contrast curve. It re-shapes the INDEX, not the optics — the
-  // concentrations still go through the same published spectra — and it is
-  // exactly the identity at mid-province, so the world's middle does not move.
-  let productivity = smoothstep(
-    ${OCEAN_PROVINCE_CONTRAST_LOW.toFixed(2)},
-    ${OCEAN_PROVINCE_CONTRAST_HIGH.toFixed(2)},
-    province.x,
-  );
-  let runoff = smoothstep(
-    ${OCEAN_PROVINCE_CONTRAST_LOW.toFixed(2)},
-    ${OCEAN_PROVINCE_CONTRAST_HIGH.toFixed(2)},
-    province.y,
-  );
-  // W-8b widened the province's authority. The first cut ran 0.45 + 1.7p on
-  // chlorophyll, which put a dry subtropical coast and a rain-fed temperate one
-  // within 60% of each other in hue — measurable, but not something a player
-  // would call a different sea. The real spread is far larger: an arid coast
-  // with no river feeding it is oligotrophic (chlorophyll under 0.3) while a
-  // wet forested one runs a spring bloom at 3-5, and CDOM tracks runoff even
-  // harder because it IS runoff.
-  return WaterConstituents(
-    mix(${OCEAN_OPEN_CHLOROPHYLL}, ${OCEAN_COASTAL_CHLOROPHYLL}, coastal)
-      * (0.22 + 2.6 * productivity * productivity),
-    mix(${OCEAN_OPEN_CDOM}, ${OCEAN_COASTAL_CDOM}, coastal)
-      * (0.18 + 2.4 * runoff * runoff),
-    (${OCEAN_COASTAL_SEDIMENT} * coastal * coastal
-      + ${OCEAN_SURF_SEDIMENT} * surf * surf)
-      * (${OCEAN_SEDIMENT_LOAD_BASE} + ${OCEAN_SEDIMENT_LOAD_RUNOFF} * runoff * runoff),
-    0.0,
-  );
-}
+${OCEAN_CONSTITUENTS_WGSL}
 
 ${WATER_DETAIL_NOISE_WGSL}
 
