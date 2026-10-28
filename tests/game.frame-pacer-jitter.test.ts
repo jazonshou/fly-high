@@ -86,6 +86,7 @@ function weighted(weights: readonly number[]): Cost {
 }
 const ONE: Cost = () => 1;
 const TWO: Cost = () => 2;
+const THREE: Cost = () => 3;
 /** The bench report's Medium air window at 120 Hz: mostly two refreshes, a fifth three. */
 const MEDIUM = weighted([111, 3_582, 955, 24, 2, 3]);
 /** Its High: mostly three and four refreshes, and a few hitches. */
@@ -448,6 +449,41 @@ describe("a display that changes rate mid-flight", () => {
     }
   });
 
+  it("tells common rates under 6% apart by a pause's re-probe under two-refresh frames, within 1 s of it", () => {
+    // The re-probe's rate is the move: the grid fit's contradictions of the
+    // held rate must not withdraw it as it lands.
+    const cases = [[50, 48], [48, 50], [72, 75], [75, 72]] as const;
+    for (const [hz, toHz] of cases) {
+      for (const stamps of [firefox(true), uniform(0.5), uniform(1.5)]) {
+        for (const seed of [1, 2, 3]) {
+          const flight = fly({
+            hz, toHz, switchAtMs: SWITCH_MS, durationMs: 30_000, seed, setting: "30", stamps, heavy: always, cost: TWO, paused: pause,
+          });
+          const name = `${hz} to ${toHz} Hz, seed ${seed}`;
+          expect(flight.rightFromMs, name).not.toBeNull();
+          expect(flight.rightFromMs!, name).toBeLessThanOrEqual(24_000);
+          expect(flight.pacer.currentCadence, name).toMatchObject({ displayPeriodMs: 1_000 / toHz, periodConfirmed: true });
+        }
+      }
+    }
+  });
+
+  it("follows 72 to 175 Hz under two-refresh frames by a pause's re-probe, not holding 180 Hz", () => {
+    // Every 175 Hz tick of two refreshes sits near 180 Hz's grid too: a
+    // snapped 180 Hz drew every 3rd refresh (58 fps) to the end.
+    for (const stamps of [firefox(true), uniform(0.5), uniform(1)]) {
+      for (let seed = 1; seed <= 8; seed += 1) {
+        const flight = fly({
+          hz: 72, toHz: 175, switchAtMs: SWITCH_MS, durationMs: 32_000, seed, stamps, paused: pause,
+          cost: (u, ms) => (ms >= SWITCH_MS ? 2 : 1),
+        });
+        expect(flight.rightFromMs, `seed ${seed}`).not.toBeNull();
+        expect(flight.rightFromMs!, `seed ${seed}`).toBeLessThanOrEqual(24_000);
+        expect(flight.pacer.currentCadence, `seed ${seed}`).toMatchObject({ divisor: 2, periodConfirmed: true });
+      }
+    }
+  });
+
   it("draws every tick after 120 to 60 Hz with no pause, through no third rate", () => {
     // Every 60 Hz tick is one the 120 Hz divisor draws anyway, so no tick
     // tells the two apart until a pause re-probes: the frames are right.
@@ -617,6 +653,25 @@ describe("a display that changes rate mid-flight", () => {
     }
   });
 
+  it("follows 165 and 170 to 240 Hz under Medium load with no pause, within 4 s, confirmed", () => {
+    // At a divisor of 2 the tick after a drawn one is the pacer's own skip:
+    // a check skip there would come only when that tick's stamp came late,
+    // and read the display short.
+    for (const hz of [165, 170]) {
+      for (const cost of [TWO, MEDIUM]) {
+        for (let seed = 1; seed <= 6; seed += 1) {
+          const flight = fly({ hz, toHz: 240, switchAtMs: SWITCH_MS, durationMs: 32_000, seed, stamps: uniform(0.5), heavy: always, cost });
+          const name = `${hz} to 240 Hz, seed ${seed}`;
+          expect(flight.rightFromMs, name).not.toBeNull();
+          expect(flight.rightFromMs!, name).toBeLessThanOrEqual(SWITCH_MS + 4_000);
+          expect(flight.thirdMs, name).toBe(0);
+          expect(flight.unpausedFlags, name).toBeLessThanOrEqual(24);
+          expect(flight.pacer.currentCadence, name).toMatchObject({ displayPeriodMs: 1_000 / 240, periodConfirmed: true });
+        }
+      }
+    }
+  });
+
   it("tells common rates under 6% apart within 2 s: 72 and 75, 48 and 50, 170 and 180 Hz", () => {
     // Snapping a measured 75 Hz to 72 kept 72 Hz's divisor; the ticks sit on
     // the new rate's grid, not the held one's.
@@ -703,6 +758,23 @@ describe("steady flights", () => {
     }
   });
 
+  it("spend at most one round of check skips on 160, 185 and 195 Hz under frames of three refreshes and more", () => {
+    // Firefox's early stamps leave these rates' grid fits a little below
+    // the next common rate's: one round may move the reading, and the rate
+    // it confirms keeps the rest of the flight's frames.
+    for (const hz of [160, 185, 195]) {
+      for (const cost of [THREE, HIGH]) {
+        for (let seed = 1; seed <= 6; seed += 1) {
+          const flight = fly({ hz, durationMs: 40_000, seed, stamps: firefox(true), heavy: always, cost });
+          const name = `${hz} Hz, seed ${seed}`;
+          expect(flight.unpausedFlags, name).toBeLessThanOrEqual(24);
+          expect(flight.changes.length, name).toBeLessThanOrEqual(4);
+          expect(wrongShare(flight), name).toBeLessThan(MAX_WRONG_SHARE);
+        }
+      }
+    }
+  });
+
   it("confirm 60 Hz from a lead cut to 18 ticks by its 300 ms limit, then a busy startup", () => {
     for (const seed of [1, 2, 3, 4]) {
       const flight = fly({ hz: 60, durationMs: 30_000, seed, leadTicks: 18, busyStartup: true, stamps: firefox(true), heavy: always, cost: MEDIUM });
@@ -729,6 +801,49 @@ describe("steady flights", () => {
     for (const hz of [59.94, 119.88, 239.76]) {
       const flight = fly({ hz, durationMs: 40_000, stamps: uniform(0.5), cost: MEDIUM });
       expect(wrongShare(flight), `${hz} Hz`).toBeLessThan(MAX_WRONG_SHARE);
+    }
+  });
+});
+
+describe("a display that presents each frame when it is ready", () => {
+  it("spends at most one round of check skips on it, and seldom withdraws a confirmation", () => {
+    // Variable refresh where rAF follows presentation (48-144 and 40-120 Hz):
+    // a tick comes when the last frame is shown, so the ticks hold no grid
+    // and contradict every rate the pacer holds. Rounds that each re-confirmed
+    // the same rate repeated a frame in every few for the whole flight.
+    const cases = [[48, 144, 9, 18], [40, 120, 12, 24]] as const;
+    for (const [minHz, maxHz, fastestMs, slowestMs] of cases) {
+      for (const seed of [1, 2, 3]) {
+        const draws = xorshift(seed, 4);
+        const pacer = new FramePacer({ pace60: true });
+        let now = 1_000;
+        let lastStampMs = Number.NEGATIVE_INFINITY;
+        const stamp = (): number => {
+          lastStampMs = Math.max(lastStampMs, Math.round((now + (draws() * 2 - 1) * 0.5) / STAMP_GRID_MS) * STAMP_GRID_MS);
+          return lastStampMs;
+        };
+        for (let index = 0; index < IDLE_PROBE_LEAD_TICKS; index += 1) {
+          pacer.probe(stamp(), index + 1 < IDLE_PROBE_LEAD_TICKS);
+          now += 1_000 / maxHz;
+        }
+        now += FIRST_TICK_GAP_MS;
+        const endMs = now + 60_000;
+        let flagged = 0;
+        let flips = 0;
+        let confirmed: boolean | null = null;
+        while (now < endMs) {
+          const result = pacer.tick(stamp(), "60", false);
+          const held = pacer.currentCadence?.periodConfirmed ?? false;
+          if (confirmed !== null && held !== confirmed) flips += 1;
+          confirmed = held;
+          if (result.render && result.afterReprobe) flagged += 1;
+          const frameMs = result.render ? fastestMs + (slowestMs - fastestMs) * draws() : 0;
+          now += Math.min(1_000 / minHz, Math.max(1_000 / maxHz, frameMs));
+        }
+        const name = `${minHz}-${maxHz} Hz, frames of ${fastestMs}-${slowestMs} ms, seed ${seed}`;
+        expect(flagged, name).toBeLessThanOrEqual(24);
+        expect(flips, name).toBeLessThanOrEqual(4);
+      }
     }
   });
 });

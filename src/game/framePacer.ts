@@ -42,13 +42,16 @@ import type { FrameRateSetting } from "@/src/settings";
  * display. Everything else the drawn ticks show goes through a grid fit
  * over every tick, along which jitter cancels: it says which rate near the
  * clean evidence the display runs at, common or not (112, 175 and 222 Hz
- * panels exist), may snap a reading to a common rate, and, when it keeps
- * contradicting the held rate, withdraws its confirmation and has the pacer
- * skip a few ticks to measure the display, since a load that hides a new
- * rate's skips may never lighten. Faster periods aside, it moves no rate
- * where no clean evidence is near; before any, it gives only an unconfirmed
- * first reading. Busy probe ticks miss vsyncs at random, so no fit runs over
- * them at all.
+ * panels exist), may snap a reading to a common rate or move a snapped one
+ * to the uncommon rate clean evidence and every tick agree on, and, when it
+ * keeps contradicting the held rate, withdraws its confirmation and has the
+ * pacer skip a few ticks to measure the display, since a load that hides a
+ * new rate's skips may never lighten: once per held rate, since a display
+ * whose ticks hold no grid (one that presents frames when they are ready)
+ * contradicts every rate. Faster periods aside, it moves no rate where no
+ * clean evidence is near; before any, it gives only an unconfirmed first
+ * reading. Busy probe ticks miss vsyncs at random, so no fit runs over them
+ * at all.
  *
  * Pure, with no DOM: `startIdleProbe` takes the browser's frame and timer
  * functions as a host. A tick allocates nothing beyond V8's boxing of
@@ -181,9 +184,12 @@ const QUALITY_MARGIN = 0.15;
  */
 const MAX_FINER_MULTIPLE = 3;
 /**
- * Check skips one rate change may spend (see `tick`): twice the clean
+ * Check skips one held rate may spend (see `tick`): twice the clean
  * samples a confirmation needs, so jitter that turns some away still
- * leaves enough.
+ * leaves enough. The budget comes back when the rate moves or the flight
+ * pauses, never when a round confirms the rate it questioned: a display
+ * whose ticks keep leaving every grid would otherwise repeat a frame in
+ * every few for the whole flight.
  */
 const CHECK_SKIPS = 2 * MIN_CLEAN_SAMPLES;
 /** Drawn ticks between check skips: one frame in this many repeats. */
@@ -199,9 +205,13 @@ const AGREEING_ESTIMATES = 3;
 /**
  * Consecutive estimates whose grid fit must contradict the confirmed
  * period before the confirmation is withdrawn: 48 new deltas, so a
- * jittery window cannot do it alone.
+ * jittery window cannot do it alone. Twice as many each time the same rate
+ * was confirmed again since, up to 8 times: ticks that hold no grid
+ * withdraw it at random.
  */
 const CONTRADICTING_ESTIMATES = 6;
+/** The doublings of `CONTRADICTING_ESTIMATES` a held rate may reach. */
+const MAX_WITHDRAWAL_DOUBLINGS = 3;
 /** An estimate counts only when this share of the ring sits within its band. */
 const MIN_BAND_SHARE = 0.5;
 /** Ticks skipped to re-measure the display when the flight is paused. */
@@ -433,6 +443,14 @@ export class FramePacer {
   private checkSkipsLeft = 0;
   private checkBudget = CHECK_SKIPS;
   private checkCountdown = 0;
+  /**
+   * The last round of check skips was spent since the rate was last
+   * adopted and the skips ring last emptied: its skips need not keep
+   * coming (see `estimate`).
+   */
+  private roundSpent = false;
+  /** Withdrawn confirmations of the held rate since it moved, a pause or a gap. */
+  private withdrawals = 0;
   private divisor = 1;
   private cadence: PresentationCadence | null = null;
   private wasPaused = false;
@@ -459,16 +477,18 @@ export class FramePacer {
   /**
    * A startup tick that draws nothing, so its delta measures the display.
    * `quiet` while the main thread is: the lead, before renderer creation
-   * starts (`startIdleProbe` says when it ends). Only quiet ticks, and at
-   * most the first `IDLE_PROBE_LEAD_TICKS`, are clean: once the renderer
-   * is created a busy main thread misses vsyncs at random, which no fit of
-   * 64 deltas can always tell from a slower display.
+   * starts (`startIdleProbe` says when it ends). Only quiet ticks are
+   * clean: once the renderer is created a busy main thread misses vsyncs
+   * at random, which no fit of 64 deltas can always tell from a slower
+   * display. A caller that says nothing gets the first
+   * `IDLE_PROBE_LEAD_TICKS` as quiet; `startIdleProbe` says, so a lead that
+   * stalls twice and runs past that many ticks keeps its last run quiet.
    */
-  probe(nowMs: number, quiet = true): void {
+  probe(nowMs: number, quiet?: boolean): void {
     this.record(nowMs);
     this.probeTicks += 1;
-    if (!quiet) this.probeTicks = Math.max(this.probeTicks, IDLE_PROBE_LEAD_TICKS + 1);
-    this.previousIdle = this.probeTicks <= IDLE_PROBE_LEAD_TICKS ? FORCED : BUSY;
+    if (quiet === false) this.probeTicks = Math.max(this.probeTicks, IDLE_PROBE_LEAD_TICKS + 1);
+    this.previousIdle = quiet === true || this.probeTicks <= IDLE_PROBE_LEAD_TICKS ? FORCED : BUSY;
     if (this.samplesSinceEstimate >= ESTIMATE_EVERY_SAMPLES) this.estimate();
   }
 
@@ -499,15 +519,23 @@ export class FramePacer {
           idle = elapsed <= (this.divisor - 0.5 - CLEAN_SKIP_MARGIN) * period ? CLEAN_SKIP : CLOSE_SKIP;
         }
       }
-      if (idle === DREW && this.checkSkipsLeft > 0 && this.previousIdle === DREW && effective !== "display") {
-        // A check skip: the tick after one that drew draws nothing, so the
-        // next delta is one refresh (see `estimate`). Its frame repeats once.
-        // Never at Match display, which draws every refresh: a setting
-        // changed in the middle of a check keeps the rest for later.
+      if (
+        idle === DREW && this.checkSkipsLeft > 0 && effective !== "display"
+        && (this.previousIdle === DREW || this.previousIdle === CLEAN_SKIP || this.previousIdle === CLOSE_SKIP)
+      ) {
+        // A check skip: a tick that would draw draws nothing, so the next
+        // delta is one refresh (see `estimate`). Its frame shows a refresh
+        // longer. After a drawn tick or one the pacer skipped, never after a
+        // probe or another check: at a divisor of 2 or more the tick after a
+        // drawn one is the pacer's own skip, unless its stamp came late,
+        // so only checks after those skips come at all, unbiased. Never at
+        // Match display, which draws every refresh: a setting changed in the
+        // middle of a check keeps the rest for later.
         this.checkCountdown -= 1;
         if (this.checkCountdown <= 0) {
           this.checkCountdown = CHECK_EVERY_TICKS;
           this.checkSkipsLeft -= 1;
+          this.roundSpent = this.checkSkipsLeft === 0;
           this.reprobeSkipped = true;
           idle = CHECK_SKIP;
         }
@@ -543,6 +571,9 @@ export class FramePacer {
     this.previousIdle = DREW;
     this.candidateCount = 0;
     this.contradictions = 0;
+    // The skips are gone, and the display may have changed while hidden.
+    this.roundSpent = false;
+    this.withdrawals = 0;
     this.wasPaused = false;
     // A check skip waits for drawn ticks again.
     this.checkCountdown = CHECK_EVERY_TICKS;
@@ -566,14 +597,18 @@ export class FramePacer {
     this.skipCount = 0;
     this.skipHead = 0;
     this.reprobeTicksLeft = REPROBE_TICKS;
-    // The re-probe measures what a check would have.
+    // The re-probe measures what a check would have, and the display may
+    // have changed while paused: the check budget and the withdrawal
+    // threshold start over.
     this.checkSkipsLeft = 0;
+    this.roundSpent = false;
     this.checkBudget = CHECK_SKIPS;
+    this.withdrawals = 0;
   }
 
   /**
-   * Spends the check skips left for this rate (see `tick`): the tick after
-   * a drawn one, every `CHECK_EVERY_TICKS` drawn ticks, draws nothing, so
+   * Spends the check skips left for this rate (see `tick`): a tick that
+   * would draw, every `CHECK_EVERY_TICKS` drawn ticks, draws nothing, so
    * the next delta is one refresh of the display.
    */
   private startChecks(): void {
@@ -588,6 +623,7 @@ export class FramePacer {
     this.skipCount = 0;
     this.skipHead = 0;
     this.forcedPeriodMs = null;
+    this.roundSpent = false;
   }
 
   private record(nowMs: number): void {
@@ -1047,13 +1083,15 @@ export class FramePacer {
 
   /**
    * The grid near `seedMs` the newest `count` ticks sit on best, or null:
-   * `gridPeriod`'s, or a common rate's within `STALL_TOLERANCE` of
+   * `gridPeriod`'s, or a common rate's within `CONFIRMS_TOLERANCE` of
    * `seedMs` whose fit lands on it and holds the ticks more coherently,
    * by `QUALITY_MARGIN / 3` for a common rate over an uncommon one. For
    * check skips' period: a check skips a tick whatever its stamp, so its
    * delta is a refresh with the stamps' jitter either way, and a dozen
-   * with 1.5 ms of it at 165 Hz can read 214 Hz; every tick, along which
-   * jitter cancels, says which rate it was. Not for the pacer's own skips:
+   * with 1.5 ms of it read several percent off; every tick, along which
+   * jitter cancels, says which rate it was. No further off: searched 25%
+   * either way, the bonus took a 185 Hz panel's skips to 240 Hz (every 4th
+   * refresh drawn instead of every 3rd). Not for the pacer's own skips:
    * a coarser grid holds the drawn ticks more coherently under heavy
    * jitter (180 Hz those of a 240 Hz display drawn every 4th refresh).
    */
@@ -1064,7 +1102,7 @@ export class FramePacer {
     let quality = best === null ? 0 : this.fitQuality;
     for (const rate of COMMON_REFRESH_RATES_HZ) {
       const periodMs = 1_000 / rate;
-      if (Math.abs(periodMs - seedMs) > STALL_TOLERANCE * seedMs) continue;
+      if (Math.abs(periodMs - seedMs) > CONFIRMS_TOLERANCE * seedMs) continue;
       const fit = this.gridFit(periodMs, count);
       if (fit === null || nominalHzWithin(fit, SNAP_TOLERANCE) !== rate) continue;
       if (this.fitQuality + QUALITY_MARGIN / 3 > score) {
@@ -1088,12 +1126,16 @@ export class FramePacer {
    * two refreshes of 144 Hz look exactly like a 72 Hz display. Null for a
    * period from spans whose grid holds the ticks no clearly better than the
    * held rate's does: frames of one to three refreshes of 240 Hz average
-   * 165 Hz over a span.
+   * 165 Hz over a span. Null too for a period whose grid holds no tick and
+   * no common rate is near: 1.5 ms of jitter at 240 Hz can leave a dozen
+   * quiet deltas of 3.1 ms, which "Match display", with no skip or
+   * re-probe to test it, held as a 320 Hz display to the end.
    */
   private fasterPeriod(quickMs: number): number | null {
     const count = Math.min(this.allCount, Math.max(MIN_SAMPLES, this.fastTicks));
     const grid = this.gridPeriod(quickMs, count);
     const coarseQuality = this.fitQuality;
+    if (grid === null && commonRateOffset(quickMs) > SEED_SNAP_TOLERANCE) return null;
     if (this.fastFromSpans) {
       if (grid === null) return null;
       this.gridFit(this.periodMs!, count);
@@ -1130,6 +1172,7 @@ export class FramePacer {
     let confirmed: boolean;
     let faster = false;
     let contradicted = false;
+    let sharpened = false;
     if (reference !== null) {
       const quick = this.fasterQuietPeriod(reference);
       const quickPeriod = quick === null ? null : this.fasterPeriod(quick);
@@ -1198,18 +1241,25 @@ export class FramePacer {
             // The skips must still come, a period of `clean` apart: a ring
             // of them that stopped is a display that changed since, whose
             // ticks may sit on any multiple of its own grid, `clean`'s too.
-            // Check skips of a spent round need not: they measured the
-            // display once the held rate came into question, and a rate
-            // drawn every tick skips no other.
-            const checked = this.checkedSkips && this.checkSkipsLeft === 0 && this.checkBudget === 0;
+            // Check skips of a spent round need not keep coming: they
+            // measured the display once the held rate came into question,
+            // and a rate drawn every tick skips no other. They count while
+            // any of them is among the newest ticks, until the rate is
+            // adopted again, whatever skips came after them.
+            const fresh = this.freshSkips(clean!);
             period = other !== null && otherQuality >= fitQuality + margin
-              && (slow !== null || checked
-                || this.freshSkips(clean!) >= (this.confirmed || !this.held ? FRESH_SKIPS : MIN_CLEAN_SAMPLES))
+              && (slow !== null || (this.roundSpent && fresh > 0)
+                || fresh >= (this.confirmed || !this.held ? FRESH_SKIPS : MIN_CLEAN_SAMPLES))
               ? other : null;
             // Where none stands, ticks that leave the adopted grid contradict
             // it here too: skips read 6% fast (a band cuts their tail) stay
             // clean once a 165 Hz display drops to 60 Hz drawn every tick.
             contradicted = period === null && disagrees;
+            // A spent round's skips that settled nothing are stale once no
+            // tick after them is left among the newest: kept, they would
+            // stand as the period a faster display must beat (24 skips of
+            // a 200 Hz display under 1.5 ms of jitter read 227 Hz).
+            if (period === null && this.roundSpent && fresh === 0) this.forgetCleanEvidence();
           }
           confirmed = true;
         } else {
@@ -1224,7 +1274,11 @@ export class FramePacer {
             const snappedFit = common === null ? null : this.gridFit(1_000 / common, this.allCount);
             if (snappedFit !== null && nominalHzWithin(snappedFit, SNAP_TOLERANCE) === common
               && this.fitQuality >= fitQuality - QUALITY_MARGIN / 3) period = 1_000 / common!;
-          } else if (!busy && clean !== null && nominalHzWithin(clean, SEED_SNAP_TOLERANCE) !== this.rateHz) {
+          } else if (
+            !busy && clean !== null
+            && (nominalHzWithin(clean, SEED_SNAP_TOLERANCE) !== this.rateHz
+              || Math.abs(clean - adopted) > SNAP_TOLERANCE * adopted)
+          ) {
             // A common rate as close to the clean one as 170 is to 165 Hz
             // gives way, by agreement, to the clean one where every tick sits
             // clearly more on its grid. A grid seeded 3% off slides two
@@ -1233,15 +1287,23 @@ export class FramePacer {
             // 180 Hz) where the clean evidence reads the very rate the ticks
             // land on, from skips that still come: stale 176 Hz skips of a
             // 165 Hz display that dropped to 60 Hz seed 180 Hz, whose grid
-            // holds the 60 Hz ticks.
+            // holds the 60 Hz ticks. And a common rate held by a snap gives
+            // way to an uncommon one the clean evidence reads more than 2%
+            // off it, within 2% of where every tick sits clearly more: a
+            // 175 Hz panel whose check skips read 177 Hz was held as 180,
+            // whose own fit stays near 180 on junk, so nothing contradicted
+            // it, and a re-probe reading 175.0 confirmed it.
             const near = this.gridPeriod(clean, this.allCount);
             const nearHz = near === null ? 0 : nominalHz(near);
             if (
-              near !== null && this.fitQuality >= fitQuality + QUALITY_MARGIN && isCommonRate(nearHz)
-              && (sameRate(nearHz, this.rateHz!) || (nominalHzWithin(clean, SNAP_TOLERANCE) === nearHz
-                && (skips === null || this.freshSkips(clean) >= FRESH_SKIPS)))
+              near !== null && this.fitQuality >= fitQuality + QUALITY_MARGIN
+              && (isCommonRate(nearHz)
+                ? sameRate(nearHz, this.rateHz!) || (nominalHzWithin(clean, SNAP_TOLERANCE) === nearHz
+                  && (skips === null || this.freshSkips(clean) >= FRESH_SKIPS))
+                : sameRate(nearHz, this.rateHz!) && Math.abs(near - clean) <= SNAP_TOLERANCE * clean)
             ) {
               period = near;
+              sharpened = !isCommonRate(nearHz);
             }
           }
           // Skips confirm a rate only where every tick agrees with it: a
@@ -1249,7 +1311,10 @@ export class FramePacer {
           // skips then show early stamps' shifts. A probe run's idle ticks
           // confirm it whatever the grid.
           confirmed = this.confirmed || (clean !== null && (skips === null || (!busy && !disagrees)));
-          contradicted = disagrees;
+          // An estimate that proposes the rate the ticks sit on does not
+          // also count against the held one: a withdrawal would drop the
+          // re-probe's period that the proposal rests on (50 to 48 Hz).
+          contradicted = disagrees && period === adopted;
         }
       }
     } else {
@@ -1259,14 +1324,18 @@ export class FramePacer {
       confirmed = false;
     }
     this.contradictions = contradicted ? this.contradictions + 1 : 0;
-    if (this.contradictions >= CONTRADICTING_ESTIMATES && this.confirmed) {
+    const withdrawAt = CONTRADICTING_ESTIMATES << Math.min(this.withdrawals, MAX_WITHDRAWAL_DOUBLINGS);
+    if (this.contradictions >= withdrawAt && this.confirmed) {
       // Every tick keeps showing another grid: the clean evidence is stale
       // (the display changed under a load that hides it) or was wrong. Hold
       // the rate, withdraw the confirmation, and skip a tick now and then
       // to measure the display: a load that hides the new rate's skips may
-      // never lighten. A faster candidate is what such ticks would show: it
+      // never lighten. Once per held rate: where the round confirms the
+      // same rate, its ticks hold no grid, and another round would only
+      // repeat frames. A faster candidate is what such ticks would show: it
       // stays.
       this.contradictions = 0;
+      this.withdrawals += 1;
       this.forgetCleanEvidence();
       this.confirmed = false;
       if (!this.candidateFaster) this.candidateCount = 0;
@@ -1276,17 +1345,18 @@ export class FramePacer {
     if (period === null) return;
     const measured = nominalHz(period);
     // A snapped rate is exact: an unsnapped reading of the same rate never
-    // replaces it, but a snapped one replaces an unsnapped first reading at
+    // replaces it, unless clean evidence and every tick agree it is over 2%
+    // off (see above). A snapped one replaces an unsnapped first reading at
     // once, and another snapped one (165 for 170 Hz) by agreement.
     const snapped = this.rateHz !== null && isCommonRate(this.rateHz);
-    const hz = this.rateHz !== null && sameRate(measured, this.rateHz) && snapped && !isCommonRate(measured)
+    const hz = !sharpened && this.rateHz !== null && sameRate(measured, this.rateHz) && snapped && !isCommonRate(measured)
       ? this.rateHz
       : measured;
     // The first rate, and a confirmation of the rate already adopted, apply
     // at once: neither can flip back. Any other change waits for agreement.
     if (
       this.rateHz === null
-      || (sameRate(hz, this.rateHz) && confirmed && !this.confirmed)
+      || (sameRate(hz, this.rateHz) && confirmed && !this.confirmed && !sharpened)
       || (sameRate(hz, this.rateHz) && confirmed === this.confirmed && hz !== this.rateHz && isCommonRate(hz) && !snapped)
     ) {
       this.adopt(hz, confirmed, faster);
@@ -1314,6 +1384,7 @@ export class FramePacer {
   }
 
   private adopt(hz: number, confirmed: boolean, faster: boolean): void {
+    const moved = this.rateHz === null || !sameRate(this.rateHz, hz);
     // Clean evidence of another rate is stale once the rate moves: a reset
     // would bring the last probe run's period back as clean evidence.
     if (this.forcedPeriodMs !== null && !sameRate(1_000 / this.forcedPeriodMs, hz)) this.forcedPeriodMs = null;
@@ -1330,7 +1401,13 @@ export class FramePacer {
     this.candidateCount = 0;
     this.contradictions = 0;
     this.checkSkipsLeft = 0;
-    this.checkBudget = CHECK_SKIPS;
+    this.roundSpent = false;
+    // A new rate may test itself once; the rate a round confirmed again
+    // has had its round (see `CHECK_SKIPS`).
+    if (moved) {
+      this.checkBudget = CHECK_SKIPS;
+      this.withdrawals = 0;
+    }
   }
 
   private updateCadence(effective: FrameRateSetting): PresentationCadence | null {

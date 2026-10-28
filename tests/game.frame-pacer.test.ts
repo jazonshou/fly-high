@@ -245,6 +245,26 @@ describe("heavy timestamp jitter", () => {
   });
 });
 
+describe("runs of jitter", () => {
+  it("hold 240 Hz at Match display where they leave quiet deltas a quarter short", () => {
+    // Stamps 1.4 ms late, 0.35 ms late, 0.7 ms early and 1.4 ms early, twice
+    // in every ten refreshes: a dozen quiet deltas of 3.1 ms in every ring,
+    // a 320 Hz period whose grid holds no tick and no common rate is near.
+    // Match display tests no reading with a skip, so it held 320 Hz to the end.
+    const offsets = [1.4, 0.35, -0.7, -1.4, 1.4, 0.35, -0.7, -1.4, 0, 0];
+    const period = 1_000 / 240;
+    const pacer = new FramePacer({ pace60: true });
+    for (let tick = 0; tick < IDLE_PROBE_LEAD_TICKS; tick += 1) pacer.probe(1_000 + tick * period);
+    const rates = new Set<number>();
+    for (let tick = 2 * IDLE_PROBE_LEAD_TICKS; tick < 4_800; tick += 1) {
+      pacer.tick(1_000 + tick * period + offsets[tick % offsets.length]!, "display");
+      rates.add(Math.round(1_000 / pacer.currentCadence!.displayPeriodMs!));
+    }
+    expect([...rates]).toEqual([240]);
+    expect(pacer.currentCadence?.periodConfirmed).toBe(true);
+  });
+});
+
 describe("misses, gaps and resets", () => {
   it("does not draw twice to catch up after a dropped frame", () => {
     const flight = fly(120, "60", { jitterMs: 0.5, dropAt: 1_201, ticks: 1_600 });
@@ -614,6 +634,33 @@ describe("the startup idle probe", () => {
       idle.stop();
       pacer.tick(now + 100, "60");
       expect(pacer.currentCadence, `${before} ticks before`).toEqual(cadenceOf(60, 1, 60, true));
+    }
+  });
+
+  it("reads the run that settles a lead two stalls cut as quiet, past the 24th tick", async () => {
+    // Each stall ends a run, so the 13 ticks with no gap that settle the
+    // lead can start after the 24th: they are still the quiet lead's. Read
+    // as busy, they left no clean evidence, and frames of two refreshes then
+    // read half the rate for the whole flight.
+    for (const [first, second] of [[9, 11], [6, 12]] as const) {
+      const { fake, step, fireTimer } = host();
+      const pacer = new FramePacer({ pace60: true });
+      const idle = startIdleProbe(pacer, fake);
+      let now = 1_000;
+      for (let tick = 0; tick < first; tick += 1, now += 1_000 / 120) step(now);
+      now += 260;
+      fireTimer(IDLE_PROBE_LEAD_MS);
+      for (let tick = 0; tick < second; tick += 1, now += 1_000 / 120) step(now);
+      now += 260;
+      for (let tick = 0; tick < IDLE_PROBE_MIN_LEAD_TICKS - 1; tick += 1, now += 1_000 / 120) step(now);
+      expect(await settledOf(idle), `${first} and ${second} ticks`).toBe(false);
+      step(now);
+      expect(await settledOf(idle), `${first} and ${second} ticks`).toBe(true);
+      // Renderer creation misses every other refresh.
+      for (let tick = 0; tick < 60; tick += 1) step((now += 1_000 / 60));
+      idle.stop();
+      pacer.tick(now + 100, "60");
+      expect(pacer.currentCadence, `${first} and ${second} ticks`).toEqual(cadenceOf(60, 2, 120, true));
     }
   });
 
