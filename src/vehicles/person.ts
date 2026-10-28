@@ -137,11 +137,18 @@ export const PERSON: PersonSpec = Object.freeze({
     fadeDistance: 0.5,
     fieldOfView: 60,
   }),
-  // Body box: feet at 0, head at 1.76 m, about 0.5 m deep. Aim at mid-height
-  // and fill about 60% of the frame, as the vehicles do; measured again on
-  // the built figure in render.top-front-views.
-  cinematic: Object.freeze({ radiusMeters: 4.5, heightMeters: 1.4, heightDriftMeters: 0.4 }),
-  topFront: Object.freeze({ centreForward: 0, centreUp: 0.88, topDistanceMeters: 4.2, frontDistanceMeters: 4.6 }),
+  // MEASURED on the built figure standing (render.top-front-views): its box
+  // runs 0.13 m behind the feet point to 0.21 m ahead (the boots' toes), 0 to
+  // 1.77 m up and 0.31 m either side (the hands). Both views aim over the
+  // feet point, where the shoulders, nearest the top camera, centre the plan.
+  // The front view fills 59% of the frame's height, as the vehicles fill 60%.
+  // The top view cannot: a plan 0.62 m across would fill 60% of the frame
+  // with the camera 4 cm over the crown, so it stands 1.5 m over it, the
+  // walker a quarter of the frame across with the ground round it. The orbit
+  // aims 1.3 m up whatever it circles, so its radius keeps the boots 10%
+  // clear of the frame's foot and the walker fills 53% of its height.
+  cinematic: Object.freeze({ radiusMeters: 5.4, heightMeters: 1.2, heightDriftMeters: 0.35 }),
+  topFront: Object.freeze({ centreForward: 0, centreUp: 0.88, topDistanceMeters: 2.4, frontDistanceMeters: 7.4 }),
 });
 
 /** Jump take-off speed for `PERSON.jumpHeight`, m/s (2.97 m/s at 0.45 m). */
