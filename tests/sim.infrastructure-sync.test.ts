@@ -5,6 +5,7 @@ import type { TerrainCollisionSample } from "@/src/world";
 import {
   changeInfrastructureRegions,
   clearInfrastructureRegions,
+  INFRASTRUCTURE_MAX_PARAMS,
   infrastructureRegionsVersion,
   withStaticInfrastructure,
   type InfrastructureChange,
@@ -12,8 +13,11 @@ import {
 } from "@/src/world/infrastructure";
 import {
   INFRASTRUCTURE_CHANGE_LOG_LENGTH,
+  INFRASTRUCTURE_POST_SEGMENT_FLOATS,
   InfrastructureChangeLog,
   InfrastructureRegionsForwarder,
+  packInfrastructureRegionsUpdate,
+  unpackInfrastructureRegionsPost,
   type InfrastructureRegionsUpdate,
 } from "@/src/world/infrastructureSync";
 import { roadRegionInfrastructure } from "@/src/world/roads/roadInfrastructure";
@@ -111,7 +115,7 @@ function initialize(infrastructure: InfrastructureRegionsUpdate): void {
     airborneStartAgl: 450,
     attractMode: false,
     weather: "breezy",
-    infrastructure,
+    infrastructure: packInfrastructureRegionsUpdate(infrastructure),
     dayOfYear: 171,
   });
 }
@@ -178,7 +182,7 @@ describe("the simulation worker's copy of the roads", () => {
     // The road arrives on the main thread and the worker is told at once.
     const install = changeInfrastructureRegions(world, [majorRegion])!;
     const forwarded = forwarder.next({ version: install.version, reset: false, install: [majorRegion], remove: [] })!;
-    realm.send({ type: "infrastructure", update: forwarded });
+    realm.send({ type: "infrastructure", update: packInfrastructureRegionsUpdate(forwarded) });
     // The page under the fill predates the road: dropped, so the car stands on the fill.
     expect(realm.groundHeight(fill.x, fill.z)).toBe(sampleTerrainCollisionHeight(world, fill.x, fill.z));
     // Ground the road does not reach keeps its page.
@@ -192,7 +196,7 @@ describe("the simulation worker's copy of the roads", () => {
     const remove = changeInfrastructureRegions(world, [], [majorRegion.key])!;
     realm.send({
       type: "infrastructure",
-      update: forwarder.next({ version: remove.version, reset: false, install: [], remove: [majorRegion.key] })!,
+      update: packInfrastructureRegionsUpdate(forwarder.next({ version: remove.version, reset: false, install: [], remove: [majorRegion.key] })!),
     });
     expect(realm.groundHeight(fill.x, fill.z)).toBe(sampleTerrainCollisionHeight(world, fill.x, fill.z));
     expect(realm.groundHeight(fill.x, fill.z)).toBe(withStaticInfrastructure(() => sampleTerrainCollisionHeight(world, fill.x, fill.z)));
@@ -217,7 +221,7 @@ describe("the simulation worker's copy of the roads", () => {
     expect(caughtUp.reset).toBe(true);
     expect(caughtUp.version).toBe(remove.version);
     expect(caughtUp.install.map((region) => region.key)).toEqual([majorRegion.key]);
-    realm.send({ type: "infrastructure", update: caughtUp });
+    realm.send({ type: "infrastructure", update: packInfrastructureRegionsUpdate(caughtUp) });
     // A reset trusts no page it held; the regions are the main thread's.
     const farPoint = insideTile(far.x, far.z);
     expect(realm.groundHeight(farPoint.x, farPoint.z)).toBe(sampleTerrainCollisionHeight(world, farPoint.x, farPoint.z));
@@ -247,5 +251,39 @@ describe("a late page publication", () => {
     const away = terrainPageAirportDomain({ level: 0, x: 900, z: 900 });
     expect(log.touchedSince(1, away)).toBe(false);
     expect(log.touchedSince(0, away)).toBe(true);
+  });
+});
+
+describe("an update as posted to a worker", () => {
+  const bare: InfrastructureRegion = {
+    key: "test:bare",
+    segments: [
+      // Every optional field left out, and a full set of parameters.
+      { profile: 1, mode: "fill", priority: 3, ax: -1.5, az: 2.25, bx: 7, bz: -0.125, halfWidth: 4, reach: 9.5, params: [1, -2, 3.5, 0, 1e-9, -0, 7, 8] },
+      { profile: 0, mode: "set", priority: 10, ax: 5, az: 5, bx: 5, bz: 5, halfWidth: 12, reach: 0, params: [], surface: "concrete", plantClearance: 0, key: 0 },
+    ],
+    rails: [{ points: [0, 0, 10, 0.5], heightMeters: 0.75 }],
+  };
+
+  it("unpacks to the regions it was made from, fields left out and all", () => {
+    const update: InfrastructureRegionsUpdate = { version: 7, reset: true, install: [majorRegion, bare], remove: ["test:gone"] };
+    const unpacked = unpackInfrastructureRegionsPost(structuredClone(packInfrastructureRegionsUpdate(update)));
+    expect(unpacked).toStrictEqual(update);
+    expect(Object.is(unpacked.install[1]!.segments[0]!.params[5], -0)).toBe(true);
+    expect(majorRegion.segments.length).toBeGreaterThan(10);
+  });
+
+  it("packs a region once, however many workers it goes to", () => {
+    const update: InfrastructureRegionsUpdate = { version: 1, reset: false, install: [bare], remove: [] };
+    const first = packInfrastructureRegionsUpdate(update);
+    expect(packInfrastructureRegionsUpdate(update).install[0]).toBe(first.install[0]);
+    expect(first.install[0]!.segments).toBeInstanceOf(Float64Array);
+    expect(first.install[0]!.segments.length).toBe(2 * INFRASTRUCTURE_POST_SEGMENT_FLOATS);
+  });
+
+  it("refuses a segment with more parameters than the stage reads", () => {
+    const segment = { ...bare.segments[0]!, params: Array.from({ length: INFRASTRUCTURE_MAX_PARAMS + 1 }, () => 1) };
+    const update: InfrastructureRegionsUpdate = { version: 1, reset: false, install: [{ key: "test:long", segments: [segment] }], remove: [] };
+    expect(() => packInfrastructureRegionsUpdate(update)).toThrow(RangeError);
   });
 });

@@ -28,7 +28,8 @@ import {
 } from "@/src/world";
 import {
   applyInfrastructureRegionsUpdate,
-  type InfrastructureRegionsUpdate,
+  unpackInfrastructureRegionsPost,
+  type InfrastructureRegionsPost,
 } from "@/src/world/infrastructureSync";
 import {
   airfieldStructureExclusionSites,
@@ -310,8 +311,9 @@ export class DetailWorkerRuntime {
    * dropped, as the simulation worker drops its own; retained cells are the
    * main thread's to invalidate, as for an airport change.
    */
-  private applyInfrastructure(update: InfrastructureRegionsUpdate): void {
+  private applyInfrastructure(post: InfrastructureRegionsPost): void {
     if (!this.world) return;
+    const update = unpackInfrastructureRegionsPost(post);
     const change = applyInfrastructureRegionsUpdate(this.world, update);
     if (update.reset) this.terrainAuthority.applyInfrastructureReset();
     else if (change) this.terrainAuthority.applyInfrastructureChange(change);

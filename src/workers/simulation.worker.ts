@@ -70,7 +70,8 @@ import {
 import { homeMarina } from "@/src/world/marina";
 import {
   applyInfrastructureRegionsUpdate,
-  type InfrastructureRegionsUpdate,
+  unpackInfrastructureRegionsPost,
+  type InfrastructureRegionsPost,
 } from "@/src/world/infrastructureSync";
 import { BoatSimulator } from "@/src/sim/boat/boatSimulator";
 import { CarColliders } from "@/src/sim/ground/carColliders";
@@ -760,8 +761,9 @@ function simulationTick(): void {
  * collision's analytic fallback reads them, and the L0 pages they change are
  * dropped until their rebuilds arrive.
  */
-function applyInfrastructure(update: InfrastructureRegionsUpdate): void {
+function applyInfrastructure(post: InfrastructureRegionsPost): void {
   if (!world) return;
+  const update = unpackInfrastructureRegionsPost(post);
   const change = applyInfrastructureRegionsUpdate(world, update);
   if (update.reset) terrainAuthority.applyInfrastructureReset();
   else if (change) terrainAuthority.applyInfrastructureChange(change);

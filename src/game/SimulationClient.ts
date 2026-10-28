@@ -6,6 +6,7 @@ import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR, type AirportDefinition, type WorldDefinition } from "@/src/world";
 import {
   InfrastructureRegionsForwarder,
+  packInfrastructureRegionsUpdate,
   type InfrastructureRegionsUpdate,
 } from "@/src/world/infrastructureSync";
 import {
@@ -142,7 +143,7 @@ export class SimulationClient {
     this.send({
       type: "initialize",
       world,
-      infrastructure: this.infrastructure.initial(),
+      infrastructure: packInfrastructureRegionsUpdate(this.infrastructure.initial()),
       aircraft,
       surfaceVehicle,
       carSetup,
@@ -248,7 +249,7 @@ export class SimulationClient {
    */
   publishInfrastructure(update: InfrastructureRegionsUpdate): void {
     const post = this.infrastructure.next(update);
-    if (post) this.send({ type: "infrastructure", update: post });
+    if (post) this.send({ type: "infrastructure", update: packInfrastructureRegionsUpdate(post) });
   }
 
   /** One hydrology region's lakes and rivers, for the car's water; its arrays are transferred. */

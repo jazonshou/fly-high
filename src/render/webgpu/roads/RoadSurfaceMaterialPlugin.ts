@@ -16,6 +16,7 @@ import {
   TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS,
   TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS,
 } from "../terrain/TerrainSurfacePlugin";
+import { INFRASTRUCTURE_SURFACE_MATERIAL, INFRASTRUCTURE_TRACK_EARTH_TINT } from "../terrain/TerrainInfrastructureKernel";
 import { SURFACE_MATERIALS, SurfaceMaterial } from "../terrain/surfaceMaterials";
 import { ROAD_RIBBON_CHUNK_METERS, ROAD_RIBBON_PAD_KIND } from "./roadSurfaceGeometry";
 
@@ -75,8 +76,8 @@ export const ROAD_RIBBON_LOOK = Object.freeze({
   /** Track: the two ruts' centres either side, and their half width. */
   rutOffsetMeters: 0.85,
   rutHalfWidthMeters: 0.28,
-  /** A rut is compacted fines: the gravel darkened toward bare earth. */
-  rutTint: Object.freeze([0.8, 0.72, 0.6] as const),
+  /** A rut is compacted earth: a little darker than the track's own (INFRASTRUCTURE_TRACK_EARTH_TINT). */
+  rutTint: Object.freeze([0.82, 0.8, 0.78] as const),
 });
 
 /** The guardrail's galvanised steel. */
@@ -129,6 +130,9 @@ function material(id: number): { readonly inversePeriod: string; readonly refere
 const SEALED = roadClass(ROAD_CLASS.airport);
 const ASPHALT = material(SurfaceMaterial.Asphalt);
 const GRAVEL = material(SurfaceMaterial.Gravel);
+// A track's earth is the terrain's: the sand layer, browned (as its splat paint is).
+const EARTH = material(INFRASTRUCTURE_SURFACE_MATERIAL.track);
+const EARTH_TINT = INFRASTRUCTURE_TRACK_EARTH_TINT.map((tint, channel) => tint * ROAD_RIBBON_LOOK.rutTint[channel]!);
 const LOOK = ROAD_RIBBON_LOOK;
 
 const VERTEX_DEFINITIONS = /* wgsl */ `
@@ -263,13 +267,16 @@ var roadTexel: RoadSurfaceTexel;
 if (roadSealed) {
   roadTexel = roadSurfaceTexel(${SurfaceMaterial.Asphalt}, ${ASPHALT.inversePeriod}, ${ASPHALT.reference},
     roadPosition, roadDdx, roadDdy, roadDetailWeight);
+} else if (roadClassId < 0.5) {
+  roadTexel = roadSurfaceTexel(${INFRASTRUCTURE_SURFACE_MATERIAL.track}, ${EARTH.inversePeriod}, ${EARTH.reference},
+    roadPosition, roadDdx, roadDdy, roadDetailWeight);
 } else {
   roadTexel = roadSurfaceTexel(${SurfaceMaterial.Gravel}, ${GRAVEL.inversePeriod}, ${GRAVEL.reference},
     roadPosition, roadDdx, roadDdy, roadDetailWeight);
 }
 var roadAlbedo = roadTexel.albedo;
 if (roadClassId < 0.5) {
-  roadAlbedo = roadAlbedo * vec3f(${LOOK.rutTint.map(wgslNumber).join(", ")});
+  roadAlbedo = roadAlbedo * vec3f(${EARTH_TINT.map(wgslNumber).join(", ")});
 } else if (roadClassId < 1.5 && !roadOnPad) {
   // Gravel: two compacted wheel paths, darker and finer; loose stone between.
   let roadPath = roadSurfaceLine(roadAcross - ${wgslNumber(LOOK.wheelPathOffsetMeters)},

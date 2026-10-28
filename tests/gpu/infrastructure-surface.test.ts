@@ -9,6 +9,7 @@ import { resolveWebGpuQualityProfile } from "../../src/render/webgpu/core/Qualit
 import { GlobalHeightPyramid } from "../../src/render/webgpu/terrain/GlobalHeightPyramid";
 import { PageSplatBake } from "../../src/render/webgpu/terrain/PageOcclusionBake";
 import {
+  INFRASTRUCTURE_PAINT_ID_OFFSET,
   INFRASTRUCTURE_SURFACE_MATERIAL,
   TERRAIN_INFRASTRUCTURE_WGSL,
   packTerrainInfrastructure,
@@ -47,7 +48,7 @@ import {
   type InfrastructureSegment,
   type InfrastructureSurfaceSample,
 } from "../../src/world";
-import { infrastructureSegmentLocal } from "../../src/world/infrastructure";
+import { changeInfrastructureRegions, clearInfrastructureRegions, infrastructureSegmentLocal } from "../../src/world/infrastructure";
 import { landformCoreCenter } from "../../src/world/landforms";
 
 /**
@@ -143,7 +144,9 @@ describe("infrastructure surface paint on the GPU", () => {
       segments.push(
         segment({ ax: site.x - 50, az: site.z, bx: site.x + 50, bz: site.z + 12, halfWidth: 18, surface: "concrete" }),
         segment({ priority: 1, ax: site.x + 30, az: site.z - 30, bx: site.x + 70, bz: site.z - 30, halfWidth: 14, surface: "asphalt" }),
-        segment({ priority: 2, ax: site.x - 300, az: site.z - 200, bx: site.x + 300, bz: site.z + 260, halfWidth: 3.5, reach: 8, surface: "gravel" }),
+        // The road is keyed, as a streamed region's segment is: its paint
+        // comes a quarter id up, for the fragment's coverage blend.
+        segment({ priority: 2, ax: site.x - 300, az: site.z - 200, bx: site.x + 300, bz: site.z + 260, halfWidth: 3.5, reach: 8, surface: "gravel", key: 1 }),
         segment({ ax: site.x - 90, az: site.z + 60, bx: site.x - 90, bz: site.z + 60, halfWidth: 9, surface: "concrete" }),
         segment({ mode: "cut", ax: site.x - 20, az: site.z - 80, bx: site.x + 20, bz: site.z - 80, halfWidth: 25, params: [-3, 3] }),
       );
@@ -239,6 +242,7 @@ describe("infrastructure surface paint on the GPU", () => {
         let worstCoverage = 0;
         let painted = 0;
         let wrongMaterial = 0;
+        let wrongFlag = 0;
         const byMaterial = new Map<number, number>();
         probes.forEach((probe, i) => {
           if (probe.texel !== texel) return;
@@ -251,7 +255,11 @@ describe("infrastructure surface paint on the GPU", () => {
             painted += 1;
             byMaterial.set(expected, (byMaterial.get(expected) ?? 0) + 1);
           }
-          if (id !== expected && !contested(probe.x, probe.z, texel, sample.coverage)) wrongMaterial += 1;
+          const material = Math.floor(id);
+          const flag = sample.surface === "gravel" ? INFRASTRUCTURE_PAINT_ID_OFFSET : 0;
+          const uncontested = !contested(probe.x, probe.z, texel, sample.coverage);
+          if (material !== expected && uncontested) wrongMaterial += 1;
+          if (expected >= 0 && Math.abs(id - material - flag) > 1e-6 && uncontested) wrongFlag += 1;
         });
         console.log(
           `surface parity over ${texel} m texels, ${probes.length / TEXELS.length} probes (${painted} painted: `
@@ -262,6 +270,7 @@ describe("infrastructure surface paint on the GPU", () => {
         expect(byMaterial.get(SurfaceMaterial.Asphalt) ?? 0).toBeGreaterThan(1_000);
         expect(byMaterial.get(SurfaceMaterial.Gravel) ?? 0).toBeGreaterThan(1_000);
         expect(wrongMaterial).toBe(0);
+        expect(wrongFlag).toBe(0);
         expect(worstCoverage).toBeLessThan(1e-3);
       }
 
@@ -278,8 +287,21 @@ describe("infrastructure surface paint on the GPU", () => {
 
   it("bakes Concrete and Gravel into the page splat and leaves the rest untouched", async () => {
     const world = createWorld("infrastructure-splat", { worldEvolution: "analytic" });
+    expect(infrastructureIndex(world).segments).toHaveLength(2);
+    // And a streamed road along the page's north edge, clear of the static
+    // two: its lanes carry the paint flag (a quarter id up), theirs do not.
+    const roadZ = -70;
+    changeInfrastructureRegions(world, [{
+      key: "infrastructure-splat-road",
+      segments: [{
+        profile: 0, mode: "set", priority: 1, key: 1,
+        ax: 540, az: roadZ, bx: 1000, bz: roadZ,
+        halfWidth: 4, reach: 6, params: [3.2, 2],
+        surface: "gravel", plantClearance: 2,
+      }],
+    }]);
     const index = infrastructureIndex(world);
-    expect(index.segments).toHaveLength(2);
+    expect(index.segments).toHaveLength(3);
     const address = createWorldPageAddress(0, 1, -1);
     const bounds = worldPageBounds(address, WORLD_PAGE_BASE_EXTENT_METERS);
     expect([bounds.minX, bounds.minZ]).toEqual([512, -512]);
@@ -336,11 +358,15 @@ describe("infrastructure surface paint on the GPU", () => {
       const sample: InfrastructureSurfaceSample = { surface: null, coverage: 0 };
       let full = 0;
       let fullOk = 0;
+      let fullStreamed = 0;
       let bare = 0;
       let bareIdentical = 0;
       let feather = 0;
       let featherCarries = 0;
       const idOf = (byte: number) => Math.round((byte / 255) * (SURFACE_MATERIAL_COUNT - 1));
+      // The stored id less its material: the flag, to the byte's quantum (11 / 510).
+      const flagged = (byte: number, streamed: boolean) => Math.abs(
+        (byte / 255) * (SURFACE_MATERIAL_COUNT - 1) - idOf(byte) - (streamed ? INFRASTRUCTURE_PAINT_ID_OFFSET : 0)) < 0.03;
       for (let row = WORLD_PAGE_GUTTER; row < edge - WORLD_PAGE_GUTTER; row += 1) {
         for (let col = WORLD_PAGE_GUTTER; col < edge - WORLD_PAGE_GUTTER; col += 1) {
           const at = (row * edge + col) * 4;
@@ -348,19 +374,21 @@ describe("infrastructure surface paint on the GPU", () => {
           const worldZ = bounds.minZ + (row - WORLD_PAGE_GUTTER + 0.5) * texel;
           sampleInfrastructureSurface(index, worldX, worldZ, sample, texel);
           const expected = sample.surface === null ? -1 : INFRASTRUCTURE_SURFACE_MATERIAL[sample.surface];
+          const streamed = Math.abs(worldZ - roadZ) < 30;
           if (sample.coverage >= 1) {
             // All of it: the material alone, in slot 0, both seasons, and no
             // canopy in the closure lane.
             full += 1;
+            if (streamed) fullStreamed += 1;
             if (
-              idOf(painted.ids[at]!) === expected
+              idOf(painted.ids[at]!) === expected && flagged(painted.ids[at]!, streamed)
               && painted.lo[at]! >= 254 && painted.hi[at]! >= 254
               && painted.lo[at + 3]! === 0
             ) fullOk += 1;
           } else if (sample.coverage > 0) {
             feather += 1;
-            const ids = [0, 1, 2, 3].map((lane) => idOf(painted.ids[at + lane]!));
-            if (ids.includes(expected)) featherCarries += 1;
+            const lane = [0, 1, 2, 3].findIndex((k) => idOf(painted.ids[at + k]!) === expected);
+            if (lane >= 0 && flagged(painted.ids[at + lane]!, streamed)) featherCarries += 1;
           } else {
             bare += 1;
             let same = true;
@@ -374,11 +402,13 @@ describe("infrastructure surface paint on the GPU", () => {
         }
       }
       console.log(
-        `splat paint: ${full} fully painted (${fullOk} as the material alone), `
+        `splat paint: ${full} fully painted (${fullOk} as the material alone, ${fullStreamed} streamed), `
         + `${feather} feathered (${featherCarries} carry it), ${bare} bare (${bareIdentical} bit-identical)`,
       );
       expect(full).toBeGreaterThan(100);
       expect(fullOk).toBe(full);
+      expect(fullStreamed).toBeGreaterThan(100);
+      expect(full - fullStreamed).toBeGreaterThan(100);
       expect(feather).toBeGreaterThan(20);
       expect(featherCarries).toBe(feather);
       expect(bare).toBeGreaterThan(10_000);
@@ -389,6 +419,7 @@ describe("infrastructure surface paint on the GPU", () => {
       channelAtlas.dispose();
       heightAtlas.dispose();
     } finally {
+      clearInfrastructureRegions(world);
       scene?.dispose();
       engine.stopRenderLoop();
       engine.dispose();

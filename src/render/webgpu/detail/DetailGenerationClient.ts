@@ -12,6 +12,7 @@ import type { TerrainMacroGrid, TerrainPagePublication } from "@/src/workers/ter
 import type { AirportDefinition, WorldDefinition, WorldSeed } from "@/src/world";
 import {
   InfrastructureRegionsForwarder,
+  packInfrastructureRegionsUpdate,
   type InfrastructureRegionsUpdate,
 } from "@/src/world/infrastructureSync";
 import type { TerrainAuxPagePublication } from "../terrain/TerrainPageAtlas";
@@ -118,7 +119,7 @@ export class DetailGenerationClient {
         ...(options.presentationCatalog
           ? { presentationCatalog: options.presentationCatalog }
           : {}),
-        ...(this.infrastructure ? { infrastructure: this.infrastructure.initial() } : {}),
+        ...(this.infrastructure ? { infrastructure: packInfrastructureRegionsUpdate(this.infrastructure.initial()) } : {}),
       } satisfies DetailWorkerCommand);
     } catch {
       this.markUnavailable();
@@ -186,7 +187,7 @@ export class DetailGenerationClient {
     const post = this.infrastructure.next(update);
     if (!post) return true;
     try {
-      this.worker.postMessage({ type: "infrastructure", update: post } satisfies DetailWorkerCommand);
+      this.worker.postMessage({ type: "infrastructure", update: packInfrastructureRegionsUpdate(post) } satisfies DetailWorkerCommand);
       return true;
     } catch {
       this.markUnavailable();

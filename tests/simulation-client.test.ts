@@ -19,6 +19,11 @@ import {
   type InfrastructureRegion,
 } from "../src/world/infrastructure";
 import type { SimulationEvent } from "../src/workers/protocol";
+import {
+  packInfrastructureRegionsUpdate,
+  unpackInfrastructureRegionsPost,
+  type InfrastructureRegionsPost,
+} from "../src/world/infrastructureSync";
 import { packHydrologyWater } from "../src/sim/water/hydrologyWater";
 import { TERRAIN_READBACK_RING_CAPACITY } from "../src/workers/terrainAuthority";
 
@@ -370,7 +375,8 @@ describe("simulation worker lifecycle commands", () => {
       const client = new SimulationClient(world, "unassisted");
       const worker = WorkerStub.latest!;
       const version = infrastructureRegionsVersion(world);
-      expect((worker.messages[0] as { infrastructure: unknown }).infrastructure).toEqual({
+      const posted = (worker.messages[0] as { infrastructure: InfrastructureRegionsPost }).infrastructure;
+      expect(unpackInfrastructureRegionsPost(posted)).toEqual({
         version,
         reset: true,
         install: [region],
@@ -383,7 +389,7 @@ describe("simulation worker lifecycle commands", () => {
       const update = { version: removal.version, reset: false, install: [], remove: [region.key] };
       client.publishInfrastructure(update);
       client.publishInfrastructure(update);
-      expect(worker.messages.slice(1)).toEqual([{ type: "infrastructure", update }]);
+      expect(worker.messages.slice(1)).toEqual([{ type: "infrastructure", update: packInfrastructureRegionsUpdate(update) }]);
       client.dispose();
     } finally {
       clearInfrastructureRegions();

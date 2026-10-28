@@ -9,7 +9,7 @@ import type { AircraftKind } from "@/src/sim";
 import type { HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
 import { vehicleClass, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type { AirportDefinition, WorldDefinition } from "@/src/world";
-import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
+import type { InfrastructureRegionsPost } from "@/src/world/infrastructureSync";
 import type { TerrainMacroGrid, TerrainPagePublication } from "./terrainAuthority";
 
 /** Where an aeroplane starts. */
@@ -71,7 +71,7 @@ export type SimulationCommand =
        * as a reset: installed before the spawn is placed, so a car starting on
        * a road fill stands on it.
        */
-      infrastructure: InfrastructureRegionsUpdate;
+      infrastructure: InfrastructureRegionsPost;
       /**
        * The calendar day the renderer paints the terrain for (settings'
        * `dayOfYear`): the car's seasonal snow follows it.
@@ -116,7 +116,7 @@ export type SimulationCommand =
    * and drops the L0 pages the change touches; its analytic fallback answers
    * there from the new regions until the rebuilt pages arrive.
    */
-  | { type: "infrastructure"; update: InfrastructureRegionsUpdate }
+  | { type: "infrastructure"; update: InfrastructureRegionsPost }
   /**
    * One hydrology region's lakes and rivers as the renderer draws them
    * (`packHydrologyWater`; its buffers are transferred), for the car's
