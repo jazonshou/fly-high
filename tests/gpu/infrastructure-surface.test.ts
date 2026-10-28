@@ -41,6 +41,7 @@ import {
   infrastructureCapsuleDistance,
   infrastructureIndex,
   INFRASTRUCTURE_PROFILE,
+  INFRASTRUCTURE_SURFACE_BOX_HALF_METERS,
   INFRASTRUCTURE_SURFACE_FEATHER_METERS,
   sampleInfrastructureSurface,
   type InfrastructureSegment,
@@ -50,8 +51,9 @@ import { infrastructureSegmentLocal } from "../../src/world/infrastructure";
 import { landformCoreCenter } from "../../src/world/landforms";
 
 /**
- * Built ground's paint, on the GPU: `terrainInfrastructureSurface` against
- * the CPU authority (`sampleInfrastructureSurface`), then a real page splat
+ * Built ground's paint, on the GPU: `terrainInfrastructureSurfaceOver` against
+ * the CPU authority (`sampleInfrastructureSurface`) at a point and over
+ * texels of several sizes, then a real page splat
  * bake with one shipped source standing in, so the paint is read back from
  * the channel atlas the terrain draws from.
  */
@@ -93,9 +95,9 @@ ${TERRAIN_INFRASTRUCTURE_WGSL}
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (id.x >= arrayLength(&probes)) { return; }
   let probe = probes[id.x];
-  // probe = (local x, local z, unused, page index)
+  // probe = (local x, local z, texel metres, page index)
   kSelectPage(u32(probe.w));
-  results[id.x] = vec4f(terrainInfrastructureSurface(probe.x, probe.y), 0.0, 0.0);
+  results[id.x] = vec4f(terrainInfrastructureSurfaceOver(probe.x, probe.y, probe.z), 0.0, 0.0);
 }
 `;
 
@@ -127,7 +129,7 @@ async function createEngine(): Promise<{ engine: WebGPUEngine; canvas: HTMLCanva
 }
 
 describe("infrastructure surface paint on the GPU", () => {
-  it("matches sampleInfrastructureSurface's material and coverage", async () => {
+  it("matches sampleInfrastructureSurface's material and coverage, at a point and over texels", async () => {
     const world = createWorld("alpha");
     const core = landformCoreCenter(world);
     const sites = [
@@ -158,20 +160,26 @@ describe("infrastructure surface paint on the GPU", () => {
       })), i * TERRAIN_KERNEL_PAGE_BYTES);
     });
 
-    interface Probe { readonly page: number; readonly x: number; readonly z: number }
+    // A point (what a tyre reads), texels a road is narrower than, one the
+    // apron is too, and one past the box's half-bin limit.
+    const TEXELS = [0, 8, 16, 32, 128];
+    interface Probe { readonly page: number; readonly x: number; readonly z: number; readonly texel: number }
     const probes: Probe[] = [];
-    sites.forEach((site, page) => {
-      for (let i = -120; i <= 120; i += 1) {
-        for (let j = -120; j <= 120; j += 1) {
-          probes.push({ page, x: site.x + i * 0.93 + 0.13, z: site.z + j * 0.87 - 0.29 });
+    for (const texel of TEXELS) {
+      sites.forEach((site, page) => {
+        for (let i = -120; i <= 120; i += 1) {
+          for (let j = -120; j <= 120; j += 1) {
+            probes.push({ page, x: site.x + i * 0.93 + 0.13, z: site.z + j * 0.87 - 0.29, texel });
+          }
         }
-      }
-    });
+      });
+    }
     const probeData = new Float32Array(probes.length * 4);
     probes.forEach((probe, i) => {
       const page = pages[probe.page]!;
       probeData[i * 4] = probe.x - page.x;
       probeData[i * 4 + 1] = probe.z - page.z;
+      probeData[i * 4 + 2] = probe.texel;
       probeData[i * 4 + 3] = probe.page;
     });
 
@@ -212,40 +220,50 @@ describe("infrastructure surface paint on the GPU", () => {
       const local = { along: 0, across: 0 };
       // The runner-up coverage of a DIFFERENT material: where two segments'
       // coverages are within f32 rounding, either may win.
-      const contested = (x: number, z: number, best: number): boolean => index.segments.some((packed) => {
-        if (packed.segment.surface === undefined || packed.segment.surface === sample.surface) return false;
+      const coverageOf = (packed: (typeof index.segments)[number], x: number, z: number, texel: number): number => {
         infrastructureSegmentLocal(packed, x, z, local);
         const distance = infrastructureCapsuleDistance(local.along, local.across, packed.length);
-        const coverage = Math.min(1, Math.max(0,
-          0.5 + (packed.segment.halfWidth - distance) / INFRASTRUCTURE_SURFACE_FEATHER_METERS));
+        const halfWidth = packed.segment.halfWidth;
+        if (2 * halfWidth < texel) {
+          const half = Math.min(texel / 2, INFRASTRUCTURE_SURFACE_BOX_HALF_METERS);
+          return Math.max(0, Math.min(halfWidth, distance + half) - Math.max(-halfWidth, distance - half)) / (2 * half);
+        }
+        return Math.min(1, Math.max(0, 0.5 + (halfWidth - distance) / INFRASTRUCTURE_SURFACE_FEATHER_METERS));
+      };
+      const contested = (x: number, z: number, texel: number, best: number): boolean => index.segments.some((packed) => {
+        if (packed.segment.surface === undefined || packed.segment.surface === sample.surface) return false;
+        const coverage = coverageOf(packed, x, z, texel);
         return coverage > 0 && Math.abs(coverage - best) < 1e-3;
       });
-      let worstCoverage = 0;
-      let painted = 0;
-      let wrongMaterial = 0;
-      const byMaterial = new Map<number, number>();
-      probes.forEach((probe, i) => {
-        sampleInfrastructureSurface(index, probe.x, probe.z, sample);
-        const id = raw[i * 4]!;
-        const coverage = raw[i * 4 + 1]!;
-        worstCoverage = Math.max(worstCoverage, Math.abs(coverage - sample.coverage));
-        const expected = sample.surface === null ? -1 : INFRASTRUCTURE_SURFACE_MATERIAL[sample.surface];
-        if (expected >= 0) {
-          painted += 1;
-          byMaterial.set(expected, (byMaterial.get(expected) ?? 0) + 1);
-        }
-        if (id !== expected && !contested(probe.x, probe.z, sample.coverage)) wrongMaterial += 1;
-      });
-      console.log(
-        `surface parity over ${probes.length} probes (${painted} painted: `
-        + `${[...byMaterial].map(([m, n]) => `${m}x${n}`).join(" ")}): `
-        + `max |d coverage| = ${worstCoverage.toExponential(2)}, wrong material ${wrongMaterial}`,
-      );
-      expect(byMaterial.get(SurfaceMaterial.Concrete) ?? 0).toBeGreaterThan(5_000);
-      expect(byMaterial.get(SurfaceMaterial.Asphalt) ?? 0).toBeGreaterThan(1_000);
-      expect(byMaterial.get(SurfaceMaterial.Gravel) ?? 0).toBeGreaterThan(1_000);
-      expect(wrongMaterial).toBe(0);
-      expect(worstCoverage).toBeLessThan(1e-3);
+      for (const texel of TEXELS) {
+        let worstCoverage = 0;
+        let painted = 0;
+        let wrongMaterial = 0;
+        const byMaterial = new Map<number, number>();
+        probes.forEach((probe, i) => {
+          if (probe.texel !== texel) return;
+          sampleInfrastructureSurface(index, probe.x, probe.z, sample, texel);
+          const id = raw[i * 4]!;
+          const coverage = raw[i * 4 + 1]!;
+          worstCoverage = Math.max(worstCoverage, Math.abs(coverage - sample.coverage));
+          const expected = sample.surface === null ? -1 : INFRASTRUCTURE_SURFACE_MATERIAL[sample.surface];
+          if (expected >= 0) {
+            painted += 1;
+            byMaterial.set(expected, (byMaterial.get(expected) ?? 0) + 1);
+          }
+          if (id !== expected && !contested(probe.x, probe.z, texel, sample.coverage)) wrongMaterial += 1;
+        });
+        console.log(
+          `surface parity over ${texel} m texels, ${probes.length / TEXELS.length} probes (${painted} painted: `
+          + `${[...byMaterial].map(([m, n]) => `${m}x${n}`).join(" ")}): `
+          + `max |d coverage| = ${worstCoverage.toExponential(2)}, wrong material ${wrongMaterial}`,
+        );
+        expect(byMaterial.get(SurfaceMaterial.Concrete) ?? 0).toBeGreaterThan(5_000);
+        expect(byMaterial.get(SurfaceMaterial.Asphalt) ?? 0).toBeGreaterThan(1_000);
+        expect(byMaterial.get(SurfaceMaterial.Gravel) ?? 0).toBeGreaterThan(1_000);
+        expect(wrongMaterial).toBe(0);
+        expect(worstCoverage).toBeLessThan(1e-3);
+      }
 
       pageBuffer.dispose();
       dataBuffer.dispose();
@@ -328,7 +346,7 @@ describe("infrastructure surface paint on the GPU", () => {
           const at = (row * edge + col) * 4;
           const worldX = bounds.minX + (col - WORLD_PAGE_GUTTER + 0.5) * texel;
           const worldZ = bounds.minZ + (row - WORLD_PAGE_GUTTER + 0.5) * texel;
-          sampleInfrastructureSurface(index, worldX, worldZ, sample);
+          sampleInfrastructureSurface(index, worldX, worldZ, sample, texel);
           const expected = sample.surface === null ? -1 : INFRASTRUCTURE_SURFACE_MATERIAL[sample.surface];
           if (sample.coverage >= 1) {
             // All of it: the material alone, in slot 0, both seasons, and no

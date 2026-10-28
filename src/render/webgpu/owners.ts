@@ -262,7 +262,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "landform core centre and points arrive split like the volcanic overlay's, "
       + "so precision holds anywhere a marina or road can be. The page and sea-depth "
       + "bakes read its heights; the splat bake reads only its surface paint "
-      + "(terrainInfrastructureSurface), since its heights are already in the atlas.",
+      + "(terrainInfrastructureSurfaceOver, over each texel), since its heights are already in the atlas.",
   },
   {
     artifact: "terrain-page-atlas",

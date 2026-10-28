@@ -2124,7 +2124,7 @@ fn splatAlignSeasonalWeights(
 
 /**
  * Built ground's paint over the aligned weights: surface is
- * (material id, coverage) from terrainInfrastructureSurface, which the
+ * (material id, coverage) from terrainInfrastructureSurfaceOver, which the
  * COMPOSER supplies with the infrastructure include (terrainPageSplatWgsl).
  * The material takes its own slot, or the slot weakest in both seasons; the
  * other weights keep (1 - coverage) of themselves and the material gains
@@ -2252,7 +2252,9 @@ fn bakeSplat(
   let hi = splatSupersample(job, localX, localZ, job.placement.w, tapCanopy, province, sandCover);
   // Built ground: the paint its segments carry (Concrete on a slipway, say),
   // over the classified cover. Nothing reaches: the cover exactly as before.
-  let built = terrainInfrastructureSurface(localX, localZ);
+  // Over the texel, so a road narrower than it paints (and thins the canopy
+  // closure by) the share of the texel it covers.
+  let built = terrainInfrastructureSurfaceOver(localX, localZ, job.shape.x);
   let aligned = splatApplyInfrastructureSurface(splatAlignSeasonalWeights(lo, hi), built);
   textureStore(splatId, texel, aligned.ids * scale);
   // 6-8: the canopy-closure channel rides the weight textures' ALPHA lane, in
