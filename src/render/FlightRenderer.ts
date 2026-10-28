@@ -93,13 +93,14 @@ import { RoadStreamRuntime } from "./roads/RoadStreamRuntime";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
 import { createPersonVisual, type PersonAnimationInput, type PersonVisual } from "./webgpu/person";
-import { CharacterCamera, type CameraObstacleBox } from "./characterCamera";
+import { CharacterCamera, type CameraObstacleBox, type CameraWaterBand, type CharacterCameraWater } from "./characterCamera";
 import { LatticeHeightCache } from "./latticeHeightCache";
 import type { OceanHullClip } from "./webgpu/boat/oceanHullClip";
 import type { UndrawnSeaHeave } from "./webgpu/boat/undrawnSeaHeave";
 import { createBoatEffects, type BoatEffects } from "./webgpu/boat/BoatEffects";
 import type { CarBowWave } from "./webgpu/ground/CarBowWave";
 import { createCarEffects, type CarEffects } from "./webgpu/ground/CarEffects";
+import { createCameraWaterSample } from "./webgpu/underwater/cameraWater";
 import { UnderwaterView } from "./webgpu/underwater/UnderwaterView";
 import type { CarParticleSystem } from "./webgpu/ground/CarParticleSystem";
 import type { CarTrackSystem } from "./webgpu/ground/CarTrackSystem";
@@ -859,6 +860,31 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** Where the walker last stood on foot, world, for the figure's walk to the door. */
   private readonly lastFootPose = { x: 0, y: 0, z: 0, heading: 0, valid: false };
   private boardingFrom: { forward: number; up: number; right: number; facing: number } | null = null;
+  /**
+   * The water the character camera keeps a side of (the underwater view's
+   * camera sampler), and the side: the walker's head's, changed only once the
+   * head is past the surface's band on the other side.
+   */
+  private readonly characterWaterSample = createCameraWaterSample();
+  private characterWaterTime = 0;
+  private readonly characterWater: CharacterCameraWater = {
+    below: false,
+    at: (x: number, y: number, z: number, out: CameraWaterBand): boolean => {
+      const underwater = this.underwater;
+      if (!underwater) return false;
+      const sample = underwater.cameraWater.sample(
+        x + this.originX,
+        y,
+        z + this.originZ,
+        this.characterWaterTime,
+        this.characterWaterSample,
+      );
+      if (sample.kind === "none") return false;
+      out.surface = sample.surfaceHeight;
+      out.clearance = sample.clearance;
+      return true;
+    },
+  };
   private readonly parkedCarObstacle: CameraObstacleBox = {
     centerX: 0, centerY: 0, centerZ: 0, halfX: 1, halfY: 1, halfZ: 1, qx: 0, qy: 0, qz: 0, qw: 1,
   };
@@ -4093,7 +4119,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * and first person, driven directly (no rig lag) so mouse look never trails.
    * The exterior rig's offsets are kept in step for the next view.
    */
-  private updateCharacterCamera(state: FlightVisualState, payload: PersonVisualState): void {
+  private updateCharacterCamera(state: FlightVisualState): void {
     const ground = this.walkerGround;
     const obstacles: CameraObstacleBox[] = [];
     const parked = state.walking?.car;
@@ -4119,6 +4145,21 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     const originX = this.originX;
     const originZ = this.originZ;
     const look = this.characterLook;
+    const underwater = this.underwater;
+    const water = underwater ? this.characterWater : null;
+    if (underwater && water) {
+      this.characterWaterTime = state.simulationTime;
+      const head = underwater.cameraWater.sample(
+        state.position.x,
+        state.position.y + PERSON.eyeHeight,
+        state.position.z,
+        state.simulationTime,
+        this.characterWaterSample,
+      );
+      if (head.kind === "none") water.below = false;
+      else if (head.depth > head.clearance) water.below = true;
+      else if (head.depth < -head.clearance) water.below = false;
+    }
     const pose = this.characterCamera.update({
       feetX: state.position.x - originX,
       feetY: state.position.y,
@@ -4132,8 +4173,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       groundHeight: ground
         ? (x, z) => ground.sample(x + originX, z + originZ)
         : (x, z) => this.cameraTerrainHeight(x + originX, z + originZ),
-      // Above the water while the head is; a diver's camera follows it under.
-      waterFloor: payload.waterDepth > 0 && payload.headDepth < 0.3 ? state.position.y + payload.waterDepth : null,
+      water,
       obstacles,
     });
     look.yaw = 0;
@@ -4156,7 +4196,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
   private updateCamera(state: FlightVisualState): void {
     const walker = this.person !== null && state.vehicle?.kind === "person" ? state.vehicle : null;
     if (walker && (this.cameraMode === "chase" || this.cameraMode === "cockpit")) {
-      this.updateCharacterCamera(state, walker);
+      this.updateCharacterCamera(state);
       return;
     }
     this.person?.setFade(0);

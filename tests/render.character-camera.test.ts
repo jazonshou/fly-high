@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { CharacterCamera, rayBoxDistance, type CameraObstacleBox, type CharacterCameraFrame } from "../src/render/characterCamera";
+import {
+  CharacterCamera,
+  rayBoxDistance,
+  type CameraObstacleBox,
+  type CharacterCameraFrame,
+  type CharacterCameraWater,
+} from "../src/render/characterCamera";
 import { LatticeHeightCache } from "../src/render/latticeHeightCache";
 import { PERSON } from "../src/vehicles/person";
 
@@ -21,7 +27,7 @@ function frame(overrides: Partial<CharacterCameraFrame> = {}): CharacterCameraFr
     deltaSeconds: 1 / 60,
     firstPerson: false,
     groundHeight: () => 0,
-    waterFloor: null,
+    water: null,
     obstacles: [],
     ...overrides,
   };
@@ -88,12 +94,30 @@ describe("character camera", () => {
     expect(pose.fade).toBe(0);
   });
 
-  it("keeps the eye above the water while the walker swims at the surface", () => {
+  it("keeps the eye on the head's side of the water, clear of the surface's band", () => {
     const camera = new CharacterCamera();
     camera.reset(0);
     camera.pitch = 0.6;
-    const pose = camera.update(frame({ feetY: -1.3, waterFloor: 0, groundHeight: () => -5 }));
-    expect(pose.eyeY).toBeGreaterThanOrEqual(0.25);
+    // A sea whose surface rises toward the camera, with a 0.2 m band.
+    const sea = (below: boolean): CharacterCameraWater => ({
+      at(x, _y, z, out) {
+        out.surface = 0.05 * z - 0.02 * x;
+        out.clearance = 0.2;
+        return true;
+      },
+      below,
+    });
+    // Swimming: the head is above, so the eye is above the band.
+    const swimming = camera.update(frame({ feetY: -1.3, water: sea(false), groundHeight: () => -5 }));
+    expect(swimming.eyeY).toBeGreaterThanOrEqual(0.05 * swimming.eyeZ - 0.02 * swimming.eyeX + 0.2 - 1e-9);
+    // Diving, looking up from under: the eye stays under the band.
+    camera.pitch = -0.6;
+    const diving = camera.update(frame({ feetY: -0.9, water: sea(true), groundHeight: () => -5 }));
+    expect(diving.eyeY).toBeLessThanOrEqual(0.05 * diving.eyeZ - 0.02 * diving.eyeX - 0.2 + 1e-9);
+    // Dry ground asks nothing of the eye.
+    camera.pitch = 0;
+    const dry = camera.update(frame({ water: { at: () => false, below: false } }));
+    expect(dry.eyeY).toBeCloseTo(PERSON.camera.pivotHeight, 6);
   });
 });
 

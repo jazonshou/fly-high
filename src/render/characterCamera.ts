@@ -42,12 +42,27 @@ export interface CharacterCameraFrame {
   firstPerson: boolean;
   /** Ground height under a frame point (x, z in the camera's frame). */
   groundHeight(x: number, z: number): number;
-  /**
-   * The water surface the camera must stay above while the walker's head is
-   * above it, or null to let the camera follow a diver under.
-   */
-  waterFloor: number | null;
+  /** The water the eye keeps to one side of, or null where there is none to ask. */
+  water: CharacterCameraWater | null;
   obstacles: readonly CameraObstacleBox[];
+}
+
+/** The drawn water surface over a point and the band either side of it the eye keeps out of. */
+export interface CameraWaterBand {
+  surface: number;
+  clearance: number;
+}
+
+/**
+ * The water for the camera: the eye stays on the walker's head's side of the
+ * surface, out of the band where the drawn surface could be either side of
+ * it (`CameraWaterSample.clearance`), and so crosses it in one move.
+ */
+export interface CharacterCameraWater {
+  /** Writes the surface over a frame point to `out`; false over dry ground. */
+  at(x: number, y: number, z: number, out: CameraWaterBand): boolean;
+  /** Whether the walker's head is under the surface, so the eye keeps below it. */
+  below: boolean;
 }
 
 /** What the camera reads back each frame. */
@@ -78,6 +93,7 @@ export class CharacterCamera {
   /** Boom length asked for (the wheel's), and the one in use after collision. */
   distance: number;
   private boom: number;
+  private readonly band: CameraWaterBand = { surface: 0, clearance: 0 };
   readonly pose: CharacterCameraPose = {
     eyeX: 0,
     eyeY: 0,
@@ -153,7 +169,12 @@ export class CharacterCamera {
     pose.eyeX = pivotX + backX * this.boom;
     pose.eyeY = pivotY + backY * this.boom;
     pose.eyeZ = pivotZ + backZ * this.boom;
-    if (frame.waterFloor !== null && pose.eyeY < frame.waterFloor + 0.25) pose.eyeY = frame.waterFloor + 0.25;
+    const water = frame.water;
+    if (water && water.at(pose.eyeX, pose.eyeY, pose.eyeZ, this.band)) {
+      const { surface, clearance } = this.band;
+      if (water.below) pose.eyeY = Math.min(pose.eyeY, surface - clearance);
+      else pose.eyeY = Math.max(pose.eyeY, surface + clearance);
+    }
     pose.targetX = pivotX + forwardX * 10;
     pose.targetY = pivotY + forwardY * 10;
     pose.targetZ = pivotZ + forwardZ * 10;
