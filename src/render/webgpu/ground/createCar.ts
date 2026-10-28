@@ -8,6 +8,7 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { SubMesh } from "@babylonjs/core/Meshes/subMesh";
 import "@babylonjs/core/Meshes/thinInstanceMesh";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { Scene } from "@babylonjs/core/scene";
@@ -17,7 +18,7 @@ import type { AircraftLightState } from "@/src/render/webgpu/lighting/AircraftLi
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import { AircraftBuildContext, isAlphaBlendedAirframeMaterial } from "../aircraft/builders";
 import { createGlowApplier } from "../aircraft/airframeRig";
-import { BoatMeshData, type Surface } from "../boat/boatMeshData";
+import { BoatMeshData, type Surface, type Vec3Tuple } from "../boat/boatMeshData";
 import type { VehicleVisual } from "../vehicle/types";
 import { createCarAtlasTextures } from "./carAtlas";
 import { CAR_LAMP_TEXEL_COUNT, CAR_LAMP_TEXELS, carBodySurfaces, carLampSurfaces } from "./carBody";
@@ -39,7 +40,7 @@ import {
   writeWheelMatrices,
   type CarAxle,
 } from "./carRunningGear";
-import { STEERING_WHEEL } from "./lc76Lines";
+import { FRONT_DOOR_HINGE, STEERING_WHEEL } from "./lc76Lines";
 
 /**
  * The LandCruiser 76 GXL wagon, drawn: `createWebGpuCar(scene, kind)` returns
@@ -66,12 +67,71 @@ import { STEERING_WHEEL } from "./lc76Lines";
  *   8. `landcruiser-lamps`: every lens, emissive by a texel per lamp;
  *   9. `landcruiser-steering-wheel`;
  *   10. `landcruiser-needles`: the four gauge needles, cockpit view only.
+ *
+ * THE FRONT DOORS draw in the body's and the glass's meshes while shut, as
+ * those meshes' last index runs. One that opens (`setDoors`) drops out of
+ * them and draws on its hinge instead, `landcruiser-door-right` or `-left`
+ * with its `-glass`: two more draws, only while a door stands open.
  */
 
 function meshFrom(name: string, surfaces: { readonly single?: readonly Surface[]; readonly symmetric?: readonly Surface[] }, scene: Scene): Mesh {
   const data = new BoatMeshData();
   for (const surface of surfaces.symmetric ?? []) data.addSymmetric(surface);
   for (const surface of surfaces.single ?? []) data.add(surface);
+  const mesh = new Mesh(name, scene);
+  data.toVertexData().applyToMesh(mesh, false);
+  return mesh;
+}
+
+/**
+ * A mesh whose last two index runs are the right and the left front door's
+ * parts, so the draw can leave out an open door's (`drawDoorsShut`): one
+ * draw while both are shut, exactly the surfaces as listed.
+ */
+function meshWithDoors(
+  name: string,
+  surfaces: { readonly single?: readonly Surface[]; readonly symmetric?: readonly Surface[] },
+  door: readonly Surface[],
+  scene: Scene,
+): { readonly mesh: Mesh; readonly runs: DoorRuns } {
+  const data = new BoatMeshData();
+  for (const surface of surfaces.symmetric ?? []) data.addSymmetric(surface);
+  for (const surface of surfaces.single ?? []) data.add(surface);
+  const rest = data.indices.length;
+  for (const surface of door) data.add(surface);
+  const right = data.indices.length - rest;
+  for (const surface of door) data.add(surface.mirrored());
+  const left = data.indices.length - rest - right;
+  const mesh = new Mesh(name, scene);
+  data.toVertexData().applyToMesh(mesh, false);
+  return { mesh, runs: { rest, right, left } };
+}
+
+/** Index counts: everything but the doors, then the right door's, then the left's. */
+interface DoorRuns {
+  readonly rest: number;
+  readonly right: number;
+  readonly left: number;
+}
+
+/** Draws a door-split mesh with each door's run in or out: in while that door is shut. */
+function drawDoorsShut(mesh: Mesh, runs: DoorRuns, rightShut: boolean, leftShut: boolean): void {
+  const vertices = mesh.getTotalVertices();
+  mesh.releaseSubMeshes();
+  if (rightShut && leftShut) {
+    new SubMesh(0, 0, vertices, 0, runs.rest + runs.right + runs.left, mesh);
+  } else if (rightShut) {
+    new SubMesh(0, 0, vertices, 0, runs.rest + runs.right, mesh);
+  } else {
+    new SubMesh(0, 0, vertices, 0, runs.rest, mesh);
+    if (leftShut) new SubMesh(0, 0, vertices, runs.rest + runs.right, runs.left, mesh);
+  }
+}
+
+/** One side's front door drawn on its own, about its hinge, while it is open. */
+function doorMesh(name: string, surfaces: readonly Surface[], side: 1 | -1, hinge: Vec3Tuple, scene: Scene): Mesh {
+  const data = new BoatMeshData();
+  for (const surface of surfaces) data.add(side === 1 ? surface : surface.mirrored(), hinge);
   const mesh = new Mesh(name, scene);
   data.toVertexData().applyToMesh(mesh, false);
   return mesh;
@@ -194,10 +254,27 @@ export function createWebGpuCar(scene: Scene, kind: SurfaceVehicleKind): CarVisu
 
   const meshes: AbstractMesh[] = [];
   const surfaces = carBodySurfaces();
-  const bodyMesh = finish(meshFrom(`${kind}-body`, { symmetric: surfaces.symmetric, single: [...surfaces.single, ...cabinSurfaces()] }, scene), body, root, true);
+  const bodyBuilt = meshWithDoors(`${kind}-body`, { symmetric: surfaces.symmetric, single: [...surfaces.single, ...cabinSurfaces()] }, surfaces.door.body, scene);
+  const bodyMesh = finish(bodyBuilt.mesh, body, root, true);
   meshes.push(bodyMesh);
-  const glassMesh = finish(meshFrom(`${kind}-glass`, { single: surfaces.glass }, scene), glass, root, false);
+  const glassBuilt = meshWithDoors(`${kind}-glass`, { single: surfaces.glass }, surfaces.door.glass, scene);
+  const glassMesh = finish(glassBuilt.mesh, glass, root, false);
   meshes.push(glassMesh);
+
+  // The front doors: drawn in the body until one opens, then on its hinge.
+  const doors = ([1, -1] as const).map((side) => {
+    const hinge: Vec3Tuple = [FRONT_DOOR_HINGE.x, 0, side * FRONT_DOOR_HINGE.z];
+    const node = new TransformNode(`${kind}-door-${side === 1 ? "right" : "left"}-hinge`, scene);
+    node.parent = root;
+    node.position.set(hinge[0], hinge[1], hinge[2]);
+    const name = `${kind}-door-${side === 1 ? "right" : "left"}`;
+    const panel = finish(doorMesh(name, surfaces.door.body, side, hinge, scene), body, node, true);
+    const pane = finish(doorMesh(`${name}-glass`, surfaces.door.glass, side, hinge, scene), glass, node, false);
+    panel.setEnabled(false);
+    pane.setEnabled(false);
+    meshes.push(panel, pane);
+    return { side, node, panel, pane, open: 0 };
+  });
 
   const axles = {} as Record<CarAxle, TransformNode>;
   for (const axle of ["front", "rear"] as const) {
@@ -264,9 +341,30 @@ export function createWebGpuCar(scene: Scene, kind: SurfaceVehicleKind): CarVisu
   writeNeedleMatrices({ engineRpm: 0, speedKmh: 0, fuel: 0, temperature: 0 }, needleMatrices);
   needleMesh.thinInstanceBufferUpdated("matrix");
 
+  const setDoors = (right: number, left: number): void => {
+    let changed = false;
+    for (const door of doors) {
+      const target = door.side === 1 ? right : left;
+      const open = Number.isFinite(target) ? Math.min(1, Math.max(0, target)) : 0;
+      if (open === door.open) continue;
+      if ((open > 0) !== (door.open > 0)) changed = true;
+      door.open = open;
+      // The trailing edge swings out: +Z for the right door, -Z for the left.
+      door.node.rotation.y = door.side * open * FRONT_DOOR_HINGE.openRadians;
+      door.panel.setEnabled(open > 0);
+      door.pane.setEnabled(open > 0 && !cockpit);
+    }
+    if (!changed) return;
+    const rightShut = doors[0]!.open === 0;
+    const leftShut = doors[1]!.open === 0;
+    drawDoorsShut(bodyMesh, bodyBuilt.runs, rightShut, leftShut);
+    drawDoorsShut(glassMesh, glassBuilt.runs, rightShut, leftShut);
+  };
+
   const setCockpitView = (enabled: boolean): void => {
     cockpit = enabled;
     glassMesh.setEnabled(!enabled);
+    for (const door of doors) door.pane.setEnabled(door.open > 0 && !enabled);
     linkMesh.setEnabled(!enabled);
     coilMesh.setEnabled(!enabled);
     needleMesh.setEnabled(enabled);
@@ -275,7 +373,7 @@ export function createWebGpuCar(scene: Scene, kind: SurfaceVehicleKind): CarVisu
   return {
     kind,
     root,
-    cockpitParts: [glassMesh, linkMesh, coilMesh],
+    cockpitParts: [glassMesh, linkMesh, coilMesh, ...doors.map((door) => door.pane)],
     meshes,
     axles,
     steeringWheel,
@@ -305,9 +403,10 @@ export function createWebGpuCar(scene: Scene, kind: SurfaceVehicleKind): CarVisu
       applyGlow(body as PBRMaterial, lights.cockpitGlow);
     },
     setCockpitView,
+    setDoors,
     dispose(): void {
       for (const mesh of meshes) mesh.dispose(false, false);
-      for (const node of [steeringWheel, wheelTilt, axles.front, axles.rear]) node.dispose(false, false);
+      for (const node of [steeringWheel, wheelTilt, axles.front, axles.rear, ...doors.map((door) => door.node)]) node.dispose(false, false);
       root.dispose(false, false);
       build.disposeMaterials();
     },

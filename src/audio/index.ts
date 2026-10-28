@@ -5,6 +5,7 @@ import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/cata
 import { isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
 import { BoatVoice, boatSoundTargets } from "./boatVoice";
 import { CarVoice, carSoundTargets } from "./carVoice";
+import { PersonVoice } from "./personVoice";
 
 export interface AudioLevels {
   master: number;
@@ -50,6 +51,8 @@ export class FlightAudio {
   private boatVoice: BoatVoice | null = null;
   /** The car's own layer, built the first time a car's state arrives. */
   private carVoice: CarVoice | null = null;
+  /** The walker's footsteps, breathing and strokes, built the first time a walker's state arrives. */
+  private personVoice: PersonVoice | null = null;
   private enabled = false;
   private desiredEnabled = false;
   private activationGeneration = 0;
@@ -98,8 +101,15 @@ export class FlightAudio {
     if (!context || !this.enabled) return;
     const now = context.currentTime;
     const surface = state.vehicle ? this.surfaceVehicle : null;
+    // On foot the engine heard is the parked car's, fading with the walker's distance from it.
+    const parked = state.walking?.driven === "person" ? state.walking.car : null;
+    const heard = parked ?? state;
+    const distanceShare = parked
+      ? parkedEngineShare(Math.hypot(state.position.x - parked.position.x, state.position.y - parked.position.y, state.position.z - parked.position.z))
+      : 1;
+    const levels = distanceShare === 1 ? this.levels : { ...this.levels, engine: this.levels.engine * distanceShare };
     const rpmRatio = surface
-      ? Math.min(1.2, Math.max(0, state.engineRpm / surface.engineReadout.maximum))
+      ? Math.min(1.2, Math.max(0, heard.engineRpm / surface.engineReadout.maximum))
       : normalizedEngineSpeed(this.aircraft, state.engineRpm);
     const sound = surface ? surface.engineSound : aircraftSpec(this.aircraft).engineSound;
     if (sound !== this.voicedSound) this.voiceEngine(sound);
@@ -108,11 +118,11 @@ export class FlightAudio {
       oscillator.frequency.setTargetAtTime(baseFrequency * (index + 1), now, 0.045);
       oscillator.detune.setTargetAtTime(index === 0 ? -4 : 6, now, 0.08);
     });
-    const car = surface && state.vehicle?.kind === "car" ? state.vehicle : null;
-    const carTargets = car ? carSoundTargets(state, car) : null;
-    const engineLevel = this.levels.engine *
+    const car = surface && heard.vehicle?.kind === "car" ? heard.vehicle : null;
+    const carTargets = car ? carSoundTargets(heard, car) : null;
+    const engineLevel = levels.engine *
       (sound.gainBase + rpmRatio * sound.gainSpan) *
-      (0.55 + state.throttle * 0.45) *
+      (0.55 + heard.throttle * 0.45) *
       // A stalled or flooded diesel is silent; a cranking one is quiet.
       (carTargets ? carTargets.engineShare : 1);
     this.engineGain?.gain.setTargetAtTime(engineLevel, now, 0.07);
@@ -127,9 +137,16 @@ export class FlightAudio {
     }
     if (carTargets && this.master && this.noiseBuffer) {
       this.carVoice ??= new CarVoice(context, this.master, this.noiseBuffer);
-      this.carVoice.update(carTargets, this.levels);
+      this.carVoice.update(carTargets, levels);
     } else {
       this.carVoice?.silence();
+    }
+    const person = state.vehicle?.kind === "person" ? state.vehicle : null;
+    if (person && this.master && this.noiseBuffer) {
+      this.personVoice ??= new PersonVoice(context, this.master, this.noiseBuffer);
+      this.personVoice.update(person, this.levels);
+    } else {
+      this.personVoice?.silence();
     }
     const windAmount = Math.min(1, Math.max(0, (state.airspeed - 15) / 75));
     this.windGain?.gain.setTargetAtTime(this.levels.wind * windAmount * 0.12, now, 0.1);
@@ -158,6 +175,17 @@ export class FlightAudio {
     if (state.vehicle?.kind === "car") this.carVoice?.peaks.observe(state.vehicle);
   }
 
+  /**
+   * A foot struck as the drawn figure reports it, at once rather than at the
+   * next `update`, so the step lands with the foot. `strength` 0..1.
+   */
+  footstep(state: FlightVisualState, strength: number): void {
+    const context = this.context;
+    if (!context || !this.enabled || state.vehicle?.kind !== "person" || !this.master || !this.noiseBuffer) return;
+    this.personVoice ??= new PersonVoice(context, this.master, this.noiseBuffer);
+    this.personVoice.step(state.vehicle, strength, this.levels);
+  }
+
   suspend(): void {
     this.desiredEnabled = false;
     const generation = ++this.activationGeneration;
@@ -177,6 +205,7 @@ export class FlightAudio {
     this.boatVoice = null;
     this.carVoice?.dispose();
     this.carVoice = null;
+    this.personVoice = null;
     this.stallOscillator?.stop();
     this.windSource?.stop();
     this.engineOscillators = [];
@@ -327,4 +356,14 @@ export class FlightAudio {
     oscillator.start();
     oscillator.stop(context.currentTime + 0.28);
   }
+}
+
+/**
+ * How much of a parked car's engine a walker hears at a distance, 0..1: full
+ * within 2 m of it, then falling as the inverse square of the distance, as a
+ * point source in the open does.
+ */
+export function parkedEngineShare(distanceMeters: number): number {
+  const d = Math.max(2, Number.isFinite(distanceMeters) ? distanceMeters : 2);
+  return Math.min(1, (2 / d) ** 2);
 }

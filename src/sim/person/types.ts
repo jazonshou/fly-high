@@ -1,6 +1,11 @@
 import type { Vec3 } from "../types";
 import type { SurfaceVehicleSimulator } from "../surface/types";
 
+/** Collider group of the parked car's body box (the airports' is 6,001, the marina's 7,001). */
+export const PARKED_CAR_COLLIDER_GROUP = 8_001;
+/** Its material id: a vehicle's body, a wall to the walker, steel underfoot. */
+export const PARKED_CAR_COLLIDER_MATERIAL = 201;
+
 /** Where the walker starts: the feet point, and the heading it faces (`FlightTelemetry.heading`). */
 export interface PersonSpawn {
   position: Vec3;

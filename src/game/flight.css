@@ -1463,6 +1463,9 @@
 /* A state, not an alarm: no colour of its own and no pulse. */
 .flight-alert--quiet { color: var(--muted); animation: none; }
 .flight-alert--brake { top: calc(22% + 42px); }
+/* The walking session's get-in and get-out prompt (src/ui/PersonHud.tsx), low in the frame. */
+.walking-prompt { top: auto; bottom: 30%; }
+.walking-prompt--ready { color: var(--accent); animation: none; }
 
 .flight-hud__bottom {
   position: absolute;

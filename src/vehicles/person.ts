@@ -197,7 +197,8 @@ export interface BodyPoint {
  * hitch (2.72 m aft) to the front bumper (2.19 m ahead), 1.87 m wide, from
  * 0.30 m above the ground to the roof at 1.94 m (the published body).
  * The hip point is ESTIMATED from the drawn cockpit eye; the figure build
- * measures it on the drawn seat.
+ * measures it on the drawn seat. The door stand's `up` is not read: the
+ * walker stands on the ground at its `forward` and `right`.
  */
 export const CAR_SEATING = Object.freeze({
   cgAboveGround: 0.8,

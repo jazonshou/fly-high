@@ -15,6 +15,12 @@ import type {
   TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
 
+/** Foot strikes drawn since the last `consumeFootsteps`. */
+export interface FootstepEvents {
+  count: number;
+  strength: number;
+}
+
 export interface TerrainAuthorityPublisher {
   publishTerrainPage(page: TerrainPagePublication): void;
   publishTerrainMacro(macro: TerrainMacroGrid): void;
@@ -56,6 +62,20 @@ export interface FlightRenderingSystem {
    * since the last frame, a ground speed in the thousands.
    */
   cutCamera(): void;
+  /**
+   * The walker's look and zoom gathered since the last frame (radians right
+   * and up, wheel notches out), for the character camera. Ignored outside a
+   * walking session.
+   */
+  applyCharacterLook(look: { readonly yaw: number; readonly pitch: number; readonly zoom: number }): void;
+  /** The character camera's heading and pitch, radians: the walker moves and swims relative to them. */
+  characterView(): { readonly heading: number; readonly pitch: number };
+  /**
+   * The walker's foot strikes drawn since the last call, for the footsteps:
+   * how many, and the strongest (0..1). Written to `out`, which it returns;
+   * 0 strikes outside a walking session.
+   */
+  consumeFootsteps(out: FootstepEvents): FootstepEvents;
   /**
    * Beta terrain viewer: hides the aircraft and switches to the free-fly
    * camera rig. The caller keeps feeding `render()` a synthetic

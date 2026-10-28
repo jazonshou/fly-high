@@ -40,6 +40,8 @@ export interface PersonAnimationInput {
    * the door over progress 0..0.25. Null otherwise.
    */
   readonly boardingFrom?: { readonly forward: number; readonly up: number; readonly right: number; readonly facing: number } | null;
+  /** How far the boarding door stands open as drawn, 0 shut .. 1 (`FRONT_DOOR_HINGE.openRadians`), for the hands. 0 otherwise. */
+  readonly boardingDoor?: number;
 }
 
 /** What one `update` reports back: foot strikes since the last frame, for footsteps. */

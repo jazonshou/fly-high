@@ -38,6 +38,9 @@ function fakeRenderer() {
     domElement: canvas,
     setCameraMode: vi.fn(() => calls.push("setCameraMode")),
     cutCamera: vi.fn(),
+    applyCharacterLook: vi.fn(),
+    characterView: vi.fn(() => ({ heading: 1.25, pitch: -0.5 })),
+    consumeFootsteps: vi.fn((out: { count: number; strength: number }) => Object.assign(out, { count: 2, strength: 0.8 })),
     setViewerMode: vi.fn(),
     sampleGroundHeight: vi.fn(() => 12.5),
     setQuality: vi.fn(),
@@ -108,6 +111,9 @@ describe("the bench renderer decorator", () => {
       domElement: () => expect(bench.domElement).toBe(canvas),
       setCameraMode: () => bench.setCameraMode("cockpit"),
       cutCamera: () => bench.cutCamera(),
+      applyCharacterLook: () => bench.applyCharacterLook({ yaw: 0.1, pitch: 0.2, zoom: 1 }),
+      characterView: () => expect(bench.characterView()).toEqual({ heading: 1.25, pitch: -0.5 }),
+      consumeFootsteps: () => expect(bench.consumeFootsteps({ count: 0, strength: 0 })).toEqual({ count: 2, strength: 0.8 }),
       setViewerMode: () => bench.setViewerMode(true),
       sampleGroundHeight: () => expect(bench.sampleGroundHeight(3, 4)).toBe(12.5),
       setQuality: () => bench.setQuality("low"),
@@ -125,6 +131,7 @@ describe("the bench renderer decorator", () => {
     for (const run of Object.values(exercised)) run();
 
     expect(inner.setCameraMode).toHaveBeenCalledWith("cockpit");
+    expect(inner.applyCharacterLook).toHaveBeenCalledWith({ yaw: 0.1, pitch: 0.2, zoom: 1 });
     expect(inner.cutCamera).toHaveBeenCalledOnce();
     expect(inner.setViewerMode).toHaveBeenCalledWith(true);
     expect(inner.sampleGroundHeight).toHaveBeenCalledWith(3, 4);

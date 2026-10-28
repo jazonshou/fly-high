@@ -3,7 +3,7 @@ import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 import { createRawTextureFromMipChain } from "@/src/render/webgpu/core/MipChainUpload";
 import { hashLatticeCoordinates, unitFloatFromHash } from "@/src/world/seed";
-import { BODY, DOOR_LINES, GLASSHOUSE, SIDE_WINDOW_BOTTOM } from "./lc76Lines";
+import { A_PILLAR_WIDTH, BODY, DOOR_LINES, GLASSHOUSE, SIDE_WINDOW_BOTTOM } from "./lc76Lines";
 
 /**
  * The LandCruiser 76's ONE texture atlas: every opaque part of the car wears
@@ -406,13 +406,24 @@ function paintSides(painter: AtlasPainter): void {
     const [x1, y1] = sideTexel(toX, height);
     painter.line(x0, y0, x1, y1, width, gap, NO_GLOW, 0.7);
   };
-  // Front door: leading edge under the mirror, trailing edge at the B pillar, its bottom over the sill.
-  vertical(DOOR_LINES.frontDoorFront, BODY.sill + 0.03, SIDE_WINDOW_BOTTOM - 0.01);
-  vertical(DOOR_LINES.frontDoorRear, BODY.sill + 0.03, GLASSHOUSE.head - 0.035);
-  vertical(DOOR_LINES.rearDoorRear, BODY.sill + 0.12, GLASSHOUSE.head - 0.035);
-  horizontal(DOOR_LINES.frontDoorFront, DOOR_LINES.rearDoorRear, BODY.sill + 0.03);
+  const slanted = (fromX: number, fromHeight: number, toX: number, toHeight: number): void => {
+    const [x0, y0] = sideTexel(fromX, fromHeight);
+    const [x1, y1] = sideTexel(toX, toHeight);
+    painter.line(x0, y0, x1, y1, width, gap, NO_GLOW, 0.7);
+  };
+  // Front door: its leading edge raked from behind the flare to the A pillar's
+  // foot, then up the pillar; its trailing edge at the B pillar; its bottom
+  // over the sill. Where the drawn door is cut (carBody.ts).
+  const pillarAtTop = GLASSHOUSE.screenFootX
+    + ((GLASSHOUSE.screenHeadX - GLASSHOUSE.screenFootX) * (DOOR_LINES.doorTop - BODY.belt)) / (GLASSHOUSE.head - BODY.belt)
+    - A_PILLAR_WIDTH;
+  slanted(DOOR_LINES.frontDoorFoot, DOOR_LINES.frontDoorBottom, DOOR_LINES.frontDoorBelt, BODY.belt);
+  slanted(DOOR_LINES.frontDoorBelt, BODY.belt, pillarAtTop, DOOR_LINES.doorTop);
+  vertical(DOOR_LINES.frontDoorRear, DOOR_LINES.frontDoorBottom, DOOR_LINES.doorTop);
+  vertical(DOOR_LINES.rearDoorRear, BODY.sill + 0.12, DOOR_LINES.doorTop);
+  horizontal(DOOR_LINES.frontDoorFoot, DOOR_LINES.rearDoorRear, DOOR_LINES.frontDoorBottom);
   // The doors' window frames: a shut line round the top of each door's glass.
-  horizontal(DOOR_LINES.frontDoorFront - 0.1, DOOR_LINES.rearDoorRear, GLASSHOUSE.head - 0.035);
+  horizontal(pillarAtTop, DOOR_LINES.rearDoorRear, DOOR_LINES.doorTop);
   // A stamped swage line along the flanks, under the belt.
   const [sx0, sy0] = sideTexel(BODY.bumperRear + 0.1, BODY.belt - 0.13);
   const [sx1, sy1] = sideTexel(BODY.front - 0.05, BODY.belt - 0.13);
