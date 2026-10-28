@@ -45,6 +45,12 @@ export interface CharacterCameraFrame {
   /** The water the eye keeps to one side of, or null where there is none to ask. */
   water: CharacterCameraWater | null;
   obstacles: readonly CameraObstacleBox[];
+  /**
+   * The probe sphere swept through the world's static colliders from one
+   * frame point to another, answering the share of the way it travels
+   * before it touches one (1: clear); null where there are none.
+   */
+  sweep: ((fromX: number, fromY: number, fromZ: number, toX: number, toY: number, toZ: number, radius: number) => number) | null;
 }
 
 /** The drawn water surface over a point and the band either side of it the eye keeps out of. */
@@ -158,6 +164,13 @@ export class CharacterCamera {
     for (const box of frame.obstacles) {
       const hit = rayBoxDistance(pivotX, pivotY, pivotZ, backX, backY, backZ, box, spec.probeRadius);
       if (hit < allowed) allowed = hit;
+    }
+    if (frame.sweep && allowed > 0) {
+      allowed *= frame.sweep(
+        pivotX, pivotY, pivotZ,
+        pivotX + backX * allowed, pivotY + backY * allowed, pivotZ + backZ * allowed,
+        spec.probeRadius,
+      );
     }
     allowed = Math.max(MIN_BOOM, allowed);
     // In at once, out over the ease time.

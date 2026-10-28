@@ -29,6 +29,7 @@ function frame(overrides: Partial<CharacterCameraFrame> = {}): CharacterCameraFr
     groundHeight: () => 0,
     water: null,
     obstacles: [],
+    sweep: null,
     ...overrides,
   };
 }
@@ -84,6 +85,22 @@ describe("character camera", () => {
     const pose = camera.update(frame({ obstacles: [car] }));
     expect(pose.eyeZ).toBeGreaterThan(-0.7 + PERSON.camera.probeRadius - 0.01);
     expect(pose.fade).toBeGreaterThan(0);
+  });
+
+  it("stops short of what the static colliders' sweep meets", () => {
+    const camera = new CharacterCamera();
+    camera.reset(0);
+    camera.pitch = 0;
+    let asked: number[] = [];
+    const wall = (fx: number, fy: number, fz: number, tx: number, ty: number, tz: number, radius: number) => {
+      asked = [fx, fy, fz, tx, ty, tz, radius];
+      // A wall across z = -1.5: the probe touches it radius short of it.
+      const touch = (fz - (-1.5 + radius)) / (fz - tz);
+      return Math.min(1, Math.max(0, touch));
+    };
+    const pose = camera.update(frame({ sweep: wall }));
+    expect(asked[6]).toBe(PERSON.camera.probeRadius);
+    expect(pose.eyeZ).toBeCloseTo(-1.5 + PERSON.camera.probeRadius, 6);
   });
 
   it("puts the first-person eye in the head", () => {
