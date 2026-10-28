@@ -347,12 +347,12 @@ function surfaceVehicleOrThrow(): SurfaceVehicleKind {
 function stepWalking(session: WalkingSession): boolean {
   if (!world) return false;
   const position = session.focus;
-  const wind = sampleWind(world, position.x, position.y, position.z, session.car.state.time, windTarget);
+  const wind = sampleWind(world, position.x, position.y, position.z, session.simulationTime, windTarget);
   const windScale = weather === "clear" ? 0.62 : weather === "cloudy" ? 1.28 : 1;
   surfaceWind.x = wind.x * windScale;
   surfaceWind.y = wind.y * windScale;
   surfaceWind.z = wind.z * windScale;
-  surfaceEnvironment.water.setTime(session.car.state.time);
+  surfaceEnvironment.water.setTime(session.simulationTime);
   hydrologyWater.setVehiclePosition(position.x, position.z);
   surfaceControls.assist = mode;
   surfaceControls.boat = NEUTRAL_BOAT_CONTROLS;

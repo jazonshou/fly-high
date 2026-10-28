@@ -131,6 +131,15 @@ export class WalkingSession {
     return this.drivenValue === "car" ? this.car.state.position : this.person.state.position;
   }
 
+  /**
+   * The session's own clock, s, as of the step about to run: it keeps running
+   * while the parked car sleeps (whose clock stops), so the walker's sea and
+   * wind move on. It is the time the renderer draws the session at.
+   */
+  get simulationTime(): number {
+    return this.time;
+  }
+
   /** The driven one has crashed (only the car can). */
   get crashed(): boolean {
     return this.drivenValue === "car" && this.car.state.crashed;
