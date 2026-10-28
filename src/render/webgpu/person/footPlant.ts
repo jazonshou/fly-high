@@ -102,6 +102,12 @@ export interface FootSolveOptions {
   readonly weight: number;
   /** How fast the pelvis may rise back after the feet let it down, m/s (`MAX_RISE` walking). */
   readonly riseRate: number;
+  /**
+   * How fast the body may come down onto a foot that has just come to the
+   * ground, m/s: unbounded walking, where the foot is already there; a move
+   * that puts a hanging foot down (out of a seat) lowers the body onto it.
+   */
+  readonly fallRate: number;
 }
 
 export interface FootSolveResult {
@@ -118,6 +124,7 @@ export class FootPlanter {
   private groundUnder = 0;
   private groundUnderInitialised = false;
   private lastLift = 0;
+  private lastWeight = 1;
   private readonly result: FootSolveResult = { strikes: 0, strikeSide: 0, pelvisDrop: 0 };
 
   /**
@@ -157,6 +164,7 @@ export class FootPlanter {
       foot.release = 0;
     }
     this.groundUnderInitialised = false;
+    this.lastLift = 0;
   }
 
   get anyPlanted(): boolean {
@@ -203,8 +211,10 @@ export class FootPlanter {
       // Eased, so the pelvis does not jump as the weight passes from foot to foot on a slope.
       this.groundUnder += (under - this.groundUnder) * Math.min(1, options.deltaSeconds * 12);
     }
-    // Both feet off the ground (a running stride's flight): the pelvis carries on at its last height.
-    let lift = flight ? this.lastLift : (this.groundUnder - lowest) * w;
+    // Both feet off the ground (a running stride's flight): the pelvis carries on at its last height, let
+    // go of as the solve's weight falls (getting into a seat).
+    let lift = flight ? this.lastLift * Math.min(1, w / this.lastWeight) : (this.groundUnder - lowest) * w;
+    this.lastWeight = w;
     shiftBody(pose, lift);
 
     // Targets.
@@ -217,9 +227,9 @@ export class FootPlanter {
       const fy = gp[bones.foot * 3 + 1]!;
       const fz = gp[bones.foot * 3 + 2]!;
       if (options.standing && foot.planted && foot.step < 0 && this.feet[1 - side]!.step < 0) {
-        // Too far from under the hip, or twisted: step back.
-        pose.posedPoint(bones.foot, sole.heel[0], sole.heel[1], sole.heel[2], sc, 0);
-        const offHip = foot.onBall ? STEP_DISTANCE : Math.hypot(foot.px - sc[0]!, foot.pz - sc[2]!);
+        // Too far from under the hip, or twisted: step back. The ankle against the stance's own, so a foot
+        // left on its ball (a climb's last step) is measured as one on its heel.
+        const offHip = Math.hypot(foot.ax - fx, foot.az - fz);
         if (offHip > STEP_DISTANCE || Math.abs(foot.yaw) > STEP_YAW) {
           foot.planted = false;
           foot.step = 0;
@@ -352,6 +362,12 @@ export class FootPlanter {
     drop = Math.min(0.6, drop);
     if (drop > 0) shiftBody(pose, -drop);
     lift -= drop;
+    // Coming down onto a foot just put to the ground is eased where the move asks for it.
+    const fall = this.lastLift - options.fallRate * options.deltaSeconds - lift;
+    if (fall > 0) {
+      shiftBody(pose, fall);
+      lift += fall;
+    }
     // Rising back is eased; going down is not (the legs must reach).
     const rise = lift - this.lastLift;
     const allowed = options.riseRate * options.deltaSeconds;

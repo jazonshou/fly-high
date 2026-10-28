@@ -95,10 +95,10 @@ function doorPoint(open: number, along: number, height: number, out: number, tar
 // --- Key poses (channels), right door. ---------------------------------------------------------
 
 export const SEATED = channels({
-  ...both({ hipFlex: 84, hipAbd: 7, hipRot: -6, knee: 78, ankle: 12, shFlex: 52, shAbd: 10, shRot: 10, elbow: 38, clavProt: 10, foreTwist: 40, fingers: 62, thumb: 30, wristFlex: -10 }),
+  ...both({ hipFlex: 84, hipAbd: 7, hipRot: -6, knee: 78, ankle: 12, shFlex: 52, shAbd: 10, shRot: 10, elbow: 38, clavProt: 25, foreTwist: 40, fingers: 62, thumb: 30, wristFlex: -10 }),
   pelvisTilt: -12,
-  spineFlex: 26,
-  neckFlex: -12,
+  spineFlex: 36,
+  neckFlex: -18,
   headFlex: -6,
 });
 const STEP_UP = channels({ ...both({ shAbd: -4, elbow: 15, fingers: 25 }), hipFlexL: 72, kneeL: 92, ankleL: 10, hipFlexR: 4, kneeR: 6, spineFlex: 10 });
@@ -267,10 +267,11 @@ export class CarSeatMotion {
       this.hands(steeringWheel, smooth(0.7, 0.84, p), smooth(0.92, 1, p), deltaSeconds);
       this.pedals(smooth(0.74, 0.84, p));
     } else {
-      place.ground = smooth(0.46, 0.56, p);
-      place.stance[0] = p > 0.6;
-      place.stance[1] = p > 0.5;
-      setLimb(mt, mw, 2, STEP[0], STEP[1] + PROPORTIONS.ankleHeight, STEP[2], smooth(0.34, 0.42, p) * (1 - smooth(0.54, 0.6, p)));
+      // The outer foot reaches the ground as the hips come down off the sill, then the inner one off the step.
+      place.ground = smooth(0.58, 0.64, p);
+      place.stance[0] = p > 0.66;
+      place.stance[1] = p > 0.6;
+      setLimb(mt, mw, 2, STEP[0], STEP[1] + PROPORTIONS.ankleHeight, STEP[2], smooth(0.34, 0.42, p) * (1 - smooth(0.62, 0.68, p)));
       const door = doorOpening ?? doorOpenAt("getOut", p);
       doorPoint(door, DOOR_LENGTH - 0.45, 1.02, -0.08, mt, 3);
       mw[1] = smooth(0.04, 0.1, p) * (1 - smooth(0.2, 0.28, p));

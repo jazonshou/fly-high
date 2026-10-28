@@ -92,13 +92,20 @@ const EYE_BIND = Object.freeze([0.085, PERSON.eyeHeight, 0]);
 const VERY_SLOW = WALK_GROUP_SPEED[0]!;
 /** Speeds under this stand (both feet planted, stepping only to turn or settle). */
 const STAND_SPEED = 0.1;
-/** How fast the climb stands up on the top, m/s: its own crouch, not a foot letting the pelvis down. */
-const CLIMB_RISE = 3;
+/**
+ * How fast the pelvis may rise off the feet out of a landing's crouch, a
+ * climb or a seat, m/s: the move's own rising, not a foot letting the
+ * pelvis down mid-stride (`MAX_RISE`).
+ */
+const ACTION_RISE = 3;
 /** The sim's feet further than this from the drawn terrain stand on something it does not draw, m. */
 const OFF_TERRAIN = 0.12;
 /** The climb's hands: how far ahead of where it began they go on the top, and how far apart. */
 const CLIMB_HAND_REACH = 0.36;
 const CLIMB_HAND_SPREAD = 0.2;
+/** Under this top the climber bends over further for it, up to `CLIMB_LOW_LEAN` degrees half a metre lower. */
+const CLIMB_LEAN_HEIGHT = 1.0;
+const CLIMB_LOW_LEAN = 55;
 /**
  * The climb's pelvis over its key times: its height over where the climb
  * began, as a constant plus a share of the ledge's height, and how far
@@ -154,7 +161,7 @@ export class PersonMotion {
   /** Both feet were on the ground as this family began, and the planter keeps them there. */
   private feetKept = false;
   private readonly solveOptions: Mutable<FootSolveOptions> = {
-    stance: [true, true], standing: true, ground: flatGround, deltaSeconds: 0, weight: 0, riseRate: MAX_RISE,
+    stance: [true, true], standing: true, ground: flatGround, deltaSeconds: 0, weight: 0, riseRate: MAX_RISE, fallRate: 0,
   };
 
   setFirstPersonView(enabled: boolean): void {
@@ -311,8 +318,9 @@ export class PersonMotion {
       options.deltaSeconds = dt;
       // Feet still on the ground from the family before (a landing's crouch, a climb) stay there through the fade.
       options.weight = groundWeight * (FADE_INTO[family] > 0 && !this.feetKept ? smooth01(this.fade) : 1);
-      // The climb stands up off its crouch at its own pace.
-      options.riseRate = family === "mantle" ? CLIMB_RISE : MAX_RISE;
+      // A landing, a climb or a seat stands up off its crouch at its own pace.
+      options.riseRate = family === "ground" ? MAX_RISE : ACTION_RISE;
+      options.fallRate = family === "car" ? ACTION_RISE : Number.POSITIVE_INFINITY;
       const result = this.feet.solve(pose, options);
       if (result.strikes > 0 && family !== "land") {
         output.footStrikes += result.strikes;
@@ -351,6 +359,9 @@ export class PersonMotion {
     if (rise > 0.05) this.climbHeight = this.climbUp / rise;
     this.actions.climb(t, ch);
     const h = this.climbHeight;
+    // A low top is further below the shoulders: the body bends over further to put its hands on it.
+    const low = Math.min(1, Math.max(0, (CLIMB_LEAN_HEIGHT - h) / 0.5));
+    ch[CH.spineFlex] = ch[CH.spineFlex]! + CLIMB_LOW_LEAN * low * smoothstep(0.04, 0.14, t) * (1 - smoothstep(0.5, 0.64, t));
     // The pelvis's height over where the climb began, and its travel toward the ledge.
     const pelvis = sampleCurve(CLIMB_PELVIS_TIMES, CLIMB_PELVIS_HEIGHT, t) + h * sampleCurve(CLIMB_PELVIS_TIMES, CLIMB_PELVIS_LEDGE, t);
     const ahead = sampleCurve(CLIMB_PELVIS_TIMES, CLIMB_PELVIS_AHEAD, t);
