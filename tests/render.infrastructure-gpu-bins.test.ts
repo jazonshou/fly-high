@@ -228,11 +228,18 @@ describe("infrastructure GPU bin table", () => {
     let index = infrastructureIndex(world);
     // Without the streamed minimum, so a test-sized window runs out of room.
     const pack = new TerrainInfrastructurePack(index, world.seaLevel, origin, true, false);
+    // What the GPU holds: the pack, then only the ranges each update returns.
+    const copy = pack.words.slice();
     for (let k = 6; k < 130; k += 1) {
       installInfrastructureRegions(world, [regionAt(k)], [`fly:${k - 6}`]);
       const next = infrastructureIndex(world);
-      expect(pack.update(next, infrastructureIndexChanges(index, next)!)).not.toBeNull();
+      const ranges = pack.update(next, infrastructureIndexChanges(index, next)!);
+      expect(ranges).not.toBeNull();
+      for (let i = 0; i < ranges!.length; i += 2) {
+        copy.set(pack.words.subarray(ranges![i]! * 4, ranges![i + 1]! * 4), ranges![i]! * 4);
+      }
       index = next;
+      expect(copy.findIndex((word, i) => word !== pack.words[i]), `first word the ranges missed, step ${k}`).toBe(-1);
       if (k % 10 === 0 || k === 129) expectTableMatches(index, pack.words);
     }
     expect(pack.relayouts.lists).toBeGreaterThan(0);

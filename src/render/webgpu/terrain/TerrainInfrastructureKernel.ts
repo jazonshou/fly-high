@@ -129,13 +129,17 @@ const LIST_SLACK = 4_096;
 
 /**
  * At least this much once streamed regions are in, so the roads' whole
- * window round a jet (about 7,000 segments in 2,300 bins round the home
- * field, measured, and more with the lead ahead) streams in after the first
- * pack, made while priming round the spawn, without another: about 1.7 MB.
+ * window round a jet streams in after the first pack, made while priming
+ * round the spawn, without another, and its table is rarely rehashed:
+ * about 2.7 MB. Measured on a 300 s leg at 250 m/s from the home field
+ * (7271, -37795, heading 135): the window grows to 13,941 segments in 4,125
+ * bins, which the old 16,384 segments and 8,192 slots (a table full at
+ * 4,096 bins) took with one fresh pack (18 ms) and a rehash every 20 s
+ * (2 to 9 ms each, 13 of them) as dropped bins filled the table.
  */
-const STREAMED_MIN_SEGMENTS = 16_384;
-const STREAMED_MIN_TABLE_SLOTS = 8_192;
-const STREAMED_MIN_LIST_ENTRIES = 65_536;
+const STREAMED_MIN_SEGMENTS = 24_576;
+const STREAMED_MIN_TABLE_SLOTS = 16_384;
+const STREAMED_MIN_LIST_ENTRIES = 131_072;
 
 /** Dirty vec4 ranges closer than this are written as one. */
 const DIRTY_MERGE_VEC4S = 16;
@@ -344,12 +348,16 @@ export class TerrainInfrastructurePack {
     return slot;
   }
 
-  /** A bin's table entry; an emptied bin keeps its key, so the probes that pass it still find what lies beyond. */
-  private writeEntry(bin: PackedBin): void {
+  /**
+   * A bin's table entry; an emptied bin keeps its key, so the probes that
+   * pass it still find what lies beyond. A caller rewriting every entry
+   * marks the whole table once instead (`mark` false).
+   */
+  private writeEntry(bin: PackedBin, mark = true): void {
     const word = (this.tableBase + bin.slot) * 4;
     this.words[word + 2] = bin.count > 0 ? bin.first : 0;
     this.words[word + 3] = bin.count + 1;
-    this.markDirty(this.tableBase + bin.slot, this.tableBase + bin.slot + 1);
+    if (mark) this.markDirty(this.tableBase + bin.slot, this.tableBase + bin.slot + 1);
   }
 
   /** The table again with only the bins listing something: emptied bins' keys go. */
@@ -364,7 +372,7 @@ export class TerrainInfrastructurePack {
     for (const [key, bin] of live) {
       const moved: PackedBin = { slot: this.insertKey(key), first: bin.first, capacity: bin.capacity, count: bin.count };
       this.bins.set(key, moved);
-      this.writeEntry(moved);
+      this.writeEntry(moved, false);
     }
     this.markDirty(this.tableBase, this.listBase);
     this.relayouts.table += 1;
@@ -384,11 +392,11 @@ export class TerrainInfrastructurePack {
     if (cursor > this.listCapacity) return false;
     this.listCursor = cursor;
     for (const [key, bin] of this.bins) {
-      this.writeEntry(bin);
+      this.writeEntry(bin, false);
       const list = index.bins.get(key);
       if (list) this.words.set(list, this.listBase * 4 + bin.first);
     }
-    this.markDirty(this.listBase, this.listBase + Math.ceil(cursor / 4));
+    this.markDirty(this.tableBase, this.listBase + Math.ceil(cursor / 4));
     this.relayouts.lists += 1;
     return true;
   }
