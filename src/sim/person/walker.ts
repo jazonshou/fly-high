@@ -49,8 +49,8 @@ const SNAP_DOWN = PERSON.snapDown;
  * The capsule as four spheres of its radius, centres above the feet: the
  * foot (its bottom at the feet), the step sphere (its bottom at the step
  * height, so a lower ledge passes under it and is stepped onto), the waist
- * and the head (its top at the stature). Neighbours are 0.38 m apart, so the
- * union is never thinner than 0.23 m of the 0.3 m radius.
+ * and the head (its top at the stature). Neighbours are at most 0.4 m apart,
+ * so the union is never thinner than 0.22 m of the 0.3 m radius.
  */
 const BODY = Float64Array.of(R, STEP_UP + R, (STEP_UP + H) / 2, H - R);
 const FOOT_SPHERE = 0;
