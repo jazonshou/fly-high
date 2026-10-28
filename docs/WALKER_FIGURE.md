@@ -88,7 +88,11 @@ cross-fades from the last drawn pose:
 - **Swim and dive**: breaststroke, and the crawl when the run is asked for,
   the eye held where the sim puts it (5 cm above the water at the surface);
   the dive pitched by the sim's `swimPitch`. ESTIMATES. At the sim's -0.05 m
-  float depth the crawl is head-up; there is no breathing turn.
+  float depth both strokes are swum head-up, as a recreational breaststroke
+  and a water-polo crawl are: the trunk inclined (24 and 13 degrees), the
+  neck extended, the shoulders just under the surface and the hips 0.3 and
+  0.17 m down. The breaststroke's hands stay under the water all through;
+  only the crawl's recovering arm comes out. There is no breathing turn.
 - **Mantle**: out of the water onto a ledge, and the land climb (a jump at a
   ledge up to `PERSON.climbHeight`, the sim's `swimPitch` at pi/2): hands on
   the top, pressed up, the left knee over and its foot planted, then the right,

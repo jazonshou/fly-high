@@ -103,6 +103,45 @@ describe("the swimmer", () => {
     expect(worst).toBeLessThan(0.01);
   });
 
+  it("swims in the water, not on it: the shoulders and hips under, the breaststroke's hands never out", () => {
+    // The eye floats 5 cm up, so the water is 5 cm under the root's eye height.
+    const surface = PERSON.eyeHeight - 0.05;
+    const height = (motion: PersonMotion, bone: number): number => motion.pose.globalPositions[bone * 3 + 1]! - surface;
+    const hands = [BONE.handL, BONE.fingersL, BONE.handR, BONE.fingersR];
+
+    const breast = new PersonMotion();
+    let breastHand = -Infinity;
+    let breastShoulder = -Infinity;
+    let breastPelvis = -Infinity;
+    run(breast, motionInput(personState("swim", { speed: 0.8, waterDepth: 3, submersion: 0.8, headDepth: -0.05, grounded: false }), { forward: 0.8 }), 4, (time) => {
+      if (time < 1) return;
+      for (const bone of hands) breastHand = Math.max(breastHand, height(breast, bone));
+      breastShoulder = Math.max(breastShoulder, height(breast, BONE.upperArmL), height(breast, BONE.upperArmR));
+      breastPelvis = Math.max(breastPelvis, height(breast, BONE.pelvis));
+    });
+    expect(breastHand).toBeLessThan(0);
+    expect(breastShoulder).toBeLessThan(-0.05);
+    expect(breastPelvis).toBeLessThan(-0.2);
+
+    // The crawl's recovering arm comes out over the water for a part of its cycle; the body and the other shoulder stay in it.
+    const crawl = new PersonMotion();
+    let crawlLowShoulder = -Infinity;
+    let crawlPelvis = -Infinity;
+    let crawlHandOut = 0;
+    let frames = 0;
+    run(crawl, motionInput(personState("swim", { speed: 1.3, running: true, waterDepth: 3, submersion: 0.9, headDepth: -0.05, grounded: false }), { forward: 1.3 }), 4, (time) => {
+      if (time < 1) return;
+      frames += 1;
+      crawlLowShoulder = Math.max(crawlLowShoulder, Math.min(height(crawl, BONE.upperArmL), height(crawl, BONE.upperArmR)));
+      crawlPelvis = Math.max(crawlPelvis, height(crawl, BONE.pelvis));
+      if (height(crawl, BONE.handL) > 0) crawlHandOut += 1;
+    });
+    expect(crawlLowShoulder).toBeLessThan(0);
+    expect(crawlPelvis).toBeLessThan(-0.1);
+    expect(crawlHandOut / frames).toBeGreaterThan(0.15);
+    expect(crawlHandOut / frames).toBeLessThan(0.45);
+  });
+
   it("lies prone swimming and upright treading water", () => {
     const up = (motion: PersonMotion): number => {
       rotateVector(motion.pose.globalRotations, BONE.spine3 * 4, 0, 1, 0, v, 0);

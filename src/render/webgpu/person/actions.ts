@@ -10,7 +10,11 @@ import { both, channels, CH, createChannels, LIMB_OFFSET, SIDE_BASE, mixChannels
  *    Fastest" (2003), and the FINA technique notes describe them (the
  *    breaststroke's pull, breath, recovery, kick and glide; the crawl's
  *    entry, catch, pull, push and high-elbow recovery over a six-beat
- *    flutter kick, the body rolling about 35 degrees each way);
+ *    flutter kick, the body rolling about 35 degrees each way). Both are
+ *    swum head-up, the recreational breaststroke and the water-polo crawl,
+ *    because the sim floats the eye above the water: the neck extended, the
+ *    shoulders just under the surface, the breaststroke's hands under it
+ *    all through, the hands meeting under the chin before they reach ahead;
  *  - treading water: the eggbeater kick under sculling hands;
  *  - the hard landing's crouch and the parachute-style roll (a forward roll
  *    over the tucked body), and the jump's take-off and air;
@@ -22,14 +26,14 @@ import { both, channels, CH, createChannels, LIMB_OFFSET, SIDE_BASE, mixChannels
  */
 
 const breaststroke: ChannelKeys = [
-  [0, channels({ ...both({ shFlex: 172, shAbd: 6, elbow: 4, wristFlex: 0, fingers: 6, hipFlex: 0, knee: 6, ankle: -45 }), neckFlex: 5 })],
-  [0.14, channels({ ...both({ shFlex: 162, shAbd: 42, elbow: 18, foreTwist: 55, fingers: 8, hipFlex: 0, knee: 8, ankle: -45 }), neckFlex: -12 })],
-  [0.3, channels({ ...both({ shFlex: 112, shAbd: 38, shRot: 35, elbow: 105, foreTwist: 30, wristFlex: 15, fingers: 10, hipFlex: 8, knee: 25, ankle: -35 }), neckFlex: -35, spineFlex: -8 })],
-  [0.42, channels({ ...both({ shFlex: 128, shAbd: 12, shRot: 20, elbow: 125, foreTwist: 10, fingers: 10, hipFlex: 32, hipAbd: 12, hipRot: -20, knee: 85, ankle: 5 }), neckFlex: -30, spineFlex: -6 })],
-  [0.52, channels({ ...both({ shFlex: 152, shAbd: 6, elbow: 60, fingers: 8, hipFlex: 48, hipAbd: 22, hipRot: -32, knee: 118, ankle: 22 }), neckFlex: -10 })],
-  [0.64, channels({ ...both({ shFlex: 170, shAbd: 5, elbow: 10, fingers: 6, hipFlex: 28, hipAbd: 30, hipRot: -25, knee: 70, ankle: 18 }), neckFlex: 5 })],
-  [0.78, channels({ ...both({ shFlex: 172, shAbd: 6, elbow: 4, fingers: 6, hipFlex: 2, hipAbd: 4, knee: 6, ankle: -45 }), neckFlex: 6 })],
-  [1, channels({ ...both({ shFlex: 172, shAbd: 6, elbow: 4, wristFlex: 0, fingers: 6, hipFlex: 0, knee: 6, ankle: -45 }), neckFlex: 5 })],
+  [0, channels({ ...both({ shFlex: 150, shAbd: -20, elbow: 6, fingers: 6, hipFlex: 0, knee: 6, ankle: -45 }), neckFlex: -28, headFlex: -14 })],
+  [0.14, channels({ ...both({ shFlex: 140, shAbd: 35, elbow: 15, foreTwist: 55, fingers: 8, hipFlex: 0, knee: 8, ankle: -45 }), neckFlex: -30, headFlex: -14 })],
+  [0.3, channels({ ...both({ shFlex: 62, shAbd: 45, shRot: 30, elbow: 78, foreTwist: 30, wristFlex: 15, fingers: 10, hipFlex: 8, knee: 25, ankle: -35 }), neckFlex: -34, headFlex: -16, spineFlex: -6 })],
+  [0.42, channels({ ...both({ shFlex: 70, shAbd: 5, shRot: 40, elbow: 102, foreTwist: 10, fingers: 10, hipFlex: 32, hipAbd: 12, hipRot: -20, knee: 85, ankle: 5 }), neckFlex: -32, headFlex: -16, spineFlex: -5 })],
+  [0.52, channels({ ...both({ shFlex: 115, shAbd: -12, shRot: 20, elbow: 50, fingers: 8, hipFlex: 48, hipAbd: 22, hipRot: -32, knee: 118, ankle: 22 }), neckFlex: -29, headFlex: -14 })],
+  [0.64, channels({ ...both({ shFlex: 146, shAbd: -18, elbow: 10, fingers: 6, hipFlex: 28, hipAbd: 30, hipRot: -25, knee: 70, ankle: 18 }), neckFlex: -28, headFlex: -14 })],
+  [0.78, channels({ ...both({ shFlex: 150, shAbd: -20, elbow: 6, fingers: 6, hipFlex: 2, hipAbd: 4, knee: 6, ankle: -45 }), neckFlex: -28, headFlex: -14 })],
+  [1, channels({ ...both({ shFlex: 150, shAbd: -20, elbow: 6, fingers: 6, hipFlex: 0, knee: 6, ankle: -45 }), neckFlex: -28, headFlex: -14 })],
 ];
 
 /** The dive stroke: the breaststroke's long under-water pull, the hands swept back to the thighs, then a long glide. */
@@ -52,9 +56,9 @@ const crawlArm: readonly (readonly [number, readonly [number, number, number, nu
   [0.12, [155, 8, 25, 35, 20]],
   [0.3, [95, 6, 35, 95, 20]],
   [0.45, [25, 8, 15, 40, 10]],
-  [0.52, [-8, 14, 0, 25, 0]],
-  [0.62, [10, 62, -25, 95, -20]],
-  [0.78, [95, 55, -15, 100, -10]],
+  [0.52, [-8, 24, 0, 25, 0]],
+  [0.62, [10, 85, -25, 100, -20]],
+  [0.78, [95, 72, -15, 105, -10]],
   [0.92, [160, 18, -5, 40, 0]],
   [1, [172, 4, 0, 8, 10]],
 ];
@@ -95,11 +99,9 @@ export class ActionChannels {
       out[base + o.ankle] = -48;
       out[base + o.hipRot] = 8;
     }
-    // Breathing to the right as the right arm recovers.
-    const breath = Math.max(0, Math.sin(2 * Math.PI * (u - 0.05)));
-    out[CH.neckTurn] = 45 * breath * breath;
-    out[CH.headTurn] = 25 * breath * breath;
-    out[CH.neckFlex] = -8;
+    // Head-up (the sim floats the eye out of the water): looking ahead over the stroke, no breathing turn.
+    out[CH.neckFlex] = -30;
+    out[CH.headFlex] = -15;
     // Roll toward the pulling arm: right side down while the left arm recovers.
     return 35 * Math.sin(2 * Math.PI * (u - 0.25));
   }

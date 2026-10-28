@@ -93,6 +93,15 @@ const DEG = Math.PI / 180;
 const H = PROPORTIONS.stature;
 /** The eyes, between them, in the bind pose: the swimmer's anchor. */
 const EYE_BIND = Object.freeze([0.085, PERSON.eyeHeight, 0]);
+/**
+ * The surface strokes' body angle, radians head-up from prone (ESTIMATES).
+ * The sim floats the eye 5 cm above the water, so both strokes are swum
+ * head-up, as a recreational breaststroke and a water-polo crawl are: the
+ * trunk inclined and the neck extended put the shoulders just under the
+ * surface with the eye out. Flatter, the body would lie on top of the water.
+ */
+const BREAST_INCLINE = 0.42;
+const CRAWL_INCLINE = 0.22;
 const VERY_SLOW = WALK_GROUP_SPEED[0]!;
 /** Speeds under this stand (both feet planted, stepping only to turn or settle). */
 const STAND_SPEED = 0.1;
@@ -524,7 +533,7 @@ export class PersonMotion {
     }
     // Body pitch: prone at the surface (the breaststroke's head up a little, more as it breathes), upright treading.
     const breath = diving ? 0 : (1 - this.crawlBlend) * Math.max(0, Math.sin(2 * Math.PI * (fraction(this.strokeCycle) - 0.1)));
-    const style = diving ? 0 : (0.16 + 0.12 * breath) * (1 - this.crawlBlend) + 0.04 * this.crawlBlend;
+    const style = diving ? 0 : (BREAST_INCLINE + 0.04 * breath) * (1 - this.crawlBlend) + CRAWL_INCLINE * this.crawlBlend;
     const swimPitch = -Math.PI / 2 + person.swimPitch + style;
     const treadPitch = diving ? swimPitch : -0.32;
     const pitch = swimPitch + (treadPitch - swimPitch) * tread;
