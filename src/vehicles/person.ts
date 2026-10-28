@@ -47,6 +47,19 @@ export interface PersonSpec {
   /** Ledges a swimmer can mantle onto: height above the water and reach, metres. */
   readonly mantleHeight: number;
   readonly mantleReach: number;
+  /** Seconds a mantle takes, from the water to standing on the ledge. */
+  readonly mantleSeconds: number;
+  /**
+   * Landings (never damage: D5): from `landingHardSpeed` m/s a hard landing,
+   * a crouch of `landingHardSeconds`; from `landingRollSpeed` a roll of
+   * `landingRollSeconds`. Neither can move until it is over.
+   */
+  readonly landingHardSpeed: number;
+  readonly landingRollSpeed: number;
+  readonly landingHardSeconds: number;
+  readonly landingRollSeconds: number;
+  /** Turn rate toward the stroke direction swimming and diving, rad/s. */
+  readonly turnRateSwim: number;
   /** Getting in: within this distance of the door, with the car slower than `boardingCarSpeed`. */
   readonly doorReach: number;
   readonly boardingCarSpeed: number;
@@ -92,8 +105,11 @@ const STATURE = 1.76;
  * (PUBLISHED: Thorstensson & Roberthson 1987, Hreljac 1993), a Froude number
  * v^2 / (g L) of 0.44 with leg length L = 0.53 H, under the 0.5 where
  * walking stops being mechanically possible (Alexander 1989). Run, swimming,
- * diving and wading speeds are ESTIMATES. The camera numbers are starting
- * values for the framing test on the built figure.
+ * diving and wading speeds are ESTIMATES. The landing speeds are the plan's
+ * equal drops v^2 / 2g: under 1.3 m normal, to 3.3 m a crouch, past it a
+ * roll; the mantle's and the landings' durations and the swimming turn rate
+ * are ESTIMATES for the figure's motions to fit. The camera numbers are
+ * starting values for the framing test on the built figure.
  */
 export const PERSON: PersonSpec = Object.freeze({
   stature: STATURE,
@@ -117,6 +133,12 @@ export const PERSON: PersonSpec = Object.freeze({
   buoyantRise: 0.1,
   mantleHeight: 0.6,
   mantleReach: 0.7,
+  mantleSeconds: 1.0,
+  landingHardSpeed: 5,
+  landingRollSpeed: 8,
+  landingHardSeconds: 0.4,
+  landingRollSeconds: 1.1,
+  turnRateSwim: 180 * DEGREES,
   doorReach: 1.2,
   boardingCarSpeed: 0.5,
   getInSeconds: 2.0,

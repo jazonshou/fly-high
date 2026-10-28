@@ -21,12 +21,9 @@ import {
 import { flightAnglesOf, surfaceVisualState } from "../surface/visualState";
 import type { Quaternion, Vec3 } from "../types";
 import { createWaterSurfaceSample } from "../water/types";
-import type { PersonSimulator } from "./types";
+import { PARKED_CAR_COLLIDER_GROUP, PARKED_CAR_COLLIDER_MATERIAL, type PersonSimulator } from "./types";
 
-/** Collider group of the parked car's body box (the airports' is 6,001, the marina's 7,001). */
-export const PARKED_CAR_COLLIDER_GROUP = 8_001;
-/** Its material id: a vehicle's body, a wall to the walker. */
-export const PARKED_CAR_COLLIDER_MATERIAL = 201;
+export { PARKED_CAR_COLLIDER_GROUP, PARKED_CAR_COLLIDER_MATERIAL };
 
 /** The parked car falls asleep after this long at rest. */
 const SLEEP_AFTER_SECONDS = 1;
@@ -132,6 +129,15 @@ export class WalkingSession {
   /** The driven one's pose: what the worker samples wind and hydrology round. */
   get focus(): Readonly<Vec3> {
     return this.drivenValue === "car" ? this.car.state.position : this.person.state.position;
+  }
+
+  /**
+   * The session's own clock, s, as of the step about to run: it keeps running
+   * while the parked car sleeps (whose clock stops), so the walker's sea and
+   * wind move on. It is the time the renderer draws the session at.
+   */
+  get simulationTime(): number {
+    return this.time;
   }
 
   /** The driven one has crashed (only the car can). */
@@ -382,10 +388,8 @@ export class WalkingSession {
   }
 
   private personCanBoard(): boolean {
-    const payload = this.person.snapshot().payload;
-    if (payload.kind !== "person") return false;
-    return payload.grounded
-      && (payload.mode === "stand" || payload.mode === "walk" || payload.mode === "run" || payload.mode === "wade");
+    const mode = this.person.mode;
+    return this.person.grounded && (mode === "stand" || mode === "walk" || mode === "run" || mode === "wade");
   }
 
   private startGetIn(): void {

@@ -2,9 +2,10 @@ import type { FlightVisualState } from "@/src/game/types";
 import type { AircraftKind } from "@/src/sim";
 import { aircraftSpec, type EngineSoundSpec } from "@/src/aircraft/catalogue";
 import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/catalogue";
-import { isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
+import { isSurfaceVehicleKind, vehicleClass, type VehicleKind } from "@/src/vehicles/kinds";
 import { BoatVoice, boatSoundTargets } from "./boatVoice";
 import { CarVoice, carSoundTargets } from "./carVoice";
+import { groundWindShare, PersonVoice, UNDERWATER_MUFFLE_HZ } from "./personVoice";
 
 export interface AudioLevels {
   master: number;
@@ -21,6 +22,19 @@ export interface FlightAudioOptions extends AudioLevels {
    */
   vehicle?: VehicleKind;
 }
+
+/** What the listener is in, for a walking session: the air at the walker and the water over the camera. */
+export interface AudioSurroundings {
+  /** The wind at the walker, m/s on the world's axes: the sim's wind field at the weather's share. */
+  windX: number;
+  windY: number;
+  windZ: number;
+  /** How far under the water the render camera is, metres; 0 above it. */
+  cameraUnderwaterDepth: number;
+}
+
+/** The ground voice's level under the water: the water's own low hum. */
+const UNDERWATER_HUM = 0.35;
 
 /** Level of the engine's second harmonic against its fundamental. */
 export const ENGINE_SECOND_HARMONIC_GAIN = 0.55;
@@ -39,9 +53,17 @@ export class FlightAudio {
   private stallOscillator: OscillatorNode | null = null;
   private engineOscillators: OscillatorNode[] = [];
   private windSource: AudioBufferSourceNode | null = null;
+  /**
+   * Car sessions only, where the walker can dive: a low-pass after the
+   * master, wide open (exactly the Nyquist frequency, which passes
+   * everything) until the camera goes under.
+   */
+  private muffle: BiquadFilterNode | null = null;
+  private readonly surroundings: AudioSurroundings = { windX: 0, windY: 0, windZ: 0, cameraUnderwaterDepth: 0 };
   private levels: AudioLevels;
   private readonly aircraft: AircraftKind;
   private readonly surfaceVehicle: SurfaceVehicleSpec | null;
+  private readonly walkable: boolean;
   /** The engine the oscillators and filter are tuned for right now. */
   private voicedSound: EngineSoundSpec | null = null;
   private engineFilter: BiquadFilterNode | null = null;
@@ -50,6 +72,8 @@ export class FlightAudio {
   private boatVoice: BoatVoice | null = null;
   /** The car's own layer, built the first time a car's state arrives. */
   private carVoice: CarVoice | null = null;
+  /** The walker's footsteps, breathing and strokes, built the first time a walker's state arrives. */
+  private personVoice: PersonVoice | null = null;
   private enabled = false;
   private desiredEnabled = false;
   private activationGeneration = 0;
@@ -63,6 +87,7 @@ export class FlightAudio {
     this.surfaceVehicle = options.vehicle && isSurfaceVehicleKind(options.vehicle)
       ? surfaceVehicleSpec(options.vehicle)
       : null;
+    this.walkable = options.vehicle !== undefined && vehicleClass(options.vehicle) === "car";
   }
 
   async unlock(): Promise<void> {
@@ -91,6 +116,14 @@ export class FlightAudio {
     this.levels = levels;
     const now = this.context?.currentTime ?? 0;
     this.master?.gain.setTargetAtTime(levels.master, now, 0.05);
+  }
+
+  /** The walker's surroundings for the next `update`: the wind at them and the water over the camera. */
+  setSurroundings(surroundings: Readonly<AudioSurroundings>): void {
+    this.surroundings.windX = surroundings.windX;
+    this.surroundings.windY = surroundings.windY;
+    this.surroundings.windZ = surroundings.windZ;
+    this.surroundings.cameraUnderwaterDepth = surroundings.cameraUnderwaterDepth;
   }
 
   update(state: FlightVisualState): void {
@@ -138,10 +171,24 @@ export class FlightAudio {
     } else {
       this.carVoice?.silence();
     }
-    const windAmount = Math.min(1, Math.max(0, (state.airspeed - 15) / 75));
+    const person = state.vehicle?.kind === "person" ? state.vehicle : null;
+    if (person && this.master && this.noiseBuffer) {
+      this.personVoice ??= new PersonVoice(context, this.master, this.noiseBuffer);
+      this.personVoice.update(person, this.levels);
+    } else {
+      this.personVoice?.silence();
+    }
+    const under = this.surroundings.cameraUnderwaterDepth > 0;
+    this.muffle?.frequency.setTargetAtTime(under ? UNDERWATER_MUFFLE_HZ : context.sampleRate / 2, now, 0.04);
+    // On foot the wind is the air moving past the ear, and none of it is heard under the water.
+    const air = this.surroundings;
+    const windAmount = person
+      ? under ? 0 : groundWindShare(Math.hypot(air.windX - state.velocity.x, air.windY - state.velocity.y, air.windZ - state.velocity.z))
+      : Math.min(1, Math.max(0, (state.airspeed - 15) / 75));
     this.windGain?.gain.setTargetAtTime(this.levels.wind * windAmount * 0.12, now, 0.1);
     const groundSpeed = Math.hypot(state.velocity.x, state.velocity.z);
-    const rumble = state.onGround ? Math.min(1, groundSpeed / 34) : 0;
+    // Wheels and gear rumble rolling; feet have their footsteps instead; under the water, its own low hum.
+    const rumble = under ? UNDERWATER_HUM : !person && state.onGround ? Math.min(1, groundSpeed / 34) : 0;
     this.groundGain?.gain.setTargetAtTime(this.levels.wind * rumble * 0.085, now, 0.055);
     this.stallGain?.gain.setTargetAtTime(state.stalled && !state.onGround ? 0.055 : 0, now, 0.04);
 
@@ -165,6 +212,17 @@ export class FlightAudio {
     if (state.vehicle?.kind === "car") this.carVoice?.peaks.observe(state.vehicle);
   }
 
+  /**
+   * A foot struck as the drawn figure reports it, at once rather than at the
+   * next `update`, so the step lands with the foot. `strength` 0..1.
+   */
+  footstep(state: FlightVisualState, strength: number): void {
+    const context = this.context;
+    if (!context || !this.enabled || state.vehicle?.kind !== "person" || !this.master || !this.noiseBuffer) return;
+    this.personVoice ??= new PersonVoice(context, this.master, this.noiseBuffer);
+    this.personVoice.step(state.vehicle, strength, this.levels);
+  }
+
   suspend(): void {
     this.desiredEnabled = false;
     const generation = ++this.activationGeneration;
@@ -184,11 +242,13 @@ export class FlightAudio {
     this.boatVoice = null;
     this.carVoice?.dispose();
     this.carVoice = null;
+    this.personVoice = null;
     this.stallOscillator?.stop();
     this.windSource?.stop();
     this.engineOscillators = [];
     this.stallOscillator = null;
     this.windSource = null;
+    this.muffle = null;
     if (this.context) void this.context.close();
     this.context = null;
   }
@@ -232,7 +292,14 @@ export class FlightAudio {
     this.context = context;
     this.master = context.createGain();
     this.master.gain.value = this.levels.master;
-    this.master.connect(context.destination);
+    if (this.walkable) {
+      this.muffle = context.createBiquadFilter();
+      this.muffle.type = "lowpass";
+      this.muffle.frequency.value = context.sampleRate / 2;
+      this.master.connect(this.muffle).connect(context.destination);
+    } else {
+      this.master.connect(context.destination);
+    }
 
     const sound = aircraftSpec(this.aircraft).engineSound;
     const engineFilter = context.createBiquadFilter();

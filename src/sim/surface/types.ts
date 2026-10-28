@@ -34,6 +34,13 @@ export interface SurfaceVehicleEnvironment {
   /** The world's static colliders (buildings, guardrails); null where none are built. */
   colliders?: ColliderWorld | null;
   /**
+   * The trees, rocks and logs the near view draws round the walker (the
+   * detail worker's near-solids list, posted with the `nearSolids` command),
+   * as a collider world of their own; null or absent before the first list.
+   * Only the walker reads it: the car keeps trees soft.
+   */
+  nearSolids?: ColliderWorld | null;
+  /**
    * Whether the published L0 terrain pages answer everywhere within `radius`
    * of (x, z) (`TerrainAuthority.covers`). A car waits on it at its start so
    * it never settles on a fallback height; absent (tests, probes), it never

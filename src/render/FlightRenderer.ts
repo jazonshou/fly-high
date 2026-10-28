@@ -73,6 +73,8 @@ import {
 } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
+import { createColliderSweepHit } from "@/src/sim/colliders";
+import { CarColliders } from "@/src/sim/ground/carColliders";
 import { oceanSpectrumSeed, seaSpectrumWindSpeed } from "@/src/sim/water/seaState";
 import type { SeaShelterEllipse } from "@/src/sim/water/types";
 import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
@@ -226,7 +228,7 @@ import {
 import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
 import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
-import type { FlightRenderingSystem, ScreenPoint, TerrainAuthorityPublisher } from "./types";
+import type { FlightRenderingSystem, FootstepEvents, ScreenPoint, TerrainAuthorityPublisher } from "./types";
 import {
   type TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
@@ -848,6 +850,13 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** The car's cockpit view as last applied: on foot the car is seen from outside in every view. */
   private carCockpitView = false;
   private readonly characterCamera = new CharacterCamera();
+  /** The sim's static colliders, for the character camera; null outside car sessions. */
+  private cameraColliders: CarColliders | null = null;
+  private readonly cameraSweepFrom = { x: 0, y: 0, z: 0 };
+  private readonly cameraSweepTo = { x: 0, y: 0, z: 0 };
+  private readonly cameraSweepHit = createColliderSweepHit();
+  /** The figure's foot strikes since the last `consumeFootsteps`. */
+  private readonly footsteps: FootstepEvents = { count: 0, strength: 0 };
   private readonly characterLook = { yaw: 0, pitch: 0, zoom: 0 };
   private walkerGround: LatticeHeightCache | null = null;
   private lastWalkingDriven: "car" | "person" | null = null;
@@ -1147,7 +1156,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     // of the ground true (`RoadStreamRuntime`): the workers first, on the
     // ports their ground arrives on, then the CPU and GPU consumers here.
     roads?.setConsumers({
-      publishInfrastructure: (update) => this.terrainAuthorityPublisher?.publishInfrastructure?.(update),
+      publishInfrastructure: (update) => {
+        this.cameraColliders?.applyRegions(update);
+        this.terrainAuthorityPublisher?.publishInfrastructure?.(update);
+      },
       detailInfrastructureChanged: (update, change) => {
         this.detail.infrastructureChanged(update, change);
       },
@@ -2235,6 +2247,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   private installWalker(person: PersonVisual): void {
     this.person = person;
     this.walkerGround = new LatticeHeightCache(this.cameraTerrainHeight);
+    // The sim's static colliders, copied here for the character camera's
+    // boom: the marina, the airports' buildings and the roads' guardrails.
+    // Built behind the load screen (about 12 ms), then kept in step.
+    this.cameraColliders = new CarColliders(this.liveWorld, this.cameraTerrainHeight);
   }
 
   /**
@@ -2248,6 +2264,19 @@ export class FlightRenderer implements FlightRenderingSystem {
     gathered.yaw = gathered.yaw + look.yaw;
     gathered.pitch = gathered.pitch + look.pitch;
     gathered.zoom = gathered.zoom + look.zoom;
+  }
+
+  consumeFootsteps(out: FootstepEvents): FootstepEvents {
+    out.count = this.footsteps.count;
+    out.strength = this.footsteps.strength;
+    this.footsteps.count = 0;
+    this.footsteps.strength = 0;
+    return out;
+  }
+
+  cameraUnderwaterDepth(): number {
+    const underwater = this.underwater;
+    return underwater?.submerged ? underwater.camera.depth : 0;
   }
 
   /** The character camera's heading and pitch, radians: the walker moves and swims relative to them. */
@@ -2347,6 +2376,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     }
     // 5. The airfield: hangars, tower, windsock, furniture, lamps and floods.
     this.spawnedAirfields?.setAirports(next.airports);
+    // 6. The character camera's copy of the buildings.
+    this.cameraColliders?.setAirports(next);
   }
 
   projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean {
@@ -4119,7 +4150,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       : 0;
     animation.lookPitch = onFoot ? this.characterCamera.pitch : 0;
     person.setFirstPersonView(cockpit);
-    person.update(animation as PersonAnimationInput, this.currentDeltaSeconds);
+    const output = person.update(animation as PersonAnimationInput, this.currentDeltaSeconds);
+    if (output.footStrikes > 0) {
+      this.footsteps.count += output.footStrikes;
+      this.footsteps.strength = Math.max(this.footsteps.strength, output.strikeStrength);
+    }
   }
 
   /**
@@ -4127,6 +4162,29 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * and first person, driven directly (no rig lag) so mouse look never trails.
    * The exterior rig's offsets are kept in step for the next view.
    */
+  /** The camera's probe swept through the static colliders, frame coordinates in: the share travelled. */
+  private readonly characterSweep = (
+    fromX: number,
+    fromY: number,
+    fromZ: number,
+    toX: number,
+    toY: number,
+    toZ: number,
+    radius: number,
+  ): number => {
+    const colliders = this.cameraColliders?.colliders;
+    if (!colliders) return 1;
+    const from = this.cameraSweepFrom;
+    const to = this.cameraSweepTo;
+    from.x = fromX + this.originX;
+    from.y = fromY;
+    from.z = fromZ + this.originZ;
+    to.x = toX + this.originX;
+    to.y = toY;
+    to.z = toZ + this.originZ;
+    return colliders.sweepSphere(from, to, radius, this.cameraSweepHit) ? this.cameraSweepHit.fraction : 1;
+  };
+
   private updateCharacterCamera(state: FlightVisualState): void {
     const ground = this.walkerGround;
     const obstacles: CameraObstacleBox[] = [];
@@ -4183,6 +4241,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         : (x, z) => this.cameraTerrainHeight(x + originX, z + originZ),
       water,
       obstacles,
+      sweep: this.cameraColliders ? this.characterSweep : null,
     });
     look.yaw = 0;
     look.pitch = 0;
