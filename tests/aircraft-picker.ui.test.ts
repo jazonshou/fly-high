@@ -101,6 +101,9 @@ describe("aircraft picker", () => {
     expect(menu?.indexOf("start-screen__runway")).toBeLessThan(
       menu?.indexOf('className="seed-action"') ?? 0,
     );
+    // The Land Cruiser's second door, in the same place: on foot beside it.
+    expect(menu).toContain("onClick={() => void startSurfaceVehicle(true)}");
+    expect(menu).toContain("<span>On foot</span>");
     // Two groups, so the row wraps as pairs: the seed and settings drop to a
     // second row TOGETHER and settings is never left on a row of its own.
     const actions = menu?.indexOf('className="start-screen__actions"') ?? -1;

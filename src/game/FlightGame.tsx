@@ -410,14 +410,17 @@ export function FlightGame() {
   );
 
   /**
-   * A surface vehicle's only start: a boat moored at its berth, the car
-   * parked on the apron. There is no attract boat or car to hand off to, so
-   * this is the full reset a runway start is.
+   * A surface vehicle's start: a boat moored at its berth, the car parked on
+   * the apron, or (`onFoot`) the car parked there with you standing at its
+   * driver's door. There is no attract boat or car to hand off to, so this is
+   * the full reset a runway start is.
    */
   const startSurfaceVehicle = useCallback(
-    () => {
+    (onFoot = false) => {
       const vehicle = chosenSurfaceVehicle(settingsRef.current);
-      return vehicle ? startNewFlight(surfaceSpawnKind(vehicle), true) : undefined;
+      if (!vehicle) return undefined;
+      const spawn = surfaceSpawnKind(vehicle);
+      return startNewFlight(onFoot && spawn === "airfield" ? "foot" : spawn, true);
     },
     [startNewFlight],
   );
@@ -1103,17 +1106,30 @@ export function FlightGame() {
                   * is not shown anywhere else on this screen.
                   */}
                 {chosenSurfaceVehicle(settings) ? (
-                  <button
-                    className="primary-action start-screen__start"
-                    type="button"
-                    onClick={() => void startSurfaceVehicle()}
-                    aria-label={surfaceSpawnKind(chosenSurfaceVehicle(settings)!) === "airfield"
-                      ? `Start on the apron, parked and ready to drive. ${CONTROL_MODE_LABELS[settings.flightMode]}`
-                      : `Start at the dock, moored and ready to cast off. ${CONTROL_MODE_LABELS[settings.flightMode]}`}
-                    title={surfaceSpawnKind(chosenSurfaceVehicle(settings)!) === "airfield" ? "On the apron" : "At the dock"}
-                  >
-                    <span>Start</span>
-                  </button>
+                  <>
+                    <button
+                      className="primary-action start-screen__start"
+                      type="button"
+                      onClick={() => void startSurfaceVehicle()}
+                      aria-label={surfaceSpawnKind(chosenSurfaceVehicle(settings)!) === "airfield"
+                        ? `Start on the apron, parked and ready to drive. ${CONTROL_MODE_LABELS[settings.flightMode]}`
+                        : `Start at the dock, moored and ready to cast off. ${CONTROL_MODE_LABELS[settings.flightMode]}`}
+                      title={surfaceSpawnKind(chosenSurfaceVehicle(settings)!) === "airfield" ? "On the apron" : "At the dock"}
+                    >
+                      <span>Start</span>
+                    </button>
+                    {surfaceSpawnKind(chosenSurfaceVehicle(settings)!) === "airfield" ? (
+                      <button
+                        className="primary-action start-screen__runway"
+                        type="button"
+                        onClick={() => void startSurfaceVehicle(true)}
+                        aria-label="Start on foot, standing beside the parked car"
+                        title="Beside the car"
+                      >
+                        <span>On foot</span>
+                      </button>
+                    ) : null}
+                  </>
                 ) : (
                   <>
                     <button
@@ -1249,7 +1265,9 @@ export function FlightGame() {
                   : isCarSpawn(spawnKind)
                     ? visualState.crashed
                       ? "Restart on the wheels where the car came to rest"
-                      : "Restart on the apron, where this drive began"
+                      : spawnKind === "foot"
+                        ? "Restart on foot beside the car, where this walk began"
+                        : "Restart on the apron, where this drive began"
                   : visualState.crashed
                     ? "Restart airborne above the crash location"
                     : spawnKind === "runway"
