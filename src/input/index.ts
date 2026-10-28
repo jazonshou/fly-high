@@ -1,5 +1,5 @@
 import type { BoatControlState, CarControlState, CarTyrePressure, ControlState } from "@/src/game/types";
-import type { SpawnKind } from "@/src/workers/protocol";
+import { isCarSpawn, type SpawnKind } from "@/src/workers/protocol";
 
 export type InputAction =
   | "pause"
@@ -123,7 +123,7 @@ const HELD_CONTROL_KEYS = new Set([
 export type InputProfile = "aircraft" | "boat" | "car";
 
 export function inputProfileForSpawn(spawn: SpawnKind): InputProfile {
-  return spawn === "dock" ? "boat" : spawn === "airfield" ? "car" : "aircraft";
+  return spawn === "dock" ? "boat" : isCarSpawn(spawn) ? "car" : "aircraft";
 }
 
 /** The car's toggles: each key press is one count on its `CarControlState` counter. */

@@ -18,9 +18,12 @@ export type AircraftSpawnKind = "airborne" | "runway";
 /**
  * Where a surface vehicle starts. A boat always starts moored at the home
  * marina's start berth, `"dock"` (decision D4, 2026-10-26); the car starts on
- * the home airport's apron, `"airfield"`, beside its access road.
+ * the home airport's apron, `"airfield"`, beside its access road, with the
+ * walker in the driver's seat. `"foot"` is the same car start with the walker
+ * standing by the driver's door instead (the walking plan's "On foot beside
+ * it").
  */
-export type SurfaceSpawnKind = "dock" | "airfield";
+export type SurfaceSpawnKind = "dock" | "airfield" | "foot";
 
 /** Where a flight starts: an aircraft's or a surface vehicle's. */
 export type SpawnKind = AircraftSpawnKind | SurfaceSpawnKind;
@@ -30,10 +33,15 @@ export function isAircraftSpawn(kind: SpawnKind): kind is AircraftSpawnKind {
 }
 
 export function isSurfaceSpawn(kind: SpawnKind): kind is SurfaceSpawnKind {
-  return kind === "dock" || kind === "airfield";
+  return kind === "dock" || kind === "airfield" || kind === "foot";
 }
 
-/** The one start a surface vehicle has. */
+/** A car start, in the driver's seat or on foot beside it: the session can walk. */
+export function isCarSpawn(kind: SpawnKind): kind is "airfield" | "foot" {
+  return kind === "airfield" || kind === "foot";
+}
+
+/** The default start a surface vehicle has (a car's other one is `"foot"`). */
 export function surfaceSpawnKind(kind: SurfaceVehicleKind): SurfaceSpawnKind {
   return vehicleClass(kind) === "car" ? "airfield" : "dock";
 }

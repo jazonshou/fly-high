@@ -66,7 +66,7 @@ import {
   type RenderDiagnostics,
 } from "./types";
 import { handoffTrimSeed, heldElevator } from "@/src/sim";
-import { isSurfaceSpawn, surfaceSpawnKind, type SpawnKind } from "@/src/workers/protocol";
+import { isCarSpawn, isSurfaceSpawn, surfaceSpawnKind, type SpawnKind } from "@/src/workers/protocol";
 import { isAircraftKind, isSurfaceVehicleKind, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import {
   beginTransition,
@@ -1239,7 +1239,7 @@ export function FlightGame() {
                   ? visualState.crashed
                     ? "Restart afloat near where the boat was damaged"
                     : "Restart at the dock, where this trip began"
-                  : spawnKind === "airfield"
+                  : isCarSpawn(spawnKind)
                     ? visualState.crashed
                       ? "Restart on the wheels where the car came to rest"
                       : "Restart on the apron, where this drive began"

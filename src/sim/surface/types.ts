@@ -3,6 +3,7 @@ import type {
   CarControlState,
   CarSetup,
   FlightMode,
+  PersonControlState,
   VehicleVisualPayload,
 } from "@/src/game/types";
 import type { TerrainCollisionSample, WorldDefinition } from "@/src/world/types";
@@ -58,6 +59,8 @@ export interface SurfaceVehicleControls {
   boat: BoatControlState;
   /** The car's block (`ControlState.car`); the worker always sets it, boat probes need not. */
   car?: CarControlState;
+  /** The walker's block (`ControlState.person`); the worker sets it in a car session. */
+  person?: PersonControlState;
 }
 
 /** The common pose and engine fields, plus the class payload the HUD and renderer read. */
@@ -119,4 +122,14 @@ export const NEUTRAL_BOAT_CONTROLS: Readonly<BoatControlState> = Object.freeze({
   trim: 0,
   tabs: 0,
   moorPresses: 0,
+});
+
+export const NEUTRAL_PERSON_CONTROLS: Readonly<PersonControlState> = Object.freeze({
+  moveX: 0,
+  moveZ: 0,
+  lookPitch: 0,
+  run: false,
+  rise: false,
+  dive: false,
+  jumpPresses: 0,
 });
