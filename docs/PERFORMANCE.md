@@ -136,6 +136,8 @@ audit is why it now carries all four tiers):
 | Road ribbon range (`roadRibbonRangeMeters`; the 128 m chunks in reach drawn as one, a slot each) | 150 m | 500 m | 800 m | 1,200 m |
 | Guardrail draw range (`barrierDrawRangeMeters`; the 128 m chunks in reach drawn as one, a slot each) | 300 m | 600 m | 900 m | 1,200 m |
 | Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
+| Walker's finest figure mesh (`personFigureFinestLod`; car sessions only; 0 = 9k triangles within 25 m, 1 = 3k, 2 = 0.8k) | 1 | 0 | 0 | 0 |
+| Walker's shadow cascades (`personShadowCascades`; the nearest ones, capped by the tier's cascades) | 1 | 2 | 2 | 3 |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
 Ultra's material array edge is 512², not §5.3's published 1024²: `3-1`

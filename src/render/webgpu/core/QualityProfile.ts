@@ -477,6 +477,18 @@ export interface WebGpuQualityProfile {
    * Data, not a `profile.tier` branch, per the tier rule.
    */
   readonly marinaCastsShadows: boolean;
+  /**
+   * The walker's figure (car sessions only): the finest of its three meshes
+   * it draws (0 = 9k triangles within 25 m, 1 = 3k, 2 = 0.8k), and how many
+   * of the nearest shadow cascades it casts into (capped by
+   * `shadowCascades`). Its draws are one plus that: the walking plan's
+   * budget table, 2 on Low and 3 above it while every tier has two
+   * cascades.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly personFigureFinestLod: 0 | 1 | 2;
+  readonly personShadowCascades: number;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -591,6 +603,8 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 150,
       barrierDrawRangeMeters: 300,
       marinaCastsShadows: false,
+      personFigureFinestLod: 1,
+      personShadowCascades: 1,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -704,6 +718,8 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 500,
       barrierDrawRangeMeters: 600,
       marinaCastsShadows: true,
+      personFigureFinestLod: 0,
+      personShadowCascades: 2,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -806,6 +822,8 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 800,
       barrierDrawRangeMeters: 900,
       marinaCastsShadows: true,
+      personFigureFinestLod: 0,
+      personShadowCascades: 2,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -910,6 +928,8 @@ function resolveBaseQualityProfile(
     roadRibbonRangeMeters: 1_200,
     barrierDrawRangeMeters: 1_200,
     marinaCastsShadows: true,
+    personFigureFinestLod: 0,
+    personShadowCascades: 3,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,
