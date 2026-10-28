@@ -142,6 +142,9 @@ const GET_OUT: readonly Key[] = [
 /** Where the getting-in walk ends, and its share of the progress. */
 export const GET_IN_WALK_END = 0.22;
 
+/** Past a re-grip's threshold by this share of a third of a turn before the hand lets go. */
+const REGRIP_MARGIN = 0.05;
+
 export interface SeatPlacement {
   /** The pelvis's place and the body's turn to the right, in the seat frame. */
   x: number;
@@ -295,15 +298,17 @@ export class CarSeatMotion {
   private hands(steeringWheel: number, leftWeight: number, rightWeight: number, deltaSeconds: number): void {
     const third = (2 * Math.PI) / 3;
     for (let hand = 0; hand < 2; hand += 1) {
-      // Each hand slips back a third of a turn whenever the wheel has turned it that far, the two a sixth apart.
-      const bias = hand === 0 ? 0 : third / 2;
-      const count = Math.round((steeringWheel + bias) / third);
-      if (count !== this.shuffle[hand]) {
+      // Each hand slips back a third of a turn whenever the wheel has turned it half that far from its
+      // grip, the hand on the side the wheel turns toward first (at 30 degrees, the other at 90), with a
+      // margin either side so a wheel held at the threshold does not re-grip back and forth.
+      const turns = (steeringWheel + (hand === 0 ? -1 : 1) * (third / 4)) / third;
+      if (Math.abs(turns - this.shuffle[hand]!) > 0.5 + REGRIP_MARGIN) {
+        const count = Math.round(turns);
         this.regrip[hand] = this.regrip[hand]! + (count - this.shuffle[hand]!) * third;
         this.shuffle[hand] = count;
       }
       this.regrip[hand] = this.regrip[hand]! * Math.max(0, 1 - deltaSeconds / 0.12);
-      const clock = (hand === 0 ? -1 : 1) * (Math.PI / 2 + 0.15) + steeringWheel - count * third + this.regrip[hand]!;
+      const clock = (hand === 0 ? -1 : 1) * (Math.PI / 2 + 0.15) + steeringWheel - this.shuffle[hand]! * third + this.regrip[hand]!;
       gripPoint(clock, this.seatTargets, hand * 3);
       this.seatWeights[hand] = hand === 0 ? leftWeight : rightWeight;
     }
