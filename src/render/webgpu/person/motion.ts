@@ -1,6 +1,6 @@
 import type { PersonMode, PersonVisualState } from "@/src/game/types";
 import { PERSON } from "@/src/vehicles/person";
-import { ActionChannels, CROUCH_SECONDS, MANTLE_SECONDS, ROLL_SECONDS, STAND, smoothstep } from "./actions";
+import { ActionChannels, rollKeyedSeconds, STAND, smoothstep } from "./actions";
 import { CarSeatMotion, SEAT, type BoardingFrom } from "./carSeat";
 import { applyChannels, CH, createChannels, LIMB_OFFSET, mixChannels, SIDE_BASE } from "./channels";
 import { PROPORTIONS } from "./figureProportions";
@@ -138,8 +138,8 @@ export class PersonMotion {
     if (this.fade < 1) this.fade = this.fadeSeconds > 0 ? Math.min(1, this.fade + dt / this.fadeSeconds) : 1;
     if (family !== "car") this.feet.carry(input.forward * dt, input.up * dt, input.right * dt, input.turnRate * dt);
 
-    // A landing: the sim's clock since the last one went back.
-    if (person.landingAge < this.lastLandingAge - 1e-3 && person.landingSpeed > 0.5) {
+    // A landing on the ground (not a plunge into water): the sim's clock since the last one went back.
+    if (person.landingAge < this.lastLandingAge - 1e-3 && person.landingSpeed > 0.5 && person.grounded) {
       output.footStrikes += 1;
       output.strikeStrength = Math.min(1, 0.3 + person.landingSpeed / 8);
       output.strikeFoot = "left";
@@ -184,14 +184,16 @@ export class PersonMotion {
       }
       case "land": {
         const t = person.landingAge;
-        if (person.landingSpeed >= 8) {
+        if (person.landingSpeed >= PERSON.landingRollSpeed) {
           const angle = this.actions.roll(t, ch);
           const rolling = angle > 0 && angle < 2 * Math.PI ? 1 : 0;
-          groundWeight = 1 - smoothstep(0.08, 0.14, t) * (1 - smoothstep(0.7, 0.8, t));
+          const keyed = rollKeyedSeconds(t);
+          groundWeight = 1 - smoothstep(0.08, 0.14, keyed) * (1 - smoothstep(0.7, 0.8, keyed));
           standing = true;
           this.placeRoll(target, angle, rolling);
         } else {
-          this.actions.crouch(t, Math.min(1, Math.max(0.45, (person.landingSpeed - 4) / 4)), ch);
+          const hard = (person.landingSpeed - PERSON.landingHardSpeed) / (PERSON.landingRollSpeed - PERSON.landingHardSpeed);
+          this.actions.crouch(t, 0.45 + 0.55 * Math.min(1, Math.max(0, hard)), ch);
           groundWeight = 1;
           standing = true;
           this.setRoot(target, 0, 0, 0, 0, 0, 0);
@@ -206,7 +208,7 @@ export class PersonMotion {
         break;
       }
       case "mantle": {
-        const t = Math.min(1, this.familyAge / MANTLE_SECONDS);
+        const t = Math.min(1, this.familyAge / PERSON.mantleSeconds);
         this.actions.mantle(t, ch);
         groundWeight = smoothstep(0.78, 1, t);
         standing = true;

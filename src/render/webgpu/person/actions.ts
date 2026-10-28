@@ -1,3 +1,4 @@
+import { PERSON } from "@/src/vehicles/person";
 import { both, channels, CH, createChannels, LIMB_OFFSET, SIDE_BASE, mixChannels, sampleChannelKeys, type ChannelKeys } from "./channels";
 
 /**
@@ -148,23 +149,27 @@ export class ActionChannels {
 
   /**
    * The hard landing's crouch, `t` seconds after touch-down, `depth` 0..1
-   * (how hard: 5 m/s a shallow one, 8 a full squat), about 0.4 s: down fast,
-   * a hold, up again.
+   * (how hard: a shallow one at `PERSON.landingHardSpeed`, a full squat at
+   * the roll's speed), over `PERSON.landingHardSeconds`: down fast, a hold,
+   * up again.
    */
   crouch(t: number, depth: number, out: Float64Array): void {
     // The timeline is the full squat; a lighter landing squats less.
-    mixChannels(STAND, sampleChannelKeys(CROUCH_TIMELINE, t, this.scratch), depth, out);
+    const keyed = (t * CROUCH_KEYED_SECONDS) / PERSON.landingHardSeconds;
+    mixChannels(STAND, sampleChannelKeys(CROUCH_TIMELINE, keyed, this.scratch), depth, out);
   }
 
   /**
-   * The roll after a fall of 8 m/s or more, `t` seconds after touch-down
-   * (about 1.1 s): crouch and reach, a tucked forward roll over the
-   * shoulders, up through the crouch. Returns the roll's angle, radians
-   * forward (0 .. 2 pi), for the root to turn about the tucked body's centre.
+   * The roll after a fall of `PERSON.landingRollSpeed` or more, `t` seconds
+   * after touch-down, over `PERSON.landingRollSeconds`: crouch and reach, a
+   * tucked forward roll over the shoulders, up through the crouch. Returns
+   * the roll's angle, radians forward (0 .. 2 pi), for the root to turn
+   * about the tucked body's centre.
    */
   roll(t: number, out: Float64Array): number {
-    sampleChannelKeys(ROLL_TIMELINE, t, out);
-    const u = smoothstep(ROLL_START, ROLL_END, t);
+    const keyed = rollKeyedSeconds(t);
+    sampleChannelKeys(ROLL_TIMELINE, keyed, out);
+    const u = smoothstep(ROLL_START, ROLL_END, keyed);
     return 2 * Math.PI * u;
   }
 
@@ -201,6 +206,8 @@ const CROUCH_TIMELINE: ChannelKeys = [
   [0.2, SQUAT],
   [0.4, STAND],
 ];
+/** The crouch's timeline is keyed over this span; it plays over `PERSON.landingHardSeconds`. */
+const CROUCH_KEYED_SECONDS = 0.4;
 
 const TUCK = channels({ ...both({ hipFlex: 125, hipAbd: 10, knee: 135, ankle: 10, shFlex: 70, shAbd: 25, shRot: 40, elbow: 100, fingers: 40 }), spineFlex: 55, neckFlex: 45 });
 const REACH = channels({ ...both({ hipFlex: 95, hipAbd: 10, knee: 105, ankle: 30, shFlex: 95, shAbd: 15, elbow: 25, fingers: 15 }), spineFlex: 50, neckFlex: 30 });
@@ -215,8 +222,13 @@ const ROLL_TIMELINE: ChannelKeys = [
   [0.8, SQUAT],
   [1.1, STAND],
 ];
-export const ROLL_SECONDS = 1.1;
-export const CROUCH_SECONDS = 0.4;
+/** The roll's timeline is keyed over this span; it plays over `PERSON.landingRollSeconds`. */
+const ROLL_KEYED_SECONDS = 1.1;
+
+/** `t` seconds into the roll as its timeline's keyed seconds (the roll keyed over 1.1 s). */
+export function rollKeyedSeconds(t: number): number {
+  return (t * ROLL_KEYED_SECONDS) / PERSON.landingRollSeconds;
+}
 
 const MANTLE_TIMELINE: ChannelKeys = [
   [0, channels({ ...both({ shFlex: 25, shAbd: 48, elbow: 65, hipFlex: 60, hipAbd: 30, knee: 90 }), spineFlex: 6 })],
@@ -225,7 +237,6 @@ const MANTLE_TIMELINE: ChannelKeys = [
   [0.72, channels({ shFlexL: 20, shFlexR: 20, shAbdL: 15, shAbdR: 15, elbowL: 30, elbowR: 30, wristFlexL: -60, wristFlexR: -60, hipFlexL: 110, kneeL: 125, ankleL: 15, hipFlexR: 70, kneeR: 90, ankleR: -10, spineFlex: 45, neckFlex: -25 })],
   [1, STAND],
 ];
-export const MANTLE_SECONDS = 1.0;
 
 function crawlArmAt(u: number): readonly [number, number, number, number, number] {
   for (let i = 0; i + 1 < crawlArm.length; i += 1) {

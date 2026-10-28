@@ -109,7 +109,7 @@ const STATURE = 1.76;
  * equal drops v^2 / 2g: under 1.3 m normal, to 3.3 m a crouch, past it a
  * roll; the mantle's and the landings' durations and the swimming turn rate
  * are ESTIMATES for the figure's motions to fit. The camera numbers are
- * starting values for the framing test on the built figure.
+ * measured on the built figure (at `cinematic` below).
  */
 export const PERSON: PersonSpec = Object.freeze({
   stature: STATURE,
