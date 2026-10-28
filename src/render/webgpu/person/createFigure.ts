@@ -55,8 +55,9 @@ const SHADOW_ONLY_LAYER_MASK = 0;
  * turn, so a bone's matrix is simply its posed transform in the root frame
  * (`FigurePose.globalMatrices`) and Babylon's skin matrix (inverse bind times
  * final) moves a bind-pose vertex to where the pose puts it. The skeleton's
- * matrices go up once a frame, in `update`, so the shadow passes read this
- * frame's pose even when the figure itself is off screen.
+ * matrices are computed once a frame, in `update`, so the shadow passes read
+ * this frame's pose even when the figure itself is off screen, and each draw
+ * carries them in its uniforms.
  *
  * DRAWS. One mesh per level of detail, of which one draws, in one material,
  * plus its shadow in the nearest `personShadowCascades` cascades: Babylon
@@ -88,6 +89,9 @@ export function createFigure(scene: Scene, options: FigureOptions = {}): PersonV
   root.metadata = { personVisual: true, bodyAxes: { forward: "+x", up: "+y", right: "+z" } };
 
   const skeleton = new Skeleton("person-skeleton", "person-skeleton", scene);
+  // In the draws' uniforms: Babylon's bone texture went up through a buffer
+  // and a submit of its own every frame (measured, tests/gpu/person-figure).
+  skeleton.useTextureToStoreBoneMatrices = false;
   const bones: Bone[] = [];
   for (let bone = 0; bone < BONE_COUNT; bone += 1) {
     const bind = Matrix.Translation(BIND_POSITIONS[bone * 3]!, BIND_POSITIONS[bone * 3 + 1]!, BIND_POSITIONS[bone * 3 + 2]!);

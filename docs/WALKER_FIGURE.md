@@ -32,8 +32,9 @@ the ground between the heels (seated: the driver's hip point). The sim's
   olive-grey jacket, stone trousers, brown boots.
 - **Skinning** (`createFigure.ts`): every bone parentless and bound at its
   bind position, so a bone's matrix is its posed transform in the root frame.
-  The matrices go up once a frame in `update`, so the shadow passes read this
-  frame's pose.
+  The matrices are computed once a frame in `update`, so the shadow passes
+  read this frame's pose, and ride in each draw's uniforms: Babylon's default
+  bone texture made a buffer and a submit of its own every frame.
 
 ## Draws, LODs and the fade
 

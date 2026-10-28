@@ -33,9 +33,10 @@ import { createPersonVisual, type PersonAnimationInput, type PersonVisual } from
  * with no device error and a fragment slot left for the clustered light
  * container (the inter-stage audit, `interStageBudget.ts`); it costs the
  * walking plan's draws per tier, one plus the cascades it casts into; the
- * skin follows the bones on the GPU; and its pipelines are built off the
- * frame at load (`AsyncPipelineCompiles`), so the first walk, the first fade
- * and every mesh switch compile nothing in their frame.
+ * skin follows the bones on the GPU; its pipelines are built off the frame
+ * at load (`AsyncPipelineCompiles`), so the first walk, the first fade and
+ * every mesh switch compile nothing in their frame; and a walking frame adds
+ * no buffer or submit to the frame.
  */
 
 let engine: WebGPUEngine;
@@ -296,7 +297,7 @@ describe("the walker's figure on a real adapter", () => {
     }
   }, 120_000);
 
-  it("builds its pipelines off the frame at load, so the first walk, fade and mesh switch compile nothing in theirs", async () => {
+  it("builds its pipelines off the frame at load, so the first walk, fade and mesh switch compile nothing in theirs, and walks with no upload of its own", async () => {
     // A device of its own: the tests above leave this file's engine holding the figure's pipelines.
     const own = await ownDevice();
     const prototype = Mesh.prototype as unknown as Record<string, unknown>;
@@ -365,6 +366,29 @@ describe("the walker's figure on a real adapter", () => {
         }
       };
       walk(20);
+      // A walking frame uploads its bones in the draws' uniforms: no buffer and
+      // no submit of its own (Babylon's bone texture made one of each a frame).
+      const work = { buffers: 0, submits: 0 };
+      const createBuffer = device.createBuffer.bind(device);
+      const submit = device.queue.submit.bind(device.queue);
+      device.createBuffer = (descriptor) => {
+        work.buffers += 1;
+        return createBuffer(descriptor);
+      };
+      device.queue.submit = (commandBuffers) => {
+        work.submits += 1;
+        return submit(commandBuffers);
+      };
+      walk(10);
+      const walking = { ...work };
+      work.buffers = 0;
+      work.submits = 0;
+      figure.root.setEnabled(false);
+      for (let step = 0; step < 10; step += 1) render();
+      figure.root.setEnabled(true);
+      device.createBuffer = createBuffer;
+      device.queue.submit = submit;
+      expect(walking, "ten walking frames against ten with the figure hidden").toEqual(work);
       figure.setFade(0.5);
       walk(10);
       figure.setFade(0);
