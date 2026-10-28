@@ -1299,7 +1299,9 @@ function rayCapsuleEntry(): boolean {
  * test against the box grown by the radius finds where the ray enters it;
  * if that point is off the true box along one axis it is on a face, along
  * two on an edge's quarter cylinder and along three at a corner, where the
- * edge capsules (their caps the corner spheres) decide.
+ * edge capsules (their caps the corner spheres) decide. The edges are in this
+ * body, not a function of their own: they are met rarely, and a function
+ * that has not been optimised boxes every double it computes.
  */
 function rayRoundedBoxEntry(record: ColliderRecord, half: Vec3): boolean {
   const s = sweepState;
@@ -1379,36 +1381,27 @@ function rayRoundedBoxEntry(record: ColliderRecord, half: Vec3): boolean {
     s.px = ox;
     s.py = oy;
     s.pz = oz;
-    return roundedBoxEdges();
+  } else {
+    const px = ox + ux * enter;
+    const py = oy + uy * enter;
+    const pz = oz + uz * enter;
+    const tolerance = 1e-9;
+    let off = 0;
+    if (px < -s.hx - tolerance || px > s.hx + tolerance) off += 1;
+    if (py < -s.hy - tolerance || py > s.hy + tolerance) off += 1;
+    if (pz < -s.hz - tolerance || pz > s.hz + tolerance) off += 1;
+    if (off <= 1 || !(r > 0)) {
+      s.t = enter;
+      s.faceAxis = axis;
+      s.faceSign = sign;
+      return true;
+    }
+    s.px = px;
+    s.py = py;
+    s.pz = pz;
   }
-  const px = ox + ux * enter;
-  const py = oy + uy * enter;
-  const pz = oz + uz * enter;
-  const tolerance = 1e-9;
-  let off = 0;
-  if (px < -s.hx - tolerance || px > s.hx + tolerance) off += 1;
-  if (py < -s.hy - tolerance || py > s.hy + tolerance) off += 1;
-  if (pz < -s.hz - tolerance || pz > s.hz + tolerance) off += 1;
-  if (off <= 1 || !(r > 0)) {
-    s.t = enter;
-    s.faceAxis = axis;
-    s.faceSign = sign;
-    return true;
-  }
-  s.px = px;
-  s.py = py;
-  s.pz = pz;
-  return roundedBoxEdges();
-}
-
-/**
- * The rounded box's edges near the local point p: the capsule along each
- * axis p is inside, at the corner signs of the other two. The ray is
- * already in `sweepState`'s o and u, and the half extents in h, in the
- * box's frame.
- */
-function roundedBoxEdges(): boolean {
-  const s = sweepState;
+  // The rounded edges near the local point p: the capsule along each axis p
+  // is inside, at the corner signs of the other two.
   const hx = s.hx;
   const hy = s.hy;
   const hz = s.hz;
