@@ -881,7 +881,22 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly seatPosition = Vector3.Zero();
   private readonly seatScratch = Vector3.Zero();
   /** Where the walker last stood on foot, world, for the figure's walk to the door. */
-  private readonly lastFootPose = { x: 0, y: 0, z: 0, heading: 0, valid: false };
+  private readonly lastFootPose = { x: 0, y: 0, z: 0, heading: 0, sine: 0, cosine: 1, valid: false };
+  /**
+   * The drawn ground beside the walker's feet (`lastFootPose`), forward and
+   * right of them, above the feet: one closure for the renderer's life
+   * rather than one a frame.
+   */
+  private readonly walkerGroundOffset = (forward: number, right: number): number => {
+    const pose = this.lastFootPose;
+    const ground = this.walkerGround;
+    if (!ground) return 0;
+    return ground.sample(
+      pose.x + forward * pose.sine - right * pose.cosine,
+      pose.z + forward * pose.cosine + right * pose.sine,
+    ) - pose.y;
+  };
+  private readonly flatGroundOffset = (): number => 0;
   private boardingFrom: { forward: number; up: number; right: number; facing: number } | null = null;
   /**
    * The water the character camera keeps a side of (the underwater view's
@@ -4166,19 +4181,14 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       animation.boardingFrom = null;
       animation.boardingDoor = 0;
       this.boardingFrom = null;
-      const feetX = state.position.x;
-      const feetY = state.position.y;
-      const feetZ = state.position.z;
-      const sine = Math.sin(heading);
-      const cosine = Math.cos(heading);
-      animation.groundOffset = ground
-        ? (forward, right) => ground.sample(feetX + forward * sine - right * cosine, feetZ + forward * cosine + right * sine) - feetY
-        : () => 0;
-      this.lastFootPose.x = feetX;
-      this.lastFootPose.y = feetY;
-      this.lastFootPose.z = feetZ;
+      this.lastFootPose.x = state.position.x;
+      this.lastFootPose.y = state.position.y;
+      this.lastFootPose.z = state.position.z;
       this.lastFootPose.heading = heading;
+      this.lastFootPose.sine = Math.sin(heading);
+      this.lastFootPose.cosine = Math.cos(heading);
       this.lastFootPose.valid = true;
+      animation.groundOffset = ground ? this.walkerGroundOffset : this.flatGroundOffset;
     } else if (carRoot?.rotationQuaternion) {
       const carQuaternion = carRoot.rotationQuaternion;
       const hip = CAR_SEATING.driverHip;
@@ -4218,7 +4228,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       // The door the walker uses, as open as the car draws it.
       const doors = state.walking?.doors;
       animation.boardingDoor = boarding && doors ? doors[boarding.side === "right" ? 0 : 1] : 0;
-      animation.groundOffset = () => 0;
+      animation.groundOffset = this.flatGroundOffset;
       this.lastFootPose.valid = false;
     }
     animation.lookYaw = onFoot
