@@ -13,10 +13,12 @@ export {
   type HydrologyWaterRiverPoint,
 } from "./hydrologyWater";
 export {
+  createSeaSurfacePoint,
   createSeaTwin,
   OceanPhaseClock,
   SEA_TWIN_CASCADES,
   SeaTwin,
+  type SeaSurfacePoint,
   type SeaTwinOptions,
 } from "./seaTwin";
 export {
