@@ -318,4 +318,38 @@ describe("sweepSphere and raycast", () => {
     expect(world.sweepSphere({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, 0.5, hit)).toBe(false);
     expect(hit.handle).toBe(-1);
   });
+
+  it("pass through a skipped material, static or kinematic, and meet what is behind it", () => {
+    const world = new ColliderWorld();
+    const rail = world.addStatic({ kind: "box", center: { x: 2, y: 0, z: 0 }, halfExtents: { x: 0.5, y: 2, z: 2 } }, { material: 2 });
+    const pontoon = world.addKinematic({ kind: "box", center: { x: 0, y: 0, z: 0 }, halfExtents: { x: 0.5, y: 2, z: 2 } }, { material: 2 });
+    world.setKinematicPose(pontoon, { x: 4, y: 0, z: 0 }, { x: 0, y: 0, z: 0, w: 1 });
+    const wall = world.addStatic({ kind: "box", center: { x: 6, y: 0, z: 0 }, halfExtents: { x: 0.5, y: 2, z: 2 } }, { material: 1 });
+    const hit = createColliderSweepHit();
+    const from = { x: 0, y: 0, z: 0 };
+    const to = { x: 10, y: 0, z: 0 };
+    expect(world.sweepSphere(from, to, 0.3, hit)).toBe(true);
+    expect(hit.handle).toBe(rail);
+    expect(world.sweepSphere(from, to, 0.3, hit, 2)).toBe(true);
+    expect(hit.handle).toBe(wall);
+    expect(hit.fraction).toBeCloseTo((5.5 - 0.3) / 10, 12);
+    expect(world.raycast(from, to, hit, 2)).toBe(true);
+    expect(hit.handle).toBe(wall);
+    expect(world.raycast(from, to, hit, 1)).toBe(true);
+    expect(hit.handle).toBe(rail);
+  });
+
+  it("count every add and remove in the revision, and list the static colliders", () => {
+    const world = new ColliderWorld();
+    const before = world.revision;
+    const a = world.addStatic({ kind: "sphere", center: { x: 0, y: 0, z: 0 }, radius: 1 }, { material: 7 });
+    world.addKinematic({ kind: "sphere", center: { x: 0, y: 0, z: 0 }, radius: 1 });
+    const b = world.addStatic({ kind: "capsule", a: { x: 0, y: 0, z: 0 }, b: { x: 0, y: 2, z: 0 }, radius: 0.2 }, { material: 2 });
+    expect(world.revision).toBe(before + 3);
+    world.remove(a);
+    expect(world.revision).toBe(before + 4);
+    const listed: [string, number, number][] = [];
+    world.forEachStatic((shape, material, handle) => listed.push([shape.kind, material, handle]));
+    expect(listed).toEqual([["capsule", 2, b]]);
+  });
 });
