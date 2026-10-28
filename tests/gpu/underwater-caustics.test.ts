@@ -19,8 +19,8 @@ import type { UnderwaterLight } from "../../src/render/webgpu/underwater/underwa
  * floor 6 m under a noon sun, seen through nearly clear water, with the pass
  * drawn once without caustics and once with them. A folded sea throws a
  * bright-and-dark web on the floor, far stronger than the faint one the
- * capillary tail alone leaves at the calmest wind; past the 24 m caustic gate
- * the floor is exactly as it was.
+ * capillary tail alone leaves at the calmest wind; a lake's bed keeps only
+ * that tail; past the 24 m caustic gate the floor is exactly as it was.
  */
 
 const WIDTH = 96;
@@ -123,6 +123,7 @@ async function render(
   caustics: boolean,
   fold: number,
   { cameraY, floorY }: { cameraY: number; floorY: number } = SHALLOW,
+  sea = true,
 ): Promise<Float32Array> {
   const scene = new Scene(engine);
   scene.useRightHandedSystem = true;
@@ -144,7 +145,7 @@ async function render(
   const pass = new WaterColumnPass(camera, engine, 1, LIGHT, { source: causticSource(scene, fold), enabled: caustics });
   pass.setEnabled(camera, true);
   pass.setCameraDepth(-cameraY, -cameraY);
-  pass.setWorld(0, 0, 0);
+  pass.setWorld(0, 0, 0, sea);
   const output = new PassPostProcess(
     "underwater-caustics-out", 1, camera, Constants.TEXTURE_NEAREST_SAMPLINGMODE, engine, false,
     Constants.TEXTURETYPE_UNSIGNED_BYTE,
@@ -204,6 +205,17 @@ describe("caustics in the water column", () => {
     expect(Math.min(...web)).toBeLessThan(0.8);
     // The calmest wind's capillary tail leaves a faint web of its own.
     expect(spread(web)).toBeGreaterThan(2 * spread(ratios(calm, plain)));
+  });
+
+  it("leave a lake's bed to the capillary tail alone: the sea's swell folds no light there", async () => {
+    const plain = await render(false, 0.4);
+    const sea = await render(true, 0.4);
+    const lake = await render(true, 0.4, SHALLOW, false);
+    const stillLake = await render(true, 0, SHALLOW, false);
+    expect(gpuErrors).toEqual([]);
+    // The cascades' Jacobians are not read at all in a lake.
+    expect(Array.from(lake)).toEqual(Array.from(stillLake));
+    expect(spread(ratios(sea, plain))).toBeGreaterThan(2 * spread(ratios(lake, plain)));
   });
 
   it("leave a floor past the caustic gate exactly as it was", async () => {

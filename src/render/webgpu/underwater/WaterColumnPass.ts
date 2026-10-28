@@ -113,6 +113,9 @@ uniform causticCurvatureScales0: vec4f;
 uniform causticCurvatureScale4: f32;
 uniform cascadeWavelengths0: vec4f;
 uniform cascadeWavelength4: f32;
+// 1 in the sea; 0 in a lake or river, whose caustics are the capillary tail's
+// alone, as they are seen from above (inland water carries no Jacobian).
+uniform seaCascades: f32;
 ${CAUSTIC_SLOPE_SAMPLERS.map((name) => `var ${name}Sampler: sampler; var ${name}: texture_2d<f32>;`).join("\n")}
 
 ${WATER_CAUSTIC_WGSL}
@@ -147,8 +150,8 @@ fn waterColumnCaustic(worldXZ: vec2f, depth: f32) -> f32 {
     capillary.caustic,
     jacobians,
     jacobian4,
-    uniforms.causticCurvatureScales0 * fades,
-    uniforms.causticCurvatureScale4 * fade4,
+    uniforms.causticCurvatureScales0 * fades * uniforms.seaCascades,
+    uniforms.causticCurvatureScale4 * fade4 * uniforms.seaCascades,
     beam,
   );
   return waterCausticSheetGain(caustic, beam);
@@ -237,6 +240,7 @@ export class WaterColumnPass {
   private timeSeconds = 0;
   private worldOriginX = 0;
   private worldOriginZ = 0;
+  private seaCascades = 1;
   private attached = false;
   private resolvedDepth = false;
   private drawn = false;
@@ -285,6 +289,7 @@ export class WaterColumnPass {
         "causticCurvatureScale4",
         "cascadeWavelengths0",
         "cascadeWavelength4",
+        "seaCascades",
       ],
       ["sceneDepth", ...CAUSTIC_SLOPE_SAMPLERS],
       1,
@@ -396,13 +401,15 @@ export class WaterColumnPass {
   }
 
   /**
-   * The frame's clock (the sea's, which the caustics' capillary tail rides)
-   * and the floating origin: world x and z at the render origin.
+   * The frame's clock (the sea's, which the caustics' capillary tail rides),
+   * the floating origin (world x and z at the render origin), and whether the
+   * camera's water is the sea: only the sea's cascades fold light on its bed.
    */
-  setWorld(timeSeconds: number, worldOriginX: number, worldOriginZ: number): void {
+  setWorld(timeSeconds: number, worldOriginX: number, worldOriginZ: number, sea: boolean): void {
     this.timeSeconds = timeSeconds;
     this.worldOriginX = worldOriginX;
     this.worldOriginZ = worldOriginZ;
+    this.seaCascades = sea ? 1 : 0;
   }
 
   /** 0 passes the scene through untouched (a warm-up draw); 1 is the water. */
@@ -440,6 +447,7 @@ export class WaterColumnPass {
       effect.setFloat2("worldOrigin", this.worldOriginX, this.worldOriginZ);
       effect.setFloat("sunElevationSine", light.sunElevationSine);
       effect.setFloat("time", this.timeSeconds);
+      effect.setFloat("seaCascades", this.seaCascades);
     }
     this.drawn = true;
     const target = this.postProcess.inputTexture as unknown as DepthTarget | null;
