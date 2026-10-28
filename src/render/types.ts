@@ -6,6 +6,7 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { EnvironmentClock } from "@/src/world/environmentClock";
+import type { NearSolidsPost } from "@/src/sim/person/nearSolids";
 import type { HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
 import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import type { AirportDefinition } from "@/src/world/types";
@@ -14,6 +15,12 @@ import type {
   TerrainMacroGrid,
   TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
+
+/** Foot strikes drawn since the last `consumeFootsteps`. */
+export interface FootstepEvents {
+  count: number;
+  strength: number;
+}
 
 export interface TerrainAuthorityPublisher {
   publishTerrainPage(page: TerrainPagePublication): void;
@@ -31,6 +38,12 @@ export interface TerrainAuthorityPublisher {
    */
   publishHydrology?(key: string, region: HydrologyWaterRegion): void;
   evictHydrology?(key: string): void;
+  /**
+   * The detail worker's newest near-solids list round the walker
+   * (`WorldDetailRuntime.setNearSolidsFocus`), for the walker. Absent: the
+   * publisher's walker meets no trees.
+   */
+  publishNearSolids?(post: NearSolidsPost): void;
 }
 
 /** A world point on the canvas, written in place by `projectWorldPointToRef`. */
@@ -56,6 +69,22 @@ export interface FlightRenderingSystem {
    * since the last frame, a ground speed in the thousands.
    */
   cutCamera(): void;
+  /**
+   * The walker's look and zoom gathered since the last frame (radians right
+   * and up, wheel notches out), for the character camera. Ignored outside a
+   * walking session.
+   */
+  applyCharacterLook(look: { readonly yaw: number; readonly pitch: number; readonly zoom: number }): void;
+  /** The character camera's heading and pitch, radians: the walker moves and swims relative to them. */
+  characterView(): { readonly heading: number; readonly pitch: number };
+  /**
+   * The walker's foot strikes drawn since the last call, for the footsteps:
+   * how many, and the strongest (0..1). Written to `out`, which it returns;
+   * 0 strikes outside a walking session.
+   */
+  consumeFootsteps(out: FootstepEvents): FootstepEvents;
+  /** How far under the water the render camera was at the last frame, metres; 0 above it (and outside car sessions). */
+  cameraUnderwaterDepth(): number;
   /**
    * Beta terrain viewer: hides the aircraft and switches to the free-fly
    * camera rig. The caller keeps feeding `render()` a synthetic

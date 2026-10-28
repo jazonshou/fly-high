@@ -14,6 +14,7 @@ import { formatAirportDistance } from "@/src/ui/airportMarker";
 import type { NearestAirportInfo } from "@/src/game/AirportNetworkController";
 import { BoatHud } from "@/src/ui/BoatHud";
 import { CarHud } from "@/src/ui/CarHud";
+import { PersonHud } from "@/src/ui/PersonHud";
 import { formatHeading, MetricTape, NearestAirportControl } from "@/src/ui/hudParts";
 
 interface HudProps {
@@ -126,6 +127,21 @@ export function Hud({
         units={units}
         cameraLabel={cameraLabel}
         seedLabel={seedLabel}
+      />
+    );
+  }
+  if (state.vehicle?.kind === "person") {
+    return (
+      <PersonHud
+        state={state}
+        person={state.vehicle}
+        mode={mode}
+        units={units}
+        cameraLabel={cameraLabel}
+        seedLabel={seedLabel}
+        nearestAirport={nearestAirport}
+        nearestAirportShown={nearestAirportShown}
+        onToggleNearestAirport={onToggleNearestAirport}
       />
     );
   }

@@ -14,6 +14,7 @@ import {
   type DetailPresentationBuildSink,
   type DetailPresentationChunkStatistics,
 } from "@/src/render/webgpu/detail/presentationBuild";
+import { selectNearSolids } from "@/src/render/webgpu/detail/nearSolidsSelection";
 import {
   TerrainConsumerAuthority,
   terrainConsumerSampleFromAuthority,
@@ -221,6 +222,10 @@ export class DetailWorkerRuntime {
       case "cancelPresentation":
         this.cancelPresentationBuild(command.buildId);
         return;
+      case "nearSolids":
+        // No drain: it reads only retained cells, which generation never changes.
+        this.answerNearSolids(command);
+        return;
       case "generate":
         if (this.presentationBuilds.size > 0) {
           this.deferredGenerates.push(command);
@@ -382,6 +387,30 @@ export class DetailWorkerRuntime {
         generation: command.generation,
         key: command.key,
         message: error instanceof Error ? error.message : "Detail generation failed",
+      });
+    }
+  }
+
+  /** The near solids of the retained cells a request names, at once: a few hundred stems, under a millisecond. */
+  private answerNearSolids(command: Extract<DetailWorkerCommand, { type: "nearSolids" }>): void {
+    try {
+      const catalog = this.presentationCatalog;
+      if (!catalog) throw new Error("Detail presentation catalog has not been initialized");
+      const residents = [];
+      for (const token of command.input.tokens) {
+        const retained = this.retainedCells.get(token);
+        if (retained) residents.push(retained);
+      }
+      this.post({
+        type: "nearSolids",
+        requestId: command.requestId,
+        records: selectNearSolids({ ...command.input, residents }, catalog),
+      });
+    } catch (error) {
+      this.post({
+        type: "nearSolidsError",
+        requestId: command.requestId,
+        message: error instanceof Error ? error.message : "Detail near-solids selection failed",
       });
     }
   }

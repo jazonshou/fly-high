@@ -1,5 +1,11 @@
-import type { BoatControlState, CarControlState, CarTyrePressure, ControlState } from "@/src/game/types";
-import type { SpawnKind } from "@/src/workers/protocol";
+import type {
+  BoatControlState,
+  CarControlState,
+  CarTyrePressure,
+  ControlState,
+  PersonControlState,
+} from "@/src/game/types";
+import { isCarSpawn, type SpawnKind } from "@/src/workers/protocol";
 
 export type InputAction =
   | "pause"
@@ -116,14 +122,63 @@ const ACTION_KEYS: Partial<Record<string, InputAction>> = {
 const HELD_CONTROL_KEYS = new Set([
   "KeyW", "KeyS", "KeyA", "KeyD", "KeyQ", "KeyE",
   "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight",
-  "Space", "KeyF", "KeyV",
+  "Space", "KeyF", "KeyV", "KeyX",
 ]);
 
-/** Which set of controls the keys and pad drive. A dock start drives a boat, an airfield start the car. */
-export type InputProfile = "aircraft" | "boat" | "car";
+/**
+ * Which set of controls the keys and pad drive. A dock start drives a boat,
+ * an airfield start the car; in a car session the walking session switches
+ * between `"car"` and `"person"` as the walker gets in and out
+ * (`InputManager.setWalkingProfile`).
+ */
+export type InputProfile = "aircraft" | "boat" | "car" | "person";
 
 export function inputProfileForSpawn(spawn: SpawnKind): InputProfile {
-  return spawn === "dock" ? "boat" : spawn === "airfield" ? "car" : "aircraft";
+  if (spawn === "dock") return "boat";
+  if (spawn === "foot") return "person";
+  return isCarSpawn(spawn) ? "car" : "aircraft";
+}
+
+/** Aircraft and boat actions with no meaning on foot: their keys are the walker's or free. */
+const PERSON_REBOUND_ACTIONS: ReadonlySet<InputAction> = new Set([
+  "autoland", "moor", "flapsUp", "flapsDown", "gearToggle", "trimUp", "trimDown",
+]);
+
+/** Getting out of the car takes X (or pad Y) HELD this long, so a stray tap never throws you out. */
+export const GET_OUT_HOLD_SECONDS = 0.4;
+/** Mouse look, radians per pixel moved with the pointer locked. */
+const MOUSE_LOOK_RADIANS_PER_PIXEL = 0.0024;
+/** Right-stick look at full deflection, rad/s: turning, and looking up and down. */
+const STICK_LOOK_YAW_RATE = 2.6;
+const STICK_LOOK_PITCH_RATE = 1.8;
+
+/** Look and zoom gathered since the camera last read them (`InputManager.consumeLook`). */
+export interface LookDelta {
+  /** Radians, positive turning the view right. */
+  yaw: number;
+  /** Radians, positive looking up. */
+  pitch: number;
+  /** Wheel notches, positive pulling the camera out. */
+  zoom: number;
+}
+
+/**
+ * The walker's move from the keys or stick, turned into world axes by the
+ * camera's heading (`FlightTelemetry.heading`: headings grow turning left,
+ * so the view's right is its heading less 90 degrees). `forward` and `right`
+ * are -1..1; the result's length never exceeds 1.
+ */
+export function personMoveFromView(forward: number, right: number, cameraHeading: number): { x: number; z: number } {
+  let f = forward;
+  let r = right;
+  const length = Math.hypot(f, r);
+  if (length > 1) {
+    f /= length;
+    r /= length;
+  }
+  const sine = Math.sin(cameraHeading);
+  const cosine = Math.cos(cameraHeading);
+  return { x: f * sine - r * cosine, z: f * cosine + r * sine };
 }
 
 /** The car's toggles: each key press is one count on its `CarControlState` counter. */
@@ -335,6 +390,17 @@ export class InputManager {
   private carTyrePressure: CarTyrePressure = "road";
   private carSpeed = 0;
   private carPadWasDown = neutralCarPad();
+  private interactPresses = 0;
+  private interactHeld = 0;
+  private interactFired = false;
+  private padInteractWasDown = false;
+  private jumpPresses = 0;
+  private padJumpWasDown = false;
+  private cameraHeading = 0;
+  private cameraPitch = 0;
+  private lookYaw = 0;
+  private lookPitch = 0;
+  private lookZoom = 0;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -347,6 +413,7 @@ export class InputManager {
     window.addEventListener("mousemove", this.handleMouseMove);
     document.addEventListener("pointerlockchange", this.handlePointerLockChange);
     canvas.addEventListener("click", this.handleCanvasClick);
+    canvas.addEventListener("wheel", this.handleWheel, { passive: false });
   }
 
   updateOptions(options: InputOptions): void {
@@ -427,7 +494,58 @@ export class InputManager {
     };
     if (this.profile === "boat") controls.boat = this.boatControls(deltaSeconds, gamepad);
     if (this.profile === "car") controls.car = this.carControls(deltaSeconds, gamepad);
+    if (this.profile === "person") controls.person = this.personControls(deltaSeconds, gamepad);
+    if (this.profile === "car" || this.profile === "person") {
+      this.updateInteract(deltaSeconds, gamepad.buttonY);
+      controls.interactPresses = this.interactPresses;
+    }
     return controls;
+  }
+
+  /**
+   * In a car session, switch between driving and walking as the walking
+   * session says, without a reset: the car's press counts and the interact
+   * count carry on (a count that changed would be a press), and so does any
+   * key still held.
+   */
+  setWalkingProfile(profile: "car" | "person"): void {
+    if (this.profile === profile || (this.profile !== "car" && this.profile !== "person")) return;
+    this.profile = profile;
+    this.carAccelerator = 0;
+    this.carBrake = 0;
+    this.carSteer = 0;
+    this.carClutch = 0;
+    // A held X that got you out does not count again on foot until released.
+    this.interactFired = this.pressed.has("KeyX");
+    this.padInteractWasDown = true;
+    this.padJumpWasDown = true;
+    this.lookYaw = 0;
+    this.lookPitch = 0;
+    this.lookZoom = 0;
+    if (profile === "car" && !this.options.mouseFlight && document.pointerLockElement === this.canvas) {
+      document.exitPointerLock();
+    }
+  }
+
+  /**
+   * The character camera's heading (`FlightTelemetry.heading`, radians) and
+   * pitch (positive up), set by the renderer every frame: the walker moves
+   * relative to the first and swims where the second points.
+   */
+  setCharacterView(heading: number, pitch: number): void {
+    if (Number.isFinite(heading)) this.cameraHeading = heading;
+    if (Number.isFinite(pitch)) this.cameraPitch = pitch;
+  }
+
+  /** The mouse, right-stick and wheel look gathered since the last call, then cleared. */
+  consumeLook(out: LookDelta = { yaw: 0, pitch: 0, zoom: 0 }): LookDelta {
+    out.yaw = this.lookYaw;
+    out.pitch = this.lookPitch;
+    out.zoom = this.lookZoom;
+    this.lookYaw = 0;
+    this.lookPitch = 0;
+    this.lookZoom = 0;
+    return out;
   }
 
   get inputProfile(): InputProfile {
@@ -518,6 +636,60 @@ export class InputManager {
     };
   }
 
+  /**
+   * The walker's controls (the walking plan's controls table): W A S D or
+   * the left stick move relative to the camera, Shift or the right trigger
+   * runs (or swims the faster stroke), Space or A jumps and rises in the
+   * water, Ctrl or B dives. The mouse (pointer locked) and the right stick
+   * look, gathered for the camera in `consumeLook`.
+   */
+  private personControls(deltaSeconds: number, gamepad: ReturnType<InputManager["readGamepad"]>): PersonControlState {
+    let forward = (this.pressed.has("KeyW") ? 1 : 0) - (this.pressed.has("KeyS") ? 1 : 0);
+    let right = (this.pressed.has("KeyD") ? 1 : 0) - (this.pressed.has("KeyA") ? 1 : 0);
+    if (Math.abs(gamepad.roll) > 0.01 || Math.abs(gamepad.pitch) > 0.01) {
+      forward = -gamepad.pitch;
+      right = gamepad.roll;
+    }
+    const move = personMoveFromView(forward, right, this.cameraHeading);
+    if (gamepad.buttonA && !this.padJumpWasDown) this.jumpPresses += 1;
+    this.padJumpWasDown = gamepad.buttonA;
+    const pitchDirection = this.options.invertPitch ? -1 : 1;
+    this.lookYaw += gamepad.yaw * STICK_LOOK_YAW_RATE * deltaSeconds;
+    this.lookPitch -= gamepad.rightStickY * pitchDirection * STICK_LOOK_PITCH_RATE * deltaSeconds;
+    return {
+      moveX: move.x,
+      moveZ: move.z,
+      lookHeading: this.cameraHeading,
+      lookPitch: this.cameraPitch,
+      run: this.pressed.has("ShiftLeft") || this.pressed.has("ShiftRight") || gamepad.rightTrigger > 0.5,
+      rise: this.pressed.has("Space") || gamepad.buttonA,
+      dive: this.pressed.has("ControlLeft") || this.pressed.has("ControlRight") || gamepad.buttonB,
+      jumpPresses: this.jumpPresses,
+    };
+  }
+
+  /** X or pad Y: a press on foot; in the car, one count only once held `GET_OUT_HOLD_SECONDS`. */
+  private updateInteract(deltaSeconds: number, padDown: boolean): void {
+    const held = this.pressed.has("KeyX") || padDown;
+    if (this.profile === "person") {
+      if (padDown && !this.padInteractWasDown) this.interactPresses += 1;
+      this.padInteractWasDown = padDown;
+      if (!held) this.interactFired = false;
+      return;
+    }
+    this.padInteractWasDown = padDown;
+    if (!held) {
+      this.interactHeld = 0;
+      this.interactFired = false;
+      return;
+    }
+    this.interactHeld += deltaSeconds;
+    if (!this.interactFired && this.interactHeld >= GET_OUT_HOLD_SECONDS) {
+      this.interactFired = true;
+      this.interactPresses += 1;
+    }
+  }
+
   /** The tyre pressure preset the pause menu's vehicle panel asks for; the sim inflates only while stopped. */
   setCarTyrePressure(pressure: CarTyrePressure): void {
     this.carTyrePressure = pressure;
@@ -529,7 +701,9 @@ export class InputManager {
   }
 
   consumeActions(): InputAction[] {
-    const result = [...this.actions].filter((action) => this.profile !== "car" || !CAR_REBOUND_ACTIONS.has(action));
+    const result = [...this.actions].filter((action) =>
+      (this.profile !== "car" || !CAR_REBOUND_ACTIONS.has(action))
+      && (this.profile !== "person" || !PERSON_REBOUND_ACTIONS.has(action)));
     this.actions.clear();
     for (const action of result) {
       if (action === "flapsDown") this.flaps = Math.min(1, this.flaps + 0.5);
@@ -595,6 +769,15 @@ export class InputManager {
     this.carTyrePressure = "road";
     this.carSpeed = 0;
     this.carPadWasDown = neutralCarPad();
+    this.interactPresses = 0;
+    this.interactHeld = 0;
+    this.interactFired = false;
+    this.padInteractWasDown = false;
+    this.jumpPresses = 0;
+    this.padJumpWasDown = false;
+    this.lookYaw = 0;
+    this.lookPitch = 0;
+    this.lookZoom = 0;
     this.pressed.clear();
     this.actions.clear();
     this.roll = 0;
@@ -622,6 +805,7 @@ export class InputManager {
     window.removeEventListener("mousemove", this.handleMouseMove);
     document.removeEventListener("pointerlockchange", this.handlePointerLockChange);
     this.canvas.removeEventListener("click", this.handleCanvasClick);
+    this.canvas.removeEventListener("wheel", this.handleWheel);
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
@@ -642,6 +826,13 @@ export class InputManager {
       this.carPresses[carPress] += 1;
       event.preventDefault();
     }
+    if (this.profile === "person") {
+      if (event.code === "Space") this.jumpPresses += 1;
+      if (event.code === "KeyX" && !this.interactFired) {
+        this.interactPresses += 1;
+        this.interactFired = true;
+      }
+    }
     const action = ACTION_KEYS[event.code];
     if (action) {
       this.actions.add(action);
@@ -655,6 +846,7 @@ export class InputManager {
 
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
     this.pressed.delete(event.code);
+    if (event.code === "KeyX") this.interactFired = false;
   };
 
   private readonly handleBlur = (): void => {
@@ -675,12 +867,27 @@ export class InputManager {
   };
 
   private readonly handleCanvasClick = (): void => {
-    if (this.options.mouseFlight && document.pointerLockElement !== this.canvas) {
+    if ((this.options.mouseFlight || this.profile === "person") && document.pointerLockElement !== this.canvas) {
       void this.canvas.requestPointerLock();
     }
   };
 
+  private readonly handleWheel = (event: WheelEvent): void => {
+    if (this.profile !== "person") return;
+    event.preventDefault();
+    // A notch is about 100 pixels in line mode's pixel equivalent.
+    const pixels = event.deltaMode === 1 ? event.deltaY * 33 : event.deltaMode === 2 ? event.deltaY * 400 : event.deltaY;
+    this.lookZoom += pixels / 100;
+  };
+
   private readonly handleMouseMove = (event: MouseEvent): void => {
+    if (this.profile === "person") {
+      if (!this.pointerLocked) return;
+      const pitchDirection = this.options.invertPitch ? -1 : 1;
+      this.lookYaw += event.movementX * MOUSE_LOOK_RADIANS_PER_PIXEL;
+      this.lookPitch -= event.movementY * pitchDirection * MOUSE_LOOK_RADIANS_PER_PIXEL;
+      return;
+    }
     if (!this.options.mouseFlight || !this.pointerLocked) return;
     this.mouseRoll = Math.min(1, Math.max(-1, this.mouseRoll + event.movementX * 0.0028));
     this.mousePitch = Math.min(1, Math.max(-1, this.mousePitch + event.movementY * 0.0028));

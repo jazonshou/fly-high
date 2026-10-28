@@ -3,6 +3,7 @@ import type {
   CarControlState,
   CarSetup,
   FlightMode,
+  PersonControlState,
   VehicleVisualPayload,
 } from "@/src/game/types";
 import type { TerrainCollisionSample, WorldDefinition } from "@/src/world/types";
@@ -33,6 +34,13 @@ export interface SurfaceVehicleEnvironment {
   /** The world's static colliders (buildings, guardrails); null where none are built. */
   colliders?: ColliderWorld | null;
   /**
+   * The trees, rocks and logs the near view draws round the walker (the
+   * detail worker's near-solids list, posted with the `nearSolids` command),
+   * as a collider world of their own; null or absent before the first list.
+   * Only the walker reads it: the car keeps trees soft.
+   */
+  nearSolids?: ColliderWorld | null;
+  /**
    * Whether the published L0 terrain pages answer everywhere within `radius`
    * of (x, z) (`TerrainAuthority.covers`). A car waits on it at its start so
    * it never settles on a fallback height; absent (tests, probes), it never
@@ -58,6 +66,8 @@ export interface SurfaceVehicleControls {
   boat: BoatControlState;
   /** The car's block (`ControlState.car`); the worker always sets it, boat probes need not. */
   car?: CarControlState;
+  /** The walker's block (`ControlState.person`); the worker sets it in a car session. */
+  person?: PersonControlState;
 }
 
 /** The common pose and engine fields, plus the class payload the HUD and renderer read. */
@@ -119,4 +129,15 @@ export const NEUTRAL_BOAT_CONTROLS: Readonly<BoatControlState> = Object.freeze({
   trim: 0,
   tabs: 0,
   moorPresses: 0,
+});
+
+export const NEUTRAL_PERSON_CONTROLS: Readonly<PersonControlState> = Object.freeze({
+  moveX: 0,
+  moveZ: 0,
+  lookHeading: 0,
+  lookPitch: 0,
+  run: false,
+  rise: false,
+  dive: false,
+  jumpPresses: 0,
 });

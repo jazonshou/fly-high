@@ -14,6 +14,7 @@ import type {
   CameraMode,
   FlightVisualState,
   GpuPassAttribution,
+  PersonVisualState,
   QualityLevel,
   RenderDiagnostics,
   WeatherPreset,
@@ -72,10 +73,14 @@ import {
 } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
+import { createColliderSweepHit, type ColliderWorld } from "@/src/sim/colliders";
+import { nearSolidsColliderWorld, type NearSolidsPost } from "@/src/sim/person/nearSolids";
+import { CAR_COLLIDER_MATERIAL, CarColliders } from "@/src/sim/ground/carColliders";
 import { oceanSpectrumSeed, seaSpectrumWindSpeed } from "@/src/sim/water/seaState";
 import type { SeaShelterEllipse } from "@/src/sim/water/types";
 import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
-import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/catalogue";
+import { surfaceVehicleSpec, type SurfaceVehicleSpec, type VehicleSpec } from "@/src/vehicles/catalogue";
+import { CAR_SEATING, PERSON } from "@/src/vehicles/person";
 import { isAircraftKind, isSurfaceVehicleKind, vehicleClass, type VehicleKind } from "@/src/vehicles/kinds";
 import {
   infrastructureIndex,
@@ -90,11 +95,22 @@ import { infrastructureChangeTouches, infrastructurePlantExclusionsIn } from "@/
 import { RoadStreamRuntime } from "./roads/RoadStreamRuntime";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
+import { createPersonVisual, type PersonAnimationInput, type PersonVisual } from "./webgpu/person";
+import {
+  CharacterCamera,
+  characterCameraBelowWater,
+  type CameraObstacleBox,
+  type CameraWaterBand,
+  type CharacterCameraWater,
+} from "./characterCamera";
+import { LatticeHeightCache } from "./latticeHeightCache";
 import type { OceanHullClip } from "./webgpu/boat/oceanHullClip";
 import type { UndrawnSeaHeave } from "./webgpu/boat/undrawnSeaHeave";
 import { createBoatEffects, type BoatEffects } from "./webgpu/boat/BoatEffects";
 import type { CarBowWave } from "./webgpu/ground/CarBowWave";
 import { createCarEffects, type CarEffects } from "./webgpu/ground/CarEffects";
+import { createCameraWaterSample } from "./webgpu/underwater/cameraWater";
+import { UnderwaterView } from "./webgpu/underwater/UnderwaterView";
 import type { CarParticleSystem } from "./webgpu/ground/CarParticleSystem";
 import type { CarTrackSystem } from "./webgpu/ground/CarTrackSystem";
 import type { BoatSpraySystem } from "./webgpu/boat/BoatSpraySystem";
@@ -219,7 +235,7 @@ import {
 import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
 import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
-import type { FlightRenderingSystem, ScreenPoint, TerrainAuthorityPublisher } from "./types";
+import type { FlightRenderingSystem, FootstepEvents, ScreenPoint, TerrainAuthorityPublisher } from "./types";
 import {
   type TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
@@ -444,8 +460,10 @@ export function atmosphereFogNear(weather: WeatherPreset): number {
   return weather === "cloudy" ? 2_200 : weather === "clear" ? 4_500 : 3_800;
 }
 
-/** Sample counts for the three post-processes that can head the camera chain. */
+/** Sample counts for the post-processes that can head the camera chain. */
 export interface FirstPassSamples {
+  /** The underwater water column, at the head whenever it is attached (the camera is under water). */
+  readonly waterColumn: number;
   readonly scotopic: number;
   readonly bloom: number;
   readonly toneMap: number;
@@ -458,22 +476,26 @@ export interface FirstPassSamples {
  * and therefore its sample count. The part that is easy to get wrong is that
  * ownership is DYNAMIC: `ScotopicVision` detaches in photopic daylight, so the
  * head of the chain changes with the time of day, and `7-5` put a third
- * candidate behind it. Chain order is fixed -- rod vision, bloom, tone map --
- * so the owner is simply the first one attached.
+ * candidate behind it. Chain order is fixed -- the underwater water column
+ * (car sessions, only while the camera is under water), rod vision, bloom,
+ * tone map -- so the owner is simply the first one attached.
  *
  * Pure, and separate from `applyFirstPassOwnership`, because the interesting
- * content here is a three-way policy over eight states and none of it needs a
- * GPU. The test that replaced the old source-string pin exercises all eight.
+ * content here is a four-way policy over sixteen states and none of it needs
+ * a GPU. The test that replaced the old source-string pin exercises them all.
  */
 export function firstPassSampleAssignment(
   msaaSamples: number,
   scotopicAttached: boolean,
   bloomAttached: boolean,
+  waterColumnAttached = false,
 ): FirstPassSamples {
-  const bloomFirst = !scotopicAttached && bloomAttached;
-  const toneMapFirst = !scotopicAttached && !bloomAttached;
+  const scotopicFirst = !waterColumnAttached && scotopicAttached;
+  const bloomFirst = !waterColumnAttached && !scotopicAttached && bloomAttached;
+  const toneMapFirst = !waterColumnAttached && !scotopicAttached && !bloomAttached;
   return {
-    scotopic: scotopicAttached ? msaaSamples : 1,
+    waterColumn: waterColumnAttached ? msaaSamples : 1,
+    scotopic: scotopicFirst ? msaaSamples : 1,
     bloom: bloomFirst ? msaaSamples : 1,
     toneMap: toneMapFirst ? msaaSamples : 1,
   };
@@ -498,6 +520,33 @@ export class AtmosphereChangeTracker {
 }
 
 export type TerrainSampleFunction = (x: number, z: number) => TerrainSample;
+
+/** The views the walker shares with the vehicles: the orbit and the top and front framing (`PERSON`). */
+const PERSON_VIEW_FRAMING: Pick<VehicleSpec, "cinematic" | "topFront" | "cockpitEye"> = Object.freeze({
+  cinematic: PERSON.cinematic,
+  topFront: PERSON.topFront,
+  cockpitEye: Object.freeze({ forward: 0.12, up: PERSON.eyeHeight, right: 0 }),
+});
+
+/** The figure's pose while seated at the wheel: driving, the person is not simulated. */
+function seatedPersonState(): PersonVisualState {
+  return {
+    kind: "person",
+    mode: "seated",
+    speed: 0,
+    running: false,
+    grounded: true,
+    slope: 0,
+    waterDepth: 0,
+    submersion: 0,
+    headDepth: -PERSON.stature,
+    swimPitch: 0,
+    landingSpeed: 0,
+    landingAge: 60,
+    surface: -1,
+    boarding: null,
+  };
+}
 
 export interface FlightRendererOptions {
   canvas: HTMLCanvasElement;
@@ -659,6 +708,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly carParticles: CarParticleSystem | null;
   private readonly carTracks: CarTrackSystem | null;
   private readonly carBowWave: CarBowWave | null;
+  /** The view from under the water, where the walker can dive; null outside a car session. */
+  private readonly underwater: UnderwaterView | null;
   /** Whether the surface vehicle, not the aircraft, is the one on screen. */
   private surfaceActive = false;
   /** The surface follow's level frame: the bow's heading and world up. */
@@ -802,6 +853,110 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** Camera and aim point relative to the aircraft, which is what is smoothed. */
   private readonly cameraOffset = Vector3.Zero();
   private readonly cameraTargetOffset = Vector3.Zero();
+  /**
+   * The walker's figure, in a car session (the walking plan): on foot it
+   * follows the person's pose, driving it sits at the wheel of the drawn car.
+   * Null in aircraft and boat sessions, which never build one.
+   */
+  private person: PersonVisual | null = null;
+  private personEnabled = false;
+  /** The car's cockpit view as last applied: on foot the car is seen from outside in every view. */
+  private carCockpitView = false;
+  private readonly characterCamera = new CharacterCamera();
+  /** The sim's static colliders, for the character camera; null outside car sessions. */
+  private cameraColliders: CarColliders | null = null;
+  /**
+   * The trunks, rocks, logs and stumps round the walker (the detail worker's
+   * newest near-solids list), for the character camera; the same list goes
+   * to the simulation worker for the walker. Null before the first list.
+   */
+  private nearSolidsPost: NearSolidsPost | null = null;
+  private nearSolids: ColliderWorld | null = null;
+  private readonly cameraSweepFrom = { x: 0, y: 0, z: 0 };
+  private readonly cameraSweepTo = { x: 0, y: 0, z: 0 };
+  private readonly cameraSweepHit = createColliderSweepHit();
+  /** The figure's foot strikes since the last `consumeFootsteps`. */
+  private readonly footsteps: FootstepEvents = { count: 0, strength: 0 };
+  private readonly characterLook = { yaw: 0, pitch: 0, zoom: 0 };
+  private walkerGround: LatticeHeightCache | null = null;
+  private lastWalkingDriven: "car" | "person" | null = null;
+  /** The parked car's pose while the walker is on foot, beside `bodyQuaternion`'s person. */
+  private readonly vehicleQuaternion = new Quaternion();
+  private readonly vehicleMatrix = new Matrix();
+  private readonly seatedPerson = seatedPersonState();
+  private readonly seatPosition = Vector3.Zero();
+  private readonly seatScratch = Vector3.Zero();
+  /** Where the walker last stood on foot, world, for the figure's walk to the door. */
+  private readonly lastFootPose = { x: 0, y: 0, z: 0, heading: 0, sine: 0, cosine: 1, valid: false };
+  /**
+   * The drawn ground beside the walker's feet (`lastFootPose`), forward and
+   * right of them, above the feet: one closure for the renderer's life
+   * rather than one a frame.
+   */
+  private readonly walkerGroundOffset = (forward: number, right: number): number => {
+    const pose = this.lastFootPose;
+    const ground = this.walkerGround;
+    if (!ground) return 0;
+    return ground.sample(
+      pose.x + forward * pose.sine - right * pose.cosine,
+      pose.z + forward * pose.cosine + right * pose.sine,
+    ) - pose.y;
+  };
+  private readonly flatGroundOffset = (): number => 0;
+  private boardingFrom: { forward: number; up: number; right: number; facing: number } | null = null;
+  /**
+   * The water the character camera keeps a side of (the underwater view's
+   * camera sampler), and the side: the walker's head's, changed only once the
+   * head is past the surface's band on the other side.
+   */
+  private readonly characterWaterSample = createCameraWaterSample();
+  private characterWaterTime = 0;
+  private readonly characterWater: CharacterCameraWater = {
+    below: false,
+    at: (x: number, y: number, z: number, out: CameraWaterBand): boolean => {
+      const underwater = this.underwater;
+      if (!underwater) return false;
+      const sample = underwater.cameraWater.sample(
+        x + this.originX,
+        y,
+        z + this.originZ,
+        this.characterWaterTime,
+        this.characterWaterSample,
+      );
+      if (sample.kind === "none") return false;
+      out.surface = sample.surfaceHeight;
+      out.clearance = sample.clearance;
+      return true;
+    },
+  };
+  private readonly parkedCarObstacle: CameraObstacleBox = {
+    centerX: 0, centerY: 0, centerZ: 0, halfX: 1, halfY: 1, halfZ: 1, qx: 0, qy: 0, qz: 0, qw: 1,
+  };
+  private readonly personAnimation: {
+    person: PersonVisualState;
+    velocityX: number;
+    velocityY: number;
+    velocityZ: number;
+    turnRate: number;
+    steeringWheel: number;
+    lookYaw: number;
+    lookPitch: number;
+    boardingFrom: { forward: number; up: number; right: number; facing: number } | null;
+    boardingDoor: number;
+    groundOffset(forward: number, right: number): number;
+  } = {
+    person: seatedPersonState(),
+    velocityX: 0,
+    velocityY: 0,
+    velocityZ: 0,
+    turnRate: 0,
+    steeringWheel: 0,
+    lookYaw: 0,
+    lookPitch: 0,
+    boardingFrom: null,
+    boardingDoor: 0,
+    groundOffset: () => 0,
+  };
   /** Last frame's aircraft position, for the observed ground speed. */
   private readonly previousAircraftPosition = Vector3.Zero();
   private previousAircraftPositionValid = false;
@@ -897,6 +1052,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly spawnedAirfields: SpawnedAirfieldManager | null;
   private originShifted = true;
   private cameraCut = true;
+  /** A cut not yet taken by the character camera: on foot it stands behind the walker. */
+  private characterCameraCut = false;
+  /** A cut not yet taken by the camera's water side: it starts on the walker's head's side. */
+  private characterWaterCut = true;
   private frameIndex = 0;
   private renderScale: number;
   /**
@@ -945,6 +1104,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     surfaceVehicle: VehicleVisual | null,
     boatEffects: BoatEffects | null,
     carEffects: CarEffects | null,
+    underwater: UnderwaterView | null,
     terrain: TerrainClipmapSystem,
     terrainEvolution: TerrainEvolutionRuntime,
     terrainConsumerAuthority: TerrainConsumerAuthority | null,
@@ -1005,6 +1165,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.carParticles = carEffects?.particles ?? null;
     this.carTracks = carEffects?.tracks ?? null;
     this.carBowWave = carEffects?.bowWave ?? null;
+    this.underwater = underwater;
     this.terrain = terrain;
     this.terrainEvolution = terrainEvolution;
     this.terrainConsumerAuthority = terrainConsumerAuthority;
@@ -1016,6 +1177,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean = ocean;
     this.waterEnvironment = waterEnvironment;
     this.hydrology = hydrology;
+    // The drawn lakes and rivers for the camera's water, before any worker's.
+    if (underwater) hydrology.setWaterPublisher(underwater.hydrologyPublisher(null));
     this.bathymetry = bathymetry;
     this.dynamicAllocations = bathymetry.storageFormat === "r16float"
       ? DYNAMIC_ALLOCATIONS
@@ -1025,6 +1188,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       });
     this.airport = airport;
     this.detail = detail;
+    detail.setNearSolidsListener((post) => {
+      this.nearSolidsPost = post;
+      this.nearSolids = nearSolidsColliderWorld(post);
+      this.terrainAuthorityPublisher?.publishNearSolids?.(post);
+    });
     this.groundCover = groundCover;
     this.roads = roads;
     this.roadSurface = roadSurface;
@@ -1032,7 +1200,10 @@ export class FlightRenderer implements FlightRenderingSystem {
     // of the ground true (`RoadStreamRuntime`): the workers first, on the
     // ports their ground arrives on, then the CPU and GPU consumers here.
     roads?.setConsumers({
-      publishInfrastructure: (update) => this.terrainAuthorityPublisher?.publishInfrastructure?.(update),
+      publishInfrastructure: (update) => {
+        this.cameraColliders?.applyRegions(update);
+        this.terrainAuthorityPublisher?.publishInfrastructure?.(update);
+      },
       detailInfrastructureChanged: (update, change) => {
         this.detail.infrastructureChanged(update, change);
       },
@@ -1416,6 +1587,19 @@ export class FlightRenderer implements FlightRenderingSystem {
           atmosphere.shadows.addShadowCaster(mesh, false);
         }
       }
+      // The walker lives in car sessions only (the walking plan, D3): built
+      // hidden, it appears once the state carries a walking session.
+      const person = surfaceVehicle && vehicleClass(surfaceVehicle.kind) === "car"
+        ? createPersonVisual(scene, { profile, pipelineCompiles })
+        : null;
+      if (person) {
+        cleanup.push(() => person.dispose());
+        person.root.setEnabled(false);
+        for (const mesh of person.meshes) {
+          if (mesh.metadata?.castsShadow === false) continue;
+          atmosphere.shadows.addShadowCaster(mesh, false);
+        }
+      }
       checkpointRendererStartup("aircraft construction", "sync");
       const airportDefinition = options.runway ?? options.world.airport;
       // The access road leaves the home field through its fence.
@@ -1622,6 +1806,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       // thousands of thin instances without creating receiver-side state.
       cloudShadowReceivers.registerMeshes(aircraft.meshes);
       if (surfaceVehicle) cloudShadowReceivers.registerMeshes(surfaceVehicle.meshes);
+      if (person) cloudShadowReceivers.registerMeshes(person.meshes);
       if (airport) cloudShadowReceivers.registerMeshes(airport.root.getChildMeshes(false));
       cloudShadowReceivers.registerMeshes(marina.meshes);
       if (roadSurface) cloudShadowReceivers.registerMeshes(roadSurface.meshes);
@@ -1641,6 +1826,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       aerialReceivers.registerMaterial(terrain.pbrMaterial);
       aerialReceivers.registerMeshes(aircraft.meshes);
       if (surfaceVehicle) aerialReceivers.registerMeshes(surfaceVehicle.meshes);
+      if (person) aerialReceivers.registerMeshes(person.meshes);
       if (airport) aerialReceivers.registerMeshes(airport.root.getChildMeshes(false));
       aerialReceivers.registerMeshes(marina.meshes);
       if (roadSurface) aerialReceivers.registerMeshes(roadSurface.meshes);
@@ -1799,6 +1985,24 @@ export class FlightRenderer implements FlightRenderingSystem {
         cleanup.push(() => carEffects.tracks.dispose());
         cleanup.push(() => carEffects.bowWave.dispose());
       }
+      // Only with a car, where the walker can dive.
+      const underwater = surfaceVehicle && vehicleClass(surfaceVehicle.kind) === "car"
+        ? new UnderwaterView({
+          world: options.world,
+          weather: options.weather ?? "breezy",
+          terrainHeight: liveTerrainHeight,
+          drawnCascades: profile.oceanCascades,
+          waterEnvironment,
+          underside: {
+            camera,
+            sea: ocean,
+            environmentCube: skyProbe.texture,
+            snellWindow: profile.underwaterSnellWindow,
+            pipelineCompiles,
+          },
+        })
+        : null;
+      if (underwater) cleanup.push(() => underwater.dispose());
       // 7-4b: the clustered ILLUMINATION surface, beside the billboards that
       // are the lamps you SEE. Constructed with no definitions on purpose —
       // `ClusteredLightingSystem` then builds NO container, which costs
@@ -1970,6 +2174,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       const sharpen = new SharpenPass(camera, engine, profile.sharpenAmount);
       cleanup.push(() => sharpen.dispose(camera));
       if (!standaloneSharpen(profile)) sharpen.setEnabled(camera, false);
+      // The underwater water column: built with the chain, out of it until
+      // the camera goes under (`applyUnderwaterState`).
+      underwater?.buildColumn(camera, engine, profile.msaaSamples, {
+        source: ocean,
+        enabled: profile.underwaterCaustics,
+      });
 
       checkpointRendererStartup("presentation systems construction", "sync");
 
@@ -2040,6 +2250,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         surfaceVehicle,
         boatEffects,
         carEffects,
+        underwater,
         terrain,
         terrainEvolution,
         terrainConsumerAuthority,
@@ -2078,6 +2289,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         pipelineCompiles,
         `${info.vendor} ${info.renderer}`.trim(),
       );
+      if (person) renderer.installWalker(person);
       checkpointRendererStartup("renderer finalization", "sync");
       cleanup.length = 0;
       return renderer;
@@ -2090,6 +2302,46 @@ export class FlightRenderer implements FlightRenderingSystem {
     }
   }
 
+  private installWalker(person: PersonVisual): void {
+    this.person = person;
+    this.walkerGround = new LatticeHeightCache(this.cameraTerrainHeight);
+    // The sim's static colliders, copied here for the character camera's
+    // boom: the marina, the airports' buildings and the roads' guardrails.
+    // Built behind the load screen (about 12 ms), then kept in step.
+    this.cameraColliders = new CarColliders(this.liveWorld, this.cameraTerrainHeight);
+  }
+
+  /**
+   * The walker's look and zoom the input gathered since the last frame
+   * (radians right and up, wheel notches out), for the character camera.
+   * Ignored outside a walking session.
+   */
+  applyCharacterLook(look: { readonly yaw: number; readonly pitch: number; readonly zoom: number }): void {
+    // Spelled out: the WGSL swizzle lint reads `.yaw +=` as a swizzle.
+    const gathered = this.characterLook;
+    gathered.yaw = gathered.yaw + look.yaw;
+    gathered.pitch = gathered.pitch + look.pitch;
+    gathered.zoom = gathered.zoom + look.zoom;
+  }
+
+  consumeFootsteps(out: FootstepEvents): FootstepEvents {
+    out.count = this.footsteps.count;
+    out.strength = this.footsteps.strength;
+    this.footsteps.count = 0;
+    this.footsteps.strength = 0;
+    return out;
+  }
+
+  cameraUnderwaterDepth(): number {
+    const underwater = this.underwater;
+    return underwater?.submerged ? underwater.camera.depth : 0;
+  }
+
+  /** The character camera's heading and pitch, radians: the walker moves and swims relative to them. */
+  characterView(): { readonly heading: number; readonly pitch: number } {
+    return this.characterCamera;
+  }
+
   setCameraMode(mode: CameraMode): void {
     if (mode === this.cameraMode) return;
     this.cameraMode = mode;
@@ -2097,6 +2349,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     const cockpit = mode === "cockpit";
     this.aircraft.setCockpitView(cockpit);
     this.surfaceVehicle?.setCockpitView(cockpit);
+    this.carCockpitView = cockpit;
     // A WORLD-ONLY RIG (perf capture) draws no part of the aeroplane in cockpit view. Disabling the
     // visual's ROOT is what does it, rather than walking the meshes: `setCockpitView` and
     // `configureCockpitOnlyParts` both own per-mesh `isVisible`, and a second writer would fight
@@ -2120,9 +2373,14 @@ export class FlightRenderer implements FlightRenderingSystem {
    * ground speed in the thousands and throw the camera far behind the
    * aeroplane on its first frame. Forgetting the previous position is what
    * makes the trail zero until the aircraft has actually moved again.
+   *
+   * On foot the character camera stands behind the walker again, at its
+   * default pitch (a restart, R back to a safe spot, a capture's new shot).
    */
   cutCamera(): void {
     this.cameraCut = true;
+    this.characterCameraCut = true;
+    this.characterWaterCut = true;
     this.previousAircraftPositionValid = false;
     this.observedGroundSpeed = 0;
     this.observedGroundSpeedHeldFrames = 0;
@@ -2181,6 +2439,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     }
     // 5. The airfield: hangars, tower, windsock, furniture, lamps and floods.
     this.spawnedAirfields?.setAirports(next.airports);
+    // 6. The character camera's copy of the buildings.
+    this.cameraColliders?.setAirports(next);
   }
 
   projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean {
@@ -2210,8 +2470,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void {
     this.terrainAuthorityPublisher = publisher;
     if (publisher) this.terrainEvolution.publishMacroOnce(publisher);
+    if (publisher && this.nearSolidsPost) publisher.publishNearSolids?.(this.nearSolidsPost);
     // The drawn lakes and rivers, for the car's water.
-    this.hydrology.setWaterPublisher(hydrologyWaterPublisher(this.surfaceVehicle?.kind, publisher));
+    const workerWater = hydrologyWaterPublisher(this.surfaceVehicle?.kind, publisher);
+    this.hydrology.setWaterPublisher(this.underwater ? this.underwater.hydrologyPublisher(workerWater) : workerWater);
     const needsEvolvedConsumers = this.terrainConsumerAuthority !== null;
     this.terrain.setCollisionPagePublisher(
       publisher || needsEvolvedConsumers
@@ -2309,6 +2571,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.boatWake?.setAtmosphere(this.atmosphere.snapshot);
     this.boatSpray?.setAtmosphere(this.atmosphere.snapshot);
     this.boatHeave?.setWeather(weather);
+    this.underwater?.setWeather(weather);
+    this.underwater?.setAtmosphere(this.atmosphere.snapshot);
     this.carParticles?.setAtmosphere(this.atmosphere.snapshot);
     this.carBowWave?.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
@@ -3097,6 +3361,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.atmosphere.dispose(),
       () => this.aircraft.dispose(),
       () => this.surfaceVehicle?.dispose(),
+      () => this.person?.dispose(),
       () => {
         if (typeof window !== "undefined") {
           window.removeEventListener("keydown", this.handleDebugKey);
@@ -3120,6 +3385,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.carParticles?.dispose(),
       () => this.carTracks?.dispose(),
       () => this.carBowWave?.dispose(),
+      () => this.underwater?.dispose(),
       () => this.hydrology.dispose(),
       () => this.ocean.dispose(),
       () => this.cloudShadowReceivers.dispose(),
@@ -3198,6 +3464,13 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         // The wake and the car's bow wave lie on the waves this frame's sea is drawn with.
         this.boatWake?.bindOcean();
         this.carBowWave?.bindOcean();
+        // Which side of the drawn water the camera is on, at the time the sea is drawn at,
+        // and the walker's breath under it.
+        const visual = this.currentState;
+        const walker = visual?.vehicle?.kind === "person" ? visual.vehicle : null;
+        this.underwater?.setBreather(walker && visual ? visual.position : null, walker?.headDepth ?? 0);
+        this.underwater?.update(this.cameraWorld.x, this.cameraWorld.y, this.cameraWorld.z, frame.timeSeconds);
+        this.applyUnderwaterState();
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
         // ocean disk is depth-tested away above the waterline), so the sea
         // state and the WATER's own clock cross here — same node, same frame,
@@ -3263,8 +3536,29 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.forward.normalize();
     this.up.normalize();
     this.syncActiveVehicle(state);
+    const parkedCar = state.walking?.driven === "person" ? state.walking.car : null;
+    const carCockpit = this.cameraMode === "cockpit" && !parkedCar;
+    if (this.surfaceVehicle && carCockpit !== this.carCockpitView) {
+      this.carCockpitView = carCockpit;
+      this.surfaceVehicle.setCockpitView(carCockpit);
+    }
     if (!this.viewerMode && this.surfaceActive && this.surfaceVehicle) {
-      this.poseSurfaceVehicle(state, this.surfaceVehicle);
+      if (parkedCar) {
+        // On foot: the common state is the walker's; the car keeps its own pose.
+        this.vehicleQuaternion.set(
+          parkedCar.orientation.x,
+          parkedCar.orientation.y,
+          parkedCar.orientation.z,
+          parkedCar.orientation.w,
+        ).normalize();
+        Matrix.FromQuaternionToRef(this.vehicleQuaternion, this.vehicleMatrix);
+        this.poseSurfaceVehicle(parkedCar, this.surfaceVehicle, this.vehicleQuaternion, this.vehicleMatrix);
+      } else {
+        this.poseSurfaceVehicle(state, this.surfaceVehicle, this.bodyQuaternion, this.bodyMatrix);
+      }
+      const doors = state.walking?.doors;
+      this.surfaceVehicle.setDoors?.(doors?.[0] ?? 0, doors?.[1] ?? 0);
+      this.posePerson(state);
     } else if (!this.viewerMode) {
       this.aircraft.root.position.set(
         state.position.x - this.originX,
@@ -3450,9 +3744,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.steam.update(this.cameraWorld.x, this.cameraWorld.z, state.simulationTime);
     this.boatSpray?.update(state);
     this.boatWake?.update(state);
-    this.carParticles?.update(state);
-    this.carTracks?.update(state);
-    this.carBowWave?.update(state);
+    // On foot the car's effects read the parked car, not the walker.
+    const carState = state.walking?.driven === "person" && state.walking.car ? state.walking.car : state;
+    this.carParticles?.update(carState);
+    this.carTracks?.update(carState);
+    this.carBowWave?.update(carState);
     this.updateAerialPerspective();
   }
 
@@ -3479,11 +3775,17 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * discovering the rule from whichever site it happens to read.
    */
   private applyFirstPassOwnership(): void {
+    const waterColumn = this.underwater?.column ?? null;
+    // The water is in the scene and rods are in the eye: the water column
+    // heads the chain, over rod vision, which attaches at 0 as dusk falls.
+    waterColumn?.keepAtHead(this.camera);
     const samples = firstPassSampleAssignment(
       this.profile.msaaSamples,
       this.scotopic.enabled,
       this.bloom.enabled,
+      waterColumn?.enabled ?? false,
     );
+    waterColumn?.setSamples(samples.waterColumn);
     this.scotopic.setSamples(samples.scotopic);
     this.bloom.setSamples(samples.bloom);
     this.toneMap.samples = samples.toneMap;
@@ -3514,6 +3816,29 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.sharpen.postProcess,
     ]) {
       pass.markTextureDirty();
+    }
+    waterColumn?.postProcess.markTextureDirty();
+  }
+
+  /**
+   * The underwater water column joins the chain while the camera is under the
+   * water, and for one frame at load (drawing the scene through untouched)
+   * so its render pipeline is built behind the load screen, not at the first
+   * dive. Above the water it is not in the chain. While it fades the view, a
+   * lake or river seen from below leaves that path to it.
+   */
+  private applyUnderwaterState(): void {
+    const underwater = this.underwater;
+    const waterColumn = underwater?.column;
+    if (!underwater || !waterColumn) return;
+    const submerged = underwater.submerged;
+    const warming = !waterColumn.warmed && waterColumn.ready;
+    waterColumn.setStrength(submerged ? 1 : 0);
+    this.hydrology.setUnderwaterColumnActive(submerged);
+    const wanted = submerged || warming;
+    if (wanted !== waterColumn.enabled) {
+      waterColumn.setEnabled(this.camera, wanted);
+      this.applyFirstPassOwnership();
     }
   }
 
@@ -3687,6 +4012,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     );
     this.surfaceVehicle?.root.setEnabled(active && !this.viewerMode);
     this.surfaceVehicle?.setCockpitView(cockpit);
+    this.carCockpitView = cockpit;
     // The sea fills the hull's footprint again while the boat is away.
     if (!active) this.boatHullClip?.clearPose();
     // A different vehicle somewhere else: the rig's offsets and the frame
@@ -3718,17 +4044,22 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     return { ...state, position: { x: state.position.x, y: state.position.y - lowered, z: state.position.z } };
   }
 
-  private poseSurfaceVehicle(state: FlightVisualState, visual: VehicleVisual): void {
+  private poseSurfaceVehicle(
+    state: FlightVisualState,
+    visual: VehicleVisual,
+    bodyQuaternion: Quaternion,
+    bodyMatrix: Matrix,
+  ): void {
     visual.root.position.set(
       state.position.x - this.originX,
       state.position.y,
       state.position.z - this.originZ,
     );
-    visual.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
-    this.boatHullClip?.setPose(visual.root.position, this.bodyQuaternion);
+    visual.root.rotationQuaternion?.copyFrom(bodyQuaternion);
+    this.boatHullClip?.setPose(visual.root.position, bodyQuaternion);
     visual.update(state, this.currentDeltaSeconds);
     if (state.vehicle?.kind !== "boat") {
-      this.poseCarLights(state);
+      this.poseCarLights(state, bodyMatrix);
       return;
     }
     // The boat's lamp law, from the observer's bearing as the aircraft's is.
@@ -3774,7 +4105,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * main beam on the landing pool's (`CAR_HEADLAMP_POOLS` has why), under the
    * daylight attenuation every pool takes; the washes go dark.
    */
-  private poseCarLights(state: FlightVisualState): void {
+  private poseCarLights(state: FlightVisualState, bodyMatrix: Matrix): void {
     const car = state.vehicle?.kind === "car" ? state.vehicle : null;
     this.surfaceVehicle?.setLightState({
       portNav: 0,
@@ -3786,9 +4117,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       cockpitGlow: cockpitInstrumentGlow(this.environmentState.sun.direction[1], horizontalIlluminanceLux(this.environmentState)),
     });
     const lamps = carLampState(car);
-    const bodyForward = Vector3.TransformNormal(Vector3.Right(), this.bodyMatrix);
-    const bodyUp = Vector3.TransformNormal(Vector3.Up(), this.bodyMatrix);
-    const bodyStarboard = Vector3.TransformNormal(Vector3.Forward(true), this.bodyMatrix);
+    const bodyForward = Vector3.TransformNormal(Vector3.Right(), bodyMatrix);
+    const bodyUp = Vector3.TransformNormal(Vector3.Up(), bodyMatrix);
+    const bodyStarboard = Vector3.TransformNormal(Vector3.Forward(true), bodyMatrix);
     for (const pool of AIRCRAFT_CAST_POOLS) {
       const beam = CAR_HEADLAMP_POOLS.find((candidate) => candidate.slot === pool.name);
       const intensity = beam ? carPoolIntensity(beam, lamps, this.lastDaylightAttenuation) : 0;
@@ -3807,12 +4138,253 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     for (const slot of aircraftWashLights(this.aircraftKind)) this.clusteredLighting.setIntensity(slot.name, 0);
   }
 
+  /**
+   * The walker's figure: on foot at the person's pose, while getting in or
+   * out and while driving at the driver's seat of the drawn car (the figure
+   * plays door to seat from the boarding progress). Hidden outside a walking
+   * session, in the viewer, and from the driver's own eye.
+   */
+  private posePerson(state: FlightVisualState): void {
+    const person = this.person;
+    if (!person) return;
+    const walking = state.walking ?? null;
+    const onFoot = state.vehicle?.kind === "person" ? state.vehicle : null;
+    const seated = walking?.driven === "car" && state.vehicle?.kind === "car";
+    const driven = walking?.driven ?? null;
+    if (driven !== this.lastWalkingDriven) {
+      // Getting in or out changes what the camera follows: cut, and stand behind the walker.
+      if (this.lastWalkingDriven !== null) this.cutCamera();
+      if (onFoot) this.characterCamera.reset((state.heading * Math.PI) / 180);
+      this.lastWalkingDriven = driven;
+    } else if (this.characterCameraCut && onFoot) {
+      this.characterCamera.reset((state.heading * Math.PI) / 180);
+    }
+    this.characterCameraCut = false;
+    const cockpit = this.cameraMode === "cockpit";
+    const visible = !this.viewerMode && walking !== null && (onFoot !== null || seated) && !(seated && cockpit);
+    if (visible !== this.personEnabled) {
+      this.personEnabled = visible;
+      person.root.setEnabled(visible);
+    }
+    if (!visible) {
+      this.lastFootPose.valid = false;
+      return;
+    }
+    const ground = this.walkerGround;
+    if (ground && Math.floor(state.simulationTime / 4) !== Math.floor((state.simulationTime - this.currentDeltaSeconds) / 4)) {
+      // The analytic ground follows the streamed roads' earthworks: refresh now and then.
+      ground.clear();
+    }
+    const animation = this.personAnimation;
+    const heading = (state.heading * Math.PI) / 180;
+    const carRoot = this.surfaceVehicle?.root ?? null;
+    const boarding = onFoot?.mode === "board" ? onFoot.boarding : null;
+    if (onFoot && !boarding) {
+      person.root.position.set(state.position.x - this.originX, state.position.y, state.position.z - this.originZ);
+      person.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
+      animation.person = onFoot;
+      animation.velocityX = state.velocity.x;
+      animation.velocityY = state.velocity.y;
+      animation.velocityZ = state.velocity.z;
+      // The sim's yaw rate is about body +Y, positive turning left.
+      animation.turnRate = -state.angularVelocity.y;
+      animation.steeringWheel = 0;
+      animation.boardingFrom = null;
+      animation.boardingDoor = 0;
+      this.boardingFrom = null;
+      this.lastFootPose.x = state.position.x;
+      this.lastFootPose.y = state.position.y;
+      this.lastFootPose.z = state.position.z;
+      this.lastFootPose.heading = heading;
+      this.lastFootPose.sine = Math.sin(heading);
+      this.lastFootPose.cosine = Math.cos(heading);
+      this.lastFootPose.valid = true;
+      animation.groundOffset = ground ? this.walkerGroundOffset : this.flatGroundOffset;
+    } else if (carRoot?.rotationQuaternion) {
+      const carQuaternion = carRoot.rotationQuaternion;
+      const hip = CAR_SEATING.driverHip;
+      this.seatScratch.set(hip.forward, hip.up, hip.right);
+      this.seatScratch.rotateByQuaternionToRef(carQuaternion, this.seatPosition);
+      person.root.position.copyFrom(carRoot.position).addInPlace(this.seatPosition);
+      person.root.rotationQuaternion?.copyFrom(carQuaternion);
+      if (boarding && boarding.action === "getIn" && !this.boardingFrom && this.lastFootPose.valid) {
+        // Where the walker stood, in the seat frame: the figure walks from there to the door.
+        this.seatScratch.set(
+          this.lastFootPose.x - this.originX - person.root.position.x,
+          this.lastFootPose.y - person.root.position.y,
+          this.lastFootPose.z - this.originZ - person.root.position.z,
+        );
+        const inverse = Quaternion.Inverse(carQuaternion);
+        this.seatScratch.rotateByQuaternionToRef(inverse, this.seatPosition);
+        const carHeading = Math.atan2(
+          1 - 2 * (carQuaternion.y * carQuaternion.y + carQuaternion.z * carQuaternion.z),
+          2 * (carQuaternion.x * carQuaternion.z - carQuaternion.w * carQuaternion.y),
+        );
+        this.boardingFrom = {
+          forward: this.seatPosition.x,
+          up: this.seatPosition.y,
+          right: this.seatPosition.z,
+          // Positive turned right: headings grow turning left.
+          facing: Math.atan2(Math.sin(carHeading - this.lastFootPose.heading), Math.cos(carHeading - this.lastFootPose.heading)),
+        };
+      }
+      if (!boarding) this.boardingFrom = null;
+      animation.person = onFoot ?? this.seatedPerson;
+      animation.velocityX = 0;
+      animation.velocityY = 0;
+      animation.velocityZ = 0;
+      animation.turnRate = 0;
+      animation.steeringWheel = state.vehicle?.kind === "car" ? state.vehicle.steeringWheel : 0;
+      animation.boardingFrom = this.boardingFrom;
+      // The door the walker uses, as open as the car draws it.
+      const doors = state.walking?.doors;
+      animation.boardingDoor = boarding && doors ? doors[boarding.side === "right" ? 0 : 1] : 0;
+      animation.groundOffset = this.flatGroundOffset;
+      this.lastFootPose.valid = false;
+    }
+    animation.lookYaw = onFoot
+      ? Math.atan2(Math.sin(heading - this.characterCamera.heading), Math.cos(heading - this.characterCamera.heading))
+      : 0;
+    animation.lookPitch = onFoot ? this.characterCamera.pitch : 0;
+    person.setFirstPersonView(cockpit);
+    const output = person.update(animation as PersonAnimationInput, this.currentDeltaSeconds);
+    if (output.footStrikes > 0) {
+      this.footsteps.count += output.footStrikes;
+      this.footsteps.strength = Math.max(this.footsteps.strength, output.strikeStrength);
+    }
+  }
+
+  /**
+   * The camera's probe swept through the static colliders, frame coordinates
+   * in: the share travelled. Through the guardrails: the car's rail box is
+   * 3 m tall and 2 m deep behind the drawn 0.75 m rail, and the boom would
+   * stop at it.
+   */
+  private readonly characterSweep = (
+    fromX: number,
+    fromY: number,
+    fromZ: number,
+    toX: number,
+    toY: number,
+    toZ: number,
+    radius: number,
+  ): number => {
+    const colliders = this.cameraColliders?.colliders;
+    const solids = this.nearSolids;
+    if (!colliders && !solids) return 1;
+    const from = this.cameraSweepFrom;
+    const to = this.cameraSweepTo;
+    from.x = fromX + this.originX;
+    from.y = fromY;
+    from.z = fromZ + this.originZ;
+    to.x = toX + this.originX;
+    to.y = toY;
+    to.z = toZ + this.originZ;
+    const hit = this.cameraSweepHit;
+    let share = 1;
+    if (colliders?.sweepSphere(from, to, radius, hit, CAR_COLLIDER_MATERIAL.guardrail)) share = hit.fraction;
+    // And the trunks, rocks and logs round the walker.
+    if (solids?.sweepSphere(from, to, radius, hit) && hit.fraction < share) share = hit.fraction;
+    return share;
+  };
+
+  /**
+   * The character camera, on foot in the chase and cockpit views: the orbit
+   * and first person, driven directly (no rig lag) so mouse look never trails.
+   * The exterior rig's offsets are kept in step for the next view.
+   */
+  private updateCharacterCamera(state: FlightVisualState): void {
+    const ground = this.walkerGround;
+    const obstacles: CameraObstacleBox[] = [];
+    const parked = state.walking?.car;
+    if (parked) {
+      const box = CAR_SEATING.bodyBox;
+      const q = parked.orientation;
+      this.seatScratch.set(box.center.x, box.center.y, box.center.z);
+      this.vehicleQuaternion.set(q.x, q.y, q.z, q.w);
+      this.seatScratch.rotateByQuaternionToRef(this.vehicleQuaternion, this.seatPosition);
+      const obstacle = this.parkedCarObstacle;
+      obstacle.centerX = parked.position.x - this.originX + this.seatPosition.x;
+      obstacle.centerY = parked.position.y + this.seatPosition.y;
+      obstacle.centerZ = parked.position.z - this.originZ + this.seatPosition.z;
+      obstacle.halfX = box.halfExtents.x;
+      obstacle.halfY = box.halfExtents.y;
+      obstacle.halfZ = box.halfExtents.z;
+      obstacle.qx = q.x;
+      obstacle.qy = q.y;
+      obstacle.qz = q.z;
+      obstacle.qw = q.w;
+      obstacles.push(obstacle);
+    }
+    const originX = this.originX;
+    const originZ = this.originZ;
+    const look = this.characterLook;
+    const underwater = this.underwater;
+    const water = underwater ? this.characterWater : null;
+    if (underwater && water) {
+      this.characterWaterTime = state.simulationTime;
+      const head = underwater.cameraWater.sample(
+        state.position.x,
+        state.position.y + PERSON.eyeHeight,
+        state.position.z,
+        state.simulationTime,
+        this.characterWaterSample,
+      );
+      // The side follows the walker's own head depth, the drawn sample only
+      // whether there is water at all.
+      const depth = state.vehicle?.kind === "person" ? state.vehicle.headDepth : head.depth;
+      water.below = head.kind !== "none" && characterCameraBelowWater(water.below, this.characterWaterCut, depth);
+      this.characterWaterCut = false;
+    }
+    const pose = this.characterCamera.update({
+      feetX: state.position.x - originX,
+      feetY: state.position.y,
+      feetZ: state.position.z - originZ,
+      facing: (state.heading * Math.PI) / 180,
+      lookYaw: look.yaw,
+      lookPitch: look.pitch,
+      zoom: look.zoom,
+      deltaSeconds: this.currentDeltaSeconds,
+      firstPerson: this.cameraMode === "cockpit",
+      groundHeight: ground
+        ? (x, z) => ground.sample(x + originX, z + originZ)
+        : (x, z) => this.cameraTerrainHeight(x + originX, z + originZ),
+      water,
+      obstacles,
+      sweep: this.cameraColliders || this.nearSolids ? this.characterSweep : null,
+    });
+    look.yaw = 0;
+    look.pitch = 0;
+    look.zoom = 0;
+    this.camera.position.set(pose.eyeX, pose.eyeY, pose.eyeZ);
+    this.cameraTarget.set(pose.targetX, pose.targetY, pose.targetZ);
+    this.camera.upVector.set(0, 1, 0);
+    this.camera.setTarget(this.cameraTarget);
+    this.camera.fov = (pose.fieldOfView * Math.PI) / 180;
+    const followed = this.person?.root.position;
+    if (followed) {
+      this.cameraOffset.copyFrom(this.camera.position).subtractInPlace(followed);
+      this.cameraTargetOffset.copyFrom(this.cameraTarget).subtractInPlace(followed);
+    }
+    this.person?.setFade(this.cameraMode === "cockpit" ? 0 : pose.fade);
+    this.previousAircraftPositionValid = false;
+  }
+
   private updateCamera(state: FlightVisualState): void {
+    const walker = this.person !== null && state.vehicle?.kind === "person" ? state.vehicle : null;
+    if (walker && (this.cameraMode === "chase" || this.cameraMode === "cockpit")) {
+      this.updateCharacterCamera(state);
+      return;
+    }
+    this.person?.setFade(0);
     const followed = this.surfaceActive && this.surfaceVehicle ? this.surfaceVehicle : this.aircraft;
-    const aircraftPosition = followed.root.position;
-    const framing = this.surfaceActive && this.surfaceVehicleSpec
-      ? this.surfaceVehicleSpec
-      : aircraftSpec(this.aircraft.kind);
+    // On foot the cinematic, top and front views frame the walker.
+    const aircraftPosition = walker && this.person ? this.person.root.position : followed.root.position;
+    const framing: Pick<VehicleSpec, "cinematic" | "topFront" | "cockpitEye"> = walker
+      ? PERSON_VIEW_FRAMING
+      : this.surfaceActive && this.surfaceVehicleSpec
+        ? this.surfaceVehicleSpec
+        : aircraftSpec(this.aircraft.kind);
     // A boat's exterior views follow its HEADING: the hull pitches several
     // degrees over the hump and rolls in every wave, and a rig that took either
     // would bob the whole frame with it. The helm view stays attached. For an
@@ -4247,6 +4819,13 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       horizonField?.originZ ?? 0,
       horizonField?.spanMeters ?? 0,
     );
+    // The near solids follow the walker, and a car it may step out of once
+    // it is down to a walk; the car itself keeps trees soft.
+    if (state.walking && (state.vehicle?.kind === "person" || Math.hypot(state.velocity.x, state.velocity.z) < 5)) {
+      this.detail.setNearSolidsFocus(state.position.x, state.position.z);
+    } else {
+      this.detail.clearNearSolidsFocus();
+    }
     this.detail.update(
       {
         x: state.position.x,
@@ -4384,6 +4963,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.boatSpray?.setCap(this.profile.boatSprayParticleCap);
     this.boatWake?.setTrailSeconds(this.profile.boatWakeTrailSeconds);
     this.boatHeave?.setDrawnCascades(this.profile.oceanCascades);
+    this.underwater?.setDrawnCascades(this.profile.oceanCascades);
+    this.underwater?.setProfile(this.profile);
     this.carParticles?.setCap(this.profile.vehicleParticleBudget);
     this.carTracks?.setCap(this.profile.tyreTrackSegments);
     this.roadSurface?.setRanges(this.profile);

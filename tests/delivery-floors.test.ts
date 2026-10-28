@@ -519,6 +519,15 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
     "car-dune-cockpit",
     "car-ford-chase",
     "car-dust-chase",
+    // The walker: on foot by the car, in a clearing, swimming, diving under
+    // the sea and in the marina, and on the marina's pier at dusk, for the
+    // cars' reasons; and the figure and the underwater view are still being built.
+    "walk-door-chase",
+    "walk-clearing-chase",
+    "swim-sea-chase",
+    "dive-sea-up",
+    "dive-marina-basin",
+    "walk-marina-dusk",
   ].toSorted();
 
   it("the set of fully-unpinned probes is exactly the declared one", () => {

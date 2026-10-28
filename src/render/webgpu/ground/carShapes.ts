@@ -476,3 +476,79 @@ export function showingAwayFrom(surface: Surface, centre: Vec3Tuple): Surface {
 export function bar(from: Vec3Tuple, to: Vec3Tuple, radius: number, sides: number, uv: UvFor): Surface[] {
   return tube([from, to], radius, sides, uv, true);
 }
+
+/** The half-plane `a x + b y + c >= 0` in an outline's (a, b) plane. */
+export interface HalfPlane {
+  readonly a: number;
+  readonly b: number;
+  readonly c: number;
+}
+
+/** A convex outline cut to the side of a half-plane it keeps (Sutherland-Hodgman); empty when nothing is left. */
+export function clipToHalfPlane(outline: readonly Point2[], plane: HalfPlane): Point2[] {
+  const side = (point: Point2) => plane.a * point[0] + plane.b * point[1] + plane.c;
+  const result: Point2[] = [];
+  for (let index = 0; index < outline.length; index += 1) {
+    const point = outline[index]!;
+    const next = outline[(index + 1) % outline.length]!;
+    const s0 = side(point);
+    const s1 = side(next);
+    if (s0 >= 0) result.push(point);
+    if ((s0 >= 0) !== (s1 >= 0)) {
+      const t = s0 / (s0 - s1);
+      result.push([point[0] + (next[0] - point[0]) * t, point[1] + (next[1] - point[1]) * t]);
+    }
+  }
+  return Math.abs(outlineArea(result)) > 1e-9 ? result : [];
+}
+
+/**
+ * A convex outline split by a convex region (the half-planes it keeps): the
+ * part inside, or null, and the parts outside, each convex.
+ */
+export function splitByRegion(
+  outline: readonly Point2[],
+  region: readonly HalfPlane[],
+): { readonly inside: Point2[] | null; readonly outside: Point2[][] } {
+  const outside: Point2[][] = [];
+  let rest: Point2[] = [...outline];
+  for (const plane of region) {
+    if (rest.length === 0) break;
+    const beyond = clipToHalfPlane(rest, { a: -plane.a, b: -plane.b, c: -plane.c });
+    if (beyond.length > 0) outside.push(beyond);
+    rest = clipToHalfPlane(rest, plane);
+  }
+  return { inside: rest.length > 0 ? rest : null, outside };
+}
+
+/**
+ * A surface's triangles split in two by where their centroids fall, each half
+ * keeping the vertices it uses. Within a planar part the normals do not move.
+ */
+export function partitionSurface(surface: Surface, takes: (centroid: Vec3Tuple) => boolean): [taken: Surface, left: Surface] {
+  const taken = new Surface();
+  const left = new Surface();
+  const maps = [new Map<number, number>(), new Map<number, number>()] as const;
+  const p = surface.positions;
+  for (let index = 0; index < surface.indices.length; index += 3) {
+    const corners = [surface.indices[index]!, surface.indices[index + 1]!, surface.indices[index + 2]!];
+    const centroid: Vec3Tuple = [
+      (p[corners[0]! * 3]! + p[corners[1]! * 3]! + p[corners[2]! * 3]!) / 3,
+      (p[corners[0]! * 3 + 1]! + p[corners[1]! * 3 + 1]! + p[corners[2]! * 3 + 1]!) / 3,
+      (p[corners[0]! * 3 + 2]! + p[corners[1]! * 3 + 2]! + p[corners[2]! * 3 + 2]!) / 3,
+    ];
+    const side = takes(centroid) ? 0 : 1;
+    const target = side === 0 ? taken : left;
+    const map = maps[side];
+    for (const corner of corners) {
+      let mapped = map.get(corner);
+      if (mapped === undefined) {
+        mapped = target.vertex(p[corner * 3]!, p[corner * 3 + 1]!, p[corner * 3 + 2]!, surface.uvs[corner * 2]!, surface.uvs[corner * 2 + 1]!);
+        map.set(corner, mapped);
+      }
+      // Stored indices are already in the mesh's winding: copy them as they are.
+      target.indices.push(mapped);
+    }
+  }
+  return [taken, left];
+}

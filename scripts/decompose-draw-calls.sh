@@ -42,7 +42,7 @@ set -uo pipefail
 # surface. Every step below checks and exits explicitly instead.
 #
 # Exit codes: 2 bad arguments, 3 no usable data, 4 provenance, 5 timeout.
-DEADLINE_SECONDS="${DECOMPOSE_DEADLINE_SECONDS:-3300}"
+DEADLINE_SECONDS="${DECOMPOSE_DEADLINE_SECONDS:-4200}"
 # TWO EXPLICIT REFS, not <commit> and an implied parent. The first cut took one
 # commit and derived `^` itself; the invocation published to four owners was the
 # two-ref form, and the mismatch was SILENT -- `<sha>^ <sha> shots` would have
@@ -171,8 +171,8 @@ capture() { # <sha> <outdir>
     # down. `run_bounded` returns 0 for any non-timeout exit by design (a
     # capture exits non-zero whenever a gate fails, which is routine), so a
     # keep pass that dies before writing -- a lost WebGPU device, an OOM, or
-    # vitest's own 50-minute testTimeout firing inside this script's
-    # 55-minute watchdog -- would leave the WARM-UP's file in place, `cp` would
+    # vitest's own 65-minute testTimeout firing inside this script's
+    # 70-minute watchdog -- would leave the WARM-UP's file in place, `cp` would
     # succeed, and provenance would pass because it describes the TREE, which
     # was correct; it is the RUN that was not. The delta would then be computed
     # against the pass this file's header calls unusable, the one measured at

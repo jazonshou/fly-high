@@ -136,6 +136,10 @@ audit is why it now carries all four tiers):
 | Road ribbon range (`roadRibbonRangeMeters`; the 128 m chunks in reach drawn as one, a slot each) | 150 m | 500 m | 800 m | 1,200 m |
 | Guardrail draw range (`barrierDrawRangeMeters`; the 128 m chunks in reach drawn as one, a slot each) | 300 m | 600 m | 900 m | 1,200 m |
 | Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
+| Walker's finest figure mesh (`personFigureFinestLod`; car sessions only; 0 = 9k triangles within 25 m, 1 = 3k, 2 = 0.8k) | 1 | 0 | 0 | 0 |
+| Walker's shadow cascades (`personShadowCascades`; the nearest ones, capped by the tier's cascades) | 1 | 2 | 2 | 3 |
+| Underwater Snell's window (`underwaterSnellWindow`; car sessions, camera submerged; off = a flat underside) | no | yes | yes | yes |
+| Underwater caustics (`underwaterCaustics`; car sessions, camera submerged) | no | no | yes | yes |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
 Ultra's material array edge is 512², not §5.3's published 1024²: `3-1`
@@ -3582,6 +3586,45 @@ unpinned. They have no committed baseline, and a capture only reports them.
 
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
 delivery.
+
+## The walker's figure (2026-10-28): no aircraft, boat or car frame moves
+
+The walker's figure (`src/render/webgpu/person/`, docs/WALKER_FIGURE.md)
+replaces the lead's stand-in. It is built in car sessions only, hidden until
+the walker gets out, and draws one skinned mesh of three LODs (9,082 / 2,906
+/ 798 triangles) plus its shadow in the tier's `personShadowCascades`
+cascades. MEASURED in `tests/gpu/person-figure.test.ts` off Babylon's draw
+counter: 2 draws on Low, 3 on Medium, High and Ultra (Ultra asks for 3
+cascades, every tier has 2). The material compiles at 14 of 16 fragment
+inputs with the cascades, cloud shadows and aerial haze. No walker shot has
+a baseline or a draw ceiling yet, so nothing is re-pinned.
+
+`npm run perf:ab -- --base origin/claude/project-thread-63g5pc --rounds 0`
+(the lead's branch with the stand-in) on SwiftShader, 2026-10-28:
+
+| Shot | Draws | Work counts | Pixels |
+| --- | --- | --- | --- |
+| approach-500ft | 247 -> 247 | identical | 0.00% differ, max delta 2, SSIM 1.0000 |
+| boat-moored-dock | 125 -> 125 | identical | identical |
+| car-clearing-chase | 147 -> 147 | identical | identical |
+| walk-door-chase | 142 -> 142 | see below | the new figure (8.55% differ, SSIM 0.9708) |
+
+The car shot's inventoried GPU memory is 308.47 -> 309.71 MiB: the hidden
+figure's three meshes and its 256-texel atlas, built at load in every car
+session. The first walker run found the figure adding a 1,792-byte buffer,
+a copy and a submit to every walking frame: Babylon uploads a bone texture
+through a fresh staging buffer whenever it changes. The bones now ride in
+the draws' uniforms (`7c70f6b`), and the GPU test checks a walking frame
+adds no buffer or submit. Re-run on `7c70f6b`: walk-door-chase 141 -> 141
+draws, and the only work count that differs is the uniform upload, 176.1k ->
+179.7k bytes a frame (the bones, 1,792 bytes, in two of the draws' uniform
+buffers).
+
+CPU: `PersonMotion.update` MEASURED about 20 us a frame over every mode
+(`tests/render.person-motion-budget.test.ts`) against the walking plan's
+80 us, with about 190 B of boxed doubles a frame. GPU time was not
+measured: SwiftShader's timings are not a GPU's, so the walker shots' timing
+waits for the macOS runner.
 
 ## In-app benchmark (?bench=1)
 
