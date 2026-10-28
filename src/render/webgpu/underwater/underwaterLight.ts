@@ -115,6 +115,14 @@ export class UnderwaterLight {
   /** Absorption and backscatter of the camera's water, per metre. */
   readonly absorption: Rgb = [0, 0, 0];
   readonly backscatter: Rgb = [0, 0, 0];
+  /** The sine of the sun's elevation above the water (its beam's angle sets where caustics focus). */
+  sunElevationSine = 1;
+  /**
+   * The sun's and the sky's irradiance on a level surface above the water,
+   * over pi (the water shaders' `downwelling.total`): what a white surface
+   * lit in air shows, before the water dims it with depth.
+   */
+  readonly downwelling: Rgb = [0, 0, 0];
 
   private readonly world: WorldDefinition;
   private readonly field: WaterEnvironmentField | null;
@@ -122,7 +130,6 @@ export class UnderwaterLight {
   private readonly environment = createWaterEnvironmentSample();
   private readonly sunIrradiance: Rgb = [0, 0, 0];
   private readonly skyIrradiance: Rgb = [0, 0, 0];
-  private sunElevationSine = 1;
   private waterKind: WaterKind = "none";
   private waterDepth = Number.NaN;
   private productivity = Number.NaN;
@@ -154,6 +161,9 @@ export class UnderwaterLight {
     this.skyIrradiance[0] = (atmosphere.skyZenith.r + atmosphere.skyHorizon.r) * skyScale;
     this.skyIrradiance[1] = (atmosphere.skyZenith.g + atmosphere.skyHorizon.g) * skyScale;
     this.skyIrradiance[2] = (atmosphere.skyZenith.b + atmosphere.skyHorizon.b) * skyScale;
+    for (let channel = 0; channel < 3; channel += 1) {
+      this.downwelling[channel] = this.sunIrradiance[channel]! + this.skyIrradiance[channel]!;
+    }
     this.derive();
   }
 

@@ -238,6 +238,7 @@ describe("the camera's water", () => {
       terrainHeight: () => level - 4,
       drawnCascades: 5,
       waterEnvironment: null,
+      underside: null,
     });
     const sent: { key: string; region: unknown }[] = [];
     const evicted: string[] = [];

@@ -477,6 +477,22 @@ export interface WebGpuQualityProfile {
    * Data, not a `profile.tier` branch, per the tier rule.
    */
   readonly marinaCastsShadows: boolean;
+  /**
+   * Walking plan, "Underwater view": the sea's underside, drawn instead of the
+   * sea while the camera is under it. With the window it is shaded with the
+   * sea's own wave normals, the sky probe and the sun bent through them;
+   * without it the underside is flat (one window of analytic sky, one mirror,
+   * no texture reads). Only while submerged, and only in car sessions.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly underwaterSnellWindow: boolean;
+  /**
+   * The sea's caustic web on what the water column sees under water (the bed,
+   * the piles), from the same surface curvature the sea lays on its bed above
+   * water. Only while submerged.
+   */
+  readonly underwaterCaustics: boolean;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -591,6 +607,8 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 150,
       barrierDrawRangeMeters: 300,
       marinaCastsShadows: false,
+      underwaterSnellWindow: false,
+      underwaterCaustics: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -704,6 +722,8 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 500,
       barrierDrawRangeMeters: 600,
       marinaCastsShadows: true,
+      underwaterSnellWindow: true,
+      underwaterCaustics: false,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -806,6 +826,8 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 800,
       barrierDrawRangeMeters: 900,
       marinaCastsShadows: true,
+      underwaterSnellWindow: true,
+      underwaterCaustics: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -910,6 +932,8 @@ function resolveBaseQualityProfile(
     roadRibbonRangeMeters: 1_200,
     barrierDrawRangeMeters: 1_200,
     marinaCastsShadows: true,
+    underwaterSnellWindow: true,
+    underwaterCaustics: true,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,
