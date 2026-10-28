@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { divisorFor, FramePacer, type FramePacerTick } from "../src/game/framePacer";
+import { divisorFor, FramePacer, IDLE_PROBE_LEAD_TICKS, type FramePacerTick } from "../src/game/framePacer";
 import type { PresentationCadence } from "../src/render/webgpu/core/presentationCadence";
 import type { FrameRateSetting } from "../src/settings";
 
@@ -116,6 +116,8 @@ interface FlightOptions {
   readonly leadTicks?: number;
   /** After a frame of 2+ refreshes, the share of vsyncs that call back twice, the first early (Chrome). */
   readonly doubleCallbacks?: number;
+  /** A main-thread stall at this flight ms, this long: no tick until the first vsync after it. */
+  readonly stall?: readonly [atMs: number, ms: number];
   /** Decide with the true cadence instead of the pacer. */
   readonly oracle?: boolean;
 }
@@ -224,8 +226,11 @@ function fly(options: FlightOptions): Flight {
     return lastStampMs;
   };
 
-  for (let index = 0; index < (options.leadTicks ?? 24); index += 1) {
-    pacer.probe(stamp(heavyAt(0)));
+  // As `startIdleProbe`: the tick that settles the lead and every one
+  // after it hand the pacer a busy delta; the timer settles a shorter lead
+  // after its last tick.
+  for (let index = 0; index < (options.leadTicks ?? IDLE_PROBE_LEAD_TICKS); index += 1) {
+    pacer.probe(stamp(heavyAt(0)), index + 1 < IDLE_PROBE_LEAD_TICKS);
     advance();
   }
   if (options.busyStartup) {
@@ -235,7 +240,7 @@ function fly(options: FlightOptions): Flight {
     let stallA = vsync + misc() * 3_400;
     let stallB = vsync + misc() * 3_400;
     while (vsync < end) {
-      pacer.probe(stamp(true));
+      pacer.probe(stamp(true), false);
       let ms: number;
       const u = misc();
       if (vsync >= stallA) {
@@ -274,6 +279,7 @@ function fly(options: FlightOptions): Flight {
   let lastDrawVsync = -1;
   let lastCost = 1;
   let lastDrawSwitched = false;
+  let stalled = false;
   while (vsync - flightStart < options.durationMs) {
     const ms = vsync - flightStart;
     const setting = settingAt(ms);
@@ -321,6 +327,10 @@ function fly(options: FlightOptions): Flight {
     }
     longFrame = refreshes >= 2;
     advance(refreshes);
+    if (options.stall !== undefined && !stalled && vsync - flightStart >= options.stall[0]) {
+      stalled = true;
+      advance(Math.ceil(options.stall[1] / period));
+    }
   }
   if (thirdSince !== null) thirdMs = Math.max(thirdMs, vsync - flightStart - thirdSince);
   return { pacer, changes, judged, wrong, frames, early, missed, thirdMs, rightFromMs, unpausedFlags, unpausedSkipsMs };
@@ -521,6 +531,94 @@ describe("a display that changes rate mid-flight", () => {
       expect(paused.rightFromMs).not.toBeNull();
       expect(paused.rightFromMs!).toBeLessThanOrEqual(24_000);
       expect(paused.pacer.currentCadence).toMatchObject({ divisor: 1, displayPeriodMs: 1_000 / 60, periodConfirmed: true });
+    }
+  });
+
+  it("follows a display that slows with no pause within 2 s, confirmed, wherever its ticks show it", () => {
+    // A skipped tick draws nothing, so the next comes one new refresh after
+    // it: skips past the old clean margin, or drawn ticks the old divisor
+    // waited for, say the display slowed.
+    const cases = [[240, 144, "60"], [240, 120, "60"], [165, 120, "60"], [144, 100, "60"], [120, 60, "30"], [165, 60, "30"]] as const;
+    for (const [hz, toHz, setting] of cases) {
+      for (const stamps of [exact, firefox(true), uniform(0.5)]) {
+        const flight = fly({ hz, toHz, switchAtMs: SWITCH_MS, durationMs: 30_000, setting, stamps });
+        expect(flight.rightFromMs, `${hz} to ${toHz} Hz at ${setting}`).not.toBeNull();
+        expect(flight.rightFromMs!, `${hz} to ${toHz} Hz at ${setting}`).toBeLessThanOrEqual(SWITCH_MS + 2_000);
+        expect(flight.thirdMs).toBe(0);
+        expect(flight.pacer.currentCadence).toMatchObject({ displayPeriodMs: 1_000 / toHz, periodConfirmed: true });
+      }
+    }
+  });
+
+  it("moves to a rate under 10% slower once, without confirming and withdrawing it over and over", () => {
+    // Skips of 110 Hz confirm nothing at 120 Hz: they are 9% off, more than
+    // jitter makes, and every tick sits on 110 Hz's grid instead.
+    for (const [hz, toHz] of [[120, 110], [144, 133], [165, 155]] as const) {
+      for (const setting of ["60", "30"] as const) {
+        const flight = fly({ hz, toHz, switchAtMs: SWITCH_MS, durationMs: 50_000, setting });
+        expect(flight.changes.length, `${hz} to ${toHz} Hz at ${setting}`).toBeLessThanOrEqual(3);
+        expect(flight.rightFromMs, `${hz} to ${toHz} Hz at ${setting}`).not.toBeNull();
+        expect(flight.rightFromMs!).toBeLessThanOrEqual(SWITCH_MS + 2_000);
+        expect(1_000 / flight.pacer.currentCadence!.displayPeriodMs!).toBeCloseTo(toHz, 1);
+        expect(flight.pacer.currentCadence?.periodConfirmed).toBe(true);
+      }
+    }
+  });
+
+  it("keeps a rate its skips found through a 300 ms stall, and through two-refresh frames after it", () => {
+    // The stall resets the timing: the startup probe's period must not come
+    // back as clean evidence of the rate the display left.
+    const cases = [
+      { hz: 120, toHz: 100 },
+      { hz: 144, toHz: 120, cost: until(25_000, ONE, TWO) },
+    ];
+    for (const { hz, toHz, cost } of cases) {
+      for (const seed of [1, 2]) {
+        const flight = fly({
+          hz, toHz, switchAtMs: SWITCH_MS, durationMs: 40_000, seed, stamps: uniform(0.3), stall: [30_000, 300], ...(cost ? { cost } : {}),
+        });
+        expect(flight.rightFromMs, `${hz} to ${toHz} Hz, seed ${seed}`).not.toBeNull();
+        expect(flight.rightFromMs!, `${hz} to ${toHz} Hz, seed ${seed}`).toBeLessThanOrEqual(SWITCH_MS + 2_000);
+        expect(ratesOf(flight)).toEqual([hz, toHz]);
+      }
+    }
+  });
+
+  it("follows 60 to 144 and 100 to 120 Hz within 2 s under ±1.5 ms stamps, where few deltas are quiet", () => {
+    // ±1.5 ms either way is a fifth of a 144 Hz refresh: a quiet delta, both
+    // neighbours within 15% of it, is rare, but most spans of four are short.
+    for (const [hz, toHz] of [[60, 144], [100, 120]] as const) {
+      for (let seed = 1; seed <= 40; seed += 1) {
+        const flight = fly({ hz, toHz, switchAtMs: 10_000, durationMs: 16_000, seed, stamps: uniform(1.5) });
+        expect(flight.rightFromMs, `${hz} to ${toHz} Hz, seed ${seed}`).not.toBeNull();
+        expect(flight.rightFromMs!, `${hz} to ${toHz} Hz, seed ${seed}`).toBeLessThanOrEqual(12_000);
+      }
+    }
+  });
+
+  it("confirms no third rate when 120 Hz becomes 240 Hz under High load and Firefox's stamps", () => {
+    // Frames of three and four refreshes leave skips that slide from one
+    // rate's period to the other's: a rate between them must hold the ticks.
+    // The old rate may stay: frames that long hide the new one.
+    for (let seed = 1; seed <= 12; seed += 1) {
+      const flight = fly({ hz: 120, toHz: 240, switchAtMs: SWITCH_MS, durationMs: 60_000, seed, stamps: firefox(true), heavy: always, cost: HIGH });
+      expect(flight.thirdMs, `seed ${seed}`).toBeLessThanOrEqual(1_000);
+    }
+  });
+});
+
+describe("displays at rates no common one is", () => {
+  it("draw 112, 175 and 222 Hz at \"60\" and 160 Hz at \"30\" by their own rate, not the nearest common one", () => {
+    // 175 Hz read as 180 drew every 3rd refresh (58 fps); 112 read as 120
+    // drew every 2nd (56) and kept re-emitting the cadence.
+    const cases = [[112, "60"], [175, "60"], [222, "60"], [160, "30"]] as const;
+    for (const [hz, setting] of cases) {
+      for (const stamps of [exact, firefox(true)]) {
+        const flight = fly({ hz, durationMs: 20_000, setting, stamps });
+        expect(wrongShare(flight), `${hz} Hz at ${setting}`).toBeLessThan(MAX_WRONG_SHARE);
+        expect(flight.changes.length, `${hz} Hz at ${setting}`).toBeLessThanOrEqual(2);
+        expect(flight.pacer.currentCadence).toMatchObject({ divisor: divisorFor(setting, hz), periodConfirmed: true });
+      }
     }
   });
 });

@@ -27,7 +27,11 @@ export interface PresentationCadence {
   readonly divisor: number;
   /** Nominal display period in ms (snapped to a common rate), or null when not yet measured. */
   readonly displayPeriodMs: number | null;
-  /** True only when the period was measured on ticks that drew nothing. */
+  /**
+   * True only when the period was measured on evidence render cost cannot
+   * stretch: ticks that drew nothing, or ticks faster than the period held
+   * before (see `FramePacer`).
+   */
   readonly periodConfirmed: boolean;
 }
 

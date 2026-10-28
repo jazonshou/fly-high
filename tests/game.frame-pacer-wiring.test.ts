@@ -68,9 +68,9 @@ describe("FlightGame's frame loop paces its ticks", () => {
     expect(flightGame).toMatch(/const handleVisibility = \(\) => \{\s+framePacer\.reset\(\);/u);
   });
 
-  it("probes the display while the renderer is created, and always stops the probe", () => {
+  it("probes the display while the renderer is created, after its quiet lead at every setting, and always stops the probe", () => {
     expect(flightGame).toMatch(
-      /idleProbe = startIdleProbe\(framePacer\);\s+let created: FlightRenderer;\s+try \{\s+if \(framePacer\.paces\(activeSettings\.frameRate\)\) await idleProbe\.lead;\s+created = await FlightRenderer\.create\(rendererOptions\);\s+\} finally \{\s+idleProbe\.stop\(\);\s+\}/u,
+      /idleProbe = startIdleProbe\(framePacer\);\s+let created: FlightRenderer;\s+try \{\s+await idleProbe\.lead;\s+created = await FlightRenderer\.create\(rendererOptions\);\s+\} finally \{\s+idleProbe\.stop\(\);\s+\}/u,
     );
     // The effect's cleanup stops a probe that is still running.
     const cleanup = flightGame.slice(flightGame.indexOf("disposed = true;\n      startupAbortController.abort();"));

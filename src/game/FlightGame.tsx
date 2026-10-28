@@ -711,13 +711,14 @@ export function FlightGame() {
         ...(bench ? bench.rendererOptions(canvas) : {}),
       };
       // The startup idle probe measures the display on ticks that draw
-      // nothing, while the player waits for the renderer anyway. Where the
-      // setting paces, it gets a short lead before creation makes the main
-      // thread busy.
+      // nothing, while the player waits for the renderer anyway. It gets a
+      // short lead (300 ms at most) before creation makes the main thread
+      // busy, at every setting: the governor judges against the period it
+      // confirms at "Match display" too, and the pause menu can turn pacing on.
       idleProbe = startIdleProbe(framePacer);
       let created: FlightRenderer;
       try {
-        if (framePacer.paces(activeSettings.frameRate)) await idleProbe.lead;
+        await idleProbe.lead;
         created = await FlightRenderer.create(rendererOptions);
       } finally {
         idleProbe.stop();

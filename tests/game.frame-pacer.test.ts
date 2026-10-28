@@ -373,6 +373,53 @@ describe("confirmation", () => {
     const unpaced = fly(120, "60", { pacer: new FramePacer({ pace60: false }), ticks: 400, paused: (tick) => tick >= 200 });
     expect(unpaced.rendered).toHaveLength(400);
   });
+
+  it("re-measures the display when the pause menu turns pacing on", () => {
+    // A busy startup read a 60 Hz display as 30 Hz, and "Match display" with
+    // frames of two refreshes never contradicts it. The pause began unpaced,
+    // so only the setting change can start the re-probe.
+    const pacer = new FramePacer({ pace60: true });
+    const period = 1_000 / 60;
+    let vsync = 1_000;
+    for (let tick = 0; tick < IDLE_PROBE_LEAD_TICKS; tick += 1) {
+      pacer.probe(vsync);
+      vsync += 2 * period;
+    }
+    for (let tick = 0; tick < 1_500; tick += 1) {
+      const result = pacer.tick(vsync, tick < 600 ? "display" : "30", tick >= 500 && tick < 700);
+      vsync += (result.render ? 2 : 1) * period;
+    }
+    expect(pacer.currentCadence).toEqual(cadenceOf(30, 2, 60, true));
+  });
+
+  it("withdraws a rate whose skips read fast once the display drops to one drawn every tick, and confirms no third", () => {
+    // Every skipped 165 Hz tick is stamped 0.4 ms late, so the skips read
+    // 176 Hz, 6.6% fast: still the held rate while every tick sits on its
+    // grid. Then a 60 Hz display is drawn every tick at divisor 2, skips
+    // none, and its ticks sit on the 180 Hz grid that 176 Hz seeds.
+    const pacer = new FramePacer({ pace60: true });
+    let vsync = 1_000;
+    for (let tick = 0; tick < IDLE_PROBE_LEAD_TICKS; tick += 1) {
+      pacer.probe(vsync);
+      vsync += 1_000 / 165;
+    }
+    let drew = true;
+    for (let tick = 0; tick < 1_200; tick += 1) {
+      drew = pacer.tick(vsync + (drew ? 0.4 : 0), "60").render;
+      vsync += 1_000 / 165;
+    }
+    expect(pacer.currentCadence).toEqual(cadenceOf(60, 2, 165, true));
+    const rates = new Set<number>();
+    for (let tick = 0; tick < 1_200; tick += 1) {
+      pacer.tick(vsync, "60");
+      const periodMs = pacer.currentCadence?.displayPeriodMs ?? null;
+      rates.add(periodMs === null ? 0 : Math.round(1_000 / periodMs));
+      vsync += 1_000 / 60;
+    }
+    expect([...rates].filter((hz) => hz !== 165 && hz !== 60)).toEqual([]);
+    const final = pacer.currentCadence!;
+    expect(final.periodConfirmed && final.displayPeriodMs !== 1_000 / 60).toBe(false);
+  });
 });
 
 describe("agreement with the bench's refresh estimate", () => {
@@ -491,6 +538,22 @@ describe("the startup idle probe", () => {
     await expect(idle.lead).resolves.toBeUndefined();
     step(16);
     expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts the ticks after a lead its 300 ms cut short as busy, never as the display's", async () => {
+    // Ten quiet ticks of 60 Hz, then renderer creation misses every other refresh.
+    const { fake, step, fireTimer } = host();
+    const pacer = new FramePacer({ pace60: true });
+    const idle = startIdleProbe(pacer, fake);
+    let now = 1_000;
+    for (let tick = 0; tick < 10; tick += 1, now += 1_000 / 60) step(now);
+    fireTimer();
+    await idle.lead;
+    for (let tick = 0; tick < 40; tick += 1, now += 1_000 / 30) step(now);
+    idle.stop();
+    pacer.tick(now + 100, "60");
+    expect(pacer.currentCadence?.periodConfirmed).toBe(false);
+    expect(pacer.currentCadence?.displayPeriodMs).toBe(1_000 / 60);
   });
 
   it("confirms the period before the game's first tick, so a gap after it loses nothing", () => {
