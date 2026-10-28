@@ -136,6 +136,8 @@ audit is why it now carries all four tiers):
 | Road ribbon range (`roadRibbonRangeMeters`; the 128 m chunks in reach drawn as one, a slot each) | 150 m | 500 m | 800 m | 1,200 m |
 | Guardrail draw range (`barrierDrawRangeMeters`; the 128 m chunks in reach drawn as one, a slot each) | 300 m | 600 m | 900 m | 1,200 m |
 | Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
+| Underwater Snell's window (`underwaterSnellWindow`; car sessions, camera submerged; off = a flat underside) | no | yes | yes | yes |
+| Underwater caustics (`underwaterCaustics`; car sessions, camera submerged) | no | no | yes | yes |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
 Ultra's material array edge is 512², not §5.3's published 1024²: `3-1`

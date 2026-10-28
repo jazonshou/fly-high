@@ -242,6 +242,10 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
         (p: (typeof PROFILES)[number]) => p.vegetationCastsShadows],
       ["Home marina casts shadows",
         (p: (typeof PROFILES)[number]) => p.marinaCastsShadows],
+      ["Underwater Snell's window",
+        (p: (typeof PROFILES)[number]) => p.underwaterSnellWindow],
+      ["Underwater caustics",
+        (p: (typeof PROFILES)[number]) => p.underwaterCaustics],
     ];
 
   it.each(TIER_BOOLEAN_ROW_CHECKS)(
