@@ -818,7 +818,8 @@ describe("perf capture (1A-1c / 2Z)", () => {
         : 0;
       const heading = headingVectorFromYaw(yawDegrees);
       const orientation = orientationFromYawPitchBank(yawDegrees, shot.pitchDownDegrees, 0);
-      const state: FlightVisualState = shot.boat
+      const posedAt = simulationTime;
+      let state: FlightVisualState = shot.boat
         ? boatShotState(world, shot.boat, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
         : shot.car
         ? carShotState(world, shot.car, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
@@ -962,6 +963,12 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // the paced temporal settle or the first measured frame inherits an
       // arbitrary backlog.
       await renderer.waitForGpuIdleForCapture();
+      // A car or walker shot is posed again on the ground the stream left: the
+      // roads it installed round the shot grade the ground under the tyres and
+      // the feet, and a pose taken before they arrived rested on whichever had,
+      // a different ground (and a camera centimetres apart) every run.
+      if (shot.car) state = carShotState(world, shot.car, { x: positionX, z: positionZ, yawDegrees }, posedAt);
+      if (shot.walk) state = walkShotState(world, shot.walk, { x: positionX, z: positionZ, yawDegrees }, posedAt);
       // Pin the temporal phase before the settle: the streaming loop above
       // exits after a RUN-DEPENDENT number of frames, so accumulated time
       // would put waves and cloud advection at a different phase every run.

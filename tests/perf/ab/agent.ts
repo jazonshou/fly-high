@@ -113,7 +113,14 @@ interface ShotContext {
   readonly canonicalShotIndex: number;
   readonly viewportWidth: number;
   readonly viewportHeight: number;
-  readonly state: FlightVisualState;
+  /** Posed again by `settle` for a shot on the ground (`repose`). */
+  state: FlightVisualState;
+  /**
+   * A car or walker shot's pose rebuilt on the ground as it stands now: the
+   * stream installs the roads round the shot, and their earthworks move the
+   * ground the car's tyres and the walker's feet rest on.
+   */
+  readonly repose: (() => FlightVisualState) | null;
   readonly yawDegrees: number;
   readonly altitude: number;
   motionYawDegrees: number;
@@ -896,6 +903,12 @@ const agent: PerfAgent = {
         )
       : 0;
     const heading = headingVectorFromYaw(yawDegrees);
+    const posedAt = simulationTime;
+    const repose = shot.car
+      ? () => carShotState(activeWorld, shot.car!, { x: positionX, z: positionZ, yawDegrees }, posedAt)
+      : shot.walk
+      ? () => walkShotState(activeWorld, shot.walk!, { x: positionX, z: positionZ, yawDegrees }, posedAt)
+      : null;
     const state: FlightVisualState = shot.boat
       ? boatShotState(activeWorld, shot.boat, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
       : shot.car
@@ -928,6 +941,7 @@ const agent: PerfAgent = {
       viewportWidth,
       viewportHeight,
       state,
+      repose,
       yawDegrees,
       altitude,
       motionYawDegrees: yawDegrees,
@@ -1045,6 +1059,9 @@ const agent: PerfAgent = {
     const canonicalShotIndex = shot.canonicalShotIndex;
     const pinned = 500 + canonicalShotIndex * 120
       + (shot.shot.simulationTimeOffsetSeconds ?? 0);
+    // As the capture: a shot on the ground is posed again on the ground the
+    // stream left, whatever roads had arrived when it was first posed.
+    if (shot.repose) shot.state = shot.repose();
     // A car shot's effects first run up to the pin (`effectsHistorySeconds`),
     // as in the capture; here with the draws still gated, as the stream was.
     const history = carShotEffectsHistoryFrames(shot.shot.car);
