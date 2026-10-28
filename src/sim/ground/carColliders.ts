@@ -80,7 +80,8 @@ export interface CarRegionCollider {
  */
 export const GUARDRAIL_DEPTH = 2;
 const GUARDRAIL_TOP = 3;
-const GUARDRAIL_BELOW = 1.5;
+/** How far under the ground a guardrail's box reaches, m (the walker finds the ground in the box by it). */
+export const GUARDRAIL_BELOW = 1.5;
 /** Each box runs this far past its points, closing the seam on a straight run. */
 const GUARDRAIL_OVERLAP = 0.3;
 

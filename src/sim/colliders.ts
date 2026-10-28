@@ -241,10 +241,23 @@ export class ColliderWorld {
   private readonly kinematic: ColliderRecord[] = [];
   private stamp = 0;
   private liveCount = 0;
+  private revisionValue = 0;
 
   /** Number of colliders currently held, static and kinematic. */
   get size(): number {
     return this.liveCount;
+  }
+
+  /** Bumped by every add and remove, so a copy derived from this world (the walker's rails) knows to rebuild. */
+  get revision(): number {
+    return this.revisionValue;
+  }
+
+  /** Every static collider's shape (in its local frame, as added), material and handle, in no set order. */
+  forEachStatic(visit: (shape: Readonly<ColliderShape>, material: number, handle: number) => void): void {
+    for (const record of this.slots) {
+      if (record && !record.kinematic) visit(record.shape, record.material, record.handle);
+    }
   }
 
   /** Add a static collider. Its pose cannot change; remove and re-add to move it. */
@@ -426,11 +439,13 @@ export class ColliderWorld {
    * 0 only when the move goes deeper in (against that overlap's normal);
    * moving along or out of it, it is ignored, so a probe resting on a deck
    * or against a wall can slide off it. Kinematic colliders are swept at
-   * their current pose. Allocates nothing: the walker's step and the
-   * camera's frame call it.
+   * their current pose; colliders of material `skipMaterial` are passed
+   * through. Allocates nothing: the walker's step and the camera's frame
+   * call it.
    */
-  sweepSphere(from: Vec3, to: Vec3, radius: number, out: ColliderSweepHit): boolean {
+  sweepSphere(from: Vec3, to: Vec3, radius: number, out: ColliderSweepHit, skipMaterial = -1): boolean {
     sweepState.radius = radius > 0 ? radius : 0;
+    sweepState.skipMaterial = skipMaterial;
     return this.sweep(from, to, out);
   }
 
@@ -439,8 +454,9 @@ export class ColliderWorld {
    * with no radius. A segment starting inside a collider hits it at
    * fraction 0 only when it heads deeper in, as `sweepSphere`.
    */
-  raycast(from: Vec3, to: Vec3, out: ColliderSweepHit): boolean {
+  raycast(from: Vec3, to: Vec3, out: ColliderSweepHit, skipMaterial = -1): boolean {
     sweepState.radius = 0;
+    sweepState.skipMaterial = skipMaterial;
     return this.sweep(from, to, out);
   }
 
@@ -464,6 +480,7 @@ export class ColliderWorld {
     sweepBox.maxY = Math.max(from.y, to.y) + radius;
     sweepBox.maxZ = Math.max(from.z, to.z) + radius;
     const stamp = this.nextStamp();
+    const skip = sweepState.skipMaterial;
     let found = false;
     const ix0 = binIndex(sweepBox.minX);
     const ix1 = binIndex(sweepBox.maxX);
@@ -477,14 +494,14 @@ export class ColliderWorld {
           const record = bin[i]!;
           if (record.queryStamp === stamp) continue;
           record.queryStamp = stamp;
-          if (!aabbOverlap(record.aabb, sweepBox)) continue;
+          if (record.material === skip || !aabbOverlap(record.aabb, sweepBox)) continue;
           if (sweepRecord(record, from, out)) found = true;
         }
       }
     }
     for (let i = 0; i < this.kinematic.length; i += 1) {
       const record = this.kinematic[i]!;
-      if (!aabbOverlap(record.aabb, sweepBox)) continue;
+      if (record.material === skip || !aabbOverlap(record.aabb, sweepBox)) continue;
       if (sweepRecord(record, from, out)) found = true;
     }
     return found;
@@ -546,6 +563,7 @@ export class ColliderWorld {
     };
     this.slots[slot] = record;
     this.liveCount += 1;
+    this.revisionValue += 1;
     return record;
   }
 
@@ -581,6 +599,7 @@ export class ColliderWorld {
     this.generations[slot] = generation >= MAX_GENERATION ? 0 : generation + 1;
     this.freeSlots.push(slot);
     this.liveCount -= 1;
+    this.revisionValue += 1;
   }
 
   private insertIntoBins(record: ColliderRecord): void {
@@ -599,30 +618,25 @@ export class ColliderWorld {
     }
   }
 
+  /** A kinematic collider moves every sim step (the marina's pontoons): no closure, nothing allocated. */
   private refreshWorldGeometry(record: ColliderRecord): void {
     const { shape, worldPoints, aabb } = record;
-    const placePoint = (index: number, local: Vec3) => {
-      rotateVectorInto(scratchWorld, record.orientation, local);
-      worldPoints[index * 3] = scratchWorld.x + record.position.x;
-      worldPoints[index * 3 + 1] = scratchWorld.y + record.position.y;
-      worldPoints[index * 3 + 2] = scratchWorld.z + record.position.z;
-    };
     switch (shape.kind) {
       case "sphere":
-        placePoint(0, shape.center);
+        placeWorldPoint(record, 0, shape.center);
         boundPoints(aabb, worldPoints, 1, shape.radius);
         return;
       case "capsule":
-        placePoint(0, shape.a);
-        placePoint(1, shape.b);
+        placeWorldPoint(record, 0, shape.a);
+        placeWorldPoint(record, 1, shape.b);
         boundPoints(aabb, worldPoints, 2, shape.radius);
         return;
       case "polyline":
-        for (let i = 0; i < shape.points.length; i += 1) placePoint(i, shape.points[i]!);
+        for (let i = 0; i < shape.points.length; i += 1) placeWorldPoint(record, i, shape.points[i]!);
         boundPoints(aabb, worldPoints, shape.points.length, shape.radius);
         return;
       case "box": {
-        placePoint(0, shape.center);
+        placeWorldPoint(record, 0, shape.center);
         multiplyQuaternionInto(record.boxOrientation, record.orientation, shape.orientation ?? IDENTITY);
         normalizeQuaternionInto(record.boxOrientation, record.boxOrientation);
         boundBox(aabb, worldPoints, record.boxOrientation, shape.halfExtents);
@@ -630,6 +644,15 @@ export class ColliderWorld {
       }
     }
   }
+}
+
+/** A shape's local point `local` into the record's world points at `index`. */
+function placeWorldPoint(record: ColliderRecord, index: number, local: Vec3): void {
+  rotateVectorInto(scratchWorld, record.orientation, local);
+  const worldPoints = record.worldPoints;
+  worldPoints[index * 3] = scratchWorld.x + record.position.x;
+  worldPoints[index * 3 + 1] = scratchWorld.y + record.position.y;
+  worldPoints[index * 3 + 2] = scratchWorld.z + record.position.z;
 }
 
 function copyVec(out: Vec3, value: Vec3): void {
@@ -907,6 +930,8 @@ const sweepState = {
   dz: -0,
   length: -0,
   radius: -0,
+  /** Colliders of this material are passed through; -1 for none. */
+  skipMaterial: -1,
   /** Nearest touch so far, as a fraction of the segment. */
   best: Infinity,
   // The segment's start in the frame a solver works in (world, or a box's own).

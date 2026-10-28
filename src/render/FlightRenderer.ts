@@ -74,7 +74,7 @@ import {
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
 import { createColliderSweepHit } from "@/src/sim/colliders";
-import { CarColliders } from "@/src/sim/ground/carColliders";
+import { CAR_COLLIDER_MATERIAL, CarColliders } from "@/src/sim/ground/carColliders";
 import { oceanSpectrumSeed, seaSpectrumWindSpeed } from "@/src/sim/water/seaState";
 import type { SeaShelterEllipse } from "@/src/sim/water/types";
 import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
@@ -1023,6 +1023,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly spawnedAirfields: SpawnedAirfieldManager | null;
   private originShifted = true;
   private cameraCut = true;
+  /** A cut not yet taken by the character camera: on foot it stands behind the walker. */
+  private characterCameraCut = false;
   private frameIndex = 0;
   private renderScale: number;
   /**
@@ -2335,9 +2337,13 @@ export class FlightRenderer implements FlightRenderingSystem {
    * ground speed in the thousands and throw the camera far behind the
    * aeroplane on its first frame. Forgetting the previous position is what
    * makes the trail zero until the aircraft has actually moved again.
+   *
+   * On foot the character camera stands behind the walker again, at its
+   * default pitch (a restart, R back to a safe spot, a capture's new shot).
    */
   cutCamera(): void {
     this.cameraCut = true;
+    this.characterCameraCut = true;
     this.previousAircraftPositionValid = false;
     this.observedGroundSpeed = 0;
     this.observedGroundSpeedHeldFrames = 0;
@@ -4110,7 +4116,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       if (this.lastWalkingDriven !== null) this.cutCamera();
       if (onFoot) this.characterCamera.reset((state.heading * Math.PI) / 180);
       this.lastWalkingDriven = driven;
+    } else if (this.characterCameraCut && onFoot) {
+      this.characterCamera.reset((state.heading * Math.PI) / 180);
     }
+    this.characterCameraCut = false;
     const cockpit = this.cameraMode === "cockpit";
     const visible = !this.viewerMode && walking !== null && (onFoot !== null || seated) && !(seated && cockpit);
     if (visible !== this.personEnabled) {
@@ -4211,11 +4220,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
   }
 
   /**
-   * The character camera, on foot in the chase and cockpit views: the orbit
-   * and first person, driven directly (no rig lag) so mouse look never trails.
-   * The exterior rig's offsets are kept in step for the next view.
+   * The camera's probe swept through the static colliders, frame coordinates
+   * in: the share travelled. Through the guardrails: the car's rail box is
+   * 3 m tall and 2 m deep behind the drawn 0.75 m rail, and the boom would
+   * stop at it.
    */
-  /** The camera's probe swept through the static colliders, frame coordinates in: the share travelled. */
   private readonly characterSweep = (
     fromX: number,
     fromY: number,
@@ -4235,9 +4244,16 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     to.x = toX + this.originX;
     to.y = toY;
     to.z = toZ + this.originZ;
-    return colliders.sweepSphere(from, to, radius, this.cameraSweepHit) ? this.cameraSweepHit.fraction : 1;
+    return colliders.sweepSphere(from, to, radius, this.cameraSweepHit, CAR_COLLIDER_MATERIAL.guardrail)
+      ? this.cameraSweepHit.fraction
+      : 1;
   };
 
+  /**
+   * The character camera, on foot in the chase and cockpit views: the orbit
+   * and first person, driven directly (no rig lag) so mouse look never trails.
+   * The exterior rig's offsets are kept in step for the next view.
+   */
   private updateCharacterCamera(state: FlightVisualState): void {
     const ground = this.walkerGround;
     const obstacles: CameraObstacleBox[] = [];

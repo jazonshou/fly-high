@@ -74,7 +74,8 @@ import { setGpuPassLabelDecorator } from "../gpuPassLabels";
 import { armGpuPassTiming, collectGpuPassTiming, installGpuPassTiming } from "../gpuPassTiming";
 import { beginGpuWorkWindow, endGpuWorkWindow, installGpuWorkCounters } from "../gpuWorkCounters";
 import { carShotEffectsHistoryFrames } from "../carShotState";
-import { boatShotState, carShotState, resolveShotPlacement } from "../shotPlacement";
+import { boatShotState, carShotState, resolveShotPlacement, walkShotState } from "../shotPlacement";
+import { walkRouteState, walkShotLookPitchRadians } from "../walkShotState";
 import { FlightBakeProbe, readBakeStats } from "./bakeProbe";
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./detailWatchdog";
 import { renderAfterHitch } from "./flightHitch";
@@ -587,7 +588,12 @@ interface FlightPath {
   altitude: number;
   /** The nose's attitude below the horizon, moving toward each leg's `pitchDownDegrees`. */
   pitchDownDegrees: number;
+  /** On a walker shot: the eye under the still sea, moving toward each leg's `headDepthMeters`. */
+  headDepth: number;
 }
+
+/** How fast the walk route's swimmer goes down or up between legs, m/s. */
+const WALK_ROUTE_DEPTH_RATE_METERS_PER_SECOND = 1;
 
 /** How fast the scripted nose moves toward a leg's pitch: a firm push on the stick. */
 const FLIGHT_PITCH_RATE_DEGREES_PER_SECOND = 30;
@@ -843,7 +849,7 @@ const agent: PerfAgent = {
       shot.worldEvolution ?? "analytic",
       shot.climateProvince,
       shot.landforms,
-      shot.boat ? "speedboat" : shot.car ? "landcruiser" : null,
+      shot.boat ? "speedboat" : shot.car || shot.walk ? "landcruiser" : null,
       request.freshRenderer,
     );
     const active = requireRenderer();
@@ -894,6 +900,8 @@ const agent: PerfAgent = {
       ? boatShotState(activeWorld, shot.boat, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
       : shot.car
       ? carShotState(activeWorld, shot.car, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
+      : shot.walk
+      ? walkShotState(activeWorld, shot.walk, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
       : {
           ...INITIAL_VISUAL_STATE,
           position: { x: positionX, y: altitude, z: positionZ },
@@ -909,6 +917,11 @@ const agent: PerfAgent = {
           simulationTime,
         };
     active.setCameraMode(shot.cameraMode);
+    if (shot.walk) {
+      // As the capture: the character camera behind the walker, turned by the shot's look.
+      active.cutCamera();
+      active.applyCharacterLook({ yaw: 0, pitch: walkShotLookPitchRadians(shot.walk), zoom: 0 });
+    }
     context = {
       shot,
       canonicalShotIndex: request.canonicalShotIndex,
@@ -1127,6 +1140,9 @@ const agent: PerfAgent = {
     const active = requireRenderer();
     const activeWorld = world!;
     const fence = capability("waitForGpuIdleForCapture");
+    // A walker shot walks (or swims) the route instead of flying it, from the walker's own facing.
+    const walk = shot.shot.walk ?? null;
+    const shotHeadDepth = walk?.headDepthMeters ?? -0.05;
     if (flightPath === null || request.restart) {
       const start = request.start ?? null;
       flightPath = start
@@ -1136,13 +1152,15 @@ const agent: PerfAgent = {
           yawDegrees: start.yawDegrees,
           altitude: sampleTerrainHeight(activeWorld, start.x, start.z) + request.clearanceMeters,
           pitchDownDegrees: 0,
+          headDepth: shotHeadDepth,
         }
         : {
           x: shot.state.position.x,
           z: shot.state.position.z,
-          yawDegrees: shot.yawDegrees,
+          yawDegrees: walk ? shot.state.heading - 90 : shot.yawDegrees,
           altitude: shot.altitude,
           pitchDownDegrees: 0,
+          headDepth: shotHeadDepth,
         };
       active.setCameraMode(request.cameraMode);
     }
@@ -1190,16 +1208,30 @@ const agent: PerfAgent = {
       // looks at the ground from the clearance without flying into it.
       const pitchStep = (FLIGHT_PITCH_RATE_DEGREES_PER_SECOND / 60) * steps;
       path.pitchDownDegrees += Math.max(-pitchStep, Math.min(pitchStep, pitchTargetDegrees - path.pitchDownDegrees));
-      const state: FlightVisualState = {
-        ...shot.state,
-        simulationTime,
-        position: { x: path.x, y: path.altitude, z: path.z },
-        velocity: { x: speed * heading.x, y: 0, z: speed * heading.z },
-        orientation: orientationFromYawPitchBank(path.yawDegrees, path.pitchDownDegrees, request.bankDegrees),
-        airspeed: speed,
-        altitude: path.altitude,
-        altitudeAgl: path.altitude - groundHere,
-      };
+      const depthStep = (WALK_ROUTE_DEPTH_RATE_METERS_PER_SECOND / 60) * steps;
+      const depthTarget = request.headDepthMeters ?? shotHeadDepth;
+      path.headDepth += Math.max(-depthStep, Math.min(depthStep, depthTarget - path.headDepth));
+      const state: FlightVisualState = walk
+        ? walkRouteState(
+          activeWorld,
+          shot.state,
+          path.x,
+          path.z,
+          Math.atan2(heading.x, heading.z),
+          path.headDepth,
+          speed,
+          simulationTime,
+        )
+        : {
+          ...shot.state,
+          simulationTime,
+          position: { x: path.x, y: path.altitude, z: path.z },
+          velocity: { x: speed * heading.x, y: 0, z: speed * heading.z },
+          orientation: orientationFromYawPitchBank(path.yawDegrees, path.pitchDownDegrees, request.bankDegrees),
+          airspeed: speed,
+          altitude: path.altitude,
+          altitudeAgl: path.altitude - groundHere,
+        };
       shot.lastFrameState = state;
       const pipelinesBefore = creations.pipelines;
       const shaderModulesBefore = creations.shaderModules;
