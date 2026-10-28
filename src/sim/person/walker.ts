@@ -6,19 +6,21 @@ import {
   type PersonVisualState,
 } from "@/src/game/types";
 import { SurfaceMaterial } from "@/src/render/webgpu/terrain/surfaceMaterials";
+import { ROAD_RAIL_HEIGHT_METERS } from "@/src/world/roads/roadRails";
 import { PERSON } from "@/src/vehicles/person";
-import { createColliderSweepHit, type ColliderSweepHit } from "../colliders";
+import { ColliderWorld, createColliderSweepHit, type ColliderSweepHit } from "../colliders";
+import { CAR_COLLIDER_MATERIAL, GUARDRAIL_BELOW } from "../ground/carColliders";
 import { DeckGround } from "../ground/deckGround";
 import { createCarSurface, SurfaceCache } from "../ground/surface";
 import { createGroundPoint, TerrainLatticeCache, type GroundField, type GroundPoint } from "../ground/terrainPatch";
-import { TAU } from "../math";
+import { rotateVectorInto, TAU } from "../math";
 import {
   NEUTRAL_PERSON_CONTROLS,
   type SurfaceVehicleControls,
   type SurfaceVehicleEnvironment,
   type SurfaceVehicleSnapshot,
 } from "../surface/types";
-import type { Vec3 } from "../types";
+import type { Quaternion, Vec3 } from "../types";
 import type { VehiclePoseState } from "../vehicle";
 import {
   createWaterSurfaceSample,
@@ -70,6 +72,16 @@ const COLLIDER_LIMIT_TAN = Math.tan((COLLIDER_SLOPE_LIMIT_DEGREES * Math.PI) / 1
 const GRASS_LIMIT_TAN = WALK_SLOPE_LIMIT_TAN[SurfaceMaterial.Grass]!;
 /** A contact this close under the probe's centre is on a face (its slope counts), not an edge, m^2. */
 const FACE_OFFSET_SQUARED = 0.02 * 0.02;
+
+/**
+ * A guardrail as the walker meets it: the rail itself, from this far under
+ * the ground to the drawn rail's top and this deep behind its face (the
+ * car's box is 3 m tall and 2 m deep, so the car cannot tunnel through).
+ */
+const GUARDRAIL = CAR_COLLIDER_MATERIAL.guardrail;
+const RAIL_FOOT = 0.5;
+const RAIL_DEPTH = 0.15;
+const IDENTITY: Quaternion = Object.freeze({ x: 0, y: 0, z: 0, w: 1 });
 
 /** Toward a faster target and toward a slower one, m/s^2: about one stride to walking speed. */
 const GROUND_ACCELERATION = 8;
@@ -290,6 +302,11 @@ export class Walker implements PersonSimulator {
   private readonly hit: ColliderSweepHit = createColliderSweepHit();
   private readonly nearHit: ColliderSweepHit = createColliderSweepHit();
 
+  // The world's guardrails as rails (`rebuildRails`), and the world and revision they were built from.
+  private rails = new ColliderWorld();
+  private railSource: ColliderWorld | null = null;
+  private railRevision = -1;
+
   constructor(spawn: PersonSpawn, options: WalkerOptions = {}) {
     this.fixedGround = options.ground ?? null;
     this.fixedSurface = options.surface ?? null;
@@ -316,6 +333,11 @@ export class Walker implements PersonSimulator {
   /** What the walker is doing (the payload's `mode`), for tests and the session. */
   get mode(): PersonMode {
     return this.modeValue;
+  }
+
+  /** On its feet (the payload's `grounded`). */
+  get grounded(): boolean {
+    return this.regime === Regime.ground;
   }
 
   setControls(controls: Readonly<SurfaceVehicleControls>): void {
@@ -372,6 +394,10 @@ export class Walker implements PersonSimulator {
     state.time += dt;
     const environment = this.environment;
     if (!environment) return;
+    const colliders = environment.colliders ?? null;
+    if (colliders !== this.railSource || (colliders !== null && colliders.revision !== this.railRevision)) {
+      this.rebuildRails(colliders);
+    }
     this.landingAge += dt;
     this.lattice.setTime(state.time);
     if (environment.world && !this.fixedSurface) this.surfaceCache.beginStep(environment.world, environment.dayOfYear);
@@ -528,6 +554,8 @@ export class Walker implements PersonSimulator {
     const depthFraction = this.waterDepth / H;
 
     if (this.jumpPressed && !locked && !this.sliding && depthFraction < WADE_JUMP_LIMIT) {
+      // A ledge in reach that a jump cannot clear (a rail, a wall's top) is climbed.
+      if (this.input > 0.3 && this.tryMantle(false)) return;
       // Up at `personJumpSpeed`, with the floor's velocity.
       const velocity = state.velocity;
       velocity.x = own.x + carry.x;
@@ -681,7 +709,7 @@ export class Walker implements PersonSimulator {
       this.surfacing = false;
       this.regime = Regime.swim;
     } else if (this.waterDepth > MANTLE_WADE_DEPTH * H && this.input > 0.3) {
-      this.tryMantle();
+      this.tryMantle(true);
     }
   }
 
@@ -943,7 +971,7 @@ export class Walker implements PersonSimulator {
       this.waterAt();
       return;
     }
-    if (this.regime === Regime.swim && this.input > 0.3 && nowHead < UNDER_HEAD_DEPTH) this.tryMantle();
+    if (this.regime === Regime.swim && this.input > 0.3 && nowHead < UNDER_HEAD_DEPTH) this.tryMantle(true);
   }
 
   /** The sea bed under the eye and the chest stays clear of the swimmer's spheres. */
@@ -967,26 +995,28 @@ export class Walker implements PersonSimulator {
   }
 
   /**
-   * A ledge to climb out onto: within reach ahead, its top no higher than
-   * `mantleHeight` over the water and no deeper than awash, level enough,
-   * with nothing in the way and room to stand.
+   * A ledge to climb onto: within reach ahead, level enough, with nothing in
+   * the way and room to stand. Out of the water (`fromWater`) its top is no
+   * higher than `mantleHeight` over the water and no deeper than awash; on
+   * land it is above a step and no higher than `climbHeight` over the feet.
    */
-  private tryMantle(): boolean {
+  private tryMantle(fromWater: boolean): boolean {
     const position = this.state.position;
     const water = this.water;
     const forwardX = Math.sin(this.heading);
     const forwardZ = Math.cos(this.heading);
     if (this.inputX * forwardX + this.inputZ * forwardZ < 0.7) return false;
-    const top = water.height + PERSON.mantleHeight;
+    const top = fromWater ? water.height + PERSON.mantleHeight : position.y + PERSON.climbHeight;
+    const bottom = fromWater ? water.height - MANTLE_AWASH : position.y + STEP_UP;
     for (let i = 0; i < MANTLE_PROBES.length; i += 1) {
       const reach = MANTLE_PROBES[i]!;
       this.probeX = position.x + forwardX * reach;
       this.probeZ = position.z + forwardZ * reach;
       this.probeTop = top;
-      this.probeBottom = water.height - MANTLE_AWASH;
+      this.probeBottom = bottom;
       if (!this.findFloor()) continue;
       if (this.floorDhdx * this.floorDhdx + this.floorDhdz * this.floorDhdz > this.floorLimitTan * this.floorLimitTan) continue;
-      if (water.height - this.floorHeight > PERSON.wadeDepthFraction * H) continue;
+      if (fromWater && water.height - this.floorHeight > PERSON.wadeDepthFraction * H) continue;
       if (this.floorHeight - position.y <= STEP_UP) continue;
       let ledge = this.floorHeight;
       let ledgeX = this.probeX;
@@ -1024,7 +1054,8 @@ export class Walker implements PersonSimulator {
       this.mantleTo.y = ledge;
       this.mantleTo.z = ledgeZ;
       this.mantleTime = 0;
-      this.mantlePitch = this.swimPitch;
+      // From the feet the body stays upright; from a swim it rises from the stroke's pitch.
+      this.mantlePitch = this.regime === Regime.ground ? Math.PI / 2 : this.swimPitch;
       this.own.x = 0;
       this.own.y = 0;
       this.own.z = 0;
@@ -1213,12 +1244,53 @@ export class Walker implements PersonSimulator {
     }
   }
 
+  /**
+   * The world's guardrails as the walker meets them (`RAIL_FOOT`,
+   * `RAIL_DEPTH`): each car box's front band, from under the ground to the
+   * drawn rail's top. The walker climbs over a rail (a jump at it), and the
+   * strip behind it is open ground. Rebuilt when the colliders change, which
+   * is rare (it allocates). The rails are added in world coordinates, as
+   * `guardrailColliders` builds them; the bends' capsules are left out, the
+   * runs' overlaps closing them.
+   */
+  private rebuildRails(colliders: ColliderWorld | null): void {
+    this.railSource = colliders;
+    this.railRevision = colliders ? colliders.revision : -1;
+    const rails = new ColliderWorld();
+    this.rails = rails;
+    if (!colliders) return;
+    const offset: Vec3 = { x: 0, y: 0, z: 0 };
+    colliders.forEachStatic((shape, material) => {
+      if (material !== GUARDRAIL || shape.kind !== "box") return;
+      // Box-local +x is the face's normal (toward the road), +y up, +z along the run.
+      const half = shape.halfExtents;
+      const orientation = shape.orientation ?? IDENTITY;
+      const top = ROAD_RAIL_HEIGHT_METERS;
+      rotateVectorInto(offset, orientation, {
+        x: half.x - RAIL_DEPTH / 2,
+        y: -half.y + GUARDRAIL_BELOW + (top - RAIL_FOOT) / 2,
+        z: 0,
+      });
+      rails.addStatic({
+        kind: "box",
+        center: { x: shape.center.x + offset.x, y: shape.center.y + offset.y, z: shape.center.z + offset.z },
+        halfExtents: { x: RAIL_DEPTH / 2, y: (top + RAIL_FOOT) / 2, z: half.z },
+        orientation,
+      }, { material: GUARDRAIL });
+    });
+  }
+
   /** The nearer first touch of a sphere of the capsule's radius from `from` to `to`, in the colliders and the near solids, into `hit`. */
   private sweepWorlds(): boolean {
     const environment = this.environment!;
     let found = false;
     const colliders = environment.colliders;
-    if (colliders && colliders.sweepSphere(this.from, this.to, R, this.hit)) found = true;
+    if (colliders && colliders.sweepSphere(this.from, this.to, R, this.hit, GUARDRAIL)) found = true;
+    const rails = this.rails;
+    if (rails.size > 0 && rails.sweepSphere(this.from, this.to, R, this.nearHit)) {
+      if (!found || this.nearHit.fraction < this.hit.fraction) copyHit(this.hit, this.nearHit);
+      found = true;
+    }
     const near = environment.nearSolids;
     if (near && near.sweepSphere(this.from, this.to, R, this.nearHit)) {
       if (!found || this.nearHit.fraction < this.hit.fraction) copyHit(this.hit, this.nearHit);
@@ -1232,7 +1304,12 @@ export class Walker implements PersonSimulator {
     const environment = this.environment!;
     let found = false;
     const colliders = environment.colliders;
-    if (colliders && colliders.raycast(this.from, this.to, this.hit)) found = true;
+    if (colliders && colliders.raycast(this.from, this.to, this.hit, GUARDRAIL)) found = true;
+    const rails = this.rails;
+    if (rails.size > 0 && rails.raycast(this.from, this.to, this.nearHit)) {
+      if (!found || this.nearHit.fraction < this.hit.fraction) copyHit(this.hit, this.nearHit);
+      found = true;
+    }
     const near = environment.nearSolids;
     if (near && near.raycast(this.from, this.to, this.nearHit)) {
       if (!found || this.nearHit.fraction < this.hit.fraction) copyHit(this.hit, this.nearHit);
