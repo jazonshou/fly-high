@@ -10,6 +10,7 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { PipelineWarmUp } from "../core/AsyncPipelineCompiles";
 import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import type { TerrainDrawnAtlasShape, TerrainDrawnHeight } from "../terrain/TerrainDrawnHeight";
+import { TERRAIN_MATERIAL_LIGHTING } from "../terrain/TerrainSurfacePlugin";
 import {
   ROAD_RAIL_FINISH,
   RoadSurfaceMaterialPlugin,
@@ -543,6 +544,11 @@ export class RoadSurfaceSystem {
       // Depth bias, not lift: the drawn facets under a ribbon never cut it.
       material.zOffset = -1;
       material.zOffsetUnits = -4;
+      // Lit as the ground it is painted on (the plugin shades it as the terrain's paint).
+      material.environmentIntensity = TERRAIN_MATERIAL_LIGHTING.environmentIntensity;
+      material.directIntensity = TERRAIN_MATERIAL_LIGHTING.directIntensity;
+      material.specularIntensity = TERRAIN_MATERIAL_LIGHTING.specularIntensity;
+      material.enableSpecularAntiAliasing = TERRAIN_MATERIAL_LIGHTING.enableSpecularAntiAliasing;
     }
     prepareMaterialForClusteredLighting(material);
     const plugin = new RoadSurfaceMaterialPlugin(material, role);

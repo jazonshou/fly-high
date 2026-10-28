@@ -232,6 +232,147 @@ function terrainWgslFloat(value: number): string {
 }
 
 /**
+ * 3-4's macro wash (see the fragment, where it is applied): two value-noise
+ * octaves at the macro and patch scales, read at the absolute xz, scale the
+ * ground's albedo and swing its hue with them. Exported so what lies on the
+ * ground (the road ribbons, `RoadSurfaceMaterialPlugin`) takes the wash the
+ * ground under it does.
+ */
+export const TERRAIN_MACRO_WASH = Object.freeze({
+  macroOffset: Object.freeze([11.3, 5.9] as const),
+  patchOffset: Object.freeze([3.1, 27.5] as const),
+  /** Albedo scale, low noise to high. */
+  macroGain: Object.freeze([0.84, 1.18] as const),
+  patchGain: Object.freeze([0.93, 1.09] as const),
+  /** Hue, low noise (damp, cool) to high (bleached, warm). */
+  macroHue: Object.freeze([Object.freeze([0.952, 1, 1.058] as const), Object.freeze([1.052, 1.004, 0.934] as const)] as const),
+  patchHue: Object.freeze([Object.freeze([0.976, 1, 1.026] as const), Object.freeze([1.026, 1.002, 0.974] as const)] as const),
+});
+
+/**
+ * The wash's noises and brightness as WGSL statements: `${prefix}MacroNoiseA`,
+ * `${prefix}MacroNoiseB` and `${prefix}MacroVariation`, from `value` (a value
+ * noise on `terrainSurfaceValue`'s lattice) at `position` (absolute xz).
+ */
+export function terrainMacroWashNoiseWgsl(prefix: string, position: string, value: string): string {
+  const wash = TERRAIN_MACRO_WASH;
+  const pair = (values: readonly number[]) => values.map(terrainWgslFloat).join(", ");
+  return `let ${prefix}MacroNoiseA = ${value}(
+  ${position} * ${(1 / DETILE_MACRO_METERS).toFixed(9)} + vec2f(${pair(wash.macroOffset)}));
+let ${prefix}MacroNoiseB = ${value}(
+  ${position} * ${(1 / DETILE_PATCH_METERS).toFixed(9)} + vec2f(${pair(wash.patchOffset)}));
+let ${prefix}MacroVariation = mix(${pair(wash.macroGain)}, ${prefix}MacroNoiseA)
+  * mix(${pair(wash.patchGain)}, ${prefix}MacroNoiseB);
+`;
+}
+
+/** The wash's hue as a WGSL statement, `${prefix}MacroHue`, from the noises `terrainMacroWashNoiseWgsl` declared. */
+export function terrainMacroWashHueWgsl(prefix: string): string {
+  const wash = TERRAIN_MACRO_WASH;
+  const hue = (values: readonly number[]) => `vec3f(${values.map(terrainWgslFloat).join(", ")})`;
+  return `let ${prefix}MacroHue = mix(${hue(wash.macroHue[0])}, ${hue(wash.macroHue[1])}, ${prefix}MacroNoiseA)
+  * mix(${hue(wash.patchHue[0])}, ${hue(wash.patchHue[1])}, ${prefix}MacroNoiseB);
+`;
+}
+
+/**
+ * Fix-pack T1's meso band (below), for any surface that lies on the ground and
+ * must shade as it does (the road ribbon): its two octaves' weights by the 3D
+ * footprint, their value and world gradient at absolute xz `position` on
+ * `valueGrad`'s lattice (`terrainSurfaceValueGrad`'s), the normal slope, the
+ * tone and hue, and the roughness delta. WGSL `let`s named `${prefix}Meso*`,
+ * indented as the terrain's block is.
+ */
+export function terrainMesoWeightsWgsl(prefix: string, footprint: string): string {
+  return `let ${prefix}MesoWeightA = 1.0 - smoothstep(9.0, 34.0, ${footprint});
+let ${prefix}MesoWeightB = 1.0 - smoothstep(3.0, 11.0, ${footprint});
+`;
+}
+
+export function terrainMesoFieldsWgsl(prefix: string, position: string, valueGrad: string): string {
+  return `  // Wave Q (reptile-mountain fix): meso A sampled the UNROTATED world axes,
+  // quilting mountainsides with soft 71 m axis-aligned rectangles. Rotated
+  // 37 degrees like B's 28, with the gradient carried back through the
+  // transpose below.
+  let ${prefix}MesoA = ${valueGrad}(
+    (mat2x2f(0.798636, 0.601815, -0.601815, 0.798636) * ${position})
+      * ${(1 / 71).toFixed(9)} + vec2f(7.7, 51.2));
+  let ${prefix}MesoAGradWorld = mat2x2f(0.798636, -0.601815, 0.601815, 0.798636)
+    * vec2f(${prefix}MesoA.y, ${prefix}MesoA.z);
+  let ${prefix}MesoB = ${valueGrad}(
+    (mat2x2f(0.883, 0.469, -0.469, 0.883) * ${position})
+      * ${(1 / 23).toFixed(9)} + vec2f(29.1, 3.4));
+  // The gradient came back in ROTATED coordinates; carry it to world space
+  // through the transpose so the perturbation field stays curl-free and
+  // aligned with its own value field.
+  let ${prefix}MesoBGradWorld = mat2x2f(0.883, -0.469, 0.469, 0.883)
+    * vec2f(${prefix}MesoB.y, ${prefix}MesoB.z);
+`;
+}
+
+/** The slope the band tilts the normal by: derated on flat ground, more on steep (`steep`) and vegetated (`vegetation`, or none). */
+export function terrainMesoSlopeWgsl(prefix: string, steep: string, vegetation: string | null, gain = ""): string {
+  return `  let ${prefix}MesoSlope = (
+    ${prefix}MesoAGradWorld * 0.42 * ${prefix}MesoWeightA
+    + ${prefix}MesoBGradWorld * 0.30 * ${prefix}MesoWeightB
+  ) * (0.4${vegetation ? ` + 0.45 * ${vegetation}` : ""} + 0.9 * ${steep})${gain};
+`;
+}
+
+export function terrainMesoToneWgsl(prefix: string): string {
+  return `  let ${prefix}MesoTone = (${prefix}MesoA.x - 0.5) * 0.26 * ${prefix}MesoWeightA
+    + (${prefix}MesoB.x - 0.5) * 0.16 * ${prefix}MesoWeightB;
+  let ${prefix}MesoHue = mix(
+    vec3f(0.962, 0.988, 1.034),
+    vec3f(1.038, 1.008, 0.955),
+    mix(0.5, ${prefix}MesoB.x, ${prefix}MesoWeightB),
+  );
+`;
+}
+
+/** The albedo factor (an expression), faded out with octave A. */
+export function terrainMesoAlbedoWgsl(prefix: string, gain = ""): string {
+  return `${prefix}MesoHue * (1.0 + ${prefix}MesoTone${gain}) * ${prefix}MesoWeightA
+    + vec3f(1.0) * (1.0 - ${prefix}MesoWeightA)`;
+}
+
+/** The roughness delta (an expression). */
+export function terrainMesoRoughnessWgsl(prefix: string): string {
+  return `(${prefix}MesoA.x - 0.5) * 0.14 * ${prefix}MesoWeightA`;
+}
+
+/**
+ * The terrain material's lighting gains (`createTerrainMaterial`): what lies
+ * on the ground and must read as it does is lit with the same.
+ */
+export const TERRAIN_MATERIAL_LIGHTING = Object.freeze({
+  // 1C-6: full-strength now that scene.environmentTexture exists — the
+  // old 0.64/0.22 were compensating for IBL that did not exist.
+  environmentIntensity: 1,
+  directIntensity: 1.03,
+  specularIntensity: 1,
+  // 1B-11: kill specular shimmer on ridge lines under motion. Its partner,
+  // anisotropicFilteringLevel = 16, is a per-texture setting and lands on
+  // the 3-1 arrays; the two are complementary — one fixes the normal map's
+  // lost variance (with the Toksvig reducer), the other the geometric
+  // normal's.
+  enableSpecularAntiAliasing: true,
+});
+
+/**
+ * Wave Q's grazing reflectance for ground (see the fragment): F90 as WGSL,
+ * from a dielectric `f0` and `roughness`, suppressed the harder the rougher
+ * the surface. Exported for what lies on the ground (`RoadSurfaceMaterialPlugin`).
+ */
+export function terrainSurfaceF90Wgsl(f0: string, roughness: string): string {
+  return `clamp(
+  ${f0} * (2.0 + 6.0 * (1.0 - ${roughness})),
+  ${f0},
+  0.5,
+)`;
+}
+
+/**
  * `6-8`: the canopy's measured appearance, injected rather than retyped.
  *
  * Every one of these is `densityField.ts`'s — terrain does not get an opinion
@@ -1711,65 +1852,105 @@ export const GROUND_GRAIN_TONE_FADE = Object.freeze({ start: 0.35, end: 0.71 });
  */
 export const GROUND_GRAIN_SEABED_FADE = Object.freeze({ start: 1, end: 3 });
 
-function groundGrainScaleWgsl(index: number): string {
+/**
+ * 3-4's de-tile warp as `${prefix}SurfaceDetileWarp`, over that prefix's
+ * `SurfaceValue2`, at `amount` (the terrain reads its tuning lane). The
+ * ground grain is read through it, so a road's ribbon carries the same warp
+ * to lay the grain where the paint around it has it.
+ */
+export function terrainSurfaceDetileWarpWgsl(prefix: string, amount: string): string {
+  return `fn ${prefix}SurfaceDetileWarp(worldXz: vec2f, footprint: f32) -> vec2f {
+  let amount = ${amount};
+  if (amount <= 0.0) {
+    return vec2f(0.0);
+  }
+  let macroWeight = 1.0 - smoothstep(15.0, 96.0, footprint);
+  let patchWeight = 1.0 - smoothstep(7.0, 64.0, footprint);
+  let microWeight = 1.0 - smoothstep(1.5, 20.0, footprint);
+  var warp = vec2f(0.0);
+  warp += (${prefix}SurfaceValue2(worldXz * ${(1 / DETILE_MACRO_METERS).toFixed(9)}) - vec2f(0.5))
+    * (${DETILE_MACRO_METERS.toFixed(1)} * 0.012 * amount * macroWeight);
+  let patchRotation = mat2x2f(${PATCH_COS}, ${PATCH_SIN}, -${PATCH_SIN}, ${PATCH_COS});
+  let patchPoint = patchRotation * (worldXz + warp);
+  warp += (${prefix}SurfaceValue2(patchPoint * ${(1 / DETILE_PATCH_METERS).toFixed(9)}) - vec2f(0.5))
+    * (${DETILE_PATCH_METERS.toFixed(1)} * 0.05 * amount * patchWeight);
+  let microRotation = mat2x2f(${MICRO_COS}, ${MICRO_SIN}, -${MICRO_SIN}, ${MICRO_COS});
+  let microPoint = microRotation * (worldXz + warp);
+  warp += (${prefix}SurfaceValue2(microPoint * ${(1 / DETILE_MICRO_METERS).toFixed(9)}) - vec2f(0.5))
+    * (${DETILE_MICRO_METERS.toFixed(1)} * 0.10 * amount * microWeight);
+  return warp;
+}
+`;
+}
+
+function groundGrainScaleWgsl(index: number, prefix: string): string {
   const scale = GROUND_GRAIN_SCALES[index]!;
   const radians = (scale.rotationDegrees * Math.PI) / 180;
   const cos = Math.cos(radians).toFixed(9);
   const sin = Math.sin(radians).toFixed(9);
   const inverse = (1 / scale.periodMeters).toFixed(9);
   return `
-fn terrainGroundGrainFrame${index}() -> mat2x2f {
+fn ${prefix}GroundGrainFrame${index}() -> mat2x2f {
   return mat2x2f(${cos}, ${sin}, -${sin}, ${cos}) * ${inverse};
 }
 
 // The mip this scale's reads land on, from the footprint in metres and the
 // layer's edge in texels: log2 of the footprint in texels.
-fn terrainGroundGrainLevel${index}(footprintMeters: f32, edgeTexels: f32) -> f32 {
+fn ${prefix}GroundGrainLevel${index}(footprintMeters: f32, edgeTexels: f32) -> f32 {
   return log2(footprintMeters * edgeTexels * ${inverse});
 }
 
-fn terrainGroundGrainUv${index}(worldXz: vec2f) -> vec2f {
+fn ${prefix}GroundGrainUv${index}(worldXz: vec2f) -> vec2f {
   // fract before the fetch: the layer wraps, and a small UV keeps the f32
   // product precise kilometres from the origin. Gradients are explicit, so
   // the wrap cannot reach the mip selection.
-  return fract(terrainGroundGrainFrame${index}() * worldXz
+  return fract(${prefix}GroundGrainFrame${index}() * worldXz
     + vec2f(${scale.offset[0].toFixed(3)}, ${scale.offset[1].toFixed(3)}));
 }
 `;
 }
 
+/** The textures a grain read samples (each with its `${name}Sampler`), and the normal decode. */
+export interface GroundGrainTextures {
+  readonly albedo: string;
+  readonly normal: string;
+  readonly decodeNormal: string;
+}
+
 /**
- * The grain's fetches. Each returns the layer centred on zero and doubled, so
- * a channel reads in about [-1, 1] at mip 0 and converges to 0 as the mip
- * chain averages it away. The normal fetch returns the height GRADIENT in
- * world xz, carried back through the scale's rotation; its magnitude falls
- * with the Toksvig-shortened mips the same way.
+ * The grain's fetches, prefixed (`${prefix}GroundGrainFetch` and the rest).
+ * Each returns the layer centred on zero and doubled, so a channel reads in
+ * about [-1, 1] at mip 0 and converges to 0 as the mip chain averages it
+ * away. The normal fetch returns the height GRADIENT in world xz, carried
+ * back through the scale's rotation; its magnitude falls with the
+ * Toksvig-shortened mips the same way.
  */
-const GROUND_GRAIN_WGSL = /* wgsl */ `
-${GROUND_GRAIN_SCALES.map((_, index) => groundGrainScaleWgsl(index)).join("")}
+export function groundGrainFunctionsWgsl(prefix: string, textures: GroundGrainTextures): string {
+  return /* wgsl */ `
+${GROUND_GRAIN_SCALES.map((_, index) => groundGrainScaleWgsl(index, prefix)).join("")}
 
 // The footprint's major axis in metres. The grain reads at anisotropy
 // ${GROUND_GRAIN_ANISOTROPY_LIMIT.toFixed(0)} (GROUND_GRAIN_ANISOTROPY_LIMIT): one trilinear tap
 // at the mip this axis picks, so it is both the mip and the fades' measure.
 // Each scale's frame is a rotation times a uniform scale, so one footprint
 // in world space serves all five reads, each scaled by its period.
-fn terrainGroundGrainFootprint(worldDdx: vec2f, worldDdy: vec2f) -> f32 {
+fn ${prefix}GroundGrainFootprint(worldDdx: vec2f, worldDdy: vec2f) -> f32 {
   return max(max(length(worldDdx), length(worldDdy)), 1e-9);
 }
 
 // Explicit level, not gradients: at anisotropy 1 a gradient read is one
 // trilinear tap at the major axis's mip, which this computes once per scale
 // instead of the sampler working it out (and its anisotropy) on every read.
-fn terrainGroundGrainFetch(uv: vec2f, level: f32) -> vec4f {
-  let texel = textureSampleLevel(terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler,
+fn ${prefix}GroundGrainFetch(uv: vec2f, level: f32) -> vec4f {
+  let texel = textureSampleLevel(${textures.albedo}, ${textures.albedo}Sampler,
     uv, ${GROUND_GRAIN_LAYER}, level);
   return (texel - vec4f(0.5)) * 2.0;
 }
 
-fn terrainGroundGrainGradient(uv: vec2f, frame: mat2x2f, level: f32) -> vec2f {
-  let texel = textureSampleLevel(terrainSurfaceNormal, terrainSurfaceNormalSampler,
+fn ${prefix}GroundGrainGradient(uv: vec2f, frame: mat2x2f, level: f32) -> vec2f {
+  let texel = textureSampleLevel(${textures.normal}, ${textures.normal}Sampler,
     uv, ${GROUND_GRAIN_LAYER}, level);
-  let normal = terrainSurfaceDecodeNormal(texel.xy);
+  let normal = ${textures.decodeNormal}(texel.xy);
   let gradientUv = -normal.xy / max(normal.z, 0.3);
   // The frame's rotation part, transposed, is its inverse; its scale is left
   // out on purpose, so a gradient is in the layer's own units at every period
@@ -1778,6 +1959,108 @@ fn terrainGroundGrainGradient(uv: vec2f, frame: mat2x2f, level: f32) -> vec2f {
   return transpose(rotation) * gradientUv;
 }
 `;
+}
+
+const GROUND_GRAIN_WGSL = groundGrainFunctionsWgsl("terrain", {
+  albedo: "terrainSurfaceAlbedo",
+  normal: "terrainSurfaceNormal",
+  decodeNormal: "terrainSurfaceDecodeNormal",
+});
+
+/** Where and how a grain is read: the point (warped, as the terrain's), its xz derivatives, the albedo array, and its share. */
+export interface GroundGrainReadSite {
+  readonly xz: string;
+  readonly ddx: string;
+  readonly ddy: string;
+  readonly albedo: string;
+  readonly shown: string;
+}
+
+/**
+ * The grain's three tone reads at a point (`${p}Grain0..2`), with the
+ * footprint, levels and UVs the relief reuses. Indented for a block.
+ */
+export function groundGrainReadsWgsl(p: string, site: GroundGrainReadSite): string {
+  const { xz, ddx, ddy, albedo, shown } = site;
+  return `  let ${p}GrainXz = ${xz};
+  let ${p}GrainUv0 = ${p}GroundGrainUv0(${p}GrainXz);
+  let ${p}GrainUv1 = ${p}GroundGrainUv1(${p}GrainXz);
+  let ${p}GrainUv2 = ${p}GroundGrainUv2(${p}GrainXz);
+  // Each scale's share of the grain: none under a few metres of sea
+  // (GROUND_GRAIN_SEABED_FADE), and fading as its mips average it to the mean
+  // (GROUND_GRAIN_TONE_FADE). A zero share skips the fetch, and a skipped
+  // scale reads as zero, which every term below takes as "no change". The
+  // fetches take explicit levels, so they are legal in these branches.
+  let ${p}GrainFootprint = ${p}GroundGrainFootprint(${ddx}, ${ddy});
+  // Both arrays are built at the profile's one material edge.
+  let ${p}GrainEdge = f32(textureDimensions(${albedo}).x);
+  let ${p}GrainLevel0 = ${p}GroundGrainLevel0(${p}GrainFootprint, ${p}GrainEdge);
+  let ${p}GrainLevel1 = ${p}GroundGrainLevel1(${p}GrainFootprint, ${p}GrainEdge);
+  let ${p}GrainLevel2 = ${p}GroundGrainLevel2(${p}GrainFootprint, ${p}GrainEdge);
+  let ${p}GrainShown = ${shown};
+  let ${p}GrainShare0 = ${p}GrainShown * (1.0 - smoothstep(${grainFade(0, GROUND_GRAIN_TONE_FADE)}, ${p}GrainFootprint));
+  let ${p}GrainShare1 = ${p}GrainShown * (1.0 - smoothstep(${grainFade(1, GROUND_GRAIN_TONE_FADE)}, ${p}GrainFootprint));
+  let ${p}GrainShare2 = ${p}GrainShown * (1.0 - smoothstep(${grainFade(2, GROUND_GRAIN_TONE_FADE)}, ${p}GrainFootprint));
+  var ${p}Grain0 = vec4f(0.0);
+  var ${p}Grain1 = vec4f(0.0);
+  var ${p}Grain2 = vec4f(0.0);
+  if (${p}GrainShare0 > 0.0) {
+    ${p}Grain0 = ${p}GrainShare0 * ${p}GroundGrainFetch(
+      ${p}GrainUv0, ${p}GrainLevel0);
+  }
+  if (${p}GrainShare1 > 0.0) {
+    ${p}Grain1 = ${p}GrainShare1 * ${p}GroundGrainFetch(
+      ${p}GrainUv1, ${p}GrainLevel1);
+  }
+  if (${p}GrainShare2 > 0.0) {
+    ${p}Grain2 = ${p}GrainShare2 * ${p}GroundGrainFetch(
+      ${p}GrainUv2, ${p}GrainLevel2);
+  }
+`;
+}
+
+/**
+ * The grain on an albedo (`target`), by the cover `${p}GrainCover` (vegetation,
+ * rock, snow, other) the caller declares.
+ */
+export function groundGrainAlbedoWgsl(p: string, target: string): string {
+  return `  let ${p}GrainToneGain = dot(${p}GrainCover, vec4f(${wgslGains(GROUND_GRAIN_GAINS.tone)}));
+  let ${p}GrainClumpGain = dot(${p}GrainCover, vec4f(${wgslGains(GROUND_GRAIN_GAINS.clumps)}));
+  let ${p}GrainNormalGain = dot(${p}GrainCover, vec4f(${wgslGains(GROUND_GRAIN_GAINS.normal)}));
+  let ${p}GrainTone = ${p}Grain0.x + 0.85 * ${p}Grain1.x + 0.6 * ${p}Grain2.x;
+  let ${p}GrainClump = 0.6 * ${p}Grain0.z + ${p}Grain1.z + 0.6 * ${p}Grain2.z;
+  let ${p}GrainMoisture = 0.7 * ${p}Grain1.y + ${p}Grain2.y;
+  let ${p}GrainHue = vec3f(1.0)
+    + vec3f(${GROUND_GRAIN_GAINS.moistureHue.map((v) => v.toFixed(3)).join(", ")})
+      * (${p}GrainMoisture * ${p}GrainCover.x);
+  ${target} *= max(
+    vec3f(0.35),
+    ${p}GrainHue * (1.0 + ${p}GrainToneGain * ${p}GrainTone
+      - ${p}GrainClumpGain * ${p}GrainClump));
+`;
+}
+
+/** The grain's relief from its two finer scales, as `${p}GrainSlope` (world xz, before the normal gain). */
+export function groundGrainReliefWgsl(p: string): string {
+  return `  // Relief from the two finer scales only: the broadest is hill-sized, and
+  // the terrain mesh already shades hills. Each fades out as its mips flatten
+  // it (GROUND_GRAIN_RELIEF_FADE), well before its tone does, and is not
+  // fetched past that.
+  let ${p}GrainRelief0 = ${p}GrainShown
+    * (1.0 - smoothstep(${grainFade(0, GROUND_GRAIN_RELIEF_FADE)}, ${p}GrainFootprint));
+  let ${p}GrainRelief1 = 0.7 * ${p}GrainShown
+    * (1.0 - smoothstep(${grainFade(1, GROUND_GRAIN_RELIEF_FADE)}, ${p}GrainFootprint));
+  var ${p}GrainSlope = vec2f(0.0);
+  if (${p}GrainRelief0 > 0.0) {
+    ${p}GrainSlope += ${p}GrainRelief0 * ${p}GroundGrainGradient(
+      ${p}GrainUv0, ${p}GroundGrainFrame0(), ${p}GrainLevel0);
+  }
+  if (${p}GrainRelief1 > 0.0) {
+    ${p}GrainSlope += ${p}GrainRelief1 * ${p}GroundGrainGradient(
+      ${p}GrainUv1, ${p}GroundGrainFrame1(), ${p}GrainLevel1);
+  }
+`;
+}
 
 /**
  * Applied right after the macro wash and before the runway paint (paint is a
@@ -1791,43 +2074,15 @@ const GROUND_GRAIN_COMPOSITE_WGSL = /* wgsl */ `
 // past the ten materials.
 var terrainGrainCanopy = vec3f(1.0);
 if (uniforms.terrainSurfaceTuning.z > 0.5) {
-  let terrainGrainXz = terrainAbsolutePosition.xz + terrainWarp;
-  let terrainGrainUv0 = terrainGroundGrainUv0(terrainGrainXz);
-  let terrainGrainUv1 = terrainGroundGrainUv1(terrainGrainXz);
-  let terrainGrainUv2 = terrainGroundGrainUv2(terrainGrainXz);
-  // Each scale's share of the grain: none under a few metres of sea
-  // (GROUND_GRAIN_SEABED_FADE), and fading as its mips average it to the mean
-  // (GROUND_GRAIN_TONE_FADE). A zero share skips the fetch, and a skipped
-  // scale reads as zero, which every term below takes as "no change". The
-  // fetches take explicit levels, so they are legal in these branches.
-  let terrainGrainFootprint = terrainGroundGrainFootprint(terrainWorldDdx.xz, terrainWorldDdy.xz);
-  // Both arrays are built at the profile's one material edge.
-  let terrainGrainEdge = f32(textureDimensions(terrainSurfaceAlbedo).x);
-  let terrainGrainLevel0 = terrainGroundGrainLevel0(terrainGrainFootprint, terrainGrainEdge);
-  let terrainGrainLevel1 = terrainGroundGrainLevel1(terrainGrainFootprint, terrainGrainEdge);
-  let terrainGrainLevel2 = terrainGroundGrainLevel2(terrainGrainFootprint, terrainGrainEdge);
-  let terrainGrainShown = 1.0 - smoothstep(
+${groundGrainReadsWgsl("terrain", {
+  xz: "terrainAbsolutePosition.xz + terrainWarp",
+  ddx: "terrainWorldDdx.xz",
+  ddy: "terrainWorldDdy.xz",
+  albedo: "terrainSurfaceAlbedo",
+  shown: `1.0 - smoothstep(
     ${GROUND_GRAIN_SEABED_FADE.start.toFixed(1)}, ${GROUND_GRAIN_SEABED_FADE.end.toFixed(1)},
-    uniforms.terrainSurfaceWetness.y - terrainAbsolutePosition.y);
-  let terrainGrainShare0 = terrainGrainShown * (1.0 - smoothstep(${grainFade(0, GROUND_GRAIN_TONE_FADE)}, terrainGrainFootprint));
-  let terrainGrainShare1 = terrainGrainShown * (1.0 - smoothstep(${grainFade(1, GROUND_GRAIN_TONE_FADE)}, terrainGrainFootprint));
-  let terrainGrainShare2 = terrainGrainShown * (1.0 - smoothstep(${grainFade(2, GROUND_GRAIN_TONE_FADE)}, terrainGrainFootprint));
-  var terrainGrain0 = vec4f(0.0);
-  var terrainGrain1 = vec4f(0.0);
-  var terrainGrain2 = vec4f(0.0);
-  if (terrainGrainShare0 > 0.0) {
-    terrainGrain0 = terrainGrainShare0 * terrainGroundGrainFetch(
-      terrainGrainUv0, terrainGrainLevel0);
-  }
-  if (terrainGrainShare1 > 0.0) {
-    terrainGrain1 = terrainGrainShare1 * terrainGroundGrainFetch(
-      terrainGrainUv1, terrainGrainLevel1);
-  }
-  if (terrainGrainShare2 > 0.0) {
-    terrainGrain2 = terrainGrainShare2 * terrainGroundGrainFetch(
-      terrainGrainUv2, terrainGrainLevel2);
-  }
-  // A planar xz read smears down a steep face, and on one the xz footprint
+    uniforms.terrainSurfaceWetness.y - terrainAbsolutePosition.y)`,
+})}  // A planar xz read smears down a steep face, and on one the xz footprint
   // also understates the pixel; cliffs keep the material's triplanar detail.
   let terrainGrainFlat = 1.0 - smoothstep(0.45, 0.8, terrainSlope);
   let terrainGrainVegetation = terrainGroundVegetation;
@@ -1838,37 +2093,7 @@ if (uniforms.terrainSurfaceTuning.z > 0.5) {
     * (1.0 - 0.6 * terrainGroundAirfield);
   let terrainGrainCover = vec4f(
     terrainGrainVegetation, terrainGrainRock, terrainGrainSnow, terrainGrainOther) * terrainGrainFlat;
-  let terrainGrainToneGain = dot(terrainGrainCover, vec4f(${wgslGains(GROUND_GRAIN_GAINS.tone)}));
-  let terrainGrainClumpGain = dot(terrainGrainCover, vec4f(${wgslGains(GROUND_GRAIN_GAINS.clumps)}));
-  let terrainGrainNormalGain = dot(terrainGrainCover, vec4f(${wgslGains(GROUND_GRAIN_GAINS.normal)}));
-  let terrainGrainTone = terrainGrain0.x + 0.85 * terrainGrain1.x + 0.6 * terrainGrain2.x;
-  let terrainGrainClump = 0.6 * terrainGrain0.z + terrainGrain1.z + 0.6 * terrainGrain2.z;
-  let terrainGrainMoisture = 0.7 * terrainGrain1.y + terrainGrain2.y;
-  let terrainGrainHue = vec3f(1.0)
-    + vec3f(${GROUND_GRAIN_GAINS.moistureHue.map((v) => v.toFixed(3)).join(", ")})
-      * (terrainGrainMoisture * terrainGrainCover.x);
-  terrainAlbedo *= max(
-    vec3f(0.35),
-    terrainGrainHue * (1.0 + terrainGrainToneGain * terrainGrainTone
-      - terrainGrainClumpGain * terrainGrainClump));
-  // Relief from the two finer scales only: the broadest is hill-sized, and
-  // the terrain mesh already shades hills. Each fades out as its mips flatten
-  // it (GROUND_GRAIN_RELIEF_FADE), well before its tone does, and is not
-  // fetched past that.
-  let terrainGrainRelief0 = terrainGrainShown
-    * (1.0 - smoothstep(${grainFade(0, GROUND_GRAIN_RELIEF_FADE)}, terrainGrainFootprint));
-  let terrainGrainRelief1 = 0.7 * terrainGrainShown
-    * (1.0 - smoothstep(${grainFade(1, GROUND_GRAIN_RELIEF_FADE)}, terrainGrainFootprint));
-  var terrainGrainSlope = vec2f(0.0);
-  if (terrainGrainRelief0 > 0.0) {
-    terrainGrainSlope += terrainGrainRelief0 * terrainGroundGrainGradient(
-      terrainGrainUv0, terrainGroundGrainFrame0(), terrainGrainLevel0);
-  }
-  if (terrainGrainRelief1 > 0.0) {
-    terrainGrainSlope += terrainGrainRelief1 * terrainGroundGrainGradient(
-      terrainGrainUv1, terrainGroundGrainFrame1(), terrainGrainLevel1);
-  }
-  terrainNormal = normalize(terrainNormal)
+${groundGrainAlbedoWgsl("terrain", "terrainAlbedo")}${groundGrainReliefWgsl("terrain")}  terrainNormal = normalize(terrainNormal)
     + vec3f(-terrainGrainSlope.x, 0.0, -terrainGrainSlope.y) * terrainGrainNormalGain;
   // Distant forest: the canopy handoff below paints one colour; this is the
   // crown-to-crown and stand-to-stand variation it would otherwise lack.
@@ -1960,28 +2185,7 @@ fn terrainSurfaceValueGrad(point: vec2f) -> vec3f {
 // faded by the derivative footprint so a scale finer than the pixel stops
 // contributing instead of aliasing. Rotations are 13.7 deg and 61.2 deg,
 // deliberately NOT the deleted build's 36.3 deg (see the TS constant).
-fn terrainSurfaceDetileWarp(worldXz: vec2f, footprint: f32) -> vec2f {
-  let amount = uniforms.terrainSurfaceTuning.x;
-  if (amount <= 0.0) {
-    return vec2f(0.0);
-  }
-  let macroWeight = 1.0 - smoothstep(15.0, 96.0, footprint);
-  let patchWeight = 1.0 - smoothstep(7.0, 64.0, footprint);
-  let microWeight = 1.0 - smoothstep(1.5, 20.0, footprint);
-  var warp = vec2f(0.0);
-  warp += (terrainSurfaceValue2(worldXz * ${(1 / DETILE_MACRO_METERS).toFixed(9)}) - vec2f(0.5))
-    * (${DETILE_MACRO_METERS.toFixed(1)} * 0.012 * amount * macroWeight);
-  let patchRotation = mat2x2f(${PATCH_COS}, ${PATCH_SIN}, -${PATCH_SIN}, ${PATCH_COS});
-  let patchPoint = patchRotation * (worldXz + warp);
-  warp += (terrainSurfaceValue2(patchPoint * ${(1 / DETILE_PATCH_METERS).toFixed(9)}) - vec2f(0.5))
-    * (${DETILE_PATCH_METERS.toFixed(1)} * 0.05 * amount * patchWeight);
-  let microRotation = mat2x2f(${MICRO_COS}, ${MICRO_SIN}, -${MICRO_SIN}, ${MICRO_COS});
-  let microPoint = microRotation * (worldXz + warp);
-  warp += (terrainSurfaceValue2(microPoint * ${(1 / DETILE_MICRO_METERS).toFixed(9)}) - vec2f(0.5))
-    * (${DETILE_MICRO_METERS.toFixed(1)} * 0.10 * amount * microWeight);
-  return warp;
-}
-
+${terrainSurfaceDetileWarpWgsl("terrain", "uniforms.terrainSurfaceTuning.x")}
 // The stored pair is the hemisphere projection; z is reconstructed exactly the
 // way the CPU Toksvig reducer reconstructs it, so both agree on what "this
 // normal" means.
@@ -2650,20 +2854,12 @@ let terrainWarp = terrainSurfaceDetileWarp(terrainAbsolutePosition.xz, terrainFo
 // kilometre structure to be put back HERE, where it does not repeat. The
 // figures are the deleted build's — a camera-stable macro wash it had and the
 // audit was right to want back.
-let terrainMacroNoiseA = terrainSurfaceValue(
-  terrainAbsolutePosition.xz * ${(1 / DETILE_MACRO_METERS).toFixed(9)} + vec2f(11.3, 5.9));
-let terrainMacroNoiseB = terrainSurfaceValue(
-  terrainAbsolutePosition.xz * ${(1 / DETILE_PATCH_METERS).toFixed(9)} + vec2f(3.1, 27.5));
-let terrainMacroVariation = mix(0.84, 1.18, terrainMacroNoiseA)
-  * mix(0.93, 1.09, terrainMacroNoiseB);
-// Wave Q (plastic-ground fix): the wash was a pure SCALAR, so distant ground
+${terrainMacroWashNoiseWgsl("terrain", "terrainAbsolutePosition.xz", "terrainSurfaceValue")}// Wave Q (plastic-ground fix): the wash was a pure SCALAR, so distant ground
 // converged to one hue under a brightness ramp — no visible texture. Tie a
 // chromatic swing to the same noises: bright patches read sun-bleached and
 // dry (warm), dark patches read lush/damp (cool) — the correlation real
 // ground has. Runway paint is applied after this and stays unstained.
-let terrainMacroHue = mix(vec3f(0.952, 1.0, 1.058), vec3f(1.052, 1.004, 0.934), terrainMacroNoiseA)
-  * mix(vec3f(0.976, 1.0, 1.026), vec3f(1.026, 1.002, 0.974), terrainMacroNoiseB);
-// Wave Q (reptile-mountain fix): the de-tile warp was horizontal-only, but
+${terrainMacroWashHueWgsl("terrain")}// Wave Q (reptile-mountain fix): the de-tile warp was horizontal-only, but
 // the two cliff-dominant triplanar planes use world Y as their V axis — so
 // the Rock tile repeated in EXACT register every 5.9 m of altitude across
 // whole mountainsides, turning its band families into a wallpaper lattice.
@@ -3378,30 +3574,11 @@ let terrainFootprint3D = max(
   min(length(terrainWorldDdx), length(terrainWorldDdy)),
   terrainFootprintMajor3D * 0.25,
 );
-let terrainMesoWeightA = 1.0 - smoothstep(9.0, 34.0, terrainFootprint3D);
-let terrainMesoWeightB = 1.0 - smoothstep(3.0, 11.0, terrainFootprint3D);
-// M-2: how shattered a face is rides meso A, already paid for. Mid-grey when
+${terrainMesoWeightsWgsl("terrain", "terrainFootprint3D")}// M-2: how shattered a face is rides meso A, already paid for. Mid-grey when
 // the block is skipped: the crag octaves have all converged long before A has.
 var terrainRockFracture = 0.5;
 if (terrainMesoWeightA > 0.001) {
-  // Wave Q (reptile-mountain fix): meso A sampled the UNROTATED world axes,
-  // quilting mountainsides with soft 71 m axis-aligned rectangles. Rotated
-  // 37 degrees like B's 28, with the gradient carried back through the
-  // transpose below.
-  let terrainMesoA = terrainSurfaceValueGrad(
-    (mat2x2f(0.798636, 0.601815, -0.601815, 0.798636) * terrainAbsolutePosition.xz)
-      * ${(1 / 71).toFixed(9)} + vec2f(7.7, 51.2));
-  let terrainMesoAGradWorld = mat2x2f(0.798636, -0.601815, 0.601815, 0.798636)
-    * vec2f(terrainMesoA.y, terrainMesoA.z);
-  let terrainMesoB = terrainSurfaceValueGrad(
-    (mat2x2f(0.883, 0.469, -0.469, 0.883) * terrainAbsolutePosition.xz)
-      * ${(1 / 23).toFixed(9)} + vec2f(29.1, 3.4));
-  // The gradient came back in ROTATED coordinates; carry it to world space
-  // through the transpose so the perturbation field stays curl-free and
-  // aligned with its own value field.
-  let terrainMesoBGradWorld = mat2x2f(0.883, -0.469, 0.469, 0.883)
-    * vec2f(terrainMesoB.y, terrainMesoB.z);
-  let terrainSteep = smoothstep(0.34, 0.62, terrainSlope);
+${terrainMesoFieldsWgsl("terrain", "terrainAbsolutePosition.xz", "terrainSurfaceValueGrad")}  let terrainSteep = smoothstep(0.34, 0.62, terrainSlope);
 ${terrainTurfMesoGainWgsl()}
   // M-2: the altitude-keyed strata octave that lived here is gone. A field
   // keyed on world Y is constant along a contour, so however it was broken up
@@ -3415,23 +3592,11 @@ ${terrainTurfMesoGainWgsl()}
   // the flying reports say the ground reads as paint. Vegetated ground keeps
   // roughly twice as much of the same perturbation; rock and snow are
   // unchanged, so the mountain faces wave Q tuned do not move.
-  let terrainMesoSlope = (
-    terrainMesoAGradWorld * 0.42 * terrainMesoWeightA
-    + terrainMesoBGradWorld * 0.30 * terrainMesoWeightB
-  ) * (0.4 + 0.45 * terrainGroundVegetation * terrainGroundPatchworkOn + 0.9 * terrainSteep)${terrainTurfMesoGainTerm()};
-  terrainNormal = normalize(terrainNormal)
+${terrainMesoSlopeWgsl("terrain", "terrainSteep", "terrainGroundVegetation * terrainGroundPatchworkOn", terrainTurfMesoGainTerm())}  terrainNormal = normalize(terrainNormal)
     + vec3f(-terrainMesoSlope.x, 0.0, -terrainMesoSlope.y);
-  let terrainMesoTone = (terrainMesoA.x - 0.5) * 0.26 * terrainMesoWeightA
-    + (terrainMesoB.x - 0.5) * 0.16 * terrainMesoWeightB;
-  let terrainMesoHue = mix(
-    vec3f(0.962, 0.988, 1.034),
-    vec3f(1.038, 1.008, 0.955),
-    mix(0.5, terrainMesoB.x, terrainMesoWeightB),
-  );
-  terrainAlbedo *= terrainMesoHue * (1.0 + terrainMesoTone${terrainTurfMesoGainTerm()}) * terrainMesoWeightA
-    + vec3f(1.0) * (1.0 - terrainMesoWeightA);
+${terrainMesoToneWgsl("terrain")}  terrainAlbedo *= ${terrainMesoAlbedoWgsl("terrain", terrainTurfMesoGainTerm())};
   terrainRoughness = clamp(
-    terrainRoughness + (terrainMesoA.x - 0.5) * 0.14 * terrainMesoWeightA,
+    terrainRoughness + ${terrainMesoRoughnessWgsl("terrain")},
     0.02,
     1.0,
   );
@@ -3919,11 +4084,7 @@ var terrainSurfaceDiffuseRoughness = clamp(terrainDiffuseRoughness, 0.0, 1.0);
 // landscape. Real ground never gets there: shadowing/masking and multiple
 // scattering on a rough surface eat the Schlick spike. Suppress harder the
 // rougher the surface; smoother materials (snow) keep more of their glance.
-var terrainSurfaceF90 = clamp(
-  terrainSurfaceF0 * (2.0 + 6.0 * (1.0 - terrainSurfaceRoughness)),
-  terrainSurfaceF0,
-  0.5,
-);
+var terrainSurfaceF90 = ${terrainSurfaceF90Wgsl("terrainSurfaceF0", "terrainSurfaceRoughness")};
 // 7-4b: computed HERE rather than at final composition, because the sun/moon
 // occlusion now rides each DIRECTIONAL light's own colour inside the light
 // loop instead of multiplying the accumulated sum. 6-8 absorbs QR-2 into it
