@@ -286,7 +286,6 @@ function addLoft(builder: MeshBuilder, spec: LoftSpec): void {
   }
 }
 
-const H = PROPORTIONS.stature;
 const bind = (bone: number): Vec3 => [BIND_POSITIONS[bone * 3]!, BIND_POSITIONS[bone * 3 + 1]!, BIND_POSITIONS[bone * 3 + 2]!];
 
 /** Two bones blended across [from, to] of a coordinate. */

@@ -283,7 +283,7 @@ function crawlArmAt(u: number): readonly [number, number, number, number, number
   return crawlArm[0]![1];
 }
 
-const CRAWL_SCRATCH = [0, 0, 0, 0, 0];
+const CRAWL_SCRATCH = new Float64Array(5);
 
 function fraction(value: number): number {
   return value - Math.floor(value);

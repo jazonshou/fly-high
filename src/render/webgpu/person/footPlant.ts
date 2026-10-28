@@ -1,3 +1,4 @@
+import { DOUBLE_ZERO } from "@/src/sim/ground/doubleZero";
 import { PROPORTIONS, SHANK_LENGTH, THIGH_LENGTH } from "./figureProportions";
 import { BIND_POSITIONS, BONE, SIDES } from "./skeleton";
 import { multiplyQuaternions, rotateVector, rotationBetween, setAxisAngle, type FigurePose } from "./pose";
@@ -121,11 +122,16 @@ export interface FootSolveResult {
 export class FootPlanter {
   readonly feet: [FootLock, FootLock] = [createLock(), createLock()];
   private readonly scratch = new Float64Array(48);
-  private groundUnder = 0;
+  // Fractional fields start from a double (src/sim/ground/doubleZero.ts).
+  private groundUnder = DOUBLE_ZERO;
   private groundUnderInitialised = false;
-  private lastLift = 0;
-  private lastWeight = 1;
-  private readonly result: FootSolveResult = { strikes: 0, strikeSide: 0, pelvisDrop: 0 };
+  private lastLift = DOUBLE_ZERO;
+  private lastWeight = DOUBLE_ZERO;
+  private readonly result: FootSolveResult = { strikes: 0, strikeSide: 0, pelvisDrop: DOUBLE_ZERO };
+
+  constructor() {
+    this.lastWeight = 1;
+  }
 
   /**
    * The root moved by (dx, dy, dz) in its own frame of the last frame and
@@ -481,28 +487,31 @@ function reachDrop(hx: number, hy: number, hz: number, ax: number, ay: number, a
 }
 
 function createLock(): FootLock {
-  return {
+  // Every number a fraction from the start (src/sim/ground/doubleZero.ts); `step` is then set to "not stepping".
+  const lock: FootLock = {
     planted: false,
     onBall: false,
-    px: 0,
-    py: 0,
-    pz: 0,
-    yaw: 0,
-    releaseX: 0,
-    releaseY: 0,
-    releaseZ: 0,
-    release: 0,
+    px: DOUBLE_ZERO,
+    py: DOUBLE_ZERO,
+    pz: DOUBLE_ZERO,
+    yaw: DOUBLE_ZERO,
+    releaseX: DOUBLE_ZERO,
+    releaseY: DOUBLE_ZERO,
+    releaseZ: DOUBLE_ZERO,
+    release: DOUBLE_ZERO,
     released: false,
     raised: false,
-    step: -1,
-    stepFromX: 0,
-    stepFromY: 0,
-    stepFromZ: 0,
-    stepFromYaw: 0,
-    ax: 0,
-    ay: 0,
-    az: 0,
+    step: DOUBLE_ZERO,
+    stepFromX: DOUBLE_ZERO,
+    stepFromY: DOUBLE_ZERO,
+    stepFromZ: DOUBLE_ZERO,
+    stepFromYaw: DOUBLE_ZERO,
+    ax: DOUBLE_ZERO,
+    ay: DOUBLE_ZERO,
+    az: DOUBLE_ZERO,
   };
+  lock.step = -1;
+  return lock;
 }
 
 /** Moves every bone under the root up by `dy` (the pelvis and all it carries), globals included. */

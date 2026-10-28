@@ -1,3 +1,4 @@
+import { DOUBLE_ZERO } from "@/src/sim/ground/doubleZero";
 import type { PersonBoardingState } from "@/src/game/types";
 import { CAR_SEATING, PERSON } from "@/src/vehicles/person";
 import { BODY, DOOR_LINES, FRONT_DOOR_HINGE, GLASSHOUSE, STEERING_WHEEL } from "../ground/lc76Lines";
@@ -172,17 +173,17 @@ export interface SeatPlacement {
  */
 export class CarSeatMotion {
   readonly placement: SeatPlacement = {
-    x: 0,
-    y: 0,
-    z: 0,
-    yaw: 0,
-    walkSpeed: 0,
-    ground: 0,
+    x: DOUBLE_ZERO,
+    y: DOUBLE_ZERO,
+    z: DOUBLE_ZERO,
+    yaw: DOUBLE_ZERO,
+    walkSpeed: DOUBLE_ZERO,
+    ground: DOUBLE_ZERO,
     stance: [true, true],
     targets: new Float64Array(12),
     weights: new Float64Array(4),
-    footPitch: 0,
-    gripping: 0,
+    footPitch: DOUBLE_ZERO,
+    gripping: DOUBLE_ZERO,
   };
   private readonly mirror = createChannels();
   /** The getting-in-and-out moves' own targets (door, pillar, step) and the seat's (wheel, pedals), mixed at the end. */

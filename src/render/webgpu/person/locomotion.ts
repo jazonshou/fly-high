@@ -1,3 +1,4 @@
+import { DOUBLE_ZERO } from "@/src/sim/ground/doubleZero";
 import { CH, LIMB_OFFSET, SIDE_BASE } from "./channels";
 import {
   armChannel,
@@ -38,7 +39,10 @@ const TRUNK_SWING_SCALE = 1;
 
 export class GaitChannels {
   private readonly basis = [createHarmonicBasis(), createHarmonicBasis()] as const;
-  private readonly blend: GroupBlend = { lower: 0, share: 0 };
+  private readonly blend: GroupBlend = { lower: 0, share: DOUBLE_ZERO };
+  /** This frame's run family share and walk-run blend, for the channel readers. */
+  private runShare = DOUBLE_ZERO;
+  private runBlend = DOUBLE_ZERO;
 
   /** The stance share of a stride at this speed and walk-run blend. */
   footOff(speed: number, runBlend: number): number {
@@ -55,30 +59,20 @@ export class GaitChannels {
    */
   write(out: Float64Array, phase: number, speed: number, runBlend: number, amplitude: number): void {
     const blend = walkGroupBlend(dimensionlessSpeed(speed), this.blend);
-    const runShare = runFamilyShare(speed);
+    this.runShare = runFamilyShare(speed);
+    this.runBlend = runBlend;
     const left = harmonicBasis(fraction(phase), this.basis[0]);
     const right = harmonicBasis(fraction(phase + 0.5), this.basis[1]);
     const rb = runBlend;
-    const walk = (channel: WalkChannel, basis: Float64Array): number => walkChannel(channel, blend, basis);
-    const run = (channel: RunChannel, basis: Float64Array): number => runChannel(channel, runShare, basis);
-    const mix = (channel: RunChannel & WalkChannel, basis: Float64Array): number =>
-      rb <= 0 ? walk(channel, basis) : rb >= 1 ? run(channel, basis) : walk(channel, basis) + (run(channel, basis) - walk(channel, basis)) * rb;
-    const runMean = (channel: RunChannel): number => {
-      const packed = gaitSeries().run[channel];
-      const jog = packed[0]!;
-      return jog + (packed[packed.length / 2]! - jog) * runShare;
-    };
-    const mean = (channel: RunChannel & WalkChannel): number =>
-      walkChannelMean(channel, blend) + ((rb > 0 ? runMean(channel) : 0) - walkChannelMean(channel, blend)) * rb;
     const tiltMean = walkChannelMean("pelvisTilt", blend) + (RUN_PELVIC_TILT - walkChannelMean("pelvisTilt", blend)) * rb;
 
     // Pelvis and trunk: each leg's curve read at its own phase, the right's mirrored, averaged.
-    const pelvisTilt = 0.5 * (mix("pelvisTilt", left) + mix("pelvisTilt", right)) - mean("pelvisTilt");
-    const pelvisBend = 0.5 * (mix("pelvisObliquity", left) - mix("pelvisObliquity", right));
-    const pelvisTurn = 0.5 * (mix("pelvisRotation", left) - mix("pelvisRotation", right));
-    const trunkTilt = 0.5 * (mix("trunkTilt", left) + mix("trunkTilt", right)) - mean("trunkTilt");
-    const trunkBend = 0.5 * (mix("trunkObliquity", left) - mix("trunkObliquity", right));
-    const trunkTurn = 0.5 * (mix("trunkRotation", left) - mix("trunkRotation", right));
+    const pelvisTilt = 0.5 * (this.mix("pelvisTilt", left) + this.mix("pelvisTilt", right)) - this.mean("pelvisTilt");
+    const pelvisBend = 0.5 * (this.mix("pelvisObliquity", left) - this.mix("pelvisObliquity", right));
+    const pelvisTurn = 0.5 * (this.mix("pelvisRotation", left) - this.mix("pelvisRotation", right));
+    const trunkTilt = 0.5 * (this.mix("trunkTilt", left) + this.mix("trunkTilt", right)) - this.mean("trunkTilt");
+    const trunkBend = 0.5 * (this.mix("trunkObliquity", left) - this.mix("trunkObliquity", right));
+    const trunkTurn = 0.5 * (this.mix("trunkRotation", left) - this.mix("trunkRotation", right));
     const a = amplitude;
     out[CH.pelvisTilt] = pelvisTilt * a;
     out[CH.pelvisBend] = pelvisBend * a;
@@ -98,12 +92,12 @@ export class GaitChannels {
       const basis = side === 0 ? left : right;
       const base = SIDE_BASE[side as 0 | 1];
       const o = LIMB_OFFSET;
-      const hipFlex = mix("hipFlexion", basis) - tiltMean;
-      const hipAdd = mix("hipAdduction", basis);
-      const hipRot = rb >= 1 ? 0 : walk("hipRotation", basis) * (1 - rb);
-      const knee = mix("kneeFlexion", basis);
-      const ankle = mix("ankleDorsiflexion", basis);
-      const progression = mix("footProgression", basis);
+      const hipFlex = this.mix("hipFlexion", basis) - tiltMean;
+      const hipAdd = this.mix("hipAdduction", basis);
+      const hipRot = rb >= 1 ? 0 : this.walk("hipRotation", basis) * (1 - rb);
+      const knee = this.mix("kneeFlexion", basis);
+      const ankle = this.mix("ankleDorsiflexion", basis);
+      const progression = this.mix("footProgression", basis);
       // The foot's angle to the way of travel is the pelvis's turn on this side, the hip's rotation and the shank's.
       const pelvisOnSide = side === 0 ? pelvisTurn : -pelvisTurn;
       const shank = Math.min(10, Math.max(-20, progression - hipRot - pelvisOnSide));
@@ -129,6 +123,36 @@ export class GaitChannels {
       out[base + o.fingers] = 25 + 25 * rb;
       out[base + o.thumb] = 15 + 15 * rb;
     }
+  }
+
+  private walk(channel: WalkChannel, basis: Float64Array): number {
+    return walkChannel(channel, this.blend, basis);
+  }
+
+  private run(channel: RunChannel, basis: Float64Array): number {
+    return runChannel(channel, this.runShare, basis);
+  }
+
+  /** A channel both gaits have, between the walk's and the run's by the run blend. */
+  private mix(channel: RunChannel & WalkChannel, basis: Float64Array): number {
+    const rb = this.runBlend;
+    if (rb <= 0) return this.walk(channel, basis);
+    if (rb >= 1) return this.run(channel, basis);
+    const walk = this.walk(channel, basis);
+    return walk + (this.run(channel, basis) - walk) * rb;
+  }
+
+  private runMean(channel: RunChannel): number {
+    const packed = gaitSeries().run[channel];
+    const jog = packed[0]!;
+    return jog + (packed[packed.length / 2]! - jog) * this.runShare;
+  }
+
+  /** A channel's mean over the stride, between the walk's and the run's. */
+  private mean(channel: RunChannel & WalkChannel): number {
+    const rb = this.runBlend;
+    const walk = walkChannelMean(channel, this.blend);
+    return walk + ((rb > 0 ? this.runMean(channel) : 0) - walk) * rb;
   }
 }
 

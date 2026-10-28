@@ -1,3 +1,4 @@
+import { DOUBLE_ZERO } from "@/src/sim/ground/doubleZero";
 import {
   RUN_ARM_KEYS,
   RUN_CADENCE_AT_FULL,
@@ -172,7 +173,7 @@ export interface GroupBlend {
   share: number;
 }
 
-export function walkGroupBlend(speedHat: number, out: GroupBlend = { lower: 0, share: 0 }): GroupBlend {
+export function walkGroupBlend(speedHat: number, out: GroupBlend = { lower: 0, share: DOUBLE_ZERO }): GroupBlend {
   const last = WALK_GROUP_SPEED.length - 1;
   if (speedHat <= WALK_GROUP_SPEED[0]!) {
     out.lower = 0;

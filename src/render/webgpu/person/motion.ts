@@ -1,3 +1,4 @@
+import { DOUBLE_ZERO } from "@/src/sim/ground/doubleZero";
 import type { PersonMode, PersonVisualState } from "@/src/game/types";
 import { PERSON } from "@/src/vehicles/person";
 import { ActionChannels, rollKeyedSeconds, STAND, smoothstep } from "./actions";
@@ -133,27 +134,29 @@ export class PersonMotion {
   private readonly v = new Float64Array(6);
 
   private family: Family | null = null;
-  private fade = 1;
-  private fadeSeconds = 0;
-  private familyAge = 0;
-  private time = 0;
+  // Fractional fields start from a double (src/sim/ground/doubleZero.ts); those that start at 1 are set so
+  // in the constructor.
+  private fade = DOUBLE_ZERO;
+  private fadeSeconds = DOUBLE_ZERO;
+  private familyAge = DOUBLE_ZERO;
+  private time = DOUBLE_ZERO;
   /** The left leg's gait phase, strides. */
-  phase = 0;
-  private runBlend = 0;
-  private lastSpeed = 0;
-  private acceleration = 0;
-  private roll = 0;
-  private strokeCycle = 0;
-  private crawlBlend = 0;
-  private airSeconds = 0;
+  phase = DOUBLE_ZERO;
+  private runBlend = DOUBLE_ZERO;
+  private lastSpeed = DOUBLE_ZERO;
+  private acceleration = DOUBLE_ZERO;
+  private roll = DOUBLE_ZERO;
+  private strokeCycle = DOUBLE_ZERO;
+  private crawlBlend = DOUBLE_ZERO;
+  private airSeconds = DOUBLE_ZERO;
   private lastLandingAge = Number.POSITIVE_INFINITY;
   private firstPerson = false;
-  private lookWeight = 1;
+  private lookWeight = DOUBLE_ZERO;
   /** The mantle is a climb from the feet (upright from its start), not out of the water. */
   private climbing = false;
   /** The root's rise and travel since the mantle began, and the ledge's height over where it began, m. */
-  private climbUp = 0;
-  private climbForward = 0;
+  private climbUp = DOUBLE_ZERO;
+  private climbForward = DOUBLE_ZERO;
   private climbHeight = 0.8;
   /** The drawn ground under the feet, relative to the root, or flat when they stand on something else. */
   private groundSource: GroundOffset = flatGround;
@@ -161,8 +164,16 @@ export class PersonMotion {
   /** Both feet were on the ground as this family began, and the planter keeps them there. */
   private feetKept = false;
   private readonly solveOptions: Mutable<FootSolveOptions> = {
-    stance: [true, true], standing: true, ground: flatGround, deltaSeconds: 0, weight: 0, riseRate: MAX_RISE, fallRate: 0,
+    stance: [true, true], standing: true, ground: flatGround, deltaSeconds: DOUBLE_ZERO, weight: DOUBLE_ZERO, riseRate: MAX_RISE,
+    fallRate: DOUBLE_ZERO,
   };
+  /** The ground family's frame: whether it stands, each foot's stance, the strike strength. */
+  private readonly groundResult = { standing: false, stanceL: true, stanceR: true, strength: DOUBLE_ZERO };
+
+  constructor() {
+    this.fade = 1;
+    this.lookWeight = 1;
+  }
 
   setFirstPersonView(enabled: boolean): void {
     this.firstPerson = enabled;
@@ -471,7 +482,12 @@ export class PersonMotion {
       }
       ch[CH.spineFlex] = ch[CH.spineFlex]! + 10 * dip;
     }
-    return { standing, stanceL, stanceR, strength: Math.min(1, 0.25 + 0.12 * speed) };
+    const result = this.groundResult;
+    result.standing = standing;
+    result.stanceL = stanceL;
+    result.stanceR = stanceR;
+    result.strength = Math.min(1, 0.25 + 0.12 * speed);
+    return result;
   }
 
   private swimFamily(input: MotionInput, dt: number, ch: Float64Array, diving: boolean): void {

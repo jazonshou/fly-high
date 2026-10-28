@@ -1,3 +1,4 @@
+import { DOUBLE_ZERO } from "@/src/sim/ground/doubleZero";
 import { Bone } from "@babylonjs/core/Bones/bone";
 import { Skeleton } from "@babylonjs/core/Bones/skeleton";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
@@ -145,19 +146,19 @@ export function createFigure(scene: Scene, options: FigureOptions = {}): PersonV
   const matrices = new Float32Array(BONE_COUNT * 16);
   const boundsMin = new Vector3();
   const boundsMax = new Vector3();
-  const output: PersonAnimationOutput = { footStrikes: 0, strikeStrength: 0, strikeFoot: "left" };
+  const output: PersonAnimationOutput = { footStrikes: 0, strikeStrength: DOUBLE_ZERO, strikeFoot: "left" };
   let current: PersonAnimationInput | null = null;
   const ground: GroundOffset = (forward, right) => current?.groundOffset(forward, right) ?? 0;
   const motionInput: Mutable<MotionInput> = {
     person: null as unknown as MotionInput["person"],
-    forward: 0,
-    up: 0,
-    right: 0,
-    turnRate: 0,
+    forward: DOUBLE_ZERO,
+    up: DOUBLE_ZERO,
+    right: DOUBLE_ZERO,
+    turnRate: DOUBLE_ZERO,
     ground,
-    steeringWheel: 0,
-    lookYaw: 0,
-    lookPitch: 0,
+    steeringWheel: DOUBLE_ZERO,
+    lookYaw: DOUBLE_ZERO,
+    lookPitch: DOUBLE_ZERO,
     boardingFrom: null,
     boardingDoor: null,
   };

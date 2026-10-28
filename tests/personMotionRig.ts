@@ -1,3 +1,4 @@
+import { DOUBLE_ZERO } from "../src/sim/ground/doubleZero";
 import type { PersonVisualState } from "../src/game/types";
 import { PROPORTIONS } from "../src/render/webgpu/person/figureProportions";
 import { PersonMotion, type MotionInput, type MotionOutput } from "../src/render/webgpu/person/motion";
@@ -13,20 +14,22 @@ export type Mode = PersonVisualState["mode"];
 
 export function personState(mode: Mode, patch: Partial<PersonVisualState> = {}): PersonVisualState {
   return {
-    kind: "person", mode, speed: 0, running: mode === "run", grounded: true, slope: 0, waterDepth: 0, submersion: 0,
-    headDepth: -1, swimPitch: 0, landingSpeed: 0, landingAge: 10, surface: 0, boarding: null, ...patch,
+    // Fractions from the start, as the sim's payload (src/sim/ground/doubleZero.ts).
+    kind: "person", mode, speed: DOUBLE_ZERO, running: mode === "run", grounded: true, slope: DOUBLE_ZERO, waterDepth: DOUBLE_ZERO,
+    submersion: DOUBLE_ZERO, headDepth: -1.5, swimPitch: DOUBLE_ZERO, landingSpeed: DOUBLE_ZERO, landingAge: 10.5, surface: 0, boarding: null,
+    ...patch,
   };
 }
 
 export function motionInput(person: PersonVisualState, patch: Partial<MotionInput> = {}): MotionInput {
   return {
-    person, forward: 0, up: 0, right: 0, turnRate: 0, ground: () => 0, steeringWheel: 0, lookYaw: 0, lookPitch: 0,
-    boardingFrom: null, boardingDoor: null, ...patch,
+    person, forward: DOUBLE_ZERO, up: DOUBLE_ZERO, right: DOUBLE_ZERO, turnRate: DOUBLE_ZERO, ground: () => DOUBLE_ZERO,
+    steeringWheel: DOUBLE_ZERO, lookYaw: DOUBLE_ZERO, lookPitch: DOUBLE_ZERO, boardingFrom: null, boardingDoor: null, ...patch,
   };
 }
 
 export function motionOutput(): MotionOutput {
-  return { footStrikes: 0, strikeStrength: 0, strikeFoot: "left" };
+  return { footStrikes: 0, strikeStrength: DOUBLE_ZERO, strikeFoot: "left" };
 }
 
 export interface WalkRecord {
