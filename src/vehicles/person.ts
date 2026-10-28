@@ -174,13 +174,15 @@ export interface BodyPoint {
  * stands 0.80 m above flat ground at kerb ride. The box runs from the tow
  * hitch (2.72 m aft) to the front bumper (2.19 m ahead), 1.87 m wide, from
  * 0.30 m above the ground to the roof at 1.94 m (the published body).
- * The hip point is ESTIMATED from the drawn cockpit eye; the figure build
- * measures it on the drawn seat. The door stand's `up` is not read: the
+ * The hip point is MEASURED on the drawn front seat (the figure build,
+ * `render/webgpu/person/carSeat.ts`): the SAE H-point 0.135 m ahead of the
+ * backrest's face and 0.09 m over the pressed cushion, 1.09 m above the
+ * ground over the seat's middle. The door stand's `up` is not read: the
  * walker stands on the ground at its `forward` and `right`.
  */
 export const CAR_SEATING = Object.freeze({
   cgAboveGround: 0.8,
-  driverHip: Object.freeze({ forward: -0.5, up: 0.15, right: 0.4 }) as BodyPoint,
+  driverHip: Object.freeze({ forward: -0.4, up: 0.29, right: 0.37 }) as BodyPoint,
   doorStand: Object.freeze({ forward: -0.25, up: 0, right: 1.4 }) as BodyPoint,
   bodyBox: Object.freeze({
     kind: "box",
