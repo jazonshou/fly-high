@@ -557,7 +557,8 @@ export function FlightGame() {
         if (settingsOpenRef.current) continue;
         if (action === "camera" && phaseRef.current === "flying") changeCamera();
         if (action === "reset" && phaseRef.current !== "menu") {
-          if (latestStateRef.current.vehicle?.kind === "car") recoverCar();
+          // R in a car session recovers in place: the car while driving, the walker on foot.
+          if (latestStateRef.current.vehicle?.kind === "car" || latestStateRef.current.walking) recoverCar();
           else void restartFlight();
         }
         if (action === "pause") {
@@ -801,6 +802,8 @@ export function FlightGame() {
       simulation.onState((state) => {
         latestStateRef.current = state;
         if (state.vehicle?.kind === "car") input.setCarSpeed(state.vehicle.speed);
+        // Getting in and out of the car switches the keys between driving and walking.
+        if (state.walking) input.setWalkingProfile(state.walking.driven === "person" ? "person" : "car");
         const lastAutoland = lastAutolandRef.current;
         if (lastAutoland && !state.autoland && state.simulationTime >= lastAutoland.time) {
           input.adoptConfiguration(lastAutoland.state.throttle, lastAutoland.state.flaps, lastAutoland.state.gear);
@@ -865,6 +868,7 @@ export function FlightGame() {
         () => renderer.getDiagnostics(),
         setDiagnostics,
       );
+      const characterLook = { yaw: 0, pitch: 0, zoom: 0 };
       const renderLoop = (now: number) => {
         if (disposed || rendererTerminal) return;
         const deltaSeconds = Math.min(0.1, Math.max(1 / 240, (now - lastFrame) / 1_000));
@@ -885,7 +889,10 @@ export function FlightGame() {
           });
         }
         try {
+          if (input.inputProfile === "person") renderer.applyCharacterLook(input.consumeLook(characterLook));
           renderer.render(frameState, deltaSeconds);
+          const view = renderer.characterView();
+          input.setCharacterView(view.heading, view.pitch);
         } catch (renderError) {
           console.error("Flight renderer stopped after an unrecoverable frame error", renderError);
           const reason = renderError instanceof Error ? renderError.message : "Unknown rendering error";

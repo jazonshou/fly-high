@@ -152,6 +152,14 @@ export class BenchRenderer implements FlightRenderingSystem {
     this.inner.cutCamera();
   }
 
+  applyCharacterLook(look: { readonly yaw: number; readonly pitch: number; readonly zoom: number }): void {
+    this.inner.applyCharacterLook(look);
+  }
+
+  characterView(): { readonly heading: number; readonly pitch: number } {
+    return this.inner.characterView();
+  }
+
   setViewerMode(enabled: boolean): void {
     if (this.ignoreOnceFlying("setViewerMode")) return;
     this.inner.setViewerMode(enabled);
