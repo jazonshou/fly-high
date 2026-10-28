@@ -700,7 +700,7 @@ describe("terrain surface plugin (3-2)", () => {
       expect(source).toContain("if (uv.z <= 0.0) { return vec4f(0.0, 0.0, 0.0, 0.0); }");
       expect(source).toContain("if (confidence < 0.1) {");
       expect(source.indexOf("if (confidence < 0.1) {"))
-        .toBeLessThan(source.indexOf("let sparse = terrainSurfaceSparseSplat(atlasPosition, blend);"));
+        .toBeLessThan(source.indexOf("let sparse = terrainSurfaceSparseSplat(atlasPosition, blend, paint);"));
       expect(source).toMatch(/let terrainUsePageSplat = terrainPageSplat\.w >= 0\.1\s+\|\| terrainFarSward;/u);
       // The seam feather itself: class strength mottled by the cover noise,
       // fading toward the fallback's own composition in both material paths.

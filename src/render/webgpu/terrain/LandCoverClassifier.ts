@@ -2254,9 +2254,16 @@ fn bakeSplat(
   // over the classified cover. Nothing reaches: the cover exactly as before.
   // Over the texel, so a road narrower than it paints (and thins the canopy
   // closure by) the share of the texel it covers.
-  let built = terrainInfrastructureSurfaceOver(localX, localZ, job.shape.x);
+  let surface = terrainInfrastructureSurfaceOver(localX, localZ, job.shape.x);
+  // A streamed segment's (a road's) material arrives a quarter id up
+  // (INFRASTRUCTURE_PAINT_ID_OFFSET). Its lane is stored that way too: rounded,
+  // every reader still gets the material, and the terrain fragment blends that
+  // paint by its coverage instead of by height.
+  let built = vec2f(floor(surface.x), surface.y);
   let aligned = splatApplyInfrastructureSurface(splatAlignSeasonalWeights(lo, hi), built);
-  textureStore(splatId, texel, aligned.ids * scale);
+  let painted = select(vec4f(0.0), vec4f(surface.x - built.x),
+    (aligned.ids == vec4f(built.x)) & vec4<bool>(built.y > 0.0));
+  textureStore(splatId, texel, (aligned.ids + painted) * scale);
   // 6-8: the canopy-closure channel rides the weight textures' ALPHA lane, in
   // BOTH season buckets, and costs nothing.
   //
