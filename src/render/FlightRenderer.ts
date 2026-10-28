@@ -3792,7 +3792,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * The underwater water column joins the chain while the camera is under the
    * water, and for one frame at load (drawing the scene through untouched)
    * so its render pipeline is built behind the load screen, not at the first
-   * dive. Above the water it is not in the chain.
+   * dive. Above the water it is not in the chain. While it fades the view, a
+   * lake or river seen from below leaves that path to it.
    */
   private applyUnderwaterState(): void {
     const underwater = this.underwater;
@@ -3801,6 +3802,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     const submerged = underwater.submerged;
     const warming = !waterColumn.warmed && waterColumn.ready;
     waterColumn.setStrength(submerged ? 1 : 0);
+    this.hydrology.setUnderwaterColumnActive(submerged);
     const wanted = submerged || warming;
     if (wanted !== waterColumn.enabled) {
       waterColumn.setEnabled(this.camera, wanted);
