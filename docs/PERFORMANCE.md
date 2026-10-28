@@ -3585,6 +3585,45 @@ unpinned. They have no committed baseline, and a capture only reports them.
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
 delivery.
 
+## The walker's figure (2026-10-28): no aircraft, boat or car frame moves
+
+The walker's figure (`src/render/webgpu/person/`, docs/WALKER_FIGURE.md)
+replaces the lead's stand-in. It is built in car sessions only, hidden until
+the walker gets out, and draws one skinned mesh of three LODs (9,082 / 2,906
+/ 798 triangles) plus its shadow in the tier's `personShadowCascades`
+cascades. MEASURED in `tests/gpu/person-figure.test.ts` off Babylon's draw
+counter: 2 draws on Low, 3 on Medium, High and Ultra (Ultra asks for 3
+cascades, every tier has 2). The material compiles at 14 of 16 fragment
+inputs with the cascades, cloud shadows and aerial haze. No walker shot has
+a baseline or a draw ceiling yet, so nothing is re-pinned.
+
+`npm run perf:ab -- --base origin/claude/project-thread-63g5pc --rounds 0`
+(the lead's branch with the stand-in) on SwiftShader, 2026-10-28:
+
+| Shot | Draws | Work counts | Pixels |
+| --- | --- | --- | --- |
+| approach-500ft | 247 -> 247 | identical | 0.00% differ, max delta 2, SSIM 1.0000 |
+| boat-moored-dock | 125 -> 125 | identical | identical |
+| car-clearing-chase | 147 -> 147 | identical | identical |
+| walk-door-chase | 142 -> 142 | see below | the new figure (8.55% differ, SSIM 0.9708) |
+
+The car shot's inventoried GPU memory is 308.47 -> 309.71 MiB: the hidden
+figure's three meshes and its 256-texel atlas, built at load in every car
+session. The first walker run found the figure adding a 1,792-byte buffer,
+a copy and a submit to every walking frame: Babylon uploads a bone texture
+through a fresh staging buffer whenever it changes. The bones now ride in
+the draws' uniforms (`7c70f6b`), and the GPU test checks a walking frame
+adds no buffer or submit. Re-run on `7c70f6b`: walk-door-chase 141 -> 141
+draws, and the only work count that differs is the uniform upload, 176.1k ->
+179.7k bytes a frame (the bones, 1,792 bytes, in two of the draws' uniform
+buffers).
+
+CPU: `PersonMotion.update` MEASURED about 20 us a frame over every mode
+(`tests/render.person-motion-budget.test.ts`) against the walking plan's
+80 us, with about 190 B of boxed doubles a frame. GPU time was not
+measured: SwiftShader's timings are not a GPU's, so the walker shots' timing
+waits for the macOS runner.
+
 ## In-app benchmark (?bench=1)
 
 `?bench=1` turns the game into a benchmark anyone can run in their own
