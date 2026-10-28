@@ -3078,11 +3078,13 @@ terrainBlend2 = terrainBlend2 / terrainBlendSum;
 // arbitrate by height among themselves for the rest.
 //
 // Where the texel spans many pixels that share would airbrush a road's edge
-// across the whole texel, so a resolved road (one texel at least nearly all
-// paint) sharpens toward its half-peak line, which is the edge itself for
-// the bake's box-filtered coverage, roughened by the heights so it is not a
-// smooth curve. A road narrower than the texel (peak under ~0.6) has no edge
-// to find and stays a faint share, which cannot vanish.
+// across the whole texel, so a resolved road (a corner texel all paint)
+// sharpens toward its half-coverage line, which is the edge itself for the
+// bake's coverage, roughened by the heights so it is not a smooth curve. A
+// road narrower than the texel (a track on any page, a road on a coarser
+// one) has no edge to find: its peak swings from under half to 0.9 as the
+// road runs across the texel grid, and sharpening it cut it into blotches
+// again. It keeps its share, which cannot vanish.
 if (terrainUsePageSplat && !terrainFarSward && abs(terrainPaint.x) > 0.5) {
   let terrainPaintLower = abs(terrainPaint.x) < 1.5;
   let terrainPaintActive = select(terrainActive1, terrainActive0, terrainPaintLower);
@@ -3095,7 +3097,7 @@ if (terrainUsePageSplat && !terrainFarSward && abs(terrainPaint.x) > 0.5) {
     + ${terrainWgslFloat(TERRAIN_PAINT_EDGE_RELIEF)} * terrainPaintRelief * (1.0 - terrainPaintWidth);
   let terrainPaintShare = mix(terrainPaintCoverage,
     saturate((terrainPaintCoverage - terrainPaintEdge) / terrainPaintWidth + 0.5),
-    smoothstep(0.6, 0.9, terrainPaint.y) * select(0.0, 1.0, terrainPaintActive));
+    smoothstep(0.9, 0.98, terrainPaint.y) * select(0.0, 1.0, terrainPaintActive));
   let terrainNaturalKey0 = select(terrainKey0, -1.0e9, terrainPaintLower);
   let terrainNaturalKey1 = select(-1.0e9, terrainKey1, terrainPaintLower);
   let terrainNaturalMax = max(terrainNaturalKey0, max(terrainNaturalKey1, terrainKey2))
