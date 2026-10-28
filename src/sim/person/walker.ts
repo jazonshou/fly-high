@@ -318,6 +318,11 @@ export class Walker implements PersonSimulator {
     return this.modeValue;
   }
 
+  /** Standing on something (the payload's `grounded`), for the session's boarding check. */
+  get grounded(): boolean {
+    return this.regime === Regime.ground;
+  }
+
   setControls(controls: Readonly<SurfaceVehicleControls>): void {
     this.controls = controls.person ?? NEUTRAL_PERSON_CONTROLS;
   }

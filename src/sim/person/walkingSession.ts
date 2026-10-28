@@ -388,10 +388,8 @@ export class WalkingSession {
   }
 
   private personCanBoard(): boolean {
-    const payload = this.person.snapshot().payload;
-    if (payload.kind !== "person") return false;
-    return payload.grounded
-      && (payload.mode === "stand" || payload.mode === "walk" || payload.mode === "run" || payload.mode === "wade");
+    const mode = this.person.mode;
+    return this.person.grounded && (mode === "stand" || mode === "walk" || mode === "run" || mode === "wade");
   }
 
   private startGetIn(): void {

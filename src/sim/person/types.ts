@@ -1,3 +1,4 @@
+import type { PersonMode } from "@/src/game/types";
 import type { Vec3 } from "../types";
 import type { SurfaceVehicleSimulator } from "../surface/types";
 
@@ -35,4 +36,8 @@ export interface PersonSimulator extends SurfaceVehicleSimulator {
   placeAt(position: Readonly<Vec3>, heading: number): void;
   /** R on foot: back on the newest safe standing spot, at rest. */
   recover(): void;
+  /** What the walker is doing (the payload's `mode`), without building a snapshot. */
+  readonly mode: PersonMode;
+  /** Standing on something (the payload's `grounded`), without building a snapshot. */
+  readonly grounded: boolean;
 }
