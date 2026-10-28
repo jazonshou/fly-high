@@ -42,6 +42,8 @@ export const FIGURE_LOD_DISTANCES = Object.freeze([25, 80]);
 const LOD_HYSTERESIS = 1.5;
 /** How far the skin stands off the bones' origins at most (the crown over the head bone, the hips' sides), metres. */
 const BOUNDS_MARGIN = 0.22;
+/** Frames a prime waits for its effects before warming regardless (one that never compiles has failed loudly already). */
+const PRIME_READY_FRAME_LIMIT = 600;
 /** A camera layer mask no camera has: the solid figure still casts while its faded twin is drawn. */
 const SHADOW_ONLY_LAYER_MASK = 0;
 
@@ -69,8 +71,9 @@ const SHADOW_ONLY_LAYER_MASK = 0;
  * PIPELINES. Both materials are deferred with the renderer's off-frame
  * compiles and warmed at load by two primes: one degenerate triangle each in
  * the figure's vertex layout, skeleton and material (the solid one casting,
- * as the figure does), drawn wherever they are until the compiles report
- * them built and then disabled. They rasterise nothing. A capture's
+ * as the figure does), which once their effects are ready are drawn
+ * wherever they are until the compiles report them built, then disabled.
+ * They rasterise nothing. A capture's
  * synchronous compiles decline the warm-up and the primes never draw; with no
  * off-frame compiles they draw one frame, compiling at load.
  */
@@ -118,15 +121,23 @@ export function createFigure(scene: Scene, options: FigureOptions = {}): PersonV
   const meshes: AbstractMesh[] = [...figureMeshes, fadeTwin, solidPrime, fadePrime];
 
   const primes = [
-    { mesh: solidPrime, castsShadows: true, done: false },
-    { mesh: fadePrime, castsShadows: false, done: false },
+    { mesh: solidPrime, castsShadows: true, ready: false, waited: 0, frames: 0, done: false },
+    { mesh: fadePrime, castsShadows: false, ready: false, waited: 0, frames: 0, done: false },
   ];
-  let primeFrames = 0;
   let primeObserver: Nullable<Observer<Scene>> = scene.onBeforeRenderObservable.add(() => {
     let pending = false;
     for (const prime of primes) {
       if (prime.done) continue;
-      const status = compiles ? compiles.warmUp(prime.mesh, prime.castsShadows) : primeFrames > 0 ? "warm" : "started";
+      // Its effects first, the main pass's and the shadow map's: a pass skips a
+      // mesh whose effect is still compiling, and a warm-up that saw only the
+      // shadow draw would end without the main pass's pipeline.
+      prime.ready ||= prime.mesh.isReady(true) || ++prime.waited > PRIME_READY_FRAME_LIMIT;
+      if (!prime.ready) {
+        pending = true;
+        continue;
+      }
+      const status = compiles ? compiles.warmUp(prime.mesh, prime.castsShadows) : prime.frames > 0 ? "warm" : "started";
+      prime.frames += 1;
       if (status === "warm" || status === "declined") {
         prime.done = true;
         prime.mesh.setEnabled(false);
@@ -134,7 +145,6 @@ export function createFigure(scene: Scene, options: FigureOptions = {}): PersonV
         pending = true;
       }
     }
-    primeFrames += 1;
     if (!pending) {
       scene.onBeforeRenderObservable.remove(primeObserver);
       primeObserver = null;
