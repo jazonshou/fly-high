@@ -191,6 +191,13 @@ export interface FlightRequest {
    * Absent or 0 flies level.
    */
   readonly pitchDownDegrees?: number;
+  /**
+   * On a walker shot (the walk route): the eye's depth under the still sea
+   * this leg swims at, reached at 1 m/s from where the last leg left it;
+   * below 0.3 m it dives. Absent keeps the shot's. Ignored on dry ground
+   * and for an aircraft, which fly.
+   */
+  readonly headDepthMeters?: number;
   readonly cameraMode: "chase" | "cockpit";
   /** Drop the frame's own draws (`gpuDrawGate.ts`): CPU and compute only. */
   readonly suppressDraws: boolean;

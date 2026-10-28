@@ -22,6 +22,7 @@ import {
   WALK_SHOT_EYE_HEIGHT,
   WALK_SHOT_STATURE,
   WALK_SHOT_SURFACE_WATER,
+  walkRouteState,
   walkShotLookPitchRadians,
 } from "./perf/walkShotState";
 
@@ -178,6 +179,61 @@ describe("walker shots", () => {
     // The car in the car park.
     const car = pier.state.walking!.car!;
     expect(Math.hypot(car.position.x - layout.carParkAnchor.x, car.position.z - layout.carParkAnchor.z)).toBeLessThan(0.3);
+  });
+
+  it("move on along a perf:flight walk route as the shots pose the walker", () => {
+    // At each shot's own point, depth and pace, the route's state is the shot's.
+    for (const name of ["walk-door-chase", "swim-sea-chase", "dive-sea-up"]) {
+      const { shot, state, person } = shotState(name);
+      const run = shot.walk!;
+      const route = walkRouteState(
+        world,
+        state,
+        state.position.x,
+        state.position.z,
+        (state.heading * Math.PI) / 180,
+        run.headDepthMeters ?? -0.05,
+        run.speedMetersPerSecond ?? 0,
+        state.simulationTime + 1,
+      );
+      expect(route.position.y).toBeCloseTo(state.position.y, 6);
+      expect(route.heading).toBeCloseTo(state.heading, 9);
+      expect(route.velocity.x).toBeCloseTo(state.velocity.x, 9);
+      expect(route.velocity.z).toBeCloseTo(state.velocity.z, 9);
+      expect(route.simulationTime).toBe(state.simulationTime + 1);
+      expect(route.walking).toBe(state.walking);
+      if (route.vehicle?.kind !== "person") throw new Error(`${name}: not a person payload`);
+      expect(route.vehicle.mode).toBe(person.mode);
+      expect(route.vehicle.grounded).toBe(person.grounded);
+      expect(route.vehicle.submersion).toBeCloseTo(person.submersion, 6);
+      if (person.waterDepth > 0) expect(route.vehicle.headDepth).toBeCloseTo(person.headDepth, 9);
+    }
+    // A swimmer taken down past 0.3 m dives, and brought up swims; on the
+    // way ashore it stands on the bed once the water is shallow enough.
+    const { state } = shotState("swim-sea-chase");
+    const heading = (state.heading * Math.PI) / 180;
+    const at = (depth: number, along: number) => walkRouteState(
+      world,
+      state,
+      state.position.x + Math.sin(heading) * along,
+      state.position.z + Math.cos(heading) * along,
+      heading,
+      depth,
+      0.8,
+      state.simulationTime,
+    ).vehicle as PersonVisualState;
+    expect(at(2, 0).mode).toBe("dive");
+    expect(at(2, 0).submersion).toBe(1);
+    expect(at(0.2, 0).mode).toBe("swim");
+    let along = 0;
+    while (world.seaLevel - sampleTerrainHeight(
+      world,
+      state.position.x + Math.sin(heading) * along,
+      state.position.z + Math.cos(heading) * along,
+    ) > 0.75 * WALK_SHOT_STATURE) along += 1;
+    const ashore = at(2, along);
+    expect(ashore.grounded).toBe(true);
+    expect(["wade", "walk"]).toContain(ashore.mode);
   });
 
   it("build the same state every time", () => {

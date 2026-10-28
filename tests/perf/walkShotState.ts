@@ -268,3 +268,60 @@ export function buildWalkShotState(
     walking: { driven: "person", car: { ...car, simulationTime }, doors: [0, 0], prompt: null },
   };
 }
+
+/**
+ * The walker moved on along a perf:flight walk route (`FlightRequest` on a
+ * walker shot): the shot's state `base` with the walker at (x, z) facing
+ * `heading` (radians, as `FlightVisualState.heading`) at `speed`. Where the
+ * sea is deeper than 0.75 of the walker's stature it swims with its eye
+ * `headDepth` under the still surface, diving below 0.3 m; elsewhere it walks
+ * on the terrain, wading in the shallows. The car stays where the shot
+ * parked it.
+ */
+export function walkRouteState(
+  world: WorldDefinition,
+  base: FlightVisualState,
+  x: number,
+  z: number,
+  heading: number,
+  headDepth: number,
+  speed: number,
+  simulationTime: number,
+): FlightVisualState {
+  const ground = sampleTerrainHeight(world, x, z);
+  const sea = world.seaLevel;
+  const swimming = sea - ground > 0.75 * WALK_SHOT_STATURE;
+  const y = swimming ? sea - headDepth - WALK_SHOT_EYE_HEIGHT : ground;
+  const eyeY = y + WALK_SHOT_EYE_HEIGHT;
+  const waterDepth = Math.max(0, sea - y);
+  const previous = base.vehicle as PersonVisualState;
+  const swimPitch = swimming ? previous.swimPitch : 0;
+  const mode: PersonVisualState["mode"] = swimming
+    ? headDepth > 0.3 ? "dive" : "swim"
+    : waterDepth > 0.15 * WALK_SHOT_STATURE ? "wade" : speed > 2.5 ? "run" : speed > 0.05 ? "walk" : "stand";
+  const payload: PersonVisualState = {
+    ...previous,
+    mode,
+    speed,
+    running: mode === "run",
+    grounded: !swimming,
+    waterDepth,
+    submersion: waterDepth > 0 ? submersion(eyeY, sea, swimPitch, swimming) : 0,
+    headDepth: waterDepth > 0 ? sea - eyeY : -WALK_SHOT_STATURE,
+    swimPitch,
+    surface: waterDepth > 0 ? WALK_SHOT_SURFACE_WATER : SurfaceMaterial.Grass,
+  };
+  const half = (heading - Math.PI / 2) / 2;
+  return {
+    ...base,
+    position: { x, y, z },
+    velocity: { x: Math.sin(heading) * speed, y: 0, z: Math.cos(heading) * speed },
+    orientation: { x: 0, y: Math.sin(half), z: 0, w: Math.cos(half) },
+    altitude: y,
+    altitudeAgl: y - ground,
+    heading: (heading * 180) / Math.PI,
+    onGround: !swimming,
+    simulationTime,
+    vehicle: payload,
+  };
+}
