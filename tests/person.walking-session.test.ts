@@ -155,6 +155,20 @@ describe("walking session", () => {
     expect(rig.colliders.removeGroup(PARKED_CAR_COLLIDER_GROUP)).toBe(1);
   });
 
+  it("keeps its own clock running while the parked car sleeps, for the walker's sea and wind", () => {
+    const rig = new Rig(world, "car");
+    rig.run(3);
+    rig.press();
+    rig.run(PERSON.getOutSeconds + 2.1);
+    expect(rig.colliders.size).toBe(1);
+    const carClock = rig.session.car.state.time;
+    const before = rig.session.simulationTime;
+    rig.run(1);
+    expect(rig.session.car.state.time).toBe(carClock);
+    expect(rig.session.simulationTime - before).toBeCloseTo(1, 1);
+    expect(rig.state().simulationTime).toBe(rig.session.simulationTime);
+  });
+
   it("gets back in within reach of a door, drives again and drops the box", () => {
     const rig = new Rig(world, "car");
     rig.run(3);

@@ -8,7 +8,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { FlightAudio } from "@/src/audio";
+import { FlightAudio, type AudioSurroundings } from "@/src/audio";
 import { InputManager, type InputAction } from "@/src/input";
 import { FlightRenderer } from "@/src/render/FlightRenderer";
 import { type FlightRenderingSystem, type ScreenPoint } from "@/src/render/types";
@@ -32,7 +32,7 @@ import { CarTyrePanel } from "@/src/ui/CarTyrePanel";
 import { Hud } from "@/src/ui/Hud";
 import { modalTabTarget } from "@/src/ui/modalFocus";
 import { SettingsDialog } from "@/src/ui/SettingsPanel";
-import { createWorld, sampleTerrain, sampleTerrainHeight, type LandformsOption } from "@/src/world";
+import { createWorld, sampleTerrain, sampleTerrainHeight, sampleWind, type LandformsOption } from "@/src/world";
 import {
   applyAirportMarker,
   createAirportMarkerPlacement,
@@ -66,6 +66,7 @@ import {
   type RenderDiagnostics,
 } from "./types";
 import { handoffTrimSeed, heldElevator } from "@/src/sim";
+import { weatherWindScale } from "@/src/sim/water/seaState";
 import { isCarSpawn, isSurfaceSpawn, surfaceSpawnKind, type SpawnKind } from "@/src/workers/protocol";
 import { isAircraftKind, isSurfaceVehicleKind, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import {
@@ -762,6 +763,9 @@ export function FlightGame() {
         engine: activeSettings.engineVolume,
         wind: activeSettings.windVolume,
       }));
+      // What the walker hears around them: the wind at them, as the sim blows it, and the water over the camera.
+      const surroundings: AudioSurroundings = { windX: 0, windY: 0, windZ: 0, cameraUnderwaterDepth: 0 };
+      const windSample = { x: 0, y: 0, z: 0, speed: 0, gust: 0, turbulence: 0 };
       // Renderer/Worker replacement must preserve who owns the flight. Menu
       // rebuilds are Scenic airborne demonstrations; paused/flying rebuilds
       // retain the session's original spawn contract and pilot authority.
@@ -852,6 +856,16 @@ export function FlightGame() {
         audio.observe(state);
         if (now - lastAudioUpdateRef.current > 35) {
           lastAudioUpdateRef.current = now;
+          if (state.vehicle?.kind === "person") {
+            const { x, y, z } = state.position;
+            const wind = sampleWind(airportNetwork.world, x, y, z, state.simulationTime, windSample);
+            const share = weatherWindScale(settingsRef.current.weather);
+            surroundings.windX = wind.x * share;
+            surroundings.windY = wind.y * share;
+            surroundings.windZ = wind.z * share;
+          }
+          surroundings.cameraUnderwaterDepth = renderer.cameraUnderwaterDepth();
+          audio.setSurroundings(surroundings);
           audio.update(state);
         }
       });

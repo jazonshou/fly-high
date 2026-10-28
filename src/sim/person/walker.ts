@@ -335,7 +335,7 @@ export class Walker implements PersonSimulator {
     return this.modeValue;
   }
 
-  /** On its feet (the payload's `grounded`). */
+  /** Standing on something (the payload's `grounded`), for the session's boarding check. */
   get grounded(): boolean {
     return this.regime === Regime.ground;
   }

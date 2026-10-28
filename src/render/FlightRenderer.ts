@@ -453,8 +453,10 @@ export function atmosphereFogNear(weather: WeatherPreset): number {
   return weather === "cloudy" ? 2_200 : weather === "clear" ? 4_500 : 3_800;
 }
 
-/** Sample counts for the three post-processes that can head the camera chain. */
+/** Sample counts for the post-processes that can head the camera chain. */
 export interface FirstPassSamples {
+  /** The underwater water column, at the head whenever it is attached (the camera is under water). */
+  readonly waterColumn: number;
   readonly scotopic: number;
   readonly bloom: number;
   readonly toneMap: number;
@@ -467,22 +469,26 @@ export interface FirstPassSamples {
  * and therefore its sample count. The part that is easy to get wrong is that
  * ownership is DYNAMIC: `ScotopicVision` detaches in photopic daylight, so the
  * head of the chain changes with the time of day, and `7-5` put a third
- * candidate behind it. Chain order is fixed -- rod vision, bloom, tone map --
- * so the owner is simply the first one attached.
+ * candidate behind it. Chain order is fixed -- the underwater water column
+ * (car sessions, only while the camera is under water), rod vision, bloom,
+ * tone map -- so the owner is simply the first one attached.
  *
  * Pure, and separate from `applyFirstPassOwnership`, because the interesting
- * content here is a three-way policy over eight states and none of it needs a
- * GPU. The test that replaced the old source-string pin exercises all eight.
+ * content here is a four-way policy over sixteen states and none of it needs
+ * a GPU. The test that replaced the old source-string pin exercises them all.
  */
 export function firstPassSampleAssignment(
   msaaSamples: number,
   scotopicAttached: boolean,
   bloomAttached: boolean,
+  waterColumnAttached = false,
 ): FirstPassSamples {
-  const bloomFirst = !scotopicAttached && bloomAttached;
-  const toneMapFirst = !scotopicAttached && !bloomAttached;
+  const scotopicFirst = !waterColumnAttached && scotopicAttached;
+  const bloomFirst = !waterColumnAttached && !scotopicAttached && bloomAttached;
+  const toneMapFirst = !waterColumnAttached && !scotopicAttached && !bloomAttached;
   return {
-    scotopic: scotopicAttached ? msaaSamples : 1,
+    waterColumn: waterColumnAttached ? msaaSamples : 1,
+    scotopic: scotopicFirst ? msaaSamples : 1,
     bloom: bloomFirst ? msaaSamples : 1,
     toneMap: toneMapFirst ? msaaSamples : 1,
   };
@@ -1948,6 +1954,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           weather: options.weather ?? "breezy",
           terrainHeight: liveTerrainHeight,
           drawnCascades: profile.oceanCascades,
+          waterEnvironment,
         })
         : null;
       if (underwater) cleanup.push(() => underwater.dispose());
@@ -2122,6 +2129,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       const sharpen = new SharpenPass(camera, engine, profile.sharpenAmount);
       cleanup.push(() => sharpen.dispose(camera));
       if (!standaloneSharpen(profile)) sharpen.setEnabled(camera, false);
+      // The underwater water column: built with the chain, out of it until
+      // the camera goes under (`applyUnderwaterState`).
+      underwater?.buildColumn(camera, engine, profile.msaaSamples);
 
       checkpointRendererStartup("presentation systems construction", "sync");
 
@@ -2272,6 +2282,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.footsteps.count = 0;
     this.footsteps.strength = 0;
     return out;
+  }
+
+  cameraUnderwaterDepth(): number {
+    const underwater = this.underwater;
+    return underwater?.submerged ? underwater.camera.depth : 0;
   }
 
   /** The character camera's heading and pitch, radians: the walker moves and swims relative to them. */
@@ -2503,6 +2518,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.boatSpray?.setAtmosphere(this.atmosphere.snapshot);
     this.boatHeave?.setWeather(weather);
     this.underwater?.setWeather(weather);
+    this.underwater?.setAtmosphere(this.atmosphere.snapshot);
     this.carParticles?.setAtmosphere(this.atmosphere.snapshot);
     this.carBowWave?.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
@@ -3396,6 +3412,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         this.carBowWave?.bindOcean();
         // Which side of the drawn water the camera is on, at the time the sea is drawn at.
         this.underwater?.update(this.cameraWorld.x, this.cameraWorld.y, this.cameraWorld.z, frame.timeSeconds);
+        this.applyUnderwaterState();
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
         // ocean disk is depth-tested away above the waterline), so the sea
         // state and the WATER's own clock cross here — same node, same frame,
@@ -3700,11 +3717,17 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * discovering the rule from whichever site it happens to read.
    */
   private applyFirstPassOwnership(): void {
+    const waterColumn = this.underwater?.column ?? null;
+    // The water is in the scene and rods are in the eye: the water column
+    // heads the chain, over rod vision, which attaches at 0 as dusk falls.
+    waterColumn?.keepAtHead(this.camera);
     const samples = firstPassSampleAssignment(
       this.profile.msaaSamples,
       this.scotopic.enabled,
       this.bloom.enabled,
+      waterColumn?.enabled ?? false,
     );
+    waterColumn?.setSamples(samples.waterColumn);
     this.scotopic.setSamples(samples.scotopic);
     this.bloom.setSamples(samples.bloom);
     this.toneMap.samples = samples.toneMap;
@@ -3735,6 +3758,27 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.sharpen.postProcess,
     ]) {
       pass.markTextureDirty();
+    }
+    waterColumn?.postProcess.markTextureDirty();
+  }
+
+  /**
+   * The underwater water column joins the chain while the camera is under the
+   * water, and for one frame at load (drawing the scene through untouched)
+   * so its render pipeline is built behind the load screen, not at the first
+   * dive. Above the water it is not in the chain.
+   */
+  private applyUnderwaterState(): void {
+    const underwater = this.underwater;
+    const waterColumn = underwater?.column;
+    if (!underwater || !waterColumn) return;
+    const submerged = underwater.submerged;
+    const warming = !waterColumn.warmed && waterColumn.ready;
+    waterColumn.setStrength(submerged ? 1 : 0);
+    const wanted = submerged || warming;
+    if (wanted !== waterColumn.enabled) {
+      waterColumn.setEnabled(this.camera, wanted);
+      this.applyFirstPassOwnership();
     }
   }
 

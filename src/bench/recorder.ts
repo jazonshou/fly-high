@@ -165,6 +165,10 @@ export class BenchRenderer implements FlightRenderingSystem {
     return this.inner.consumeFootsteps(out);
   }
 
+  cameraUnderwaterDepth(): number {
+    return this.inner.cameraUnderwaterDepth();
+  }
+
   setViewerMode(enabled: boolean): void {
     if (this.ignoreOnceFlying("setViewerMode")) return;
     this.inner.setViewerMode(enabled);

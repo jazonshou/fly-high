@@ -27,6 +27,12 @@ import { PARKED_CAR_COLLIDER_MATERIAL } from "@/src/sim/person/types";
  *  - STROKES while swimming: a splash per stroke at the surface, a muffled
  *    rush under it, at a rate that grows with speed.
  *  - LANDINGS: a thump after a fall, harder with the landing speed.
+ *  - BUBBLES: a burst as the head goes under, then a breath let out every
+ *    few seconds while it stays under, each bubble a short rising chirp.
+ *
+ * FlightAudio adds what the walker is in: the wind past the ear at ground
+ * level (`groundWindShare`), and everything muffled through a low-pass while
+ * the camera is under the water (`UNDERWATER_MUFFLE_HZ`).
  *
  * The laws are pure functions so they can be tested without an audio
  * device. As the car's sounds, nothing goes above 1.2 kHz, and the levels sit
@@ -162,10 +168,31 @@ export function strokeRateHz(speed: number): number {
 /** Landings slower than this make no thump, m/s. */
 export const PERSON_LANDING_THUMP_SPEED = 2.5;
 
+/** The most of the flight's wind rush (full at 90 m/s airspeed) the air past a walker's ear makes. */
+export const PERSON_GROUND_WIND_MAX = 0.6;
+
+/**
+ * The wind at the ear, as a share of the graph's wind voice: nothing in a
+ * light air, rising through a fresh breeze to `PERSON_GROUND_WIND_MAX` at
+ * 10 m/s past the ear. `relativeSpeed` is the wind at the walker (the sim's
+ * wind field, which already slows near the ground) less the walker's own
+ * velocity, m/s, so running into it is louder than running with it.
+ */
+export function groundWindShare(relativeSpeed: number): number {
+  return PERSON_GROUND_WIND_MAX * smoothstep(1, 10, Number.isFinite(relativeSpeed) ? relativeSpeed : 0);
+}
+
+/** With the camera under the water everything heard passes a low-pass at this, Hz. */
+export const UNDERWATER_MUFFLE_HZ = 450;
+
+/** A bubble: a sine starting between `lowHz` and `highHz` and rising by `rise` as it breaks free. */
+export const PERSON_BUBBLE = Object.freeze({ lowHz: 240, highHz: 520, rise: 1.6 });
+
 const STEP_LEVEL = 0.05;
 const BREATH_LEVEL = 0.03;
 const STROKE_LEVEL = 0.045;
 const LANDING_LEVEL = 0.09;
+const BUBBLE_LEVEL = 0.04;
 
 export class PersonVoice {
   private readonly context: AudioContext;
@@ -177,6 +204,8 @@ export class PersonVoice {
   private nextStroke = 0;
   private lastLandingAge = Number.POSITIVE_INFINITY;
   private headUnderSince = Number.NaN;
+  private wasHeadUnder = false;
+  private nextBubble = 0;
   private random = 0x2545f491;
 
   /** `noise` is the graph's looping white-noise buffer. */
@@ -198,7 +227,7 @@ export class PersonVoice {
     }
   }
 
-  /** This frame's walker: breathing, strokes and landings. */
+  /** This frame's walker: breathing, strokes, bubbles and landings. */
   update(person: Readonly<PersonVisualState>, levels: { wind: number }): void {
     const now = this.context.currentTime;
     const dt = Number.isFinite(this.lastTime) ? now - this.lastTime : 0;
@@ -222,6 +251,16 @@ export class PersonVoice {
         this.nextBreath = now + period * (0.92 + 0.16 * this.nextRandom());
       }
     }
+
+    // Bubbles: a burst as the head goes under, then a breath let out every few seconds.
+    if (headUnder && !this.wasHeadUnder) {
+      this.bubbles(now, levels.wind * BUBBLE_LEVEL, 9, 0.5);
+      this.nextBubble = now + 2.5 + 2 * this.nextRandom();
+    } else if (headUnder && now >= this.nextBubble) {
+      this.bubbles(now, levels.wind * BUBBLE_LEVEL * 0.6, 5, 0.35);
+      this.nextBubble = now + 3 + 2 * this.nextRandom();
+    }
+    this.wasHeadUnder = headUnder;
 
     // Strokes while swimming or diving and moving.
     const swimming = (person.mode === "swim" || person.mode === "dive") && person.speed > 0.15;
@@ -253,6 +292,7 @@ export class PersonVoice {
     this.effort.value = 0;
     this.lastTime = Number.NaN;
     this.headUnderSince = Number.NaN;
+    this.wasHeadUnder = false;
     this.lastLandingAge = Number.POSITIVE_INFINITY;
   }
 
@@ -281,6 +321,27 @@ export class PersonVoice {
     noise.connect(filter).connect(gain).connect(this.destination);
     noise.start(at, this.nextRandom() * 1.5);
     noise.stop(at + length + 0.02);
+  }
+
+  /** `count` bubbles over `spread` seconds, each a short sine chirp rising as it breaks free. */
+  private bubbles(at: number, level: number, count: number, spread: number): void {
+    if (level <= 1e-4) return;
+    const context = this.context;
+    for (let index = 0; index < count; index += 1) {
+      const start = at + this.nextRandom() * spread;
+      const hertz = PERSON_BUBBLE.lowHz + (PERSON_BUBBLE.highHz - PERSON_BUBBLE.lowHz) * this.nextRandom();
+      const length = 0.03 + 0.04 * this.nextRandom();
+      const tone = context.createOscillator();
+      tone.type = "sine";
+      tone.frequency.setValueAtTime(hertz, start);
+      tone.frequency.exponentialRampToValueAtTime(hertz * PERSON_BUBBLE.rise, start + length);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(level * (0.5 + 0.5 * this.nextRandom()), start);
+      gain.gain.exponentialRampToValueAtTime(1e-4, start + length);
+      tone.connect(gain).connect(this.destination);
+      tone.start(start);
+      tone.stop(start + length + 0.02);
+    }
   }
 
   /** One burst of filtered noise dying over `length` seconds, over a falling sine thud when `bodyHz` is given. */

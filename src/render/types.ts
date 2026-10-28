@@ -76,6 +76,8 @@ export interface FlightRenderingSystem {
    * 0 strikes outside a walking session.
    */
   consumeFootsteps(out: FootstepEvents): FootstepEvents;
+  /** How far under the water the render camera was at the last frame, metres; 0 above it (and outside car sessions). */
+  cameraUnderwaterDepth(): number;
   /**
    * Beta terrain viewer: hides the aircraft and switches to the free-fly
    * camera rig. The caller keeps feeding `render()` a synthetic

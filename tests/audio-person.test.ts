@@ -3,10 +3,14 @@ import { FlightAudio } from "../src/audio";
 import {
   breathLevel,
   breathRateHz,
+  groundWindShare,
+  PERSON_BUBBLE,
+  PERSON_GROUND_WIND_MAX,
   PERSON_SOUND_CEILING_HZ,
   PersonEffort,
   personStepVoice,
   strokeRateHz,
+  UNDERWATER_MUFFLE_HZ,
 } from "../src/audio/personVoice";
 import {
   INITIAL_VISUAL_STATE,
@@ -41,6 +45,7 @@ const WALKER: PersonVisualState = {
 
 const onFoot = (person: Partial<PersonVisualState> = {}): FlightVisualState => ({
   ...INITIAL_VISUAL_STATE,
+  velocity: { x: 0, y: 0, z: 0 },
   vehicle: { ...WALKER, ...person },
 });
 
@@ -94,6 +99,22 @@ describe("the walker's sound laws", () => {
     expect(strokeRateHz(0)).toBeCloseTo(0.5, 9);
     expect(strokeRateHz(2)).toBeCloseTo(1, 9);
   });
+
+  it("hears the wind past the ear: nothing in a light air, most of it at 10 m/s, louder running into it", () => {
+    expect(groundWindShare(0)).toBe(0);
+    expect(groundWindShare(1)).toBe(0);
+    expect(groundWindShare(10)).toBe(PERSON_GROUND_WIND_MAX);
+    expect(groundWindShare(30)).toBe(PERSON_GROUND_WIND_MAX);
+    expect(groundWindShare(Number.NaN)).toBe(0);
+    // A 3 m/s breeze: running into it at 4 m/s, standing in it, running with it.
+    expect(groundWindShare(7)).toBeGreaterThan(groundWindShare(3));
+    expect(groundWindShare(3)).toBeGreaterThan(groundWindShare(1));
+  });
+
+  it("keeps the bubbles and the muffle under the ceiling", () => {
+    expect(PERSON_BUBBLE.highHz * PERSON_BUBBLE.rise).toBeLessThanOrEqual(PERSON_SOUND_CEILING_HZ);
+    expect(UNDERWATER_MUFFLE_HZ).toBeLessThanOrEqual(PERSON_SOUND_CEILING_HZ);
+  });
 });
 
 class FakeParam {
@@ -134,6 +155,8 @@ class FakeContext {
   static created: FakeContext[] = [];
   readonly counts = { oscillators: 0, sources: 0, filters: 0, gains: 0, shapers: 0 };
   readonly filterHz: number[] = [];
+  /** Every gain node, in the order made: the graph's own are master, engine, its second harmonic, wind, ground, stall. */
+  readonly gains: FakeNode[] = [];
   state: AudioContextState = "running";
   currentTime = 0;
   readonly sampleRate = 8_000;
@@ -143,7 +166,9 @@ class FakeContext {
   }
   createGain(): FakeNode {
     this.counts.gains += 1;
-    return new FakeNode();
+    const node = new FakeNode();
+    this.gains.push(node);
+    return node;
   }
   createBiquadFilter(): FakeNode {
     this.counts.filters += 1;
@@ -189,9 +214,9 @@ afterEach(() => {
   FakeContext.created = [];
 });
 
-async function liveAudio() {
+async function liveAudio(vehicle: "landcruiser" | "speedboat" | null = "landcruiser") {
   globals.window = { AudioContext: FakeContext };
-  const audio = new FlightAudio({ aircraft: "trainer", vehicle: "landcruiser", master: 1, engine: 1, wind: 1 });
+  const audio = new FlightAudio({ aircraft: "trainer", ...(vehicle ? { vehicle } : {}), master: 1, engine: 1, wind: 1 });
   await audio.unlock();
   return { audio, context: FakeContext.created[0]! };
 }
@@ -199,6 +224,7 @@ async function liveAudio() {
 describe("the walker's layer in the audio graph", () => {
   it("plays a footstep at once, its grains by the footing, and none for a driver or in the air", async () => {
     const { audio, context } = await liveAudio();
+    const filtersBefore = context.filterHz.length;
     let before = context.counts.sources;
     audio.footstep(onFoot({ surface: SurfaceMaterial.Gravel }), 0.5);
     expect(context.counts.sources - before).toBe(4);
@@ -209,7 +235,7 @@ describe("the walker's layer in the audio graph", () => {
     audio.footstep(INITIAL_VISUAL_STATE, 0.5);
     audio.footstep(onFoot({ surface: -1 }), 0.5);
     expect(context.counts.sources - before).toBe(0);
-    expect(Math.max(...context.filterHz)).toBeLessThanOrEqual(PERSON_SOUND_CEILING_HZ);
+    expect(Math.max(...context.filterHz.slice(filtersBefore))).toBeLessThanOrEqual(PERSON_SOUND_CEILING_HZ);
     audio.dispose();
   });
 
@@ -260,6 +286,80 @@ describe("the walker's layer in the audio graph", () => {
     const strokes = (context.counts.sources - before) / 2;
     expect(strokes).toBeGreaterThanOrEqual(3);
     expect(strokes).toBeLessThanOrEqual(5);
+    audio.dispose();
+  });
+
+  it("lets out bubbles as the head goes under, and a breath of them every few seconds after", async () => {
+    const { audio, context } = await liveAudio();
+    const diving = onFoot({ mode: "dive", speed: 0, headDepth: 1.5, waterDepth: 3, submersion: 1, surface: PERSON_SURFACE_WATER });
+    audio.update(onFoot({ mode: "swim", speed: 0, headDepth: -0.1, waterDepth: 3, surface: PERSON_SURFACE_WATER }));
+    let before = context.counts.oscillators;
+    context.currentTime += 0.05;
+    audio.update(diving);
+    expect(context.counts.oscillators - before).toBe(9);
+    before = context.counts.oscillators;
+    for (let t = 0; t < 2; t += 0.05) {
+      context.currentTime += 0.05;
+      audio.update(diving);
+    }
+    expect(context.counts.oscillators - before).toBe(0);
+    for (let t = 0; t < 6; t += 0.05) {
+      context.currentTime += 0.05;
+      audio.update(diving);
+    }
+    expect(context.counts.oscillators - before).toBeGreaterThanOrEqual(5);
+    audio.dispose();
+  });
+
+  it("muffles everything while the camera is under, in car sessions only", async () => {
+    const { audio, context } = await liveAudio();
+    const withMuffle = context.counts.filters;
+    const nyquist = context.sampleRate / 2;
+    // The muffle starts wide open: the Nyquist frequency passes everything.
+    expect(context.filterHz).toContain(nyquist);
+    audio.setSurroundings({ windX: 0, windY: 0, windZ: 0, cameraUnderwaterDepth: 1.2 });
+    audio.update(onFoot({ mode: "dive", headDepth: 1.5, waterDepth: 3, submersion: 1, surface: PERSON_SURFACE_WATER }));
+    expect(context.filterHz.at(-1)).toBe(UNDERWATER_MUFFLE_HZ);
+    audio.setSurroundings({ windX: 0, windY: 0, windZ: 0, cameraUnderwaterDepth: 0 });
+    audio.update(onFoot());
+    expect(context.filterHz.at(-1)).toBe(nyquist);
+    audio.dispose();
+    for (const vehicle of [null, "speedboat"] as const) {
+      FakeContext.created = [];
+      const other = await liveAudio(vehicle);
+      // A walker can only dive from the car: the aircraft and the boat keep their graph as it was.
+      expect(other.context.counts.filters).toBe(withMuffle - 1);
+      expect(other.context.filterHz).not.toContain(other.context.sampleRate / 2);
+      other.audio.dispose();
+    }
+  });
+
+  it("hears the wind at the walker, not their speed, and the water's hum under it", async () => {
+    const { audio, context } = await liveAudio();
+    const windGain = context.gains[3]!;
+    const groundGain = context.gains[4]!;
+    const calm = { windX: 0, windY: 0, windZ: 0, cameraUnderwaterDepth: 0 };
+    audio.setSurroundings(calm);
+    audio.update(onFoot({ mode: "stand", speed: 0 }));
+    expect(windGain.gain.value).toBe(0);
+    // A 4 m/s breeze along +x: standing in it, running into it, running with it.
+    const breeze = { ...calm, windX: 4 };
+    audio.setSurroundings(breeze);
+    audio.update(onFoot({ mode: "stand", speed: 0 }));
+    const standing = windGain.gain.value;
+    expect(standing).toBeGreaterThan(0);
+    audio.update({ ...onFoot({ mode: "run", speed: 4, running: true }), velocity: { x: -4, y: 0, z: 0 } });
+    expect(windGain.gain.value).toBeGreaterThan(standing);
+    audio.update({ ...onFoot({ mode: "run", speed: 4, running: true }), velocity: { x: 4, y: 0, z: 0 } });
+    expect(windGain.gain.value).toBe(0);
+    // Feet do not rumble like wheels.
+    audio.update({ ...onFoot({ mode: "run", speed: 4, running: true }), velocity: { x: 4, y: 0, z: 0 }, onGround: true });
+    expect(groundGain.gain.value).toBe(0);
+    // Under the water: no wind, the water's low hum.
+    audio.setSurroundings({ ...breeze, cameraUnderwaterDepth: 0.8 });
+    audio.update(onFoot({ mode: "dive", headDepth: 1, waterDepth: 3, submersion: 1, surface: PERSON_SURFACE_WATER }));
+    expect(windGain.gain.value).toBe(0);
+    expect(groundGain.gain.value).toBeGreaterThan(0);
     audio.dispose();
   });
 });
