@@ -1,7 +1,11 @@
+import type { Camera } from "@babylonjs/core/Cameras/camera";
+import type { AbstractEngine } from "@babylonjs/core/Engines/abstractEngine";
 import type { WeatherPreset } from "@/src/game/types";
-import type { HydrologyWaterRegion } from "@/src/sim/water";
+import type { HydrologyWaterRegion, WaterKind } from "@/src/sim/water";
 import type { WorldDefinition } from "@/src/world/types";
+import type { AtmosphereSnapshot } from "../atmosphere/AtmosphereSystem";
 import type { HydrologyWaterPublisher } from "../water/HydrologySystem";
+import type { WaterEnvironmentField } from "../water/WaterEnvironmentField";
 import {
   CameraWaterSampler,
   copyHydrologyWaterRegion,
@@ -9,6 +13,8 @@ import {
   type CameraWaterSample,
   type CameraWaterTerrainHeight,
 } from "./cameraWater";
+import { UnderwaterLight } from "./underwaterLight";
+import { WaterColumnPass } from "./WaterColumnPass";
 
 export interface UnderwaterViewOptions {
   readonly world: WorldDefinition;
@@ -17,6 +23,8 @@ export interface UnderwaterViewOptions {
   readonly terrainHeight: CameraWaterTerrainHeight;
   /** `profile.oceanCascades`: the cascades this tier draws. */
   readonly drawnCascades: number;
+  /** The sea's environment field: the province its chemistry follows. */
+  readonly waterEnvironment: WaterEnvironmentField | null;
 }
 
 /**
@@ -25,11 +33,17 @@ export interface UnderwaterViewOptions {
  * runs but the camera's water sample.
  *
  * Each frame `update` samples the water at the render camera; while the
- * camera is submerged the underwater path is switched on.
+ * camera is submerged the underwater path is switched on: the water column
+ * (`WaterColumnPass`) at the head of the post chain, lit by the camera's own
+ * water (`UnderwaterLight`).
  */
 export class UnderwaterView {
   readonly cameraWater: CameraWaterSampler;
+  readonly light: UnderwaterLight;
   private readonly cameraSample = createCameraWaterSample();
+  private readonly water = { kind: "none" as WaterKind, x: 0, z: 0, stillHeight: 0, waterDepth: 0 };
+  private columnPass: WaterColumnPass | null = null;
+  private columnCamera: Camera | null = null;
 
   constructor(options: UnderwaterViewOptions) {
     this.cameraWater = new CameraWaterSampler(
@@ -40,6 +54,7 @@ export class UnderwaterView {
     );
     // At load, behind the load screen: about 0.1 s, never at the first dive.
     this.cameraWater.build();
+    this.light = new UnderwaterLight(options.world, options.waterEnvironment);
   }
 
   /** The render camera's water as of the last `update`. */
@@ -52,13 +67,45 @@ export class UnderwaterView {
     return this.cameraSample.submerged;
   }
 
+  /** The water-column pass, once `buildColumn` has run. */
+  get column(): WaterColumnPass | null {
+    return this.columnPass;
+  }
+
+  /**
+   * Builds the water-column pass on the camera's post chain, held out of it
+   * (the renderer puts it at the head while the camera is under the water).
+   * `samples` is the profile's MSAA, the scene target's while the pass heads
+   * the chain.
+   */
+  buildColumn(camera: Camera, engine: AbstractEngine, samples: number): WaterColumnPass {
+    if (!this.columnPass) {
+      this.columnPass = new WaterColumnPass(camera, engine, samples, this.light);
+      this.columnCamera = camera;
+    }
+    return this.columnPass;
+  }
+
   /** The render camera's world position this frame, at the simulation time the ocean is drawn at. */
   update(cameraX: number, cameraY: number, cameraZ: number, timeSeconds: number): void {
-    this.cameraWater.sample(cameraX, cameraY, cameraZ, timeSeconds, this.cameraSample);
+    const sample = this.cameraWater.sample(cameraX, cameraY, cameraZ, timeSeconds, this.cameraSample);
+    if (!sample.submerged) return;
+    const water = this.water;
+    water.kind = sample.kind;
+    water.x = cameraX;
+    water.z = cameraZ;
+    water.stillHeight = sample.stillHeight;
+    water.waterDepth = sample.waterDepth;
+    this.light.setWater(water);
+    this.columnPass?.setCameraDepth(sample.stillDepth, sample.depth);
   }
 
   setWeather(weather: WeatherPreset): void {
     this.cameraWater.setWeather(weather);
+  }
+
+  setAtmosphere(atmosphere: AtmosphereSnapshot): void {
+    this.light.setAtmosphere(atmosphere);
   }
 
   setDrawnCascades(drawnCascades: number): void {
@@ -83,5 +130,9 @@ export class UnderwaterView {
     };
   }
 
-  dispose(): void {}
+  dispose(): void {
+    if (this.columnPass && this.columnCamera) this.columnPass.dispose(this.columnCamera);
+    this.columnPass = null;
+    this.columnCamera = null;
+  }
 }

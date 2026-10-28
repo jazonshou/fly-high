@@ -1,0 +1,170 @@
+import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { Vector2, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Scene } from "@babylonjs/core/scene";
+import { describe, expect, it } from "vitest";
+import type { AtmosphereSnapshot } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
+import { UnderwaterLight } from "../src/render/webgpu/underwater/underwaterLight";
+import {
+  OCEAN_COASTAL_CHLOROPHYLL,
+  OCEAN_OPEN_CHLOROPHYLL,
+  oceanConstituents,
+} from "../src/render/webgpu/water/WaterConstituents";
+import {
+  createWaterEnvironmentSample,
+  WATER_ENVIRONMENT_FIELD_RESOLUTION,
+  WATER_ENVIRONMENT_FIELD_SPAN_METERS,
+  WaterEnvironmentField,
+} from "../src/render/webgpu/water/WaterEnvironmentField";
+import { createWorld } from "../src/world";
+
+/**
+ * The light under the water (`UnderwaterLight`): the camera's water type from
+ * the same chemistry the surface is coloured by, and the attenuation and
+ * in-water light the water-column pass fades with. The numbers are held to
+ * the published ranges for the water types the chemistry is calibrated on.
+ */
+
+const WORLD = createWorld("open-skies");
+
+function atmosphere(sunElevationDegrees: number, sunIlluminance = 1): AtmosphereSnapshot {
+  const elevation = (sunElevationDegrees * Math.PI) / 180;
+  return {
+    sunDirection: new Vector3(Math.cos(elevation), Math.sin(elevation), 0),
+    sunColor: new Color3(1, 0.96, 0.9),
+    sunIntensity: 5.2,
+    skyZenith: new Color3(0.2, 0.35, 0.7),
+    skyHorizon: new Color3(0.5, 0.6, 0.75),
+    ambientColor: new Color3(0.3, 0.35, 0.4),
+    skylightIlluminanceNormalized: 0.6,
+    sunIlluminanceNormalized: sunIlluminance,
+    sunAngularRadiusRadians: 0.0047,
+    cloudCoverage: 0.2,
+    humidity: 0.5,
+    windSpeed: 5,
+    windDirection: new Vector2(1, 0),
+    moonDirection: new Vector3(0, -1, 0),
+    moonIlluminanceLux: 0,
+    moonIlluminatedFraction: 0,
+    adaptedLuminanceCdM2: 1_000,
+    sceneKeyLuminanceCdM2: 1_000,
+  } as AtmosphereSnapshot;
+}
+
+function sea(waterDepth: number, x = 0, z = 0) {
+  return { kind: "sea" as const, x, z, stillHeight: WORLD.seaLevel, waterDepth };
+}
+
+describe("the sea's chemistry on the CPU", () => {
+  it("is open-ocean water off the shelf and the coast's in the shallows", () => {
+    const open = oceanConstituents(400, 0.5, 0.5);
+    const shelf = oceanConstituents(4, 0.5, 0.5);
+    // Mid-province is the contrast curve's identity point: 0.22 + 2.6 / 4.
+    expect(open.chlorophyll).toBeCloseTo(OCEAN_OPEN_CHLOROPHYLL * 0.87, 6);
+    expect(open.sediment).toBe(0);
+    expect(shelf.chlorophyll).toBeGreaterThan(OCEAN_COASTAL_CHLOROPHYLL * 0.8);
+    expect(shelf.sediment).toBeGreaterThan(4);
+    // A wetter coast sheds more into its sea.
+    expect(oceanConstituents(10, 0.5, 0.8).sediment).toBeGreaterThan(oceanConstituents(10, 0.5, 0.2).sediment);
+  });
+});
+
+describe("the environment field on the CPU", () => {
+  it("reads as the shaders do: the texel at its centre, a blend between", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const field = new WaterEnvironmentField(scene, WORLD);
+    const out = createWaterEnvironmentSample();
+    // Before the first bake, the fallback's temperate province.
+    field.sample(0, 0, out);
+    expect(out.productivity).toBeCloseTo(Math.round(0.35 * 255) / 255, 6);
+    expect(out.runoff).toBeCloseTo(Math.round(0.5 * 255) / 255, 6);
+    field.update(0, 0);
+    const data = (field.fieldTexture as unknown as { _texture: { _bufferView: Uint8Array } })._texture._bufferView;
+    const { originX, originZ } = field.placement;
+    const texel = WATER_ENVIRONMENT_FIELD_SPAN_METERS / WATER_ENVIRONMENT_FIELD_RESOLUTION;
+    const ix = 40;
+    const iz = 53;
+    const offset = (iz * WATER_ENVIRONMENT_FIELD_RESOLUTION + ix) * 4;
+    field.sample(originX + (ix + 0.5) * texel, originZ + (iz + 0.5) * texel, out);
+    expect(out.productivity).toBeCloseTo(data[offset]! / 255, 9);
+    expect(out.runoff).toBeCloseTo(data[offset + 1]! / 255, 9);
+    expect(out.carbonate).toBeCloseTo(data[offset + 2]! / 255, 9);
+    // Halfway to the next texel in x: the mean of the two.
+    field.sample(originX + (ix + 1) * texel, originZ + (iz + 0.5) * texel, out);
+    expect(out.productivity).toBeCloseTo((data[offset]! + data[offset + 4]!) / 2 / 255, 9);
+    field.dispose();
+    scene.dispose();
+    engine.dispose();
+  });
+});
+
+describe("the light under the water", () => {
+  it("fades clear open sea over tens of metres in blue and a few in red", () => {
+    const light = new UnderwaterLight(WORLD, null);
+    light.setAtmosphere(atmosphere(60));
+    light.setWater(sea(400));
+    const [red, green, blue] = light.attenuation;
+    // Pure water's own absorption sets the red; blue clear-ocean beam
+    // attenuation is 0.02-0.04 per metre (Smith and Baker; Jerlov type I).
+    expect(red).toBeGreaterThan(0.27);
+    expect(green).toBeGreaterThan(0.05);
+    expect(green).toBeLessThan(0.08);
+    expect(blue).toBeGreaterThan(0.02);
+    expect(blue).toBeLessThan(0.04);
+    // Light from above: Jerlov type I diffuse attenuation, 0.02-0.035 in blue.
+    expect(light.skyDiffuseAttenuation[2]).toBeGreaterThan(0.015);
+    expect(light.skyDiffuseAttenuation[2]).toBeLessThan(0.035);
+    // The sea's own light is blue.
+    expect(light.sunUpwelling[2]).toBeGreaterThan(light.sunUpwelling[1]);
+    expect(light.sunUpwelling[1]).toBeGreaterThan(light.sunUpwelling[0]);
+  });
+
+  it("closes in over a silty shelf", () => {
+    const light = new UnderwaterLight(WORLD, null);
+    light.setAtmosphere(atmosphere(60));
+    light.setWater(sea(400));
+    const open = [...light.attenuation];
+    light.setWater(sea(5));
+    for (let channel = 0; channel < 3; channel += 1) {
+      expect(light.attenuation[channel]!).toBeGreaterThan(open[channel]! + 0.3);
+    }
+  });
+
+  it("follows the sun: dimmer and from a lower angle at evening", () => {
+    const light = new UnderwaterLight(WORLD, null);
+    light.setWater(sea(400));
+    light.setAtmosphere(atmosphere(70));
+    const noon = { upwelling: light.sunUpwelling[2]!, diffuse: light.sunDiffuseAttenuation[2]!, direct: light.directFraction };
+    light.setAtmosphere(atmosphere(8, 0.4));
+    expect(light.sunUpwelling[2]!).toBeLessThan(noon.upwelling * 0.2);
+    // A low sun's refracted beam is slanted, so it dies faster with depth.
+    expect(light.sunDiffuseAttenuation[2]!).toBeGreaterThan(noon.diffuse * 1.2);
+    expect(light.directFraction).toBeLessThan(noon.direct);
+    light.setAtmosphere(atmosphere(-5));
+    expect(light.sunUpwelling).toEqual([0, 0, 0]);
+    expect(light.directFraction).toBe(0);
+  });
+
+  it("resolves the camera's water again only once it has moved far enough to change", () => {
+    const light = new UnderwaterLight(WORLD, null);
+    light.setWater(sea(30));
+    const resolves = light.waterResolves;
+    light.setWater(sea(30.1, 2, 2));
+    expect(light.waterResolves).toBe(resolves);
+    light.setWater(sea(31));
+    expect(light.waterResolves).toBe(resolves + 1);
+    light.setWater({ kind: "none", x: 0, z: 0, stillHeight: 0, waterDepth: 0 });
+    expect(light.waterResolves).toBe(resolves + 1);
+  });
+
+  it("takes a lake's own chemistry, not the sea's", () => {
+    const light = new UnderwaterLight(WORLD, null);
+    light.setWater(sea(6));
+    const seaAbsorption = [...light.absorption];
+    light.setWater({ kind: "lake", x: 3_000, z: -2_000, stillHeight: WORLD.seaLevel + 300, waterDepth: 6 });
+    expect(light.absorption).not.toEqual(seaAbsorption);
+    // Inland water carries more dissolved organic matter: it absorbs blue harder.
+    expect(light.absorption[2]!).toBeGreaterThan(light.absorption[1]! * 0.5);
+  });
+});
