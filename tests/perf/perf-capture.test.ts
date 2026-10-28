@@ -61,7 +61,8 @@ import {
   type TemporalStability,
 } from "../../scripts/perf-capture.mts";
 import { carShotEffectsHistoryFrames } from "./carShotState";
-import { boatShotState, carShotState, resolveShotPlacement } from "./shotPlacement";
+import { boatShotState, carShotState, resolveShotPlacement, walkShotState } from "./shotPlacement";
+import { walkShotLookPitchRadians } from "./walkShotState";
 
 /**
  * 1A-1c, rebuilt by Gate 2Z — the perf-capture driver. Boots the real
@@ -721,7 +722,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
       const shotForcedKey = shot.climateProvince === undefined && shot.landforms === undefined
         ? null
         : JSON.stringify({ climateProvince: shot.climateProvince ?? null, landforms: shot.landforms ?? null });
-      const shotVehicle = shot.boat ? "speedboat" as const : shot.car ? "landcruiser" as const : null;
+      const shotVehicle = shot.boat ? "speedboat" as const : shot.car || shot.walk ? "landcruiser" as const : null;
       if (
         shotWorldEvolution !== activeWorldEvolution
         || shotForcedKey !== activeForcedKey
@@ -817,10 +818,13 @@ describe("perf capture (1A-1c / 2Z)", () => {
         : 0;
       const heading = headingVectorFromYaw(yawDegrees);
       const orientation = orientationFromYawPitchBank(yawDegrees, shot.pitchDownDegrees, 0);
-      const state: FlightVisualState = shot.boat
+      const posedAt = simulationTime;
+      let state: FlightVisualState = shot.boat
         ? boatShotState(world, shot.boat, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
         : shot.car
         ? carShotState(world, shot.car, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
+        : shot.walk
+        ? walkShotState(world, shot.walk, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
         : {
             ...INITIAL_VISUAL_STATE,
             position: { x: positionX, y: altitude, z: positionZ },
@@ -836,6 +840,12 @@ describe("perf capture (1A-1c / 2Z)", () => {
             simulationTime,
           };
       renderer.setCameraMode(shot.cameraMode);
+      if (shot.walk) {
+        // The character camera behind the walker, turned by the shot's look:
+        // walker shots share one renderer, which would carry the last one's.
+        renderer.cutCamera();
+        renderer.applyCharacterLook({ yaw: 0, pitch: walkShotLookPitchRadians(shot.walk), zoom: 0 });
+      }
 
       // Stream until the desired terrain pages are fully resident AND the
       // detail instance population stops changing (the 1B-10 worker streams
@@ -953,6 +963,12 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // the paced temporal settle or the first measured frame inherits an
       // arbitrary backlog.
       await renderer.waitForGpuIdleForCapture();
+      // A car or walker shot is posed again on the ground the stream left: the
+      // roads it installed round the shot grade the ground under the tyres and
+      // the feet, and a pose taken before they arrived rested on whichever had,
+      // a different ground (and a camera centimetres apart) every run.
+      if (shot.car) state = carShotState(world, shot.car, { x: positionX, z: positionZ, yawDegrees }, posedAt);
+      if (shot.walk) state = walkShotState(world, shot.walk, { x: positionX, z: positionZ, yawDegrees }, posedAt);
       // Pin the temporal phase before the settle: the streaming loop above
       // exits after a RUN-DEPENDENT number of frames, so accumulated time
       // would put waves and cloud advection at a different phase every run.

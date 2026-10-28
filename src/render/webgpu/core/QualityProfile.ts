@@ -179,6 +179,14 @@ export interface WebGpuQualityProfile {
    */
   readonly grassRadiusMeters: number;
   /**
+   * Walking: how far round the walker the near solids reach (the trunks,
+   * rocks, logs and stumps the walker and the character camera meet,
+   * `src/sim/person/nearSolids.ts`). The list is asked for again every 16 m
+   * the walker moves, so it always reaches this less 16 m ahead; Low lists
+   * fewer.
+   */
+  readonly nearSolidsRadiusMeters: number;
+  /**
    * `3-0`: edge of both terrain material `Texture2DArray`s. `3-1` synthesises
    * at this edge and `estimateGpuMemory`'s material-array row follows it, so
    * the tier knob and the budget cannot disagree (assertion 56).
@@ -489,6 +497,22 @@ export interface WebGpuQualityProfile {
    */
   readonly personFigureFinestLod: 0 | 1 | 2;
   readonly personShadowCascades: number;
+  /**
+   * Walking plan, "Underwater view": the sea's underside, drawn instead of the
+   * sea while the camera is under it. With the window it is shaded with the
+   * sea's own wave normals, the sky probe and the sun bent through them;
+   * without it the underside is flat (one window of analytic sky, one mirror,
+   * no texture reads). Only while submerged, and only in car sessions.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly underwaterSnellWindow: boolean;
+  /**
+   * The sea's caustic web on what the water column sees under water (the bed,
+   * the piles), from the same surface curvature the sea lays on its bed above
+   * water. Only while submerged.
+   */
+  readonly underwaterCaustics: boolean;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -537,6 +561,7 @@ function resolveBaseQualityProfile(
       treeVariantCap: 1,
       treePrototypeMode: "families",
       grassRadiusMeters: 90,
+      nearSolidsRadiusMeters: 32,
       materialArrayEdge: 256,
       terrainTriplanarMode: "planar",
       heightBlendMaxMaterials: 2,
@@ -605,6 +630,8 @@ function resolveBaseQualityProfile(
       marinaCastsShadows: false,
       personFigureFinestLod: 1,
       personShadowCascades: 1,
+      underwaterSnellWindow: false,
+      underwaterCaustics: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -649,6 +676,7 @@ function resolveBaseQualityProfile(
       // which is noise. Row 3 of §7 is a single-reader estimate and the
       // measurement does not support it here. `6-11` owns the re-tier.
       grassRadiusMeters: 150,
+      nearSolidsRadiusMeters: 48,
       materialArrayEdge: 512,
       terrainTriplanarMode: "biplanar",
       heightBlendMaxMaterials: 3,
@@ -720,6 +748,8 @@ function resolveBaseQualityProfile(
       marinaCastsShadows: true,
       personFigureFinestLod: 0,
       personShadowCascades: 2,
+      underwaterSnellWindow: true,
+      underwaterCaustics: false,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -755,6 +785,7 @@ function resolveBaseQualityProfile(
       treeVariantCap: 5,
       treePrototypeMode: "species",
       grassRadiusMeters: 220,
+      nearSolidsRadiusMeters: 48,
       materialArrayEdge: 512,
       terrainTriplanarMode: "triplanar",
       heightBlendMaxMaterials: 4,
@@ -824,6 +855,8 @@ function resolveBaseQualityProfile(
       marinaCastsShadows: true,
       personFigureFinestLod: 0,
       personShadowCascades: 2,
+      underwaterSnellWindow: true,
+      underwaterCaustics: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -855,6 +888,7 @@ function resolveBaseQualityProfile(
     treeVariantCap: 5,
     treePrototypeMode: "species",
     grassRadiusMeters: 320,
+    nearSolidsRadiusMeters: 48,
     materialArrayEdge: 512,
     terrainTriplanarMode: "triplanar",
     heightBlendMaxMaterials: 4,
@@ -930,6 +964,8 @@ function resolveBaseQualityProfile(
     marinaCastsShadows: true,
     personFigureFinestLod: 0,
     personShadowCascades: 3,
+    underwaterSnellWindow: true,
+    underwaterCaustics: true,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,

@@ -5,6 +5,7 @@ import {
   type DetailRetainedCellDescriptor,
   type DetailWorkerCommand,
   type DetailWorkerEvent,
+  type DetailWorkerNearSolidsInput,
   type DetailWorkerPresentationBuildInput,
   type DetailWorkerPresentationResult,
 } from "@/src/workers/detailProtocol";
@@ -54,6 +55,11 @@ interface PendingPresentationRequest {
   readonly onProgress?: (slices: number, units: number) => void;
 }
 
+interface PendingNearSolidsRequest {
+  readonly onResult: (records: Float32Array) => void;
+  readonly onError: (error: Error) => void;
+}
+
 type WorkerFactory = () => Worker;
 
 export interface DetailGenerationClientOptions {
@@ -85,11 +91,13 @@ export class DetailGenerationClient {
   private readonly queue: BoundedPriorityQueue<PendingDetailRequest>;
   private readonly pending = new Map<number, PendingDetailRequest>();
   private readonly pendingPresentation = new Map<number, PendingPresentationRequest>();
+  private readonly pendingNearSolids = new Map<number, PendingNearSolidsRequest>();
   private readonly retainedCellTokens = new Set<number>();
   private worker: Worker | null = null;
   private activeRequestId: number | null = null;
   private nextRequestId = 1;
   private nextBuildId = 1;
+  private nextNearSolidsId = 1;
   private failed = false;
   private disposed = false;
   private readonly onWorkerUnavailable: () => void;
@@ -280,6 +288,34 @@ export class DetailGenerationClient {
     }
   }
 
+  /**
+   * The near solids of retained cells round a point (`selectNearSolids`),
+   * answered by the worker as soon as it reads the request. -1 when the
+   * worker is gone or a token is not owned (`onError` has the reason then).
+   */
+  requestNearSolids(
+    input: DetailWorkerNearSolidsInput,
+    onResult: (records: Float32Array) => void,
+    onError: (error: Error) => void = () => undefined,
+  ): number {
+    if (this.disposed || this.failed || !this.worker || !this.presentationAvailable) return -1;
+    if (input.tokens.some((token) => !this.retainedCellTokens.has(token))) {
+      onError(new Error("Detail near-solids request referenced an unowned cell token"));
+      return -1;
+    }
+    if (!Number.isSafeInteger(this.nextNearSolidsId)) return -1;
+    const requestId = this.nextNearSolidsId;
+    this.nextNearSolidsId += 1;
+    this.pendingNearSolids.set(requestId, { onResult, onError });
+    try {
+      this.worker.postMessage({ type: "nearSolids", requestId, input } satisfies DetailWorkerCommand);
+      return requestId;
+    } catch {
+      this.markUnavailable();
+      return -1;
+    }
+  }
+
   cancelPresentation(buildId: number): void {
     if (buildId < 0) return;
     if (!this.pendingPresentation.delete(buildId)) return;
@@ -310,6 +346,7 @@ export class DetailGenerationClient {
     if (this.disposed) return;
     this.cancelAll();
     this.cancelAllPresentations();
+    this.pendingNearSolids.clear();
     for (const token of this.retainedCellTokens) this.postReleaseCell(token);
     this.retainedCellTokens.clear();
     this.disposed = true;
@@ -412,6 +449,14 @@ export class DetailGenerationClient {
       this.pendingPresentation.get(event.buildId)?.onProgress?.(event.slices, event.units);
       return;
     }
+    if (event.type === "nearSolids" || event.type === "nearSolidsError") {
+      // Answered in order and never queued: an unknown id was dropped by dispose.
+      const request = this.pendingNearSolids.get(event.requestId);
+      this.pendingNearSolids.delete(event.requestId);
+      if (event.type === "nearSolids") request?.onResult(event.records);
+      else request?.onError(new Error(event.message));
+      return;
+    }
     if (event.type === "presentation" || event.type === "presentationError") {
       const request = this.pendingPresentation.get(event.buildId);
       this.pendingPresentation.delete(event.buildId);
@@ -506,8 +551,10 @@ export class DetailGenerationClient {
     this.detachWorker();
     const orphaned = [...this.pending.values()];
     const orphanedPresentation = [...this.pendingPresentation.values()];
+    const orphanedNearSolids = [...this.pendingNearSolids.values()];
     this.pending.clear();
     this.pendingPresentation.clear();
+    this.pendingNearSolids.clear();
     this.queue.clear();
     this.retainedCellTokens.clear();
     this.activeRequestId = null;
@@ -515,6 +562,9 @@ export class DetailGenerationClient {
       request.onError(new Error("Detail generation worker became unavailable"));
     }
     for (const request of orphanedPresentation) {
+      request.onError(new Error("Detail generation worker became unavailable"));
+    }
+    for (const request of orphanedNearSolids) {
       request.onError(new Error("Detail generation worker became unavailable"));
     }
     this.onWorkerUnavailable();

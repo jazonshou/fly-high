@@ -73,7 +73,8 @@ import {
 } from "./webgpu/atmosphere/SkyEnvironmentProbe";
 import type { RenderingMode } from "@/src/settings";
 import type { AircraftKind } from "@/src/sim";
-import { createColliderSweepHit } from "@/src/sim/colliders";
+import { createColliderSweepHit, type ColliderWorld } from "@/src/sim/colliders";
+import { nearSolidsColliderWorld, type NearSolidsPost } from "@/src/sim/person/nearSolids";
 import { CAR_COLLIDER_MATERIAL, CarColliders } from "@/src/sim/ground/carColliders";
 import { oceanSpectrumSeed, seaSpectrumWindSpeed } from "@/src/sim/water/seaState";
 import type { SeaShelterEllipse } from "@/src/sim/water/types";
@@ -858,6 +859,13 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly characterCamera = new CharacterCamera();
   /** The sim's static colliders, for the character camera; null outside car sessions. */
   private cameraColliders: CarColliders | null = null;
+  /**
+   * The trunks, rocks, logs and stumps round the walker (the detail worker's
+   * newest near-solids list), for the character camera; the same list goes
+   * to the simulation worker for the walker. Null before the first list.
+   */
+  private nearSolidsPost: NearSolidsPost | null = null;
+  private nearSolids: ColliderWorld | null = null;
   private readonly cameraSweepFrom = { x: 0, y: 0, z: 0 };
   private readonly cameraSweepTo = { x: 0, y: 0, z: 0 };
   private readonly cameraSweepHit = createColliderSweepHit();
@@ -1023,6 +1031,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly spawnedAirfields: SpawnedAirfieldManager | null;
   private originShifted = true;
   private cameraCut = true;
+  /** A cut not yet taken by the character camera: on foot it stands behind the walker. */
+  private characterCameraCut = false;
   private frameIndex = 0;
   private renderScale: number;
   /**
@@ -1155,6 +1165,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       });
     this.airport = airport;
     this.detail = detail;
+    detail.setNearSolidsListener((post) => {
+      this.nearSolidsPost = post;
+      this.nearSolids = nearSolidsColliderWorld(post);
+      this.terrainAuthorityPublisher?.publishNearSolids?.(post);
+    });
     this.groundCover = groundCover;
     this.roads = roads;
     this.roadSurface = roadSurface;
@@ -1955,6 +1970,13 @@ export class FlightRenderer implements FlightRenderingSystem {
           terrainHeight: liveTerrainHeight,
           drawnCascades: profile.oceanCascades,
           waterEnvironment,
+          underside: {
+            camera,
+            sea: ocean,
+            environmentCube: skyProbe.texture,
+            snellWindow: profile.underwaterSnellWindow,
+            pipelineCompiles,
+          },
         })
         : null;
       if (underwater) cleanup.push(() => underwater.dispose());
@@ -2131,7 +2153,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       if (!standaloneSharpen(profile)) sharpen.setEnabled(camera, false);
       // The underwater water column: built with the chain, out of it until
       // the camera goes under (`applyUnderwaterState`).
-      underwater?.buildColumn(camera, engine, profile.msaaSamples);
+      underwater?.buildColumn(camera, engine, profile.msaaSamples, {
+        source: ocean,
+        enabled: profile.underwaterCaustics,
+      });
 
       checkpointRendererStartup("presentation systems construction", "sync");
 
@@ -2325,9 +2350,13 @@ export class FlightRenderer implements FlightRenderingSystem {
    * ground speed in the thousands and throw the camera far behind the
    * aeroplane on its first frame. Forgetting the previous position is what
    * makes the trail zero until the aircraft has actually moved again.
+   *
+   * On foot the character camera stands behind the walker again, at its
+   * default pitch (a restart, R back to a safe spot, a capture's new shot).
    */
   cutCamera(): void {
     this.cameraCut = true;
+    this.characterCameraCut = true;
     this.previousAircraftPositionValid = false;
     this.observedGroundSpeed = 0;
     this.observedGroundSpeedHeldFrames = 0;
@@ -2417,6 +2446,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void {
     this.terrainAuthorityPublisher = publisher;
     if (publisher) this.terrainEvolution.publishMacroOnce(publisher);
+    if (publisher && this.nearSolidsPost) publisher.publishNearSolids?.(this.nearSolidsPost);
     // The drawn lakes and rivers, for the car's water.
     const workerWater = hydrologyWaterPublisher(this.surfaceVehicle?.kind, publisher);
     this.hydrology.setWaterPublisher(this.underwater ? this.underwater.hydrologyPublisher(workerWater) : workerWater);
@@ -3410,7 +3440,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         // The wake and the car's bow wave lie on the waves this frame's sea is drawn with.
         this.boatWake?.bindOcean();
         this.carBowWave?.bindOcean();
-        // Which side of the drawn water the camera is on, at the time the sea is drawn at.
+        // Which side of the drawn water the camera is on, at the time the sea is drawn at,
+        // and the walker's breath under it.
+        const visual = this.currentState;
+        const walker = visual?.vehicle?.kind === "person" ? visual.vehicle : null;
+        this.underwater?.setBreather(walker && visual ? visual.position : null, walker?.headDepth ?? 0);
         this.underwater?.update(this.cameraWorld.x, this.cameraWorld.y, this.cameraWorld.z, frame.timeSeconds);
         this.applyUnderwaterState();
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
@@ -4096,7 +4130,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       if (this.lastWalkingDriven !== null) this.cutCamera();
       if (onFoot) this.characterCamera.reset((state.heading * Math.PI) / 180);
       this.lastWalkingDriven = driven;
+    } else if (this.characterCameraCut && onFoot) {
+      this.characterCamera.reset((state.heading * Math.PI) / 180);
     }
+    this.characterCameraCut = false;
     const cockpit = this.cameraMode === "cockpit";
     const visible = !this.viewerMode && walking !== null && (onFoot !== null || seated) && !(seated && cockpit);
     if (visible !== this.personEnabled) {
@@ -4212,7 +4249,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     radius: number,
   ): number => {
     const colliders = this.cameraColliders?.colliders;
-    if (!colliders) return 1;
+    const solids = this.nearSolids;
+    if (!colliders && !solids) return 1;
     const from = this.cameraSweepFrom;
     const to = this.cameraSweepTo;
     from.x = fromX + this.originX;
@@ -4221,9 +4259,12 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     to.x = toX + this.originX;
     to.y = toY;
     to.z = toZ + this.originZ;
-    return colliders.sweepSphere(from, to, radius, this.cameraSweepHit, CAR_COLLIDER_MATERIAL.guardrail)
-      ? this.cameraSweepHit.fraction
-      : 1;
+    const hit = this.cameraSweepHit;
+    let share = 1;
+    if (colliders?.sweepSphere(from, to, radius, hit, CAR_COLLIDER_MATERIAL.guardrail)) share = hit.fraction;
+    // And the trunks, rocks and logs round the walker.
+    if (solids?.sweepSphere(from, to, radius, hit) && hit.fraction < share) share = hit.fraction;
+    return share;
   };
 
   /**
@@ -4287,7 +4328,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         : (x, z) => this.cameraTerrainHeight(x + originX, z + originZ),
       water,
       obstacles,
-      sweep: this.cameraColliders ? this.characterSweep : null,
+      sweep: this.cameraColliders || this.nearSolids ? this.characterSweep : null,
     });
     look.yaw = 0;
     look.pitch = 0;
@@ -4755,6 +4796,13 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       horizonField?.originZ ?? 0,
       horizonField?.spanMeters ?? 0,
     );
+    // The near solids follow the walker, and a car it may step out of once
+    // it is down to a walk; the car itself keeps trees soft.
+    if (state.walking && (state.vehicle?.kind === "person" || Math.hypot(state.velocity.x, state.velocity.z) < 5)) {
+      this.detail.setNearSolidsFocus(state.position.x, state.position.z);
+    } else {
+      this.detail.clearNearSolidsFocus();
+    }
     this.detail.update(
       {
         x: state.position.x,
@@ -4893,6 +4941,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.boatWake?.setTrailSeconds(this.profile.boatWakeTrailSeconds);
     this.boatHeave?.setDrawnCascades(this.profile.oceanCascades);
     this.underwater?.setDrawnCascades(this.profile.oceanCascades);
+    this.underwater?.setProfile(this.profile);
     this.carParticles?.setCap(this.profile.vehicleParticleBudget);
     this.carTracks?.setCap(this.profile.tyreTrackSegments);
     this.roadSurface?.setRanges(this.profile);

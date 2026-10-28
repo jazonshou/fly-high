@@ -618,30 +618,25 @@ export class ColliderWorld {
     }
   }
 
+  /** A kinematic collider moves every sim step (the marina's pontoons): no closure, nothing allocated. */
   private refreshWorldGeometry(record: ColliderRecord): void {
     const { shape, worldPoints, aabb } = record;
-    const placePoint = (index: number, local: Vec3) => {
-      rotateVectorInto(scratchWorld, record.orientation, local);
-      worldPoints[index * 3] = scratchWorld.x + record.position.x;
-      worldPoints[index * 3 + 1] = scratchWorld.y + record.position.y;
-      worldPoints[index * 3 + 2] = scratchWorld.z + record.position.z;
-    };
     switch (shape.kind) {
       case "sphere":
-        placePoint(0, shape.center);
+        placeWorldPoint(record, 0, shape.center);
         boundPoints(aabb, worldPoints, 1, shape.radius);
         return;
       case "capsule":
-        placePoint(0, shape.a);
-        placePoint(1, shape.b);
+        placeWorldPoint(record, 0, shape.a);
+        placeWorldPoint(record, 1, shape.b);
         boundPoints(aabb, worldPoints, 2, shape.radius);
         return;
       case "polyline":
-        for (let i = 0; i < shape.points.length; i += 1) placePoint(i, shape.points[i]!);
+        for (let i = 0; i < shape.points.length; i += 1) placeWorldPoint(record, i, shape.points[i]!);
         boundPoints(aabb, worldPoints, shape.points.length, shape.radius);
         return;
       case "box": {
-        placePoint(0, shape.center);
+        placeWorldPoint(record, 0, shape.center);
         multiplyQuaternionInto(record.boxOrientation, record.orientation, shape.orientation ?? IDENTITY);
         normalizeQuaternionInto(record.boxOrientation, record.boxOrientation);
         boundBox(aabb, worldPoints, record.boxOrientation, shape.halfExtents);
@@ -649,6 +644,15 @@ export class ColliderWorld {
       }
     }
   }
+}
+
+/** A shape's local point `local` into the record's world points at `index`. */
+function placeWorldPoint(record: ColliderRecord, index: number, local: Vec3): void {
+  rotateVectorInto(scratchWorld, record.orientation, local);
+  const worldPoints = record.worldPoints;
+  worldPoints[index * 3] = scratchWorld.x + record.position.x;
+  worldPoints[index * 3 + 1] = scratchWorld.y + record.position.y;
+  worldPoints[index * 3 + 2] = scratchWorld.z + record.position.z;
 }
 
 function copyVec(out: Vec3, value: Vec3): void {

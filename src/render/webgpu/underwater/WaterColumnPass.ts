@@ -6,12 +6,35 @@ import { PostProcess } from "@babylonjs/core/PostProcesses/postProcess";
 import type { Camera } from "@babylonjs/core/Cameras/camera";
 import type { AbstractEngine } from "@babylonjs/core/Engines/abstractEngine";
 import type { Effect } from "@babylonjs/core/Materials/effect";
+import { OCEAN_SURFACE_SLOPES_WGSL, type OceanCausticTarget } from "../water/SpectralOceanSystem";
+import {
+  WATER_CAPILLARY_DETAIL_WGSL,
+  WATER_CAUSTIC_WGSL,
+  WATER_DETAIL_NOISE_WGSL,
+} from "../water/WaterShaders";
 import { UNDERWATER_RADIANCE_STEP, type UnderwaterLight } from "./underwaterLight";
 
 const WATER_COLUMN_SHADER_NAME = "aerolithUnderwaterColumn";
 
 /** Defined when the scene's depth is the multisampled target's resolved r32float copy. */
 const RESOLVED_DEPTH_DEFINE = "#define SCENE_DEPTH_RESOLVED";
+/** Defined on the tiers that lay the sea's caustics on what the water column sees. */
+const CAUSTICS_DEFINE = "#define WATER_COLUMN_CAUSTICS";
+
+const CAUSTIC_SLOPE_SAMPLERS: readonly string[] = Array.from({ length: 5 }, (_, index) => `slopeFoam${index}`);
+
+/** The sea's caustic sources (`SpectralOceanSystem.bindCaustics`). */
+export interface WaterColumnCausticSource {
+  bindCaustics(target: OceanCausticTarget): void;
+}
+
+/**
+ * A cascade's caustic fades out where the footprint of a pixel on what it
+ * lands on reaches this fraction of the band's wavelength (gone at the upper
+ * value: two pixels a wavelength), as the sea's own cascades fade by pixel.
+ */
+const CAUSTIC_FOOTPRINT_FADE_LOW = 0.15;
+const CAUSTIC_FOOTPRINT_FADE_HIGH = 0.5;
 
 /**
  * A view ray with nothing drawn on it (reversed depth's clear value) runs this
@@ -46,6 +69,12 @@ const RISING_PATH_FLOOR = 0.2;
  * ray of any length is exactly these two, which is why the fade needs no
  * second constant. A ray climbing toward the surface stops there: what lies
  * beyond is the surface's own business (the ocean underside).
+ *
+ * On the tiers with caustics (`underwaterCaustics`) the sun's share of `dim`
+ * carries the sea's caustic web where the ray lands under the water: the same
+ * surface curvature (each cascade's stored Jacobian and the capillary tail)
+ * focused by the same refracted beam (`WATER_CAUSTIC_WGSL`) the sea lays on
+ * its bed when seen from above, so a bed shows one pattern from either side.
  */
 export const WATER_COLUMN_FRAGMENT_WGSL = /* wgsl */ `
 varying vUV: vec2f;
@@ -71,6 +100,60 @@ uniform cameraStillDepth: f32;
 uniform cameraSurfaceDepth: f32;
 // 0 draws the scene through untouched (the load-time warm-up), 1 the water.
 uniform waterColumnStrength: f32;
+#ifdef WATER_COLUMN_CAUSTICS
+// Render space to world xz (the floating origin), and the sea's caustic sources.
+uniform worldOrigin: vec2f;
+uniform sunElevationSine: f32;
+uniform time: f32;
+uniform oceanWind: vec2f;
+uniform patchLengths0: vec4f;
+uniform patchLength4: f32;
+uniform cascadeCount: f32;
+uniform causticCurvatureScales0: vec4f;
+uniform causticCurvatureScale4: f32;
+uniform cascadeWavelengths0: vec4f;
+uniform cascadeWavelength4: f32;
+${CAUSTIC_SLOPE_SAMPLERS.map((name) => `var ${name}Sampler: sampler; var ${name}: texture_2d<f32>;`).join("\n")}
+
+${WATER_CAUSTIC_WGSL}
+${WATER_DETAIL_NOISE_WGSL}
+${WATER_CAPILLARY_DETAIL_WGSL}
+${OCEAN_SURFACE_SLOPES_WGSL}
+
+// The collimated share's gain at a point under the water, depth metres below
+// the still surface: the sea's caustic sheet (1 where there is none).
+fn waterColumnCaustic(worldXZ: vec2f, depth: f32) -> f32 {
+  let beam = waterRefractedSunBeam(depth, uniforms.sunElevationSine);
+  let footprint = max(length(dpdx(worldXZ)), length(dpdy(worldXZ)));
+  let capillary = waterCapillaryDetail(worldXZ, uniforms.oceanWind, uniforms.time, 0.0, beam);
+  var jacobians = vec4f(1.0);
+  var jacobian4 = 1.0;
+  jacobians.x = sampleSlopeTexture(worldXZ, uniforms.patchLengths0.x, slopeFoam0, slopeFoam0Sampler).w;
+  if (uniforms.cascadeCount > 1.5) { jacobians.y = sampleSlopeTexture(worldXZ, uniforms.patchLengths0.y, slopeFoam1, slopeFoam1Sampler).w; }
+  if (uniforms.cascadeCount > 2.5) { jacobians.z = sampleSlopeTexture(worldXZ, uniforms.patchLengths0.z, slopeFoam2, slopeFoam2Sampler).w; }
+  if (uniforms.cascadeCount > 3.5) { jacobians.w = sampleSlopeTexture(worldXZ, uniforms.patchLengths0.w, slopeFoam3, slopeFoam3Sampler).w; }
+  if (uniforms.cascadeCount > 4.5) { jacobian4 = sampleSlopeTexture(worldXZ, uniforms.patchLength4, slopeFoam4, slopeFoam4Sampler).w; }
+  let fades = vec4f(1.0) - smoothstep(
+    vec4f(${CAUSTIC_FOOTPRINT_FADE_LOW}),
+    vec4f(${CAUSTIC_FOOTPRINT_FADE_HIGH}),
+    vec4f(footprint) / max(uniforms.cascadeWavelengths0, vec4f(0.001)),
+  );
+  let fade4 = 1.0 - smoothstep(
+    ${CAUSTIC_FOOTPRINT_FADE_LOW},
+    ${CAUSTIC_FOOTPRINT_FADE_HIGH},
+    footprint / max(uniforms.cascadeWavelength4, 0.001),
+  );
+  let caustic = waterCausticCascadeBands(
+    capillary.caustic,
+    jacobians,
+    jacobian4,
+    uniforms.causticCurvatureScales0 * fades,
+    uniforms.causticCurvatureScale4 * fade4,
+    beam,
+  );
+  return waterCausticSheetGain(caustic, beam);
+}
+#endif
 
 const RADIANCE_STEP_LOG: f32 = ${Math.log(UNDERWATER_RADIANCE_STEP)};
 
@@ -100,13 +183,24 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   let ray = normalize((uniforms.viewToWorld * vec4f(onRay.xyz / onRay.w, 0.0)).xyz);
   let hit = uniforms.inverseProjection * vec4f(ndc, depth, 1.0);
   let drawn = depth > 0.0 && abs(hit.w) > 1.0e-12;
-  var s = select(${UNDRAWN_DISTANCE_METERS.toFixed(1)}, length(hit.xyz / hit.w), drawn);
+  // Nothing drawn: a finite stand-in, so its neighbours' derivatives stay finite.
+  let hitView = select(vec3f(0.0, 0.0, -1.0), hit.xyz / hit.w, drawn);
   let mu = ray.y;
-  if (mu > 0.0) {
-    s = min(s, max(uniforms.cameraSurfaceDepth, 0.0) / mu);
-  }
+  let hitDistance = select(${UNDRAWN_DISTANCE_METERS.toFixed(1)}, length(hitView), drawn);
+  // A rising ray stops at the surface.
+  let s = select(
+    hitDistance,
+    min(hitDistance, max(uniforms.cameraSurfaceDepth, 0.0) / max(mu, 1.0e-6)),
+    mu > 0.0,
+  );
   let hitDepth = max(uniforms.cameraStillDepth - mu * s, 0.0);
-  let dim = uniforms.directFraction * exp(-uniforms.sunDiffuseAttenuation * hitDepth)
+#ifdef WATER_COLUMN_CAUSTICS
+  let worldHit = (uniforms.viewToWorld * vec4f(hitView, 1.0)).xyz;
+  let caustic = select(1.0, waterColumnCaustic(worldHit.xz + uniforms.worldOrigin, hitDepth), drawn);
+#else
+  let caustic = 1.0;
+#endif
+  let dim = uniforms.directFraction * exp(-uniforms.sunDiffuseAttenuation * hitDepth) * caustic
     + (1.0 - uniforms.directFraction) * exp(-uniforms.skyDiffuseAttenuation * hitDepth);
   let brightening = exp(RADIANCE_STEP_LOG * (1.0 + mu));
   let water = scene * dim * exp(-uniforms.waterAttenuation * s)
@@ -129,9 +223,20 @@ interface DepthTarget {
   resolveMSAADepth: boolean;
 }
 
+export interface WaterColumnCaustics {
+  readonly source: WaterColumnCausticSource;
+  /** `profile.underwaterCaustics`. */
+  readonly enabled: boolean;
+}
+
 export class WaterColumnPass {
   readonly postProcess: PostProcess;
   private readonly light: UnderwaterLight;
+  private readonly causticSource: WaterColumnCausticSource | null;
+  private caustics: boolean;
+  private timeSeconds = 0;
+  private worldOriginX = 0;
+  private worldOriginZ = 0;
   private attached = false;
   private resolvedDepth = false;
   private drawn = false;
@@ -141,9 +246,17 @@ export class WaterColumnPass {
   private readonly inverseProjection = new Matrix();
   private readonly viewToWorld = new Matrix();
 
-  constructor(camera: Camera, engine: AbstractEngine, samples: number, light: UnderwaterLight) {
+  constructor(
+    camera: Camera,
+    engine: AbstractEngine,
+    samples: number,
+    light: UnderwaterLight,
+    caustics: WaterColumnCaustics | null = null,
+  ) {
     registerShader();
     this.light = light;
+    this.causticSource = caustics?.source ?? null;
+    this.caustics = this.causticSource !== null && (caustics?.enabled ?? false);
     const count = Math.max(1, Math.round(samples));
     this.resolvedDepth = count > 1;
     this.postProcess = new PostProcess(
@@ -161,14 +274,25 @@ export class WaterColumnPass {
         "cameraStillDepth",
         "cameraSurfaceDepth",
         "waterColumnStrength",
+        "worldOrigin",
+        "sunElevationSine",
+        "time",
+        "oceanWind",
+        "patchLengths0",
+        "patchLength4",
+        "cascadeCount",
+        "causticCurvatureScales0",
+        "causticCurvatureScale4",
+        "cascadeWavelengths0",
+        "cascadeWavelength4",
       ],
-      ["sceneDepth"],
+      ["sceneDepth", ...CAUSTIC_SLOPE_SAMPLERS],
       1,
       camera,
       Constants.TEXTURE_BILINEAR_SAMPLINGMODE,
       engine,
       false,
-      this.resolvedDepth ? RESOLVED_DEPTH_DEFINE : null,
+      this.defines(),
       Constants.TEXTURETYPE_HALF_FLOAT,
       undefined,
       undefined,
@@ -222,8 +346,17 @@ export class WaterColumnPass {
     if (resolved !== this.resolvedDepth) {
       this.resolvedDepth = resolved;
       this.drawn = false;
-      this.postProcess.updateEffect(resolved ? RESOLVED_DEPTH_DEFINE : null);
+      this.postProcess.updateEffect(this.defines());
     }
+  }
+
+  /** The tier's caustics (`profile.underwaterCaustics`): a new shader, warmed again. */
+  setCaustics(enabled: boolean): void {
+    const caustics = enabled && this.causticSource !== null;
+    if (caustics === this.caustics) return;
+    this.caustics = caustics;
+    this.drawn = false;
+    this.postProcess.updateEffect(this.defines());
   }
 
   /** Put the pass at the head of the chain, or take it out. */
@@ -262,6 +395,16 @@ export class WaterColumnPass {
     this.cameraSurfaceDepth = Math.max(surfaceDepth, 0);
   }
 
+  /**
+   * The frame's clock (the sea's, which the caustics' capillary tail rides)
+   * and the floating origin: world x and z at the render origin.
+   */
+  setWorld(timeSeconds: number, worldOriginX: number, worldOriginZ: number): void {
+    this.timeSeconds = timeSeconds;
+    this.worldOriginX = worldOriginX;
+    this.worldOriginZ = worldOriginZ;
+  }
+
   /** 0 passes the scene through untouched (a warm-up draw); 1 is the water. */
   setStrength(strength: number): void {
     this.strength = Math.min(Math.max(strength, 0), 1);
@@ -292,6 +435,12 @@ export class WaterColumnPass {
     effect.setFloat("cameraStillDepth", this.cameraStillDepth);
     effect.setFloat("cameraSurfaceDepth", this.cameraSurfaceDepth);
     effect.setFloat("waterColumnStrength", this.strength);
+    if (this.caustics && this.causticSource) {
+      this.causticSource.bindCaustics(effect);
+      effect.setFloat2("worldOrigin", this.worldOriginX, this.worldOriginZ);
+      effect.setFloat("sunElevationSine", light.sunElevationSine);
+      effect.setFloat("time", this.timeSeconds);
+    }
     this.drawn = true;
     const target = this.postProcess.inputTexture as unknown as DepthTarget | null;
     if (target?.depthStencilTexture) {
@@ -304,5 +453,13 @@ export class WaterColumnPass {
 
   dispose(camera: Camera): void {
     this.postProcess.dispose(camera);
+  }
+
+  private defines(): string | null {
+    const defines = [
+      this.resolvedDepth ? RESOLVED_DEPTH_DEFINE : null,
+      this.caustics ? CAUSTICS_DEFINE : null,
+    ].filter((define) => define !== null);
+    return defines.length > 0 ? defines.join("\n") : null;
   }
 }
