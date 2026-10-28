@@ -226,7 +226,12 @@ describe("the pin is capture-only and sits at the time pin", () => {
     // phase. Either way the fix silently stops working.
     for (const [path, settleLoop] of Object.entries(PERF_HARNESS_SETTLE_LOOPS)) {
       const harness = read(path);
-      const timePin = harness.indexOf("simulationTime = 500 + canonicalShotIndex * 120");
+      // The pinned instant, then any car shot's effects history run up to
+      // it, then the clock set to it: the time pin.
+      const pinned = harness.indexOf("const pinned = 500 + canonicalShotIndex * 120");
+      const timePin = harness.indexOf("simulationTime = pinned;");
+      expect(pinned, path).toBeGreaterThan(-1);
+      expect(timePin, path).toBeGreaterThan(pinned);
       const cadencePin = harness.indexOf("renderer.pinOceanCascadePhaseForCapture();");
       const settle = harness.indexOf(settleLoop);
       expect(timePin, path).toBeGreaterThan(-1);

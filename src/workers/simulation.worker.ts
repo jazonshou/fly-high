@@ -75,6 +75,7 @@ import {
 } from "@/src/world/infrastructureSync";
 import { BoatSimulator } from "@/src/sim/boat/boatSimulator";
 import { CarColliders } from "@/src/sim/ground/carColliders";
+import { type CarSea, createCarSea } from "@/src/sim/ground/carSea";
 import { GroundVehicleSimulator } from "@/src/sim/ground/groundVehicle";
 import { MarinaHarbour } from "@/src/sim/marina/harbour";
 import { createSurfaceRecoverySpawn, createSurfaceSpawn } from "@/src/game/surfaceSpawn";
@@ -191,6 +192,8 @@ let carColliders: CarColliders | null = null;
  * boat takes the same composite later (boats W3).
  */
 const hydrologyWater = new HydrologyWaterSource(terrainHeightSample);
+/** The sea a car session wades: the boat's sea twin, asked only where the car is in it. */
+let carSea: CarSea | null = null;
 /** The car's gearbox and clutch, from the session's settings. */
 let carSetup: CarSetup = DEFAULT_CAR_SETUP;
 const surfaceControls: SurfaceVehicleControls = {
@@ -290,15 +293,20 @@ function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn): v
   const boat = vehicleClass(kind) === "boat";
   // The sea the renderer draws, from the same spectrum, seed and weather,
   // calmed inside the home marina's basin, over the worker's own bed. The
-  // car wades the sea's still level and the posted lakes and rivers.
+  // car wades the same sea (built here, inside its wait for the terrain:
+  // about 0.2 s) and the posted lakes and rivers.
   const seaLevel = world?.seaLevel ?? 0;
+  carSea = null;
   if (world && boat) {
     const sea = createSeaTwin(world, weather, terrainHeightSample);
     sea.setShelter([homeMarina(world).shelter]);
     surfaceEnvironment.water = sea;
+  } else if (boat) {
+    surfaceEnvironment.water = new CalmWaterSurface(seaLevel, terrainHeightSample);
   } else {
-    const calm = new CalmWaterSurface(seaLevel, terrainHeightSample);
-    surfaceEnvironment.water = boat ? calm : new WaterSurfaceComposite(calm, hydrologyWater, seaLevel);
+    carSea = world ? createCarSea(world, weather) : null;
+    const sea = carSea ?? new CalmWaterSurface(seaLevel, terrainHeightSample);
+    surfaceEnvironment.water = new WaterSurfaceComposite(sea, hydrologyWater, seaLevel);
   }
   // The boat meets the marina through its harbour; the car meets every
   // airport's buildings, the marina and the roads' guardrails.
@@ -840,6 +848,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       if (world && surfaceEnvironment.water instanceof SeaTwin) {
         surfaceEnvironment.water.setConfig(resolveSeaSpectrumConfig(world, weather));
       }
+      if (world && carSea) carSea.setConfig(resolveSeaSpectrumConfig(world, weather));
     }
     else if (command.type === "carSetup") {
       carSetup = command.carSetup;

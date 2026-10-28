@@ -51,17 +51,19 @@
  * in order with V8's own traces (`npx tsx --trace-deopt ...`),
  * `PROBE_REPEAT=2` drives the show route twice in one process (the second
  * time on optimised code), and `PROBE_END=1` prints where the show drive
- * ends, to every bit, to compare two builds.
+ * ends, to every bit, to compare two builds. The sea is the boat's twin as
+ * the worker gives the car, under `PROBE_WEATHER` (clear, breezy or cloudy;
+ * breezy by default).
  */
-import type { CarControlState } from "../src/game/types";
+import type { CarControlState, WeatherPreset } from "../src/game/types";
 import { createSurfaceSpawn } from "../src/game/surfaceSpawn";
 import { SurfaceMaterial } from "../src/render/webgpu/terrain/surfaceMaterials";
 import { GroundVehicleSimulator } from "../src/sim/ground";
 import { CarColliders } from "../src/sim/ground/carColliders";
+import { type CarSea, createCarSea } from "../src/sim/ground/carSea";
 import { outerAngle, rackLimit } from "../src/sim/ground/steering";
 import { DEFAULT_CAR_SETUP, NEUTRAL_BOAT_CONTROLS, NEUTRAL_CAR_CONTROLS } from "../src/sim/surface";
 import { sampleGroundHeight } from "../src/sim/terrainGrid";
-import { CalmWaterSurface } from "../src/sim/water/calmWater";
 import { createWaterSurfaceSample } from "../src/sim/water";
 import { WaterSurfaceComposite } from "../src/sim/water/compositeWater";
 import { HydrologyWaterSource, packHydrologyWater, type HydrologyWaterRiver } from "../src/sim/water/hydrologyWater";
@@ -96,6 +98,8 @@ for (const p of PROVINCES) if (!CLIMATE_PROVINCE_NAMES.includes(p)) throw new Er
 const run = (section: Section) => asked.length === 0 || asked.includes(section);
 
 const TRACE = process.env.PROBE_TRACE === "1";
+/** The sea state (the worker's default until the renderer sends the session's). */
+const WEATHER = (process.env.PROBE_WEATHER ?? "breezy") as WeatherPreset;
 /** Every step over this many us is kept with what happened in it (`PROBE_SLOW=us`). */
 const SLOW_US = Number(process.env.PROBE_SLOW ?? (TRACE ? 500 : 0));
 const GC_KINDS = new Map([[1, "scavenge"], [2, "mark-compact"], [4, "incremental marking"], [8, "weak callbacks"]]);
@@ -146,6 +150,13 @@ if (SLOW_US > 0) {
   });
 }
 let traceHeight: (x: number, z: number) => number = () => NaN;
+/** The started car's sea, whose time the worker sets before each step. */
+let probeSea: CarSea | null = null;
+
+function stepCar(sim: GroundVehicleSimulator): void {
+  probeSea?.setTime(sim.state.time);
+  sim.step(STEP);
+}
 const f = (value: number, digits = 1, width = 6) => value.toFixed(digits).padStart(width);
 
 // ---------------------------------------------------------------------------
@@ -156,6 +167,8 @@ interface Site {
   readonly label: string;
   readonly height: (x: number, z: number) => number;
   readonly colliders: CarColliders;
+  /** The sea as the worker gives the car: the boat's twin, under `PROBE_WEATHER`. */
+  readonly sea: CarSea;
   /** Every road piece round the airport, both layers, each once. */
   readonly pieces: readonly RoadPiece[];
   /** Road pieces binned on a 64 m grid, for "is a road near". */
@@ -177,6 +190,7 @@ function buildSite(seed: number | undefined, province: ClimateProvinceName | und
       for (const layer of ROAD_LAYERS) regions.push(network.region(layer, rx + dx, rz + dz));
     }
   }
+  const sea = createCarSea(world, WEATHER);
   if (process.env.PROBE_NO_ROADS !== "1") installInfrastructureRegions(world, regions.map((region) => roadRegionInfrastructure(network, region)));
   const seen = new Set<string>();
   const pieces: RoadPiece[] = [];
@@ -209,6 +223,7 @@ function buildSite(seed: number | undefined, province: ClimateProvinceName | und
     label: `${province ?? "natural"}/${seed ?? "default"}`,
     height,
     colliders: new CarColliders(world, height),
+    sea,
     pieces,
     roadBins,
   };
@@ -367,6 +382,7 @@ const WHEELBASE = LANDCRUISER_76.geometry.wheelbase;
 function startCar(site: Site, x: number, z: number, heading: number, rivers: readonly HydrologyWaterRiver[] = []): GroundVehicleSimulator {
   const world = site.world;
   traceHeight = site.height;
+  probeSea = site.sea;
   const sim = new GroundVehicleSimulator({
     position: { x, y: site.height(x, z), z },
     heading,
@@ -376,7 +392,7 @@ function startCar(site: Site, x: number, z: number, heading: number, rivers: rea
   const inland = new HydrologyWaterSource(site.height);
   if (rivers.length > 0) inland.setRegion("probe-ford", packHydrologyWater(rivers, []));
   sim.setEnvironment({
-    water: new WaterSurfaceComposite(new CalmWaterSurface(world.seaLevel, site.height), inland, world.seaLevel),
+    water: new WaterSurfaceComposite(site.sea, inland, world.seaLevel),
     wind: { x: 0, y: 0, z: 0 },
     bedHeight: site.height,
     world,
@@ -572,7 +588,7 @@ function driveRoute(sim: GroundVehicleSimulator, route: Route, maxSeconds: numbe
     }
     setPedals(sim, accelerator, brake, steer, (hold && Math.abs(speed) < 0.3) || recovery === 4 ? 1 : 0);
     const started = performance.now();
-    sim.step(STEP);
+    stepCar(sim);
     const took = (performance.now() - started) * 1000;
     if (SLOW_US > 0 && took > SLOW_US) {
       slowSteps.push({
@@ -652,12 +668,12 @@ function driveRoute(sim: GroundVehicleSimulator, route: Route, maxSeconds: numbe
 function settle(sim: GroundVehicleSimulator, rangePresses = 0): void {
   pedals.rangePresses = 0;
   setPedals(sim, 0, 0.6, 0);
-  for (let i = 0; i < 120; i += 1) sim.step(STEP);
+  for (let i = 0; i < 120; i += 1) stepCar(sim);
   pedals.rangePresses = rangePresses;
   setPedals(sim, 0, 0.6, 0);
-  for (let i = 0; i < 60; i += 1) sim.step(STEP);
+  for (let i = 0; i < 60; i += 1) stepCar(sim);
   setPedals(sim, 0, 0, 0);
-  sim.step(STEP);
+  stepCar(sim);
 }
 
 // ---------------------------------------------------------------------------

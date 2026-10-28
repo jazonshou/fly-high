@@ -14,6 +14,7 @@ import { aircraftSpec } from "../src/aircraft/catalogue";
 import { PERF_COCKPIT_HORIZONTAL_FOV_DEGREES } from "../src/render/cameraPresentation";
 import type { ClimateProvinceOption } from "../src/world/climateProvince";
 import type { LandformsOption } from "../src/world/landforms";
+import type { SurfaceMaterial } from "../src/render/webgpu/terrain/surfaceMaterials";
 
 export const PERF_CAPTURE_SEED = "phase1-perf-baseline";
 export const PERF_CAPTURE_WIDTH = 1_280;
@@ -327,10 +328,12 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     "boat-helm",
     "boat-wake-lowsun",
     // Cars, after the boats and for the same reason: nobody has measured a
-    // car scene's memory, and one of them forces a whole sand sea.
+    // car scene's memory, one of them forces a whole sand sea, and another a
+    // whole high-desert province.
     "car-clearing-chase",
     "car-dune-cockpit",
     "car-ford-chase",
+    "car-dust-chase",
   ] as readonly string[]),
   tier: 1,
   quality: "medium",
@@ -431,6 +434,26 @@ export interface PerfCaptureCarRun {
   readonly sinkageMeters: number;
   /** "ford" only: the water over the bed where the car stands, metres. */
   readonly wadingDepthMeters?: number;
+  /**
+   * What every tyre out of the water stands on, where the terrain biome's
+   * material (the default) is not what the car simulator reports there: the
+   * high desert's dry grass is "grassland" to the biome. Pinned to the
+   * simulator's own classification at the tyres by `perf-car-shots.test.ts`.
+   */
+  readonly surface?: keyof typeof SurfaceMaterial;
+  /**
+   * Seconds of the car's effects run up to the time pin
+   * (`carShotEffectsHistoryFrames`), so the gated frame holds the settled
+   * dust cloud or spray a player sees rather than what a few frames raise:
+   * a perf:ab capture keeps 12 frames after the pin, 0.2 s, and the clock's
+   * jump to the pin ages out what the stream raised. Both harnesses, so both
+   * perf:ab arms and perf-capture, render these frames before the pin,
+   * starting that much earlier, and then pin the time, the ocean's cadence
+   * and the wildlife exactly as for any other shot. Only the car shots whose
+   * effects are on screen carry it; every other shot captures as it always
+   * has.
+   */
+  readonly effectsHistorySeconds?: number;
 }
 
 export interface PerfCaptureShotDefinition {
@@ -2272,14 +2295,16 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     ceilings: null,
   },
   /**
-   * CARS. Three shots of the LandCruiser 76 (`car` has how the pose is
+   * CARS. Four shots of the LandCruiser 76 (`car` has how the pose is
    * made), appended after the boats so no earlier shot's canonical index
    * moves. Not baselined and not floor-pinned: a car frame has no history.
    * The chase view in a forest clearing (the ground-level scene the car
    * spends its time in, trees all round), the driver's view climbing a dune
    * on sand (the forced sand sea, the one shot that carries `landforms`),
-   * and the chase view wading out of the sea up a beach, where the spray
-   * and the bow wave are.
+   * the chase view wading out of the sea up a beach, where the spray and
+   * the bow wave are, and the chase view pulling away over the high desert
+   * in its own dust. The last two gate their effects settled
+   * (`PerfCaptureCarRun.effectsHistorySeconds`).
    */
   {
     name: "car-clearing-chase",
@@ -2360,6 +2385,42 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
       tyrePressure: "road",
       sinkageMeters: 0,
       wadingDepthMeters: 0.45,
+      // The spray off the tyres lives up to 1.8 s and the exhaust 2.6 s:
+      // settled well inside the dust's 5 s.
+      effectsHistorySeconds: 5,
+    },
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "car-dust-chase",
+    description:
+      "The chase view of the LandCruiser pulling away hard over the high "
+      + "desert's dry grass, wheels spinning: its dust cloud drifting downwind",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    // Open dry grass 400 m out from the forced province's airport, the wind
+    // across the view and the sun to the right behind.
+    offsetXMeters: 200,
+    offsetZMeters: 346,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    relativeSunBearingDegrees: 110,
+    climateProvince: "high-desert",
+    car: {
+      site: "here",
+      speedMetersPerSecond: 2,
+      wheelspinRadiansPerSecond: 16,
+      throttle: 1,
+      boost: 0.9,
+      range: "2H",
+      tyrePressure: "road",
+      sinkageMeters: 0.01,
+      surface: "DryGrass",
+      // The dust lives 2.6-5 s: every grain in the gated frame was raised
+      // inside the history.
+      effectsHistorySeconds: 5,
     },
     comparesToBaseline: false,
     ceilings: null,

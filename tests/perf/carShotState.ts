@@ -43,6 +43,16 @@ export const CAR_SHOT_WHEEL_CENTRE_Y = 0.37 - 0.8;
 export const CAR_SHOT_KERB_MASS = 2_300;
 export const CAR_SHOT_FRONT_SHARE = 0.52;
 
+/**
+ * The frames a harness renders before a car shot's time pin, at 60 a second,
+ * so its effects have `PerfCaptureCarRun.effectsHistorySeconds` behind them;
+ * 0 for every other shot.
+ */
+export function carShotEffectsHistoryFrames(run: Pick<PerfCaptureCarRun, "effectsHistorySeconds"> | undefined): number {
+  const seconds = run?.effectsHistorySeconds ?? 0;
+  return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 60) : 0;
+}
+
 const GRAVITY = 9.80665;
 /** Wheel order: front left, front right, rear left, rear right. */
 const WHEEL_X = [CAR_SHOT_FRONT_AXLE_X, CAR_SHOT_FRONT_AXLE_X, CAR_SHOT_REAR_AXLE_X, CAR_SHOT_REAR_AXLE_X] as const;
@@ -374,6 +384,7 @@ export function buildCarShotState(
   const wadingDepth = Math.max(0, world.seaLevel - lowest);
   const surface = ground.map((g) => {
     if (g.y < world.seaLevel) return -1;
+    if (run.surface !== undefined) return SurfaceMaterial[run.surface];
     return MATERIAL_FOR_BIOME[sampleTerrain(world, g.x, g.z).biomeName] ?? SurfaceMaterial.Grass;
   });
   const sand = run.tyrePressure === "sand";
@@ -401,6 +412,8 @@ export function buildCarShotState(
     tyrePressure: sand ? "sand" : "road",
     tyrePressureBar: sand ? 1.2 : 2.4,
     wadingDepth,
+    // The shot's only water is the sea (its tyres' ground below sea level).
+    wadingSea: wadingDepth > 0 ? 1 : 0,
     settling: false,
     wheelSteer: [0, 0, 0, 0],
     wheelSpin: [0, 0, 0, 0],

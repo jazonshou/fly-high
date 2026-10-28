@@ -215,6 +215,12 @@ export interface CarVisualState {
   /** Water above the ground at the car, metres; 0 when dry. The wading bar. */
   wadingDepth: number;
   /**
+   * Of the tyres in water, the share in the sea rather than a lake or river,
+   * 0..1 (0 when dry): the water the wading depth is in. The sea's surface
+   * carries its waves, so its level alone cannot say.
+   */
+  wadingSea: number;
+  /**
    * The car is waiting at its start for the terrain under it to stream in,
    * held still and not simulated (at most `GROUND_WAIT_SECONDS`).
    */

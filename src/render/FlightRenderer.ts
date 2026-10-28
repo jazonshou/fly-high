@@ -1790,6 +1790,8 @@ export class FlightRenderer implements FlightRenderingSystem {
           world: options.world,
           atmosphere: atmosphere.snapshot,
           groundHeight: liveTerrainHeight,
+          sea: { ocean, seaLevel: options.world.seaLevel },
+          pipelineCompiles,
         })
         : null;
       if (carEffects) {
@@ -3193,8 +3195,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
           this.ocean.setWaterEnvironmentField(this.waterEnvironment);
         }
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
-        // The wake lies on the waves this frame's sea is drawn with.
+        // The wake and the car's bow wave lie on the waves this frame's sea is drawn with.
         this.boatWake?.bindOcean();
+        this.carBowWave?.bindOcean();
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
         // ocean disk is depth-tested away above the waterline), so the sea
         // state and the WATER's own clock cross here — same node, same frame,

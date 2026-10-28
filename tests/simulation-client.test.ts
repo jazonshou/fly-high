@@ -2,6 +2,9 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_VISUAL_EXTRAPOLATION_SECONDS,
+  SIMULATION_WORKER_LOAD_FAILED_MESSAGE,
+  SIMULATION_WORKER_LOAD_RETRIES,
+  SIMULATION_WORKER_RETRY_DELAY_MILLISECONDS,
   SimulationClient,
   VISUAL_PRESENTATION_DELAY_SECONDS,
   extrapolateFlightState,
@@ -22,15 +25,19 @@ import {
   type InfrastructureRegionsPost,
 } from "../src/world/infrastructureSync";
 import { packHydrologyWater } from "../src/sim/water/hydrologyWater";
+import { TERRAIN_READBACK_RING_CAPACITY } from "../src/workers/terrainAuthority";
 
 class WorkerStub extends EventTarget {
   static latest: WorkerStub | null = null;
+  static created: WorkerStub[] = [];
   readonly messages: unknown[] = [];
   readonly transfers: Transferable[][] = [];
+  terminated = false;
 
   constructor() {
     super();
     WorkerStub.latest = this;
+    WorkerStub.created.push(this);
   }
 
   postMessage(message: unknown, transferables: Transferable[] = []): void {
@@ -42,13 +49,22 @@ class WorkerStub extends EventTarget {
     this.dispatchEvent(new MessageEvent("message", { data: event }));
   }
 
-  terminate(): void {}
+  /** What a browser reports when the script failed to download or parse. */
+  failToLoad(): void {
+    this.dispatchEvent(new Event("error"));
+  }
+
+  terminate(): void {
+    this.terminated = true;
+  }
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   WorkerStub.latest = null;
+  WorkerStub.created = [];
 });
 
 function visualStateAt(
@@ -107,6 +123,173 @@ function quaternionAngularDistance(
   );
   return 2 * Math.acos(Math.min(1, Math.max(-1, dot)));
 }
+
+describe("simulation worker load failures", () => {
+  function terrainPage(tileX: number) {
+    return { level: 0, tileX, tileZ: 0, heights: new Float32Array(4).fill(tileX) };
+  }
+
+  it("replaces a worker whose script failed to load and replays every command", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("Worker", WorkerStub);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errors: string[] = [];
+    const client = new SimulationClient(createWorld(789), "scenic", "runway");
+    client.onError((message) => errors.push(message));
+    const first = WorkerStub.latest!;
+    const page = terrainPage(3);
+    const macroHeights = new Float32Array([1, 2, 3, 4]);
+    client.publishTerrainPage(page);
+    client.publishTerrainMacro({
+      originX: 0,
+      originZ: 0,
+      texelSizeMeters: 512,
+      width: 2,
+      height: 2,
+      heights: macroHeights,
+    });
+    client.setPaused(true);
+
+    // Terrain still transfers to the first worker; the replay holds copies.
+    expect(first.transfers[1]).toEqual([page.heights.buffer]);
+    expect(first.transfers[2]).toEqual([macroHeights.buffer]);
+
+    first.failToLoad();
+    expect(first.terminated).toBe(true);
+    expect(errors).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    // A command sent while the replacement waits is held for it too.
+    client.setMode("unassisted");
+    vi.advanceTimersByTime(SIMULATION_WORKER_RETRY_DELAY_MILLISECONDS - 1);
+    expect(WorkerStub.created).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(WorkerStub.created).toHaveLength(2);
+
+    const second = WorkerStub.latest!;
+    expect(second.messages).toEqual(first.messages);
+    expect(second.messages.map((message) => (message as { type: string }).type)).toEqual([
+      "initialize",
+      "terrainPage",
+      "terrainMacro",
+      "pause",
+      "mode",
+    ]);
+    const replayedPage = (second.messages[1] as { page: { heights: Float32Array } }).page;
+    expect(replayedPage.heights).not.toBe(page.heights);
+    expect(second.transfers.every((transfer) => transfer.length === 0)).toBe(true);
+
+    // Once it answers, the replay is dropped and a failure is final.
+    second.emit({ type: "ready", state: visualStateAt(0) });
+    const later = terrainPage(4);
+    client.publishTerrainPage(later);
+    expect(second.transfers.at(-1)).toEqual([later.heights.buffer]);
+    second.failToLoad();
+    expect(errors).toEqual(["The flight simulation worker stopped unexpectedly."]);
+    expect(WorkerStub.created).toHaveLength(2);
+    client.dispose();
+  });
+
+  it("gives up with a load message after the retries are spent", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("Worker", WorkerStub);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const errors: string[] = [];
+    const client = new SimulationClient(createWorld(790), "unassisted");
+    client.onError((message) => errors.push(message));
+
+    for (let attempt = 0; attempt < SIMULATION_WORKER_LOAD_RETRIES; attempt += 1) {
+      WorkerStub.latest!.failToLoad();
+      vi.advanceTimersByTime(SIMULATION_WORKER_RETRY_DELAY_MILLISECONDS);
+    }
+    expect(WorkerStub.created).toHaveLength(SIMULATION_WORKER_LOAD_RETRIES + 1);
+    expect(errors).toEqual([]);
+
+    WorkerStub.latest!.failToLoad();
+    expect(errors).toEqual([SIMULATION_WORKER_LOAD_FAILED_MESSAGE]);
+    expect(error).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(10 * SIMULATION_WORKER_RETRY_DELAY_MILLISECONDS);
+    expect(WorkerStub.created).toHaveLength(SIMULATION_WORKER_LOAD_RETRIES + 1);
+    client.dispose();
+  });
+
+  it("reports a script that loaded and threw without retrying it", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("Worker", WorkerStub);
+    const errors: string[] = [];
+    const client = new SimulationClient(createWorld(791), "unassisted");
+    client.onError((message) => errors.push(message));
+
+    // Node has no ErrorEvent: an Event carrying a message stands in for one.
+    WorkerStub.latest!.dispatchEvent(
+      Object.assign(new Event("error"), { message: "ReferenceError: window is not defined" }),
+    );
+    vi.advanceTimersByTime(10 * SIMULATION_WORKER_RETRY_DELAY_MILLISECONDS);
+    expect(errors).toEqual(["ReferenceError: window is not defined"]);
+    expect(WorkerStub.created).toHaveLength(1);
+    client.dispose();
+  });
+
+  it("starts no replacement after dispose", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("Worker", WorkerStub);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const client = new SimulationClient(createWorld(792), "unassisted");
+    WorkerStub.latest!.failToLoad();
+    client.dispose();
+    vi.advanceTimersByTime(10 * SIMULATION_WORKER_RETRY_DELAY_MILLISECONDS);
+    expect(WorkerStub.created).toHaveLength(1);
+  });
+
+  it("replays a car's hydrology region intact after its arrays went to the failed worker", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("Worker", WorkerStub);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const client = new SimulationClient(createWorld(794), "unassisted", "airfield", "breezy", 450, false, "trainer", "landcruiser");
+    const first = WorkerStub.latest!;
+    const region = packHydrologyWater(
+      [{ points: [{ x: 0, y: 1, z: 0, widthMeters: 4, flowSpeedMetersPerSecond: 1 }, { x: 0, y: 0.9, z: 50, widthMeters: 4, flowSpeedMetersPerSecond: 1 }] }],
+      [{ surfaceHeight: 3, boundary: [{ x: 100, z: 0 }, { x: 120, z: 0 }, { x: 110, z: 20 }] }],
+    );
+    const expected = structuredClone(region);
+    client.publishHydrology("0:0", region);
+    expect(first.transfers.at(-1)).toHaveLength(5);
+    // What a real transfer does to the sender's arrays.
+    structuredClone(null, { transfer: first.transfers.at(-1)! });
+    expect(region.riverPoints.length).toBe(0);
+
+    first.failToLoad();
+    vi.advanceTimersByTime(SIMULATION_WORKER_RETRY_DELAY_MILLISECONDS);
+    const replayed = WorkerStub.latest!.messages.find(
+      (message) => (message as { type: string }).type === "hydrology",
+    ) as { key: string; region: typeof region };
+    expect(replayed.key).toBe("0:0");
+    expect(replayed.region).toEqual(expected);
+    client.dispose();
+  });
+
+  it("holds only the newest pages the worker would keep for a replay", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("Worker", WorkerStub);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const client = new SimulationClient(createWorld(793), "unassisted");
+    const extra = 5;
+    for (let tile = 0; tile < TERRAIN_READBACK_RING_CAPACITY + extra; tile += 1) {
+      client.publishTerrainPage(terrainPage(tile));
+    }
+    WorkerStub.latest!.failToLoad();
+    vi.advanceTimersByTime(SIMULATION_WORKER_RETRY_DELAY_MILLISECONDS);
+
+    const replayed = WorkerStub.latest!.messages as { type: string; page?: { tileX: number } }[];
+    expect(replayed[0]!.type).toBe("initialize");
+    const tiles = replayed.filter((message) => message.type === "terrainPage")
+      .map((message) => message.page!.tileX);
+    expect(tiles).toEqual(
+      Array.from({ length: TERRAIN_READBACK_RING_CAPACITY }, (_, index) => index + extra),
+    );
+    client.dispose();
+  });
+});
 
 describe("simulation worker lifecycle commands", () => {
   it("sends crash recovery separately from an ordinary spawn reset", () => {

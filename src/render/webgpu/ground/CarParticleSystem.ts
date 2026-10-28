@@ -50,6 +50,7 @@ import {
   createCarWheelContacts,
   rotateCarBodyToWorld,
 } from "./carEffectLaws";
+import { CarPipelinePrime, type CarPipelineCompiles } from "./carPipelinePrime";
 import { LC76_TYRE_LOADED_RADIUS } from "./lc76Lines";
 
 /**
@@ -247,6 +248,8 @@ export interface CarParticleOptions {
   /** Surface wind the particles relax to, world m/s along x and z. */
   readonly windX?: number;
   readonly windZ?: number;
+  /** The renderer's off-frame compiles, for the spawn's pipeline prime (`CarPipelinePrime`). */
+  readonly pipelineCompiles?: CarPipelineCompiles | null;
 }
 
 /** What a particle is, for the counts the tests read. */
@@ -289,7 +292,7 @@ export class CarParticleSystem {
   private originZ = 0;
   private births = 0;
   private readonly bornBySource: Record<CarParticleKind, number> = { dust: 0, mud: 0, water: 0, bow: 0, exhaust: 0 };
-  private primePending = false;
+  private readonly pipelinePrime: CarPipelinePrime;
   private holdX = Number.NaN;
   private holdZ = Number.NaN;
   private holdTime = Number.NaN;
@@ -342,6 +345,7 @@ export class CarParticleSystem {
     this.scene = scene;
     this.windX = Number.isFinite(options.windX) ? options.windX! : 0;
     this.windZ = Number.isFinite(options.windZ) ? options.windZ! : 0;
+    this.pipelinePrime = new CarPipelinePrime(options.pipelineCompiles ?? null);
     this.dirtyChunks = new Uint8Array(CAR_PARTICLE_CAPACITY / CAR_PARTICLE_CHUNK);
     this.setCap(options.cap);
   }
@@ -477,8 +481,7 @@ export class CarParticleSystem {
 
     const alive = !Number.isNaN(this.lastBirthClock)
       && sprayAge(clock, this.lastBirthClock) <= CAR_PARTICLE_MAX_LIFETIME_SECONDS;
-    const draw = this.primePending || alive;
-    this.primePending = false;
+    const draw = alive || this.pipelinePrime.wanted(gpu.mesh);
     if (gpu.mesh.isEnabled(false) !== draw) gpu.mesh.setEnabled(draw);
   }
 
@@ -947,7 +950,7 @@ export class CarParticleSystem {
 
     this.gpu = { mesh, material, buffer, chunkViews };
     this.records = records;
-    this.primePending = true;
+    this.pipelinePrime.adopt(material);
     if (this.binding) this.setAerialPerspective(this.binding);
   }
 

@@ -60,6 +60,7 @@ import {
   type ShotPlacement,
   type TemporalStability,
 } from "../../scripts/perf-capture.mts";
+import { carShotEffectsHistoryFrames } from "./carShotState";
 import { boatShotState, carShotState, resolveShotPlacement } from "./shotPlacement";
 
 /**
@@ -983,8 +984,19 @@ describe("perf capture (1A-1c / 2Z)", () => {
       );
       // `7-0-a` / `7-8`: the optional per-shot offset. Without it every shot
       // sits on the same lamp phase (see `simulationTimeOffsetSeconds`).
-      simulationTime = 500 + canonicalShotIndex * 120
+      const pinned = 500 + canonicalShotIndex * 120
         + (shot.simulationTimeOffsetSeconds ?? 0);
+      // A car shot whose effects are on screen first runs them up to the pin
+      // (`effectsHistorySeconds`), so the frame holds a settled dust cloud or
+      // spray; every other shot pins straight away, as it always has.
+      const history = carShotEffectsHistoryFrames(shot.car);
+      simulationTime = pinned - history / 60;
+      for (let frame = 0; frame < history; frame += 1) {
+        await nextAnimationFrame();
+        simulationTime += 1 / 60;
+        renderer.render({ ...state, simulationTime }, 1 / 60);
+      }
+      simulationTime = pinned;
       // Pinning TIME is not enough for the sea. The ocean decides which wave
       // cascades to evolve by an absolute FRAME count that one renderer carries
       // across every shot, so the every-4th-frame cascade's last update before
@@ -2194,5 +2206,5 @@ describe("perf capture (1A-1c / 2Z)", () => {
       );
       console.info(`Rebaseline candidate PASSED all gates: ${candidateDir}`);
     }
-  }, 2_100_000);
+  }, 3_000_000);
 });

@@ -73,6 +73,7 @@ import {
 import { setGpuPassLabelDecorator } from "../gpuPassLabels";
 import { armGpuPassTiming, collectGpuPassTiming, installGpuPassTiming } from "../gpuPassTiming";
 import { beginGpuWorkWindow, endGpuWorkWindow, installGpuWorkCounters } from "../gpuWorkCounters";
+import { carShotEffectsHistoryFrames } from "../carShotState";
 import { boatShotState, carShotState, resolveShotPlacement } from "../shotPlacement";
 import { FlightBakeProbe, readBakeStats } from "./bakeProbe";
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./detailWatchdog";
@@ -1025,14 +1026,25 @@ const agent: PerfAgent = {
     const shot = requireContext();
     const renderer = requireRenderer();
     const fence = capability("waitForGpuIdleForCapture");
-    setGpuDrawsSuppressed(false);
-    await fence();
     // The capture's time pin and the two pins that go with it, in its order:
     // keyed on the CANONICAL index, then the ocean's cascade cadence and the
     // wildlife restarted at that instant, then the settle.
     const canonicalShotIndex = shot.canonicalShotIndex;
-    simulationTime = 500 + canonicalShotIndex * 120
+    const pinned = 500 + canonicalShotIndex * 120
       + (shot.shot.simulationTimeOffsetSeconds ?? 0);
+    // A car shot's effects first run up to the pin (`effectsHistorySeconds`),
+    // as in the capture; here with the draws still gated, as the stream was.
+    const history = carShotEffectsHistoryFrames(shot.shot.car);
+    simulationTime = pinned - history / 60;
+    for (let frame = 0; frame < history; frame += 1) {
+      simulationTime += 1 / 60;
+      renderFrame({ ...shot.state, simulationTime });
+      await yieldToTasks();
+      if (frame % 4 === 3) await fence();
+    }
+    setGpuDrawsSuppressed(false);
+    await fence();
+    simulationTime = pinned;
     renderer.pinOceanCascadePhaseForCapture();
     renderer.pinWildlifeForCapture();
     const countFrom = request.settleFrames - request.countFrames;

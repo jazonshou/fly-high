@@ -22,7 +22,7 @@ import {
 } from "../surface/types";
 import type { Quaternion, Vec3 } from "../types";
 import type { VehiclePoseState } from "../vehicle";
-import { createWaterSurfaceSample, type WaterSurfaceAuthority } from "../water/types";
+import { createWaterSurfaceSample, type HullWaterSampler, type WaterSurfaceAuthority, type WaveFieldFocus } from "../water/types";
 import { DrivelineSolver, DRIVELINE_DOF, ENGINE } from "./drivelineSolver";
 import { Engine, IDLE_OMEGA, RPM_PER_RAD_S } from "./engine";
 import { roughnessProfile, type RoughnessPoint } from "./roughness";
@@ -330,6 +330,12 @@ const SEA_WATER_DENSITY = 1_025;
  */
 const DRY_POLL_METERS = 0.3;
 const DRY_POLL_SECONDS = 0.25;
+/**
+ * The footprint a wave sampler is focused on (the sea twin's fast path):
+ * the four contacts' middle, out past the axles and the wider track by this
+ * much, m, so the tyres stay on it between the twin's steps.
+ */
+const WATER_FOCUS_PAD = 0.5;
 /** ESTIMATE: a submerged hard bed keeps this share of its friction (wet, silted). */
 const SUBMERGED_FRICTION = 0.8;
 /** The cabin drains this much faster than it floods, out of the water. */
@@ -494,6 +500,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
 
   rolled = false;
   private wadingDepthValue = DOUBLE_ZERO;
+  private wadingSeaValue = DOUBLE_ZERO;
   private readonly waterSample = createWaterSurfaceSample();
   /**
    * The water at each wheel, sampled one wheel a step in turn (`sampleWater`):
@@ -511,6 +518,16 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private readonly waterVelocityX = new Float64Array(4);
   private readonly waterVelocityY = new Float64Array(4);
   private readonly waterVelocityZ = new Float64Array(4);
+  /** The footprint handed to a water authority that takes one (`HullWaterSampler`). */
+  private readonly waterFocus: WaveFieldFocus = {
+    x: DOUBLE_ZERO,
+    z: DOUBLE_ZERO,
+    heading: DOUBLE_ZERO,
+    halfLength: 0.5 * GEOMETRY.wheelbase + WATER_FOCUS_PAD,
+    halfBeam: 0.5 * Math.max(GEOMETRY.frontTrack, GEOMETRY.rearTrack) + WATER_FOCUS_PAD,
+  };
+  private focusedWater: WaterSurfaceAuthority | null = null;
+  private waterTakesFocus = false;
   /** A tyre whose contact is under the water surface: wet, and no material of its own for the effects. */
   readonly wheelSubmerged = new Uint8Array(4);
   private readonly wheelFrictionScale = new Float64Array(4).fill(1);
@@ -1188,19 +1205,26 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
    * crawling car would otherwise spend a fifth of its step asking. A turn
    * first asks whether the point is dry for certain (`dryOverBed`), which
    * reads no bed. Whether a tyre is under the surface is decided every step,
-   * from its contact now.
+   * from its contact now. The sea is water only over ground below its still
+   * level, as the ocean is drawn (the terrain owns the swash above it), and
+   * a wheel's sea surface is carried between its turns by the surface's
+   * vertical velocity: the twin's waves rise and fall up to a metre a second.
    */
   private sampleWater(): void {
     const env = this.environment;
     this.wadingDepthValue = 0;
+    this.wadingSeaValue = 0;
     this.inWater = false;
     let sea = false;
+    let wetWheels = 0;
+    let seaWheels = 0;
     let surface = -Infinity;
     let lowest = Infinity;
     const turn = this.waterTurn;
     this.waterTurn = (turn + 1) & 3;
     const dry = this.waterAt[0] === 0 && this.waterAt[1] === 0 && this.waterAt[2] === 0 && this.waterAt[3] === 0;
     const time = this.state.time;
+    let focused = false;
     for (let w = 0; w < 4; w += 1) {
       this.wheelSubmerged[w] = 0;
       if (!env) {
@@ -1223,23 +1247,36 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
           this.waterAt[w] = 0;
           this.waterSea[w] = 0;
         } else {
+          if (!focused) {
+            this.focusWater(env.water);
+            focused = true;
+          }
           const sample = env.water.sample(at.x, at.z, this.waterSample);
-          const wet = sample.kind !== "none";
+          // The sea stands only over ground below its still level, as it is drawn.
+          const wet = sample.kind !== "none" && (sample.kind !== "sea" || at.y < sample.stillHeight);
           this.waterAt[w] = wet ? 1 : 0;
-          this.waterSea[w] = sample.kind === "sea" ? 1 : 0;
+          this.waterSea[w] = wet && sample.kind === "sea" ? 1 : 0;
           this.waterHeight[w] = sample.height;
           this.waterVelocityX[w] = sample.velocity.x;
           this.waterVelocityY[w] = sample.velocity.y;
           this.waterVelocityZ[w] = sample.velocity.z;
         }
+      } else if (this.waterSea[w] === 1) {
+        // The sea's surface rises and falls between a wheel's turns: carried by its vertical velocity.
+        this.waterHeight[w] = this.waterHeight[w]! + this.waterVelocityY[w]! * this.dt;
       }
       if (this.waterAt[w] !== 1) continue;
-      if (this.waterSea[w] === 1) sea = true;
+      wetWheels += 1;
+      if (this.waterSea[w] === 1) {
+        sea = true;
+        seaWheels += 1;
+      }
       this.inWater = true;
       surface = Math.max(surface, this.waterHeight[w]!);
       if (this.waterHeight[w]! > at.y) this.wheelSubmerged[w] = 1;
     }
     this.waterDensity = sea ? SEA_WATER_DENSITY : FRESH_WATER_DENSITY;
+    if (wetWheels > 0) this.wadingSeaValue = seaWheels / wetWheels;
     // The cabin floods towards the water's height up the body, and drains faster than it fills.
     let immersed = 0;
     if (this.inWater) {
@@ -1273,6 +1310,31 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
    * sample, about 13 us. Only on the lattice, which caches the environment's
    * `bedHeight`, the bed the authority reads; a test's fixed ground may not be.
    */
+  /**
+   * Before the step's first water sample, an authority that takes a
+   * footprint (the sea twin) is focused on the car's: the contacts' middle,
+   * along the body's heading.
+   */
+  private focusWater(water: WaterSurfaceAuthority): void {
+    if (water !== this.focusedWater) {
+      this.focusedWater = water;
+      this.waterTakesFocus = typeof (water as Partial<HullWaterSampler>).setFocus === "function";
+    }
+    if (!this.waterTakesFocus) return;
+    const focus = this.waterFocus;
+    let x = 0;
+    let z = 0;
+    for (let w = 0; w < 4; w += 1) {
+      const at = this.contacts[w]!.point;
+      x += at.x;
+      z += at.z;
+    }
+    focus.x = 0.25 * x;
+    focus.z = 0.25 * z;
+    focus.heading = this.headingOf(this.body.orientation);
+    (water as HullWaterSampler).setFocus(focus);
+  }
+
   private dryOverBed(water: WaterSurfaceAuthority, at: Readonly<Vec3>): boolean {
     if (water.isDry === undefined || this.fixedGround !== null) return false;
     const bed = this.bedPoint;
@@ -2104,6 +2166,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       tyrePressure: this.controls.tyrePressure,
       tyrePressureBar: this.tyrePressureBar,
       wadingDepth: this.wadingDepthValue,
+      wadingSea: this.wadingSeaValue,
       settling: this.settling,
       wheelSteer: [this.steering.left, this.steering.right, 0, 0],
       wheelSpin: Array.from(this.wheelSpin),
