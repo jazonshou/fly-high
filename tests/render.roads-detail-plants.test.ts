@@ -29,7 +29,7 @@ import {
   type InfrastructurePlantExclusion,
   type InfrastructureRegion,
 } from "@/src/world/infrastructure";
-import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
+import { packInfrastructureRegionsUpdate, type InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import { roadRegionInfrastructure } from "@/src/world/roads/roadInfrastructure";
 import { RoadNetwork, roadRegionOf } from "@/src/world/roads/roadNetwork";
 import { airportRoadHead } from "@/src/world/roads/roadNodes";
@@ -212,12 +212,12 @@ describe("the detail worker", () => {
     expect(fromWorker(roadCell)).toEqual(bare);
 
     const { update } = installRoads();
-    worker.handleCommand({ type: "infrastructure", update });
+    worker.handleCommand({ type: "infrastructure", update: packInfrastructureRegionsUpdate(update) });
     const built = generate(...roadCell);
     expect(fromWorker(roadCell)).toEqual(built);
     expect(onCleared(built, roadExclusions)).toBe(0);
 
-    worker.handleCommand({ type: "infrastructure", update: removeRoads().update });
+    worker.handleCommand({ type: "infrastructure", update: packInfrastructureRegionsUpdate(removeRoads().update) });
     expect(fromWorker(roadCell)).toEqual(bare);
   });
 
@@ -227,7 +227,7 @@ describe("the detail worker", () => {
     const worker = new WorkerRuntime((event) => events.push(event), () => undefined);
     worker.handleCommand({
       type: "initialize", worldSeed: world.seed, world, cellSizeMeters: CELL, seaLevelMeters: world.seaLevel,
-      infrastructure: { version: 1, reset: true, install: regions, remove: [] },
+      infrastructure: packInfrastructureRegionsUpdate({ version: 1, reset: true, install: regions, remove: [] }),
     });
     worker.handleCommand({
       type: "generate", requestId: 1, generation: 0, key: roadCell.join(":"),
@@ -444,7 +444,7 @@ describe("WorldDetailRuntime.infrastructureChanged", () => {
       const { change, update } = installRoads();
       const invalidated = runtime.infrastructureChanged(update, change);
       const sent = bridge.commands.slice(posted);
-      expect(sent[0]).toEqual({ type: "infrastructure", update });
+      expect(sent[0]).toEqual({ type: "infrastructure", update: packInfrastructureRegionsUpdate(update) });
       const released = sent.filter((command) => command.type === "releaseCell")
         .map((command) => (command as { token: number }).token);
       expect(released).toHaveLength(invalidated);

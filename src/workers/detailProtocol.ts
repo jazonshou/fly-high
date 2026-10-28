@@ -10,7 +10,7 @@ import type {
 } from "@/src/render/webgpu/detail/types";
 import type { TerrainAuxPagePublication } from "@/src/render/webgpu/terrain/TerrainPageAtlas";
 import type { AirportDefinition, WorldDefinition, WorldSeed } from "@/src/world";
-import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
+import type { InfrastructureRegionsPost } from "@/src/world/infrastructureSync";
 import type { TerrainMacroGrid, TerrainPagePublication } from "./terrainAuthority";
 
 /** Lightweight main-thread handle for one full cell retained by the worker. */
@@ -91,7 +91,7 @@ export type DetailWorkerCommand =
        * The streamed infrastructure regions (roads) the main thread holds now,
        * as a reset; sent with `world`.
        */
-      infrastructure?: InfrastructureRegionsUpdate;
+      infrastructure?: InfrastructureRegionsPost;
     }
   | {
       /**
@@ -101,7 +101,7 @@ export type DetailWorkerCommand =
        * invalidates the cells the change reaches and cancels their requests.
        */
       type: "infrastructure";
-      update: InfrastructureRegionsUpdate;
+      update: InfrastructureRegionsPost;
     }
   | {
       /**

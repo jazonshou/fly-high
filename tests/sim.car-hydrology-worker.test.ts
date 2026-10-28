@@ -3,7 +3,7 @@ import type { FlightVisualState } from "@/src/game/types";
 import { WORLD_PAGE_BASE_EXTENT_METERS, WORLD_PAGE_HEIGHT_CORE } from "@/src/render/webgpu/world/pageGeometry";
 import { HYDROLOGY_EVICTION_KEEP_METERS, packHydrologyWater, type HydrologyWaterLake } from "@/src/sim/water/hydrologyWater";
 import { clearInfrastructureRegions } from "@/src/world/infrastructure";
-import { InfrastructureRegionsForwarder } from "@/src/world/infrastructureSync";
+import { InfrastructureRegionsForwarder, packInfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import { createWorld } from "@/src/world/world";
 import type { SimulationCommand, SimulationEvent } from "@/src/workers/protocol";
 
@@ -78,7 +78,7 @@ function lake(x: number, z: number, level: number): HydrologyWaterLake {
 
 describe("the simulation worker's lakes and rivers, for the car", () => {
   it("wades a posted lake, keeps it on an eviction while near, and dries when it is replaced", () => {
-    const infrastructure = new InfrastructureRegionsForwarder(world).initial();
+    const infrastructure = packInfrastructureRegionsUpdate(new InfrastructureRegionsForwarder(world).initial());
     realm.send({
       type: "initialize",
       world,
