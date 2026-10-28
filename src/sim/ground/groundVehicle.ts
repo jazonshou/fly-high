@@ -2119,6 +2119,16 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     return false;
   }
 
+  /** Held at its start until the terrain under it streams in (the payload's `settling`), for the walking session. */
+  get waitingForGround(): boolean {
+    return this.settling;
+  }
+
+  /** On its roof or a side (the payload's `rolled`), for the walking session. */
+  get isRolled(): boolean {
+    return this.rolled;
+  }
+
   /** Engine speed, rpm. */
   get engineRpm(): number {
     return Math.max(0, this.driveline.omega[ENGINE]! * RPM_PER_RAD_S);

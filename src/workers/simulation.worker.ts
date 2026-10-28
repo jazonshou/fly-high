@@ -53,6 +53,7 @@ import {
   DEFAULT_CAR_SETUP,
   NEUTRAL_BOAT_CONTROLS,
   NEUTRAL_CAR_CONTROLS,
+  NEUTRAL_PERSON_CONTROLS,
   surfaceVisualState,
   type SurfaceVehicleControls,
   type SurfaceVehicleEnvironment,
@@ -78,6 +79,8 @@ import { CarColliders } from "@/src/sim/ground/carColliders";
 import { type CarSea, createCarSea } from "@/src/sim/ground/carSea";
 import { GroundVehicleSimulator } from "@/src/sim/ground/groundVehicle";
 import { MarinaHarbour } from "@/src/sim/marina/harbour";
+import { createPersonSimulator } from "@/src/sim/person";
+import { WalkingSession, type WalkingStart } from "@/src/sim/person/walkingSession";
 import { createSurfaceRecoverySpawn, createSurfaceSpawn } from "@/src/game/surfaceSpawn";
 import { vehicleClass, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type {
@@ -196,10 +199,17 @@ const hydrologyWater = new HydrologyWaterSource(terrainHeightSample);
 let carSea: CarSea | null = null;
 /** The car's gearbox and clutch, from the session's settings. */
 let carSetup: CarSetup = DEFAULT_CAR_SETUP;
+/**
+ * A car session's walking session: the walker and the car, exactly one
+ * driven (`src/sim/person/walkingSession.ts`). Every car session has one;
+ * boat sessions and aircraft sessions never do.
+ */
+let walking: WalkingSession | null = null;
 const surfaceControls: SurfaceVehicleControls = {
   assist: "scenic",
   boat: { ...NEUTRAL_BOAT_CONTROLS },
   car: { ...NEUTRAL_CAR_CONTROLS },
+  person: { ...NEUTRAL_PERSON_CONTROLS },
 };
 const surfaceWind = { x: 0, y: 0, z: 0 };
 const surfaceEnvironment: SurfaceVehicleEnvironment = {
@@ -284,11 +294,14 @@ function installSimulation(kind: AircraftSpawnKind, spawn: SpawnOptions): void {
   post({ type: "ready", state: visualState() });
 }
 
-function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn): void {
+function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn, start: WalkingStart = "car"): void {
   disengageAutoland();
   controls = { ...DEFAULT_CONTROLS };
   surfaceControls.boat = { ...NEUTRAL_BOAT_CONTROLS };
   surfaceControls.car = { ...NEUTRAL_CAR_CONTROLS };
+  surfaceControls.person = { ...NEUTRAL_PERSON_CONTROLS };
+  walking?.dispose();
+  walking = null;
   surfaceEnvironment.world = world;
   const boat = vehicleClass(kind) === "boat";
   // The sea the renderer draws, from the same spectrum, seed and weather,
@@ -314,6 +327,10 @@ function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn): v
   surfaceEnvironment.colliders = carColliders?.colliders ?? null;
   surface = createSurfaceSimulator(kind, boat ? spawn : { ...spawn, car: carSetup });
   harbour = surface instanceof BoatSimulator && world ? new MarinaHarbour(world, surface) : null;
+  if (!boat) {
+    const person = createPersonSimulator({ position: spawn.position, heading: spawn.heading });
+    walking = new WalkingSession(surface, person, start, surfaceEnvironment);
+  }
   if (harbour && spawn.moored && world) harbour.makeFastAtStart(world);
   accumulator = 0;
   lastTime = performance.now();
@@ -324,6 +341,25 @@ function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn): v
 function surfaceVehicleOrThrow(): SurfaceVehicleKind {
   if (!surfaceVehicle) throw new Error("A surface start needs a surface vehicle: this session has none");
   return surfaceVehicle;
+}
+
+/** One step of a car session's walking session; true when the driven one changed. */
+function stepWalking(session: WalkingSession): boolean {
+  if (!world) return false;
+  const position = session.focus;
+  const wind = sampleWind(world, position.x, position.y, position.z, session.car.state.time, windTarget);
+  const windScale = weather === "clear" ? 0.62 : weather === "cloudy" ? 1.28 : 1;
+  surfaceWind.x = wind.x * windScale;
+  surfaceWind.y = wind.y * windScale;
+  surfaceWind.z = wind.z * windScale;
+  surfaceEnvironment.water.setTime(session.car.state.time);
+  hydrologyWater.setVehiclePosition(position.x, position.z);
+  surfaceControls.assist = mode;
+  surfaceControls.boat = NEUTRAL_BOAT_CONTROLS;
+  if (controls.car) surfaceControls.car = controls.car;
+  else delete surfaceControls.car;
+  surfaceControls.person = controls.person ?? NEUTRAL_PERSON_CONTROLS;
+  return session.step(FIXED_TIME_STEP, surfaceControls, controls.interactPresses);
 }
 
 function stepSurface(active: SurfaceVehicleSimulator): void {
@@ -428,9 +464,11 @@ function reset(kind: SpawnKind, requestedAirborneStartAgl = airborneStartAgl): v
   airborneStartAgl = normalizeAirborneStartAgl(requestedAirborneStartAgl);
   if (isSurfaceSpawn(kind)) {
     const vehicle = surfaceVehicleOrThrow();
-    installSurface(vehicle, createSurfaceSpawn(world, vehicle));
+    installSurface(vehicle, createSurfaceSpawn(world, vehicle), kind === "foot" ? "foot" : "car");
     return;
   }
+  walking?.dispose();
+  walking = null;
   surface = null;
   harbour = null;
   installSimulation(
@@ -482,7 +520,8 @@ function restartAfterCrash(requestedAirborneStartAgl = airborneStartAgl): void {
  */
 function recoverCar(): void {
   if (!(surface instanceof GroundVehicleSimulator)) return;
-  surface.recover();
+  if (walking) walking.recover();
+  else surface.recover();
   accumulator = 0;
   lastTime = performance.now();
   lastSnapshotTime = 0;
@@ -664,6 +703,7 @@ function assistedControls(): FlightControls {
 }
 
 function visualState(): FlightVisualState {
+  if (walking) return walking.visualState(terrainAuthority.countersSnapshot());
   if (surface) return surfaceVisualState(surface.snapshot(), terrainAuthority.countersSnapshot());
   if (!simulator) throw new Error("Simulation has not been initialized");
   const snapshot = simulator.snapshot();
@@ -710,7 +750,14 @@ function simulationTick(): void {
   if (paused || !world || (!simulator && !surface)) return;
   accumulator += elapsed;
   let steps = 0;
+  let drivenChanged = false;
   while (accumulator >= FIXED_TIME_STEP && steps < 6) {
+    if (walking) {
+      if (stepWalking(walking)) drivenChanged = true;
+      accumulator -= FIXED_TIME_STEP;
+      steps += 1;
+      continue;
+    }
     if (surface) {
       stepSurface(surface);
       accumulator -= FIXED_TIME_STEP;
@@ -750,6 +797,13 @@ function simulationTick(): void {
     steps += 1;
   }
   if (steps === 6) accumulator = 0;
+  if (drivenChanged) {
+    // Getting in or out changes what the common state describes: the
+    // renderer cuts to it rather than blending the person into the car.
+    lastSnapshotTime = now;
+    post({ type: "ready", state: visualState() });
+    return;
+  }
   if (now - lastSnapshotTime >= 1000 / 60) {
     lastSnapshotTime = now;
     post({ type: "snapshot", state: visualState() });
@@ -911,6 +965,8 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       // End-flight is one state transition: no timer tick can observe a new
       // airborne state without the menu controller that is meant to own it.
       attractMode = true;
+      walking?.dispose();
+      walking = null;
       surface = null;
       harbour = null;
       reset("airborne", command.airborneStartAgl);

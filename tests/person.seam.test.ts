@@ -77,7 +77,7 @@ describe("foot spawn", () => {
     expect(isCarSpawn("foot")).toBe(true);
     expect(isCarSpawn("airfield")).toBe(true);
     expect(isCarSpawn("dock")).toBe(false);
-    expect(inputProfileForSpawn("foot")).toBe("car");
+    expect(inputProfileForSpawn("foot")).toBe("person");
   });
 });
 
