@@ -1,6 +1,7 @@
 import type { CarSetup, ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
 import type { AircraftKind } from "@/src/sim";
 import { DEFAULT_CAR_SETUP } from "@/src/sim/surface/types";
+import type { NearSolidsPost } from "@/src/sim/person/nearSolids";
 import type { HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR, type AirportDefinition, type WorldDefinition } from "@/src/world";
@@ -263,6 +264,11 @@ export class SimulationClient {
   /** The renderer is done with a hydrology region. */
   evictHydrology(key: string): void {
     this.send({ type: "hydrologyEvict", key });
+  }
+
+  /** The trunks, rocks, logs and stumps round the walker; copied, the renderer keeps its own. */
+  publishNearSolids(post: NearSolidsPost): void {
+    this.send({ type: "nearSolids", post });
   }
 
   /** The world's full airport list, home field first (see `withAirports`). */

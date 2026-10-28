@@ -80,6 +80,7 @@ import { type CarSea, createCarSea } from "@/src/sim/ground/carSea";
 import { GroundVehicleSimulator } from "@/src/sim/ground/groundVehicle";
 import { MarinaHarbour } from "@/src/sim/marina/harbour";
 import { createPersonSimulator } from "@/src/sim/person";
+import { nearSolidsColliderWorld } from "@/src/sim/person/nearSolids";
 import { WalkingSession, type WalkingStart } from "@/src/sim/person/walkingSession";
 import { createSurfaceRecoverySpawn, createSurfaceSpawn } from "@/src/game/surfaceSpawn";
 import { vehicleClass, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
@@ -834,6 +835,7 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       terrainAuthority.clear();
       hydrologyWater.clear();
       carColliders = null;
+      surfaceEnvironment.nearSolids = null;
       world = command.world;
       applyInfrastructure(command.infrastructure);
       aircraftKind = command.aircraft;
@@ -867,6 +869,10 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
     }
     if (command.type === "hydrologyEvict") {
       hydrologyWater.evictRegion(command.key);
+      return;
+    }
+    if (command.type === "nearSolids") {
+      surfaceEnvironment.nearSolids = nearSolidsColliderWorld(command.post);
       return;
     }
     if (command.type === "airports") {

@@ -6,6 +6,7 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { AircraftKind } from "@/src/sim";
+import type { NearSolidsPost } from "@/src/sim/person/nearSolids";
 import type { HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
 import { vehicleClass, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type { AirportDefinition, WorldDefinition } from "@/src/world";
@@ -133,6 +134,12 @@ export type SimulationCommand =
   | { type: "hydrology"; key: string; region: HydrologyWaterRegion }
   /** The renderer is done with a hydrology region: the worker drops it once the vehicle is about a kilometre clear. */
   | { type: "hydrologyEvict"; key: string }
+  /**
+   * The trunks, rocks, logs and stumps the near view draws round the walker
+   * (`src/sim/person/nearSolids.ts`), newest list replacing the last: the
+   * walker meets them through `SurfaceVehicleEnvironment.nearSolids`.
+   */
+  | { type: "nearSolids"; post: NearSolidsPost }
   /**
    * Engage the autoland on the nearest airport's runway, or hand back. The
    * worker refuses to engage on the ground and in the menu flight, and drops

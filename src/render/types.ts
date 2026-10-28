@@ -6,6 +6,7 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { EnvironmentClock } from "@/src/world/environmentClock";
+import type { NearSolidsPost } from "@/src/sim/person/nearSolids";
 import type { HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
 import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import type { AirportDefinition } from "@/src/world/types";
@@ -37,6 +38,12 @@ export interface TerrainAuthorityPublisher {
    */
   publishHydrology?(key: string, region: HydrologyWaterRegion): void;
   evictHydrology?(key: string): void;
+  /**
+   * The detail worker's newest near-solids list round the walker
+   * (`WorldDetailRuntime.setNearSolidsFocus`), for the walker. Absent: the
+   * publisher's walker meets no trees.
+   */
+  publishNearSolids?(post: NearSolidsPost): void;
 }
 
 /** A world point on the canvas, written in place by `projectWorldPointToRef`. */
