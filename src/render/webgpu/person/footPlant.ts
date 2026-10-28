@@ -71,8 +71,8 @@ const MAX_TRAILING_DROP = 0.05;
 const MAX_HEEL_RAISE = 0.6;
 /** The ball's joint above the sole with the toes flat. */
 const MTP_HEIGHT = 0.022;
-/** How fast the pelvis may rise back after a foot lets it down, m/s. */
-const MAX_RISE = 0.6;
+/** How fast the pelvis may rise back after a foot lets it down walking, m/s. */
+export const MAX_RISE = 0.6;
 const NORMAL_SPAN = 0.15;
 
 /** The heel's and the ball's sole points in the bind pose, per side, and the ankle. */
@@ -100,6 +100,8 @@ export interface FootSolveOptions {
   readonly deltaSeconds: number;
   /** 0..1: how much of the solve to apply (0 leaves the forward-kinematic legs). */
   readonly weight: number;
+  /** How fast the pelvis may rise back after the feet let it down, m/s (`MAX_RISE` walking). */
+  readonly riseRate: number;
 }
 
 export interface FootSolveResult {
@@ -352,7 +354,7 @@ export class FootPlanter {
     lift -= drop;
     // Rising back is eased; going down is not (the legs must reach).
     const rise = lift - this.lastLift;
-    const allowed = MAX_RISE * options.deltaSeconds;
+    const allowed = options.riseRate * options.deltaSeconds;
     if (rise > allowed && !firstFrame) {
       shiftBody(pose, allowed - rise);
       lift = this.lastLift + allowed;

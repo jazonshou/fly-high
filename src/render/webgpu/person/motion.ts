@@ -4,7 +4,7 @@ import { ActionChannels, rollKeyedSeconds, STAND, smoothstep } from "./actions";
 import { CarSeatMotion, SEAT, type BoardingFrom } from "./carSeat";
 import { applyChannels, CH, createChannels, LIMB_OFFSET, mixChannels, SIDE_BASE } from "./channels";
 import { PROPORTIONS } from "./figureProportions";
-import { FootPlanter, type GroundOffset } from "./footPlant";
+import { FootPlanter, MAX_RISE, type FootSolveOptions, type GroundOffset } from "./footPlant";
 import { dimensionlessSpeed, strideLength } from "./gait";
 import { WALK_GROUP_SPEED } from "./gaitData";
 import { setGlobalRotation, solveTwoBone } from "./ik";
@@ -55,6 +55,8 @@ export interface MotionOutput {
   strikeFoot: "left" | "right";
 }
 
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
 type Family = "ground" | "air" | "land" | "swim" | "dive" | "mantle" | "car";
 
 const FAMILY: Readonly<Record<PersonMode, Family>> = Object.freeze({
@@ -90,6 +92,24 @@ const EYE_BIND = Object.freeze([0.085, PERSON.eyeHeight, 0]);
 const VERY_SLOW = WALK_GROUP_SPEED[0]!;
 /** Speeds under this stand (both feet planted, stepping only to turn or settle). */
 const STAND_SPEED = 0.1;
+/** How fast the climb stands up on the top, m/s: its own crouch, not a foot letting the pelvis down. */
+const CLIMB_RISE = 3;
+/** The sim's feet further than this from the drawn terrain stand on something it does not draw, m. */
+const OFF_TERRAIN = 0.12;
+/** The climb's hands: how far ahead of where it began they go on the top, and how far apart. */
+const CLIMB_HAND_REACH = 0.36;
+const CLIMB_HAND_SPREAD = 0.2;
+/**
+ * The climb's pelvis over its key times: its height over where the climb
+ * began, as a constant plus a share of the ledge's height, and how far
+ * ahead of the climb's start. ESTIMATES: standing, crouched to jump, the
+ * hands on the top, pressed up on straight arms 0.15 m over it, the left
+ * knee over it, its foot on it, standing on it.
+ */
+const CLIMB_PELVIS_TIMES = Object.freeze([0, 0.12, 0.3, 0.48, 0.56, 0.66, 1]);
+const CLIMB_PELVIS_HEIGHT = Object.freeze([0.93, 0.78, 0.6, 0.15, 0.22, 0.47, 0.93]);
+const CLIMB_PELVIS_LEDGE = Object.freeze([0, 0, 0.5, 1, 1, 1, 1]);
+const CLIMB_PELVIS_AHEAD = Object.freeze([0, 0.02, 0.08, 0.18, 0.24, 0.32, 0.32]);
 
 export class PersonMotion {
   /** The drawn pose: locals and globals current after `update`. */
@@ -122,6 +142,20 @@ export class PersonMotion {
   private lastLandingAge = Number.POSITIVE_INFINITY;
   private firstPerson = false;
   private lookWeight = 1;
+  /** The mantle is a climb from the feet (upright from its start), not out of the water. */
+  private climbing = false;
+  /** The root's rise and travel since the mantle began, and the ledge's height over where it began, m. */
+  private climbUp = 0;
+  private climbForward = 0;
+  private climbHeight = 0.8;
+  /** The drawn ground under the feet, relative to the root, or flat when they stand on something else. */
+  private groundSource: GroundOffset = flatGround;
+  private groundOnTerrain = true;
+  /** Both feet were on the ground as this family began, and the planter keeps them there. */
+  private feetKept = false;
+  private readonly solveOptions: Mutable<FootSolveOptions> = {
+    stance: [true, true], standing: true, ground: flatGround, deltaSeconds: 0, weight: 0, riseRate: MAX_RISE,
+  };
 
   setFirstPersonView(enabled: boolean): void {
     this.firstPerson = enabled;
@@ -134,6 +168,13 @@ export class PersonMotion {
     this.time += dt;
     const family = FAMILY[person.mode];
     if (family !== this.family) this.enter(family);
+    if (family === "mantle" && this.familyAge === 0) {
+      // From the feet the sim holds the body upright from the start; out of the water it pitches up.
+      this.climbing = person.swimPitch > Math.PI / 2 - 0.05;
+      this.climbUp = 0;
+      this.climbForward = 0;
+      this.climbHeight = 0.8;
+    }
     this.familyAge += dt;
     if (this.fade < 1) this.fade = this.fadeSeconds > 0 ? Math.min(1, this.fade + dt / this.fadeSeconds) : 1;
     if (family !== "car") this.feet.carry(input.forward * dt, input.up * dt, input.right * dt, input.turnRate * dt);
@@ -155,7 +196,11 @@ export class PersonMotion {
     let stanceL = true;
     let stanceR = true;
     let strikeStrength = 0;
-    let ground: GroundOffset = input.ground;
+    // The sim's feet stand on the drawn terrain (it is under the root), or on a deck, a rail's top or a
+    // ledge the terrain does not draw: then the ground is flat at the root.
+    this.groundSource = input.ground;
+    this.groundOnTerrain = Math.abs(input.ground(0, 0)) < OFF_TERRAIN;
+    let ground: GroundOffset = this.stoodOn;
     let lookWeight = 1;
     switch (family) {
       case "ground": {
@@ -209,11 +254,20 @@ export class PersonMotion {
       }
       case "mantle": {
         const t = Math.min(1, this.familyAge / PERSON.mantleSeconds);
-        this.actions.mantle(t, ch);
-        groundWeight = smoothstep(0.78, 1, t);
-        standing = true;
         lookWeight = 0;
-        this.setRoot(target, 0, 0, 0, 0, 0, 0);
+        if (this.climbing) {
+          this.climbFrame(input, t, dt, ch, target);
+          // The left foot up onto the top, then the right: the planter holds them there as the body comes over.
+          groundWeight = smoothstep(0.6, 0.68, t);
+          stanceL = t > 0.62;
+          stanceR = t > 0.88;
+          standing = t > 0.88;
+        } else {
+          this.actions.mantle(t, ch);
+          groundWeight = smoothstep(0.78, 1, t);
+          standing = true;
+          this.setRoot(target, 0, 0, 0, 0, 0, 0);
+        }
         break;
       }
       case "car": {
@@ -250,13 +304,16 @@ export class PersonMotion {
     pose.computeGlobals();
 
     if (groundWeight > 0) {
-      const result = this.feet.solve(pose, {
-        stance: stanceFlags(stanceL, stanceR),
-        standing,
-        ground,
-        deltaSeconds: dt,
-        weight: groundWeight * (FADE_INTO[family] > 0 ? smooth01(this.fade) : 1),
-      });
+      const options = this.solveOptions;
+      options.stance = stanceFlags(stanceL, stanceR);
+      options.standing = standing;
+      options.ground = ground;
+      options.deltaSeconds = dt;
+      // Feet still on the ground from the family before (a landing's crouch, a climb) stay there through the fade.
+      options.weight = groundWeight * (FADE_INTO[family] > 0 && !this.feetKept ? smooth01(this.fade) : 1);
+      // The climb stands up off its crouch at its own pace.
+      options.riseRate = family === "mantle" ? CLIMB_RISE : MAX_RISE;
+      const result = this.feet.solve(pose, options);
       if (result.strikes > 0 && family !== "land") {
         output.footStrikes += result.strikes;
         output.strikeStrength = standing ? 0.15 : strikeStrength;
@@ -266,6 +323,7 @@ export class PersonMotion {
       this.feet.release();
     }
     if (family === "car") this.reachSeatTargets(pose);
+    if (family === "mantle" && this.climbing) this.reachLedge(pose, Math.min(1, this.familyAge / PERSON.mantleSeconds));
     this.look(pose, input.lookYaw, input.lookPitch, this.lookWeight);
     if (this.firstPerson) {
       // The head (and the face) shrink into the neck: the eye sits inside it.
@@ -275,11 +333,62 @@ export class PersonMotion {
   }
 
   private readonly seatGround: GroundOffset = () => SEAT.ground;
+  private readonly stoodOn: GroundOffset = (forward, right) => (this.groundOnTerrain ? this.groundSource(forward, right) : 0);
+
+  /**
+   * One frame of the climb from the feet: its key poses, and the body drawn
+   * under the root as it rises. The sim lifts the feet point onto the ledge
+   * over the first 60% of the mantle (a smoothstep) and carries it over the
+   * last 70%; the body is lower than that (crouched, then pressed up on its
+   * arms with the pelvis just over the top) until the left foot is on the
+   * top, where the feet's planter takes over. The ledge's height comes from
+   * the rise so far, as the sim's smoothstep makes it.
+   */
+  private climbFrame(input: MotionInput, t: number, dt: number, ch: Float64Array, target: FigurePose): void {
+    this.climbUp += input.up * dt;
+    this.climbForward += input.forward * dt;
+    const rise = smoothstep(0, 0.6, t);
+    if (rise > 0.05) this.climbHeight = this.climbUp / rise;
+    this.actions.climb(t, ch);
+    const h = this.climbHeight;
+    // The pelvis's height over where the climb began, and its travel toward the ledge.
+    const pelvis = sampleCurve(CLIMB_PELVIS_TIMES, CLIMB_PELVIS_HEIGHT, t) + h * sampleCurve(CLIMB_PELVIS_TIMES, CLIMB_PELVIS_LEDGE, t);
+    const ahead = sampleCurve(CLIMB_PELVIS_TIMES, CLIMB_PELVIS_AHEAD, t);
+    const fromRoot = 1 - smoothstep(0.66, 0.88, t);
+    this.setRoot(
+      target,
+      Math.max(0, ahead - this.climbForward) * fromRoot,
+      Math.min(0, pelvis - PROPORTIONS.hipHeight - this.climbUp) * fromRoot,
+      0,
+      0,
+      0,
+      0,
+    );
+  }
+
+  /** The climb's hands on the top: the wrists just over it, fixed there in the world while they bear the body. */
+  private reachLedge(pose: FigurePose, t: number): void {
+    const weight = smoothstep(0.08, 0.18, t) * (1 - smoothstep(0.6, 0.72, t));
+    if (weight <= 0) return;
+    const gp = pose.globalPositions;
+    const x = CLIMB_HAND_REACH - 0.06 - this.climbForward;
+    const y = this.climbHeight + 0.04 - this.climbUp;
+    for (let side = 0; side < 2; side += 1) {
+      const bones = SIDES[side]!;
+      const z = bones.sign * CLIMB_HAND_SPREAD;
+      const ex = gp[bones.hand * 3]!;
+      const ey = gp[bones.hand * 3 + 1]!;
+      const ez = gp[bones.hand * 3 + 2]!;
+      solveTwoBone(pose, bones.upperArm, bones.forearm, bones.hand, ex + (x - ex) * weight, ey + (y - ey) * weight, ez + (z - ez) * weight);
+    }
+    pose.computeGlobals();
+  }
 
   private enter(family: Family): void {
     const previous = this.family;
     this.family = family;
     this.familyAge = 0;
+    this.feetKept = family === "ground" && this.feet.feet[0].planted && this.feet.feet[1].planted;
     // The first frame, and the car's frame change, cut; everything else fades from the drawn pose.
     if (previous === null || family === "car" || previous === "car") {
       this.fade = 1;
@@ -570,6 +679,19 @@ const NEITHER = Object.freeze([false, false] as const);
 export function walkAmplitude(speed: number): number {
   const vHat = dimensionlessSpeed(Math.max(0, speed));
   return Math.min(1, Math.sqrt(vHat / VERY_SLOW)) * smoothstep(STAND_SPEED * 0.5, STAND_SPEED * 2.5, speed);
+}
+
+/** The value at `t` of a curve through (times, values), smoothstepped between its keys. */
+function sampleCurve(times: readonly number[], values: readonly number[], t: number): number {
+  if (t <= times[0]!) return values[0]!;
+  for (let i = 0; i + 1 < times.length; i += 1) {
+    if (t <= times[i + 1]!) return values[i]! + (values[i + 1]! - values[i]!) * smooth01((t - times[i]!) / (times[i + 1]! - times[i]!));
+  }
+  return values[values.length - 1]!;
+}
+
+function flatGround(): number {
+  return 0;
 }
 
 function fraction(value: number): number {

@@ -14,7 +14,8 @@ import { both, channels, CH, createChannels, LIMB_OFFSET, SIDE_BASE, mixChannels
  *  - treading water: the eggbeater kick under sculling hands;
  *  - the hard landing's crouch and the parachute-style roll (a forward roll
  *    over the tucked body), and the jump's take-off and air;
- *  - the mantle out of the water onto a ledge.
+ *  - the mantle out of the water onto a ledge, and the climb over a rail or
+ *    a low wall from the feet (hands on the top, a knee up onto it).
  *
  * Shoulder flexion of 180 is the arm along the body past the head (overhead
  * standing, ahead of a prone swimmer).
@@ -173,9 +174,19 @@ export class ActionChannels {
     return 2 * Math.PI * u;
   }
 
-  /** Climbing out onto a ledge, `t` 0..1 through it. */
+  /** Climbing out of the water onto a ledge, `t` 0..1 through it. */
   mantle(t: number, out: Float64Array): void {
     sampleChannelKeys(MANTLE_TIMELINE, t, out);
+  }
+
+  /**
+   * Climbing a rail or a low wall from the feet, `t` 0..1 through it: a
+   * crouch reaching for the top, the jump with the hands on it, pressed up
+   * on straight arms, the left knee and foot up onto it, the right leg
+   * over, standing.
+   */
+  climb(t: number, out: Float64Array): void {
+    sampleChannelKeys(CLIMB_TIMELINE, t, out);
   }
 
   /** Breathing and a slow weight shift standing, added to `out` scaled by `amount`. */
@@ -235,6 +246,22 @@ const MANTLE_TIMELINE: ChannelKeys = [
   [0.22, channels({ ...both({ shFlex: 140, shAbd: 25, elbow: 25, wristFlex: -35, fingers: 20, hipFlex: 20, knee: 35, ankle: -20 }), spineFlex: 5, neckFlex: -10 })],
   [0.5, channels({ ...both({ shFlex: -10, shAbd: 25, elbow: 15, wristFlex: -70, fingers: 10, hipFlex: 10, knee: 20, ankle: -25 }), spineFlex: 25, neckFlex: -20 })],
   [0.72, channels({ shFlexL: 20, shFlexR: 20, shAbdL: 15, shAbdR: 15, elbowL: 30, elbowR: 30, wristFlexL: -60, wristFlexR: -60, hipFlexL: 110, kneeL: 125, ankleL: 15, hipFlexR: 70, kneeR: 90, ankleR: -10, spineFlex: 45, neckFlex: -25 })],
+  [1, STAND],
+];
+
+const CLIMB_PRESS_ARMS = { shFlex: -5, shAbd: 20, elbow: 15, wristFlex: -75, fingers: 10 } as const;
+const CLIMB_TIMELINE: ChannelKeys = [
+  [0, STAND],
+  [0.12, channels({ ...both({ shFlex: 105, shAbd: 15, elbow: 35, wristFlex: -40, fingers: 20, hipFlex: 35, knee: 60, ankle: 20 }), spineFlex: 22, neckFlex: -15 })],
+  [0.3, channels({ ...both({ shFlex: 45, shAbd: 20, elbow: 70, wristFlex: -60, fingers: 15, hipFlex: 60, knee: 95, ankle: -10 }), spineFlex: 28, neckFlex: -15 })],
+  // Pressed up on straight arms, the legs hanging against the wall.
+  [0.48, channels({ ...both({ ...CLIMB_PRESS_ARMS, hipFlex: 15, knee: 35, ankle: -25 }), spineFlex: 30, neckFlex: -20 })],
+  // The left knee up over the top, its foot tucked behind it, then the foot on the top.
+  [0.56, channels({ ...both(CLIMB_PRESS_ARMS), hipFlexL: 90, kneeL: 140, ankleL: 20, hipFlexR: 20, kneeR: 45, ankleR: -20, spineFlex: 55, neckFlex: -25 })],
+  [0.66, channels({ ...both({ shFlex: 5, shAbd: 15, elbow: 20, wristFlex: -60, fingers: 10 }), hipFlexL: 105, kneeL: 115, ankleL: 20, hipFlexR: 70, kneeR: 135, ankleR: 0, spineFlex: 50, neckFlex: -20 })],
+  // The right leg over, rising.
+  [0.8, channels({ ...both({ shFlex: 20, shAbd: 12, elbow: 30, wristFlex: -20, fingers: 20 }), hipFlexL: 80, kneeL: 95, ankleL: 15, hipFlexR: 85, kneeR: 110, ankleR: 5, spineFlex: 30, neckFlex: -10 })],
+  [0.9, channels({ ...both({ shFlex: 15, shAbd: 6, elbow: 25, fingers: 25, hipFlex: 40, knee: 55, ankle: 12 }), spineFlex: 15 })],
   [1, STAND],
 ];
 
