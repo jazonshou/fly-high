@@ -634,4 +634,41 @@ describe("the roads' surface system", () => {
     expect(counts[0]!.ribbonChunks).toBeLessThan(counts[1]!.ribbonChunks / 4);
     expect(counts[0]!.ribbonVertices).toBeLessThan(counts[1]!.ribbonVertices / 4);
   });
+
+  it("holds a capture while a layer with chunks in reach is hidden, or selected and not drawn", () => {
+    const system = new RoadSurfaceSystem(scene, terrain, ultra);
+    system.apply([...regions, railRegion], []);
+    settle(system, head.startX, head.startZ);
+    // A frame as Babylon renders one: each mesh selected (onBeforeRender), and drawn to its end (onAfterRender) or not.
+    const frame = (drawn: readonly boolean[]) => {
+      scene.incrementRenderId();
+      system.meshes.forEach((mesh, index) => {
+        mesh.onBeforeRenderObservable.notifyObservers(mesh);
+        if (drawn[index]) mesh.onAfterRenderObservable.notifyObservers(mesh);
+      });
+    };
+    frame([true, true]);
+    expect(system.statistics.undrawnLayers).toBe(0);
+    expect(system.pendingWork).toBe(0);
+    // The ribbon's material not ready for its draw: the frame selects it and skips it.
+    frame([false, true]);
+    expect(system.statistics.undrawnLayers).toBe(1);
+    expect(system.pendingWork).toBe(1);
+    frame([true, true]);
+    expect(system.pendingWork).toBe(0);
+    // Culled (not selected at all): nothing to wait for.
+    scene.incrementRenderId();
+    expect(system.pendingWork).toBe(0);
+    system.dispose();
+
+    // Hidden with its chunks in reach: the ground's arrays gone (as while they are rebuilt).
+    const bare = new RoadSurfaceSystem(scene, { ...terrain, surfaceMaterialArrays: null }, ultra);
+    bare.apply(regions, []);
+    for (let step = 0; step < 1_000 && bare.statistics.ribbonVertices === 0; step += 1) bare.update(head.startX, head.startZ);
+    bare.update(head.startX, head.startZ);
+    expect(bare.meshes[0]!.isEnabled()).toBe(false);
+    expect(bare.statistics.undrawnLayers).toBe(1);
+    expect(bare.pendingWork).toBeGreaterThan(0);
+    bare.dispose();
+  });
 });

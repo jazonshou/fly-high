@@ -10,6 +10,7 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { PipelineWarmUp } from "../core/AsyncPipelineCompiles";
 import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import type { TerrainDrawnAtlasShape, TerrainDrawnHeight } from "../terrain/TerrainDrawnHeight";
+import { TERRAIN_MATERIAL_LIGHTING } from "../terrain/TerrainSurfacePlugin";
 import {
   ROAD_RAIL_FINISH,
   RoadSurfaceMaterialPlugin,
@@ -89,6 +90,12 @@ export interface RoadSurfaceStatistics {
   readonly railVertices: number;
   /** Meshes drawn this frame (0-2). */
   readonly draws: number;
+  /**
+   * Layers with chunks in reach that the last frame did not draw: hidden
+   * (their material or binding not ready) or selected and skipped (their
+   * material not ready for the draw). Part of `pendingWork`.
+   */
+  readonly undrawnLayers: number;
   /** Layers drawing their pipeline warm-up this frame (0-2), and layers whose pipelines are proven built. */
   readonly warmUps: number;
   readonly warmLayers: number;
@@ -144,6 +151,9 @@ interface Layer {
   placeholder: boolean;
   /** Its pipelines are built (or the warm-up was declined: capture mode). */
   pipelinesWarm: boolean;
+  /** The scene render that last selected the mesh, and the last that drew it (`Mesh.render` to its end). */
+  selectedAt: number;
+  drawnAt: number;
 }
 
 export class RoadSurfaceSystem {
@@ -189,9 +199,17 @@ export class RoadSurfaceSystem {
     return [this.ribbon.material, this.rail.material];
   }
 
-  /** Streamed changes not yet in the index and chunks in reach not yet written as it stands: a capture waits for none. */
+  /**
+   * Streamed changes not yet in the index, chunks in reach not yet written as
+   * it stands, and layers the last frame should have drawn and did not: a
+   * capture waits for none.
+   */
   get pendingWork(): number {
-    return this.index.pendingSteps + this.ribbon.pending + this.rail.pending;
+    return this.index.pendingSteps + this.ribbon.pending + this.rail.pending + this.undrawnLayers;
+  }
+
+  private get undrawnLayers(): number {
+    return (this.undrawn(this.ribbon) ? 1 : 0) + (this.undrawn(this.rail) ? 1 : 0);
   }
 
   get statistics(): RoadSurfaceStatistics {
@@ -203,6 +221,7 @@ export class RoadSurfaceSystem {
       ribbonVertices: chunkVertices(this.ribbon),
       railVertices: chunkVertices(this.rail),
       draws: this.draws,
+      undrawnLayers: this.undrawnLayers,
       warmUps: this.warmUps,
       warmLayers: (this.ribbon.pipelinesWarm ? 1 : 0) + (this.rail.pipelinesWarm ? 1 : 0),
       writes: this.writes,
@@ -495,6 +514,16 @@ export class RoadSurfaceSystem {
     layer.mesh.setBoundingInfo(info);
   }
 
+  /**
+   * A layer with chunks in reach that is hidden, or that the last render
+   * selected and did not draw (its material not ready for the draw).
+   */
+  private undrawn(layer: Layer): boolean {
+    if (chunkVertices(layer) === 0) return false;
+    if (!layer.mesh.isEnabled()) return true;
+    return layer.selectedAt === this.scene.getRenderId() && layer.drawnAt !== layer.selectedAt;
+  }
+
   private placeLayer(layer: Layer): void {
     layer.mesh.position.set(
       layer.anchorCx * ROAD_RIBBON_CHUNK_METERS - this.originX,
@@ -515,6 +544,11 @@ export class RoadSurfaceSystem {
       // Depth bias, not lift: the drawn facets under a ribbon never cut it.
       material.zOffset = -1;
       material.zOffsetUnits = -4;
+      // Lit as the ground it is painted on (the plugin shades it as the terrain's paint).
+      material.environmentIntensity = TERRAIN_MATERIAL_LIGHTING.environmentIntensity;
+      material.directIntensity = TERRAIN_MATERIAL_LIGHTING.directIntensity;
+      material.specularIntensity = TERRAIN_MATERIAL_LIGHTING.specularIntensity;
+      material.enableSpecularAntiAliasing = TERRAIN_MATERIAL_LIGHTING.enableSpecularAntiAliasing;
     }
     prepareMaterialForClusteredLighting(material);
     const plugin = new RoadSurfaceMaterialPlugin(material, role);
@@ -527,7 +561,7 @@ export class RoadSurfaceSystem {
     if (role === "rail") mesh.alwaysSelectAsActiveMesh = true;
     mesh.metadata = { roadSurface: role, castsShadow: false };
     mesh.setEnabled(false);
-    return {
+    const layer: Layer = {
       role,
       mesh,
       material,
@@ -543,7 +577,16 @@ export class RoadSurfaceSystem {
       anchorCz: 0,
       placeholder: false,
       pipelinesWarm: false,
+      selectedAt: -1,
+      drawnAt: -1,
     };
+    mesh.onBeforeRenderObservable.add(() => {
+      layer.selectedAt = this.scene.getRenderId();
+    });
+    mesh.onAfterRenderObservable.add(() => {
+      layer.drawnAt = this.scene.getRenderId();
+    });
+    return layer;
   }
 }
 

@@ -12,9 +12,28 @@ import {
   type TerrainDrawnAtlasShape,
   type TerrainDrawnHeight,
 } from "../terrain/TerrainDrawnHeight";
+import { groundCoverOf } from "../terrain/GroundPatchwork";
+import { GROUND_GRAIN_LAYER } from "../terrain/GroundGrainSynthesis";
+import { rockReliefShareOf } from "../terrain/RockRelief";
 import {
+  DEFAULT_DETILE_WARP,
+  groundGrainAlbedoWgsl,
+  groundGrainFunctionsWgsl,
+  groundGrainReadsWgsl,
+  groundGrainReliefWgsl,
   TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS,
   TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS,
+  TERRAIN_SURFACE_INJECTION_ANCHORS,
+  terrainMacroWashHueWgsl,
+  terrainMacroWashNoiseWgsl,
+  terrainMesoAlbedoWgsl,
+  terrainMesoFieldsWgsl,
+  terrainMesoRoughnessWgsl,
+  terrainMesoSlopeWgsl,
+  terrainMesoToneWgsl,
+  terrainMesoWeightsWgsl,
+  terrainSurfaceDetileWarpWgsl,
+  terrainSurfaceF90Wgsl,
 } from "../terrain/TerrainSurfacePlugin";
 import { INFRASTRUCTURE_TRACK_EARTH_TINT } from "../terrain/TerrainInfrastructureKernel";
 import { SURFACE_MATERIALS, SurfaceMaterial } from "../terrain/surfaceMaterials";
@@ -39,11 +58,24 @@ import { ROAD_RIBBON_CHUNK_METERS, ROAD_RIBBON_PAD_KIND } from "./roadSurfaceGeo
  *
  * WHAT A RIBBON LOOKS LIKE. Opaque, sampled from the terrain's own material
  * arrays (asphalt, gravel), planar, at their tiling periods, so the ribbon is
- * the material the splat paints under it, only sharp. Its edge is ragged:
- * loose stone spills up to `raggedMeters` past the formation, where the splat's
- * own feather takes over. A track draws its two ruts only (the sward between
- * and beside them is the terrain's). The sealed road carries white edge lines
- * inside its seal, faded with their footprint so they never alias.
+ * the material the splat paints under it, only sharp. It is shaded as the
+ * terrain shades that paint (`TerrainSurfacePlugin`): the ground's macro wash,
+ * meso band (tone, hue, tilt and roughness) and, where the tier builds it,
+ * ground grain (its tone only on a seal, which is rolled flat) at the same point, each texel's own roughness and cavity, the
+ * material's F0, diffuse roughness and grazing reflectance, and the terrain
+ * material's lighting gains; neither material has a seasonal tint. So ribbon
+ * and paint are one colour, and the ribbon reads as the road sharpening, not
+ * as a strip laid on it. Its edge is ragged: loose stone spills up to
+ * `raggedMeters` past the formation, where the splat's own feather takes over.
+ * A track draws its two ruts only (the sward between and beside them is the
+ * terrain's), fading them into the paint as they narrow to a few pixels. The
+ * sealed road carries white edge lines inside its seal, faded with their
+ * footprint so they never alias.
+ *
+ * What the terrain's shading has that the ribbon does not: the baked sky
+ * visibility, the horizon map's and the canopy's cut of direct light, the
+ * patchwork on the gravel's vegetated share, and, within a few hundred metres
+ * of a runway, the airfield's weaker grain.
  */
 
 /** Lift over the drawn ground by class id, on a road and on a pad (each over every road that meets it), metres. */
@@ -78,6 +110,12 @@ export const ROAD_RIBBON_LOOK = Object.freeze({
   rutHalfWidthMeters: 0.28,
   /** A rut is compacted earth: a little darker than the track's own (INFRASTRUCTURE_TRACK_EARTH_TINT). */
   rutTint: Object.freeze([0.82, 0.8, 0.78] as const),
+  /**
+   * Metres a pixel spans across a track: a rut is drawn whole up to the
+   * first and gone into the paint past the second (its width about six
+   * pixels, then two), where it would read as a rail.
+   */
+  rutFadeFootprintMeters: Object.freeze([0.09, 0.28] as const),
 });
 
 /** The guardrail's galvanised steel. */
@@ -119,11 +157,30 @@ ${table(ROAD_RIBBON_LIFTS.road, 0)}
 }`;
 }
 
-function material(id: number): { readonly inversePeriod: string; readonly reference: string } {
+/**
+ * A material as the terrain samples it (`TerrainSurfacePlugin`): its tiling,
+ * its reference (the mean albedo, and the rough end of its band, which the
+ * texels converge to as their detail fades) and its BRDF row.
+ */
+function material(id: number): {
+  readonly inversePeriod: string;
+  readonly reference: string;
+  readonly f0: string;
+  readonly diffuseRoughness: string;
+  readonly cover: string;
+} {
   const spec = SURFACE_MATERIALS[id]!;
+  // The ground grain's cover classes (vegetated, rock, snow, other), as the
+  // terrain reads them from the material id.
+  const vegetation = groundCoverOf(id)[0];
+  const rock = rockReliefShareOf(id);
+  const cover = [vegetation, rock, 0, Math.max(0, 1 - vegetation - rock)];
   return {
     inversePeriod: wgslNumber(1 / spec.tilingPeriodMeters),
-    reference: `vec3f(${spec.referenceAlbedo.map(wgslNumber).join(", ")})`,
+    reference: `vec4f(${[...spec.referenceAlbedo, spec.roughness[1]].map(wgslNumber).join(", ")})`,
+    f0: wgslNumber(spec.f0),
+    diffuseRoughness: wgslNumber(spec.diffuseRoughness),
+    cover: `vec4f(${cover.map(wgslNumber).join(", ")})`,
   };
 }
 
@@ -197,6 +254,39 @@ fn roadSurfaceValue(point: vec2f) -> f32 {
   );
 }
 
+// Value and gradient on the same lattice (the terrain's terrainSurfaceValueGrad).
+fn roadSurfaceValueGrad(point: vec2f) -> vec3f {
+  let cell = floor(point);
+  let local = fract(point);
+  let blend = local * local * (vec2f(3.0) - 2.0 * local);
+  let slope = 6.0 * local * (vec2f(1.0) - local);
+  let a = roadSurfaceHash(cell);
+  let b = roadSurfaceHash(cell + vec2f(1.0, 0.0));
+  let c = roadSurfaceHash(cell + vec2f(0.0, 1.0));
+  let d = roadSurfaceHash(cell + vec2f(1.0));
+  return vec3f(
+    mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y),
+    mix(b - a, d - c, blend.y) * slope.x,
+    mix(c - a, d - b, blend.x) * slope.y,
+  );
+}
+
+fn roadSurfaceValue2(point: vec2f) -> vec2f {
+  return vec2f(roadSurfaceValue(point), roadSurfaceValue(point + vec2f(37.7, 19.3)));
+}
+
+// The terrain's de-tile warp, at the amount it draws with (DEFAULT_DETILE_WARP):
+// the ground grain is read through it.
+${terrainSurfaceDetileWarpWgsl("road", wgslNumber(DEFAULT_DETILE_WARP))}
+fn roadSurfaceDecodeNormal(encoded: vec2f) -> vec3f {
+  let xy = encoded * 2.0 - vec2f(1.0);
+  return vec3f(xy, sqrt(max(0.0, 1.0 - dot(xy, xy))));
+}
+${groundGrainFunctionsWgsl("road", {
+  albedo: "roadSurfaceAlbedo",
+  normal: "roadSurfaceNormal",
+  decodeNormal: "roadSurfaceDecodeNormal",
+})}
 // 0..1, two octaves: the ragged edge's wander.
 fn roadSurfaceRagged(point: vec2f) -> f32 {
   let scale = ${wgslNumber(1 / LOOK.raggedWavelengthMeters)};
@@ -209,13 +299,29 @@ fn roadSurfaceLine(distance: f32, halfWidth: f32, footprint: f32) -> f32 {
     * clamp(halfWidth * 2.0 / max(footprint, 1e-4), 0.0, 1.0);
 }
 
+// 2-14's ordered 8x8 Bayer threshold in [1/128, 127/128] (the detail
+// plugins' construction), on render-target pixels.
+fn roadSurfaceBayer8(pixel: vec2u) -> f32 {
+  let x = pixel.x % 8u;
+  let y = pixel.y % 8u;
+  let xorBits = x ^ y;
+  let index = ((y & 1u) << 5u) | ((xorBits & 1u) << 4u)
+    | ((y & 2u) << 2u) | ((xorBits & 2u) << 1u)
+    | ((y & 4u) >> 1u) | ((xorBits & 4u) >> 2u);
+  return (f32(index) + 0.5) / 64.0;
+}
+
 struct RoadSurfaceTexel {
   albedo: vec3f,
   // Tangent-space detail normal, hemisphere-decoded.
   normal: vec3f,
+  // The texel's own roughness and cavity, converging to the reference
+  // roughness and none as the detail fades (the terrain's reading of them).
+  roughness: f32,
+  cavity: f32,
 };
 
-fn roadSurfaceTexel(layer: i32, inversePeriod: f32, reference: vec3f, position: vec2f,
+fn roadSurfaceTexel(layer: i32, inversePeriod: f32, reference: vec4f, position: vec2f,
     ddx: vec2f, ddy: vec2f, detailWeight: f32) -> RoadSurfaceTexel {
   let uv = position * inversePeriod;
   let albedo = textureSampleGrad(roadSurfaceAlbedo, roadSurfaceAlbedoSampler, uv, layer,
@@ -224,9 +330,11 @@ fn roadSurfaceTexel(layer: i32, inversePeriod: f32, reference: vec3f, position: 
     ddx * inversePeriod, ddy * inversePeriod);
   var texel: RoadSurfaceTexel;
   // Array A stores sqrt(linear albedo) (SURFACE_ALBEDO_STORAGE_GAMMA).
-  texel.albedo = mix(reference, albedo.rgb * albedo.rgb, detailWeight);
+  texel.albedo = mix(reference.rgb, albedo.rgb * albedo.rgb, detailWeight);
   let xy = (normal.xy * 2.0 - vec2f(1.0)) * detailWeight;
   texel.normal = vec3f(xy, sqrt(max(0.0, 1.0 - dot(xy, xy))));
+  texel.roughness = mix(reference.w, normal.b, detailWeight);
+  texel.cavity = mix(1.0, normal.a, detailWeight);
   return texel;
 }
 `;
@@ -244,19 +352,38 @@ let roadPosition = fragmentInputs.roadAbsolute;
 let roadDdx = dpdx(roadPosition);
 let roadDdy = dpdy(roadPosition);
 let roadFootprint = max(length(roadDdx), length(roadDdy));
+// Metres a pixel spans across the road, for a track's ruts.
+let roadAcrossFootprint = length(vec2f(dpdx(roadLanes.x), dpdy(roadLanes.x)));
+// The terrain's 3D footprint (its terrainFootprint3D), for the meso band below,
+// and its world derivatives, which the grain reads.
+let roadWorldDdx = dpdx(fragmentInputs.vPositionW);
+let roadWorldDdy = dpdy(fragmentInputs.vPositionW);
+let roadFootprint3D = max(
+  min(length(roadWorldDdx), length(roadWorldDdy)),
+  max(length(roadWorldDdx), length(roadWorldDdy)) * 0.25,
+);
 let roadRagged = roadSurfaceRagged(roadPosition);
 if (roadClassId < 0.5) {
   // A track: its two ruts, and nothing between or beside them.
   if (roadOnPad) { discard; }
   let roadRut = abs(roadAcross - ${wgslNumber(LOOK.rutOffsetMeters)});
   if (roadRut > ${wgslNumber(LOOK.rutHalfWidthMeters)} + (roadRagged - 0.5) * 0.16) { discard; }
+  // A rut a few pixels wide is a crisp line over the track's soft paint,
+  // which reads as a rail: it fades into the paint as it narrows, by a
+  // screen door (the ribbon is opaque).
+  let roadRutShown = 1.0 - smoothstep(
+    ${wgslNumber(LOOK.rutFadeFootprintMeters[0])}, ${wgslNumber(LOOK.rutFadeFootprintMeters[1])}, roadAcrossFootprint);
+  if (roadSurfaceBayer8(vec2u(fragmentInputs.position.xy)) >= roadRutShown) { discard; }
 } else if (roadInFromEdge < -${wgslNumber(LOOK.raggedMeters)} * roadRagged) {
   discard;
 }
+// The detail fades on the terrain's footprint (TerrainSurfacePlugin, T2: the
+// minor axis, floored at a sixteenth of the major), so a texel converges to
+// its reference where the paint's does.
 let roadDetailWeight = 1.0 - smoothstep(
   ${wgslNumber(TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS)},
   ${wgslNumber(TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS)},
-  roadFootprint,
+  max(min(length(roadDdx), length(roadDdy)), roadFootprint * ${wgslNumber(1 / 16)}),
 );
 // The sealed road's seal stops a shoulder in from its formation; its edge is
 // laid by a machine, so it wanders a few centimetres, not decimetres.
@@ -279,6 +406,41 @@ if (roadClassId < 0.5) {
     ${wgslNumber(LOOK.wheelPathHalfWidthMeters)}, max(roadFootprint, 0.6));
   roadAlbedo = roadAlbedo * mix(1.04, 0.86, roadPath);
 }
+// The ground's meso band, macro wash and grain at this point, as the paint
+// around the road takes them, before the markings (a constant colour, which
+// the terrain leaves unwashed too). Their tilt and roughness go on the normal
+// and the BRDF below. The paint's cover is its material's (the terrain reads
+// it from the id), and the arrays carry the grain exactly where the tier runs
+// the patchwork (GroundGrainSynthesis), so their layer count is its switch.
+let roadGroundCover = select(${GRAVEL.cover}, ${ASPHALT.cover}, roadSealed);
+let roadGroundPatchworkOn = select(0.0, 1.0, textureNumLayers(roadSurfaceAlbedo) > ${GROUND_GRAIN_LAYER}u);
+let roadSlope = 1.0 - clamp(abs(normalize(fragmentInputs.vNormalW).y), 0.0, 1.0);
+${terrainMesoWeightsWgsl("road", "roadFootprint3D")}var roadGroundTilt = vec2f(0.0);
+var roadMesoRoughness = 0.0;
+if (roadMesoWeightA > 0.001) {
+${terrainMesoFieldsWgsl("road", "roadPosition", "roadSurfaceValueGrad")}  let roadSteep = smoothstep(0.34, 0.62, roadSlope);
+${terrainMesoSlopeWgsl("road", "roadSteep", "roadGroundCover.x * roadGroundPatchworkOn")}${terrainMesoToneWgsl("road")}  roadAlbedo = roadAlbedo * (${terrainMesoAlbedoWgsl("road")});
+  roadGroundTilt = roadMesoSlope;
+  roadMesoRoughness = ${terrainMesoRoughnessWgsl("road")};
+}
+${terrainMacroWashNoiseWgsl("road", "roadPosition", "roadSurfaceValue")}${terrainMacroWashHueWgsl("road")}roadAlbedo = roadAlbedo * roadMacroVariation * roadMacroHue;
+// The grain, through the terrain's de-tile warp on its major-axis footprint.
+// A road never lies under the sea, so none of it is faded there. A seal is
+// rolled flat: it takes the grain's tone but not its relief, which drew
+// tufts on the asphalt; the terrain's own pavement (RunwaySurface) has none
+// either, and the asphalt paint under a seal is covered by it.
+if (roadGroundPatchworkOn > 0.5) {
+${groundGrainReadsWgsl("road", {
+  xz: "roadPosition + roadSurfaceDetileWarp(roadPosition, roadFootprint)",
+  ddx: "roadWorldDdx.xz",
+  ddy: "roadWorldDdy.xz",
+  albedo: "roadSurfaceAlbedo",
+  shown: "1.0",
+})}  let roadGrainCover = roadGroundCover * (1.0 - smoothstep(0.45, 0.8, roadSlope));
+${groundGrainAlbedoWgsl("road", "roadAlbedo")}  if (!roadSealed) {
+${groundGrainReliefWgsl("road")}    roadGroundTilt += roadGrainSlope * roadGrainNormalGain;
+  }
+}
 if (roadSealed && !roadOnPad) {
   let roadLineAt = ${wgslNumber(SEALED.shoulderWidth + LOOK.edgeLineInsetMeters)};
   let roadLine = roadSurfaceLine(roadInFromEdge - roadLineAt, ${wgslNumber(LOOK.edgeLineWidthMeters / 2)}, roadFootprint);
@@ -293,6 +455,13 @@ if (roadSealed && !roadOnPad) {
 // (TerrainSurfacePlugin's terrainSurfaceTangent).
 const RIBBON_FRAGMENT_BEFORE_LIGHTS = /* wgsl */ `
 surfaceAlbedo = roadAlbedo;
+// The material's BRDF as the terrain's (its terrainSurface* values), for the
+// injections below; the edge lines take the asphalt's.
+var roadSurfaceRoughness = clamp(roadTexel.roughness + roadMesoRoughness, 0.02, 1.0);
+var roadSurfaceCavity = clamp(roadTexel.cavity, 0.0, 1.0);
+var roadSurfaceF0 = select(${GRAVEL.f0}, ${ASPHALT.f0}, roadSealed);
+var roadSurfaceDiffuseRoughness = select(${GRAVEL.diffuseRoughness}, ${ASPHALT.diffuseRoughness}, roadSealed);
+var roadSurfaceF90 = ${terrainSurfaceF90Wgsl("roadSurfaceF0", "roadSurfaceRoughness")};
 {
   let roadGeometric = normalize(normalW);
   let roadAxis = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), abs(roadGeometric.x) > 0.7);
@@ -302,8 +471,29 @@ surfaceAlbedo = roadAlbedo;
   normalW = normalize(roadGeometric
     + roadTangent * (roadTexel.normal.x * roadRise)
     + roadBitangent * (roadTexel.normal.y * roadRise));
+  // The meso band's and the grain's tilt, in world space, as the terrain adds them.
+  normalW = normalize(normalW + vec3f(-roadGroundTilt.x, 0.0, -roadGroundTilt.y));
 }
 `;
+
+// The terrain's injections (TerrainSurfacePlugin's FRAGMENT_WGSL), at its
+// anchors, with the ribbon's values: the cavity occludes ambient light only,
+// and roughness, diffuse roughness, F0 and F90 replace Babylon's.
+const RIBBON_FRAGMENT_INJECTIONS = Object.freeze({
+  [TERRAIN_SURFACE_INJECTION_ANCHORS.ambientOcclusion]: /* wgsl */ `$1
+aoOut.ambientOcclusionColor *= vec3f(roadSurfaceCavity);
+`,
+  [TERRAIN_SURFACE_INJECTION_ANCHORS.roughness]: /* wgsl */ `$1
+roughness = roadSurfaceRoughness;
+diffuseRoughness = roadSurfaceDiffuseRoughness;
+`,
+  [TERRAIN_SURFACE_INJECTION_ANCHORS.reflectance]: /* wgsl */ `$1
+specularEnvironmentR0 = vec3f(roadSurfaceF0);
+reflectanceF0 = roadSurfaceF0;
+reflectivityOut.reflectanceF90 = vec3f(roadSurfaceF90);
+reflectivityOut.colorReflectanceF90 = vec3f(roadSurfaceF90);
+`,
+});
 
 const RAIL_FRAGMENT_DEFINITIONS = /* wgsl */ `
 varying roadSurfaceV: vec4f;
@@ -405,6 +595,7 @@ export class RoadSurfaceMaterialPlugin extends MaterialPluginBase {
       CUSTOM_FRAGMENT_DEFINITIONS: RIBBON_FRAGMENT_DEFINITIONS,
       CUSTOM_FRAGMENT_MAIN_BEGIN: RIBBON_FRAGMENT_MAIN_BEGIN,
       CUSTOM_FRAGMENT_BEFORE_LIGHTS: RIBBON_FRAGMENT_BEFORE_LIGHTS,
+      ...RIBBON_FRAGMENT_INJECTIONS,
     };
   }
 
@@ -420,4 +611,6 @@ export const ROAD_SURFACE_WGSL = Object.freeze({
   ribbonVertex: RIBBON_VERTEX,
   railVertex: RAIL_VERTEX,
   ribbonFragmentMainBegin: RIBBON_FRAGMENT_MAIN_BEGIN,
+  ribbonFragmentBeforeLights: RIBBON_FRAGMENT_BEFORE_LIGHTS,
+  ribbonFragmentInjections: RIBBON_FRAGMENT_INJECTIONS,
 });
