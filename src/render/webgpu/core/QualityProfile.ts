@@ -179,6 +179,14 @@ export interface WebGpuQualityProfile {
    */
   readonly grassRadiusMeters: number;
   /**
+   * Walking: how far round the walker the near solids reach (the trunks,
+   * rocks, logs and stumps the walker and the character camera meet,
+   * `src/sim/person/nearSolids.ts`). The list is asked for again every 16 m
+   * the walker moves, so it always reaches this less 16 m ahead; Low lists
+   * fewer.
+   */
+  readonly nearSolidsRadiusMeters: number;
+  /**
    * `3-0`: edge of both terrain material `Texture2DArray`s. `3-1` synthesises
    * at this edge and `estimateGpuMemory`'s material-array row follows it, so
    * the tier knob and the budget cannot disagree (assertion 56).
@@ -541,6 +549,7 @@ function resolveBaseQualityProfile(
       treeVariantCap: 1,
       treePrototypeMode: "families",
       grassRadiusMeters: 90,
+      nearSolidsRadiusMeters: 32,
       materialArrayEdge: 256,
       terrainTriplanarMode: "planar",
       heightBlendMaxMaterials: 2,
@@ -653,6 +662,7 @@ function resolveBaseQualityProfile(
       // which is noise. Row 3 of §7 is a single-reader estimate and the
       // measurement does not support it here. `6-11` owns the re-tier.
       grassRadiusMeters: 150,
+      nearSolidsRadiusMeters: 48,
       materialArrayEdge: 512,
       terrainTriplanarMode: "biplanar",
       heightBlendMaxMaterials: 3,
@@ -759,6 +769,7 @@ function resolveBaseQualityProfile(
       treeVariantCap: 5,
       treePrototypeMode: "species",
       grassRadiusMeters: 220,
+      nearSolidsRadiusMeters: 48,
       materialArrayEdge: 512,
       terrainTriplanarMode: "triplanar",
       heightBlendMaxMaterials: 4,
@@ -859,6 +870,7 @@ function resolveBaseQualityProfile(
     treeVariantCap: 5,
     treePrototypeMode: "species",
     grassRadiusMeters: 320,
+    nearSolidsRadiusMeters: 48,
     materialArrayEdge: 512,
     terrainTriplanarMode: "triplanar",
     heightBlendMaxMaterials: 4,
