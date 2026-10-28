@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { createSurfaceSpawn } from "../src/game/surfaceSpawn";
 import type { FlightVisualState, PersonControlState } from "../src/game/types";
 import { ColliderWorld } from "../src/sim/colliders";
+import { CAR_AIRPORT_COLLIDER_GROUP } from "../src/sim/ground/carColliders";
+import { MARINA_COLLIDER_GROUP } from "../src/sim/marina/colliders";
 import { createPersonSimulator } from "../src/sim/person";
 import { PARKED_CAR_COLLIDER_GROUP, WalkingSession, type WalkingStart } from "../src/sim/person/walkingSession";
 import {
@@ -89,6 +91,12 @@ class Rig {
 
 describe("walking session", () => {
   const world = createWorld(0x51a7e);
+
+  it("keeps the parked car's box in a collider group of its own", () => {
+    expect(PARKED_CAR_COLLIDER_GROUP).not.toBe(MARINA_COLLIDER_GROUP);
+    expect(PARKED_CAR_COLLIDER_GROUP).not.toBe(CAR_AIRPORT_COLLIDER_GROUP);
+    expect(PARKED_CAR_COLLIDER_GROUP).toBeLessThan(1_000_000);
+  });
 
   it("starts in the driver's seat, gets out by the driver's door, and stands clear of the car", () => {
     const rig = new Rig(world, "car");

@@ -23,8 +23,8 @@ import type { Quaternion, Vec3 } from "../types";
 import { createWaterSurfaceSample } from "../water/types";
 import type { PersonSimulator } from "./types";
 
-/** Collider group of the parked car's body box. */
-export const PARKED_CAR_COLLIDER_GROUP = 7_001;
+/** Collider group of the parked car's body box (the airports' is 6,001, the marina's 7,001). */
+export const PARKED_CAR_COLLIDER_GROUP = 8_001;
 /** Its material id: a vehicle's body, a wall to the walker. */
 export const PARKED_CAR_COLLIDER_MATERIAL = 201;
 

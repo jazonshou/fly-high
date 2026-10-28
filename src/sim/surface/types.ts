@@ -127,6 +127,7 @@ export const NEUTRAL_BOAT_CONTROLS: Readonly<BoatControlState> = Object.freeze({
 export const NEUTRAL_PERSON_CONTROLS: Readonly<PersonControlState> = Object.freeze({
   moveX: 0,
   moveZ: 0,
+  lookHeading: 0,
   lookPitch: 0,
   run: false,
   rise: false,

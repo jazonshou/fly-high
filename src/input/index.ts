@@ -659,6 +659,7 @@ export class InputManager {
     return {
       moveX: move.x,
       moveZ: move.z,
+      lookHeading: this.cameraHeading,
       lookPitch: this.cameraPitch,
       run: this.pressed.has("ShiftLeft") || this.pressed.has("ShiftRight") || gamepad.rightTrigger > 0.5,
       rise: this.pressed.has("Space") || gamepad.buttonA,

@@ -466,7 +466,12 @@ export interface PersonControlState {
   /** World-axis move, |(moveX, moveZ)| <= 1: keys give 1, a stick anything between. */
   moveX: number;
   moveZ: number;
-  /** The camera's pitch, radians, positive looking up: under water you swim where it points. */
+  /**
+   * The camera's heading (`FlightTelemetry.heading`, radians) and pitch
+   * (radians, positive looking up): under water you swim where it points,
+   * the pitch applying to the forward part of the move only.
+   */
+  lookHeading: number;
   lookPitch: number;
   /** Shift held (or toggled in settings), right trigger: run, or the faster stroke. */
   run: boolean;
