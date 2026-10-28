@@ -210,7 +210,7 @@ import {
 import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
 import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
-import type { FlightRenderingSystem, ScreenPoint, TerrainAuthorityPublisher } from "./types";
+import type { FlightRenderingSystem, HudCamera, ScreenPoint, TerrainAuthorityPublisher } from "./types";
 import {
   type TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
@@ -2070,6 +2070,27 @@ export class FlightRenderer implements FlightRenderingSystem {
     result.inFront = inFront;
     result.width = width;
     result.height = height;
+    return true;
+  }
+
+  readHudCameraToRef(result: HudCamera): boolean {
+    const canvas = this.domElement;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (width <= 0 || height <= 0) return false;
+    // The matrix this frame was drawn with, and the axes of what it follows
+    // (`updatePresentation`): the aircraft's, or the viewer's own in free
+    // flight. The floating origin moves points, not directions, so the
+    // ladder, which projects only directions, needs no rebasing.
+    result.transform = this.camera.getTransformationMatrix().m;
+    result.width = width;
+    result.height = height;
+    result.forward.x = this.forward.x;
+    result.forward.y = this.forward.y;
+    result.forward.z = this.forward.z;
+    result.up.x = this.up.x;
+    result.up.y = this.up.y;
+    result.up.z = this.up.z;
     return true;
   }
 

@@ -11,7 +11,7 @@ import {
 import { FlightAudio } from "@/src/audio";
 import { InputManager, type InputAction } from "@/src/input";
 import { FlightRenderer } from "@/src/render/FlightRenderer";
-import { type FlightRenderingSystem, type ScreenPoint } from "@/src/render/types";
+import { createHudCamera, type FlightRenderingSystem, type ScreenPoint } from "@/src/render/types";
 import type { BenchSession } from "@/src/bench/types";
 import {
   createRandomSeed,
@@ -40,6 +40,13 @@ import {
   placeAirportMarker,
   type AirportMarkerView,
 } from "@/src/ui/airportMarker";
+import {
+  applyPitchLadder,
+  createPitchLadderFrame,
+  createPitchLadderView,
+  pitchLadderToRef,
+  type PitchLadderView,
+} from "@/src/ui/pitchLadder";
 import {
   AirportNetworkController,
   describeNearestAirport,
@@ -158,6 +165,8 @@ export function FlightGame() {
   const airportMarkerRef = useRef<HTMLDivElement>(null);
   /** The marker's "STQK · 4.2 NM" label, rebuilt with the readout, not per frame. */
   const airportMarkerTextRef = useRef("");
+  /** The HUD's pitch ladder, drawn through the camera every frame (src/ui/pitchLadder.ts). */
+  const pitchLadderRef = useRef<HTMLDivElement>(null);
   /**
    * The autoland as of the latest snapshot, and that snapshot's sim time: on
    * the snapshot where it is gone the pilot's input takes over its levers,
@@ -639,6 +648,9 @@ export function FlightGame() {
     const airportMarkerPoint: ScreenPoint = { x: 0, y: 0, inFront: false, width: 0, height: 0 };
     const airportMarkerPlacement = createAirportMarkerPlacement();
     let airportMarkerView: AirportMarkerView | null = null;
+    const hudCamera = createHudCamera();
+    const pitchLadderFrame = createPitchLadderFrame();
+    let pitchLadderView: PitchLadderView | null = null;
     const startupAbortController = new AbortController();
     const startupResources = new DisposableScope();
     readyRef.current = false;
@@ -875,6 +887,16 @@ export function FlightGame() {
             airportMarkerTextRef.current,
           );
         }
+        // After the frame is drawn, through the camera it was drawn with: the
+        // ladder lies on that frame's horizon, not the last React update's.
+        const ladder = pitchLadderRef.current;
+        if (ladder) {
+          if (pitchLadderView?.element !== ladder) pitchLadderView = createPitchLadderView(ladder);
+          applyPitchLadder(
+            pitchLadderView,
+            renderer.readHudCameraToRef(hudCamera) ? pitchLadderToRef(hudCamera, pitchLadderFrame) : null,
+          );
+        }
         diagnosticsPoller.tick(now, settingsRef.current.showDiagnostics, phaseRef.current);
         if (rendererTerminal) return;
         animationFrame = requestAnimationFrame(renderLoop);
@@ -1007,6 +1029,7 @@ export function FlightGame() {
           nearestAirportShown={nearestAirportShown}
           onToggleNearestAirport={toggleNearestAirport}
           onToggleAutoland={toggleAutoland}
+          pitchLadderRef={pitchLadderRef}
         />
       ) : null}
 

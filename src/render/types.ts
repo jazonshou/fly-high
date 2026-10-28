@@ -28,6 +28,28 @@ export interface ScreenPoint {
   height: number;
 }
 
+/**
+ * The camera a frame was drawn with, as the HUD draws through it (the pitch
+ * ladder, src/ui/pitchLadder.ts), written in place by `readHudCameraToRef`.
+ */
+export interface HudCamera {
+  /**
+   * View times projection, exactly as Babylon holds it: row vectors, clip =
+   * (p, 1) * M. The camera's own array, so it is read the frame it was taken.
+   */
+  transform: ArrayLike<number>;
+  /** Canvas size, CSS pixels. */
+  width: number;
+  height: number;
+  /** The followed body's nose and roof, world space, unit length. */
+  readonly forward: { x: number; y: number; z: number };
+  readonly up: { x: number; y: number; z: number };
+}
+
+export function createHudCamera(): HudCamera {
+  return { transform: [], width: 0, height: 0, forward: { x: 1, y: 0, z: 0 }, up: { x: 0, y: 1, z: 0 } };
+}
+
 export interface FlightRenderingSystem {
   readonly domElement: HTMLCanvasElement;
   setCameraMode(mode: CameraMode): void;
@@ -70,6 +92,12 @@ export interface FlightRenderingSystem {
    * for the per-frame HUD overlay.
    */
   projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean;
+  /**
+   * Writes the camera the last frame was drawn with, and the nose and roof of
+   * what it follows, into `result`; false (and `result` untouched) while the
+   * canvas has no size. Allocation-free, for the per-frame HUD overlay.
+   */
+  readHudCameraToRef(result: HudCamera): boolean;
   /** Attach the worker-owned height authority after renderer startup. */
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void;
   /** §1.6: the rendering inputs are the two continuous clock scalars. */

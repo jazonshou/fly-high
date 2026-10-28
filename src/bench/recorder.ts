@@ -8,6 +8,7 @@ import type {
 import type { RendererBenchProbe } from "@/src/render/FlightRenderer";
 import type {
   FlightRenderingSystem,
+  HudCamera,
   ScreenPoint,
   TerrainAuthorityPublisher,
 } from "@/src/render/types";
@@ -182,6 +183,10 @@ export class BenchRenderer implements FlightRenderingSystem {
 
   projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean {
     return this.inner.projectWorldPointToRef(x, y, z, result);
+  }
+
+  readHudCameraToRef(result: HudCamera): boolean {
+    return this.inner.readHudCameraToRef(result);
   }
 
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void {

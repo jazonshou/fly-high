@@ -65,6 +65,7 @@ export const HUD_SIZES = {
   sessionText: { left: 28, top: 22, width: 303, height: 12 },
   tape: { inset: 28, width: 118, height: 170 },
   attitude: { width: 340, height: 230 },
+  pitchLadder: { width: 420, height: 340 },
   stallAlert: { width: 156, height: 30 },
   brakeAlert: { width: 106, height: 30, below: 42 },
   instrumentStrip: { inset: 28, height: 67 },
@@ -137,12 +138,18 @@ export function cockpitHudLayout(
     box("AGL tape", W - s.tape.inset - s.tape.width, centre - s.tape.height / 2, s.tape.width, s.tape.height);
   }
 
-  // The attitude box, less whatever the clip cuts off its bottom.
-  const clip = cockpit(".attitude")?.["clip-path"];
-  const clipMatch = clip === undefined ? null : /^inset\(0 0 max\(0px, calc\(115px \+ 12px - (.+) \* var\(--deck-k\)\)\) 0\)$/.exec(clip);
-  if (clip !== undefined && !clipMatch) throw new Error(`.flight-hud--cockpit .attitude clip-path "${clip}" is not read by this model`);
-  const cut = clipMatch ? Math.max(0, 127 - halfWidthOf(clipMatch[1]!, ".attitude clip-path") * k) : 0;
-  box("attitude", W / 2 - s.attitude.width / 2, H / 2 - s.attitude.height / 2, s.attitude.width, s.attitude.height - cut);
+  // The attitude box and the pitch ladder's box over it, each less whatever its clip cuts off its
+  // bottom. In the cockpit the ladder's window stays centred in its box (tests/hud.pitch-ladder.test.ts).
+  const clipped = (name: string, selector: string, size: { width: number; height: number }) => {
+    const clip = cockpit(selector)?.["clip-path"];
+    const clipMatch = clip === undefined ? null : /^inset\(0 0 max\(0px, calc\((\d+)px \+ 12px - (.+) \* var\(--deck-k\)\)\) 0\)$/.exec(clip);
+    if (clip !== undefined && !clipMatch) throw new Error(`.flight-hud--cockpit ${selector} clip-path "${clip}" is not read by this model`);
+    if (clipMatch && Number(clipMatch[1]) !== size.height / 2) throw new Error(`${selector} clip-path keeps ${clipMatch[1]} px, not half the box`);
+    const cut = clipMatch ? Math.max(0, size.height / 2 + 12 - halfWidthOf(clipMatch[2]!, `${selector} clip-path`) * k) : 0;
+    box(name, W / 2 - size.width / 2, H / 2 - size.height / 2, size.width, size.height - cut);
+  };
+  clipped("attitude", ".attitude", s.attitude);
+  clipped("pitch ladder", ".pitch-ladder", s.pitchLadder);
 
   if (alerts) {
     box("STALL alert", W / 2 - s.stallAlert.width / 2, 0.22 * H, s.stallAlert.width, s.stallAlert.height);
