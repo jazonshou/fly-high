@@ -2,11 +2,12 @@ import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { Scene } from "@babylonjs/core/scene";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { INITIAL_VISUAL_STATE, type CarVisualState, type FlightVisualState } from "../src/game/types";
 import { dialNeedleAngle } from "../src/render/webgpu/ground/carAtlas";
-import { CAR_LAMP_TEXELS } from "../src/render/webgpu/ground/carBody";
+import { CAR_LAMP_TEXELS, carBodySurfaces } from "../src/render/webgpu/ground/carBody";
 import { CAR_DIALS, writeNeedleMatrices } from "../src/render/webgpu/ground/carCockpit";
 import { CAR_HEADLAMP_POOLS, CAR_LAMPS_OFF, carLampState, carPoolIntensity } from "../src/render/webgpu/ground/carLights";
 import {
@@ -19,8 +20,10 @@ import {
 } from "../src/render/webgpu/ground/carRunningGear";
 import { carLampTexels, createWebGpuCar, type CarVisual } from "../src/render/webgpu/ground/createCar";
 import {
+  ARCH,
   BODY,
   DRIVER_EYE,
+  FRONT_DOOR_HINGE,
   GROUND_Y,
   LC76_FRONT_AXLE_X,
   LC76_FRONT_TRACK,
@@ -119,7 +122,7 @@ afterAll(() => {
 });
 
 describe("the built car", () => {
-  it("draws nine meshes outside and seven in the cockpit, four casting shadows", () => {
+  it("draws nine meshes outside and seven in the cockpit, four casting shadows (and each open door)", () => {
     car.setCockpitView(false);
     car.update(visualState(carState()), 1 / 60);
     const outside = car.meshes.filter((mesh) => mesh.isEnabled() && mesh.isVisible);
@@ -128,10 +131,14 @@ describe("the built car", () => {
     const casters = car.meshes.filter((mesh) => mesh.metadata?.castsShadow !== false);
     expect(casters.map((mesh) => mesh.name).sort()).toEqual([
       "landcruiser-body",
+      "landcruiser-door-left",
+      "landcruiser-door-right",
       "landcruiser-front-axle",
       "landcruiser-rear-axle",
       "landcruiser-wheels",
     ]);
+    // The doors draw in the body while shut.
+    expect(casters.filter((mesh) => mesh.isEnabled()).length).toBe(4);
     car.setCockpitView(true);
     const inside = car.meshes.filter((mesh) => mesh.isEnabled() && mesh.isVisible);
     expect(inside.length).toBe(7);
@@ -206,6 +213,111 @@ describe("the built car", () => {
     const rimTop = [STEERING_WHEEL.x + Math.sin(tilt) * STEERING_WHEEL.radius, GROUND_Y + STEERING_WHEEL.height + Math.cos(tilt) * STEERING_WHEEL.radius] as const;
     expect(below(rimTop[0], rimTop[1])).toBeLessThan(halfVertical);
     expect(below(rimTop[0], rimTop[1])).toBeGreaterThan(0);
+  });
+});
+
+describe("the front doors", () => {
+  const indexTotal = (mesh: Mesh): number => mesh.subMeshes.reduce((sum, sub) => sum + sub.indexCount, 0);
+  const worldPoints = (mesh: Mesh): Vector3[] => {
+    mesh.computeWorldMatrix(true);
+    (mesh.parent as TransformNode).computeWorldMatrix(true);
+    const data = positions(mesh);
+    const matrix = mesh.computeWorldMatrix(true);
+    const points: Vector3[] = [];
+    for (let at = 0; at < data.length; at += 3) {
+      points.push(Vector3.TransformCoordinates(new Vector3(data[at]!, data[at + 1]!, data[at + 2]!), matrix));
+    }
+    return points;
+  };
+
+  it("lie shut exactly where the body draws them, and the body draws in one run", () => {
+    car.setDoors?.(0, 0);
+    const body = meshNamed("body");
+    expect(body.subMeshes.length).toBe(1);
+    expect(indexTotal(body)).toBe(body.getTotalIndices());
+    expect(meshNamed("door-right").isEnabled()).toBe(false);
+    // The door's vertices, put back on its hinge shut, are the body's own last ones.
+    const door = meshNamed("door-right");
+    const local = positions(door);
+    const all = positions(body);
+    const doorVertices = local.length / 3;
+    // The right door's run sits before the left's at the body's end.
+    const offset = all.length / 3 - 2 * doorVertices;
+    for (let index = 0; index < doorVertices; index += 1) {
+      expect(local[index * 3]! + FRONT_DOOR_HINGE.x).toBeCloseTo(all[(offset + index) * 3]!, 6);
+      expect(local[index * 3 + 1]!).toBeCloseTo(all[(offset + index) * 3 + 1]!, 6);
+      expect(local[index * 3 + 2]! + FRONT_DOOR_HINGE.z).toBeCloseTo(all[(offset + index) * 3 + 2]!, 6);
+    }
+  });
+
+  it("swing their trailing edges out about the hinge, and the body leaves an open door out", () => {
+    const body = meshNamed("body");
+    const glass = meshNamed("glass");
+    const shut = indexTotal(body);
+    const shutGlass = indexTotal(glass);
+    car.setDoors?.(1, 0);
+    const right = meshNamed("door-right");
+    expect(right.isEnabled()).toBe(true);
+    expect(meshNamed("door-right-glass").isEnabled()).toBe(true);
+    expect(meshNamed("door-left").isEnabled()).toBe(false);
+    expect(shut - indexTotal(body)).toBe(right.getTotalIndices());
+    expect(shutGlass - indexTotal(glass)).toBe(meshNamed("door-right-glass").getTotalIndices());
+    // Open: the trailing edge stands out from the side, ahead of where it was.
+    const points = worldPoints(right);
+    const outmost = Math.max(...points.map((point) => point.z));
+    expect(outmost).toBeGreaterThan(BODY.halfWidth + 0.8);
+    expect(Math.max(...points.map((point) => point.x))).toBeLessThan(FRONT_DOOR_HINGE.x + 0.15);
+    // The left swings out to the left.
+    car.setDoors?.(0, 1);
+    expect(right.isEnabled()).toBe(false);
+    const left = worldPoints(meshNamed("door-left"));
+    expect(Math.min(...left.map((point) => point.z))).toBeLessThan(-(BODY.halfWidth + 0.8));
+    expect(shut - indexTotal(body)).toBe(meshNamed("door-left").getTotalIndices());
+    car.setDoors?.(0, 0);
+    expect(indexTotal(body)).toBe(shut);
+    expect(body.subMeshes.length).toBe(1);
+  });
+
+  it("are cut clear of the front flare, and tile the flank with the slab", () => {
+    const surfaces = carBodySurfaces();
+    const flareA = ARCH.halfWidth + ARCH.flareWidth;
+    const flareB = ARCH.height + ARCH.flareWidth;
+    for (const surface of surfaces.door.body) {
+      for (let at = 0; at < surface.positions.length; at += 3) {
+        const x = surface.positions[at]!;
+        const height = surface.positions[at + 1]! - GROUND_Y;
+        // Inside the flare's superellipse, by a margin, nothing of the door.
+        const dx = Math.abs(x - LC76_FRONT_AXLE_X) / flareA;
+        const dy = Math.max(0, height - LC76_GEOMETRY.loadedTyreRadius) / flareB;
+        expect(dx ** ARCH.exponent + dy ** ARCH.exponent).toBeGreaterThan(1);
+      }
+    }
+    // The door's outer face and the slab's tile the side: every point of the
+    // flank between the arches is under exactly one of their triangles.
+    const triangles: [number, number, number, number, number, number][] = [];
+    for (const surface of [...surfaces.symmetric, ...surfaces.door.body]) {
+      const p = surface.positions;
+      for (let at = 0; at < surface.indices.length; at += 3) {
+        const corners = [surface.indices[at]!, surface.indices[at + 1]!, surface.indices[at + 2]!];
+        if (!corners.every((v) => Math.abs(p[v * 3 + 2]! - BODY.halfWidth) < 1e-9)) continue;
+        triangles.push([
+          p[corners[0]! * 3]!, p[corners[0]! * 3 + 1]!,
+          p[corners[1]! * 3]!, p[corners[1]! * 3 + 1]!,
+          p[corners[2]! * 3]!, p[corners[2]! * 3 + 1]!,
+        ]);
+      }
+    }
+    const covering = (x: number, y: number): number => triangles.filter(([ax, ay, bx, by, cx, cy]) => {
+      const d1 = (x - bx) * (ay - by) - (ax - bx) * (y - by);
+      const d2 = (x - cx) * (by - cy) - (bx - cx) * (y - cy);
+      const d3 = (x - ax) * (cy - ay) - (cx - ax) * (y - ay);
+      return (d1 > 0 && d2 > 0 && d3 > 0) || (d1 < 0 && d2 < 0 && d3 < 0);
+    }).length;
+    for (let x = -0.6137; x < 0.66; x += 0.0571) {
+      for (let height = 0.5613; height < 1.28; height += 0.0433) {
+        expect(covering(x, GROUND_Y + height), `x ${x.toFixed(3)} height ${height.toFixed(3)}`).toBe(1);
+      }
+    }
   });
 });
 

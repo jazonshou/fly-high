@@ -6,21 +6,29 @@ import {
   box,
   cross3,
   disc,
+  insetOutline,
   normalize3,
+  outlineArea,
+  partitionSurface,
   prismX,
   prismY,
   prismZ,
   quad,
   revealBand,
   ring,
+  splitByRegion,
   tube,
+  type HalfPlane,
   type Point2,
+  type PrismOptions,
   type UvFor,
 } from "./carShapes";
 import {
+  A_PILLAR_WIDTH,
   ARCH,
   BODY,
   BUMPERS,
+  DOOR_LINES,
   GLASSHOUSE,
   GROUND_Y,
   h,
@@ -139,10 +147,117 @@ const shellRimUv: UvFor = (point) => {
   return finishUv("paint");
 };
 
+/**
+ * The front door's leading edge at a height: raked from behind the flare to
+ * the A pillar's foot below the belt, the pillar's rear edge above it.
+ */
+export function frontDoorEdgeX(height: number): number {
+  if (height <= BODY.belt) {
+    const t = (height - DOOR_LINES.frontDoorBottom) / (BODY.belt - DOOR_LINES.frontDoorBottom);
+    return DOOR_LINES.frontDoorFoot + (DOOR_LINES.frontDoorBelt - DOOR_LINES.frontDoorFoot) * t;
+  }
+  return screenX(height) - A_PILLAR_WIDTH;
+}
+
+/**
+ * The front door in the side glasshouse's (x, height): behind the A pillar,
+ * ahead of its shut line at the B pillar, under the gutter.
+ */
+function frontDoorGlasshouseRegion(): HalfPlane[] {
+  // x <= screenX(height) - pillar, with screenX linear in height.
+  const rake = (GLASSHOUSE.screenHeadX - GLASSHOUSE.screenFootX) / GH_SPAN;
+  const atBelt = GLASSHOUSE.screenFootX - A_PILLAR_WIDTH;
+  return [
+    { a: 1, b: 0, c: -DOOR_LINES.frontDoorRear },
+    { a: -1, b: rake, c: atBelt - rake * BODY.belt },
+    { a: 0, b: -1, c: DOOR_LINES.doorTop },
+  ];
+}
+
+const SHELL_CHAMFER = 0.014;
+
+/**
+ * The right side slab, its front door cut out. The door's corners on the
+ * belt join the outline (on its straight top, so nothing there moves), the
+ * flat faces are the door and the slab round it, sharing their corners, and
+ * the rim over the door goes with it. Jambs close the cut on both sides,
+ * inside the slab while the door is shut.
+ */
+function sideSlabSurfaces(options: PrismOptions): { readonly body: Surface[]; readonly door: Surface[] } {
+  const bottom = DOOR_LINES.frontDoorBottom;
+  const rearX = DOOR_LINES.frontDoorRear;
+  // The door's front corner on the belt: where its edge meets the faces' inset top.
+  const insetTop = BODY.belt - SHELL_CHAMFER;
+  const frontX = frontDoorEdgeX(insetTop);
+  const outline: Point2[] = [];
+  for (const point of shellOutline(BODY.sill, BODY.rearBottom)) {
+    const previous = outline[outline.length - 1];
+    if (previous && previous[1] === BODY.belt && point[1] === BODY.belt) {
+      // The top edge, front to rear: the door's corners sit on it.
+      const along = [frontX, rearX].filter((x) => (x - previous[0]) * (x - point[0]) < 0);
+      if (point[0] > previous[0]) along.reverse();
+      for (const x of along) outline.push([x, BODY.belt]);
+    }
+    outline.push(point);
+  }
+  const elevated = elevation(outline);
+  const ccw = outlineArea(elevated) > 0 ? elevated : [...elevated].reverse();
+  const inset = insetOutline(ccw, SHELL_CHAMFER);
+  const corner = (x: number): number => ccw.findIndex((point) => point[0] === x && point[1] === h(BODY.belt));
+  const frontCorner = corner(frontX);
+  const rearCorner = corner(rearX);
+  const doorBottomFront: Point2 = [DOOR_LINES.frontDoorFoot, h(bottom)];
+  const doorBottomRear: Point2 = [rearX, h(bottom)];
+  const door: Point2[] = [doorBottomRear, doorBottomFront, inset[frontCorner]!, inset[rearCorner]!];
+  // The slab's faces: the inset outline with the door notched into its top.
+  const notched: Point2[] = [];
+  for (const [index, point] of inset.entries()) {
+    notched.push(point);
+    if (index === frontCorner && (index + 1) % inset.length === rearCorner) notched.push(doorBottomFront, doorBottomRear);
+    if (index === rearCorner && (index + 1) % inset.length === frontCorner) notched.push(doorBottomRear, doorBottomFront);
+  }
+  const far = (a: number, b: number): Vec3Tuple => [a, b, BODY.halfWidth];
+  const near = (a: number, b: number): Vec3Tuple => [a, b, SHELL_SPLIT_Z];
+  const nearUv = options.nearFaceUv ?? options.faceUv;
+  const body: Surface[] = [polygonSurface(notched, far, options.faceUv), polygonSurface(notched, near, nearUv).flipped()];
+  const doorSurfaces: Surface[] = [polygonSurface(door, far, options.faceUv), polygonSurface(door, near, nearUv).flipped()];
+  for (const rim of prismZ(ccw, SHELL_SPLIT_Z, BODY.halfWidth, { ...options, skipFarFace: true, skipNearFace: true })) {
+    const [overDoor, rest] = partitionSurface(rim, ([x, y]) => x > rearX && x < frontX && y > h(BODY.belt - 0.05));
+    if (overDoor.indices.length > 0) doorSurfaces.push(overDoor);
+    if (rest.indices.length > 0) body.push(rest);
+  }
+  // The jambs: the cut's three faces through the slab, with its chamfered
+  // profile at the belt. The body's show into the opening, the door's out of it.
+  const rimUv = options.rimUv ?? options.faceUv;
+  const yBottom = h(bottom);
+  const yInset = h(insetTop);
+  const profile: Point2[] = [
+    [SHELL_SPLIT_Z, yBottom],
+    [BODY.halfWidth, yBottom],
+    [BODY.halfWidth, yInset],
+    [BODY.halfWidth - SHELL_CHAMFER, h(BODY.belt)],
+    [SHELL_SPLIT_Z + SHELL_CHAMFER, h(BODY.belt)],
+    [SHELL_SPLIT_Z, yInset],
+  ];
+  // In (z, y), counter-clockwise shows -X: the door's trailing jamb, the body's leading one.
+  const trailing = polygonSurface(profile, (z, y) => [rearX, y, z], rimUv);
+  const leadingX = (y: number): number => DOOR_LINES.frontDoorFoot + ((frontX - DOOR_LINES.frontDoorFoot) * (y - yBottom)) / (yInset - yBottom);
+  const leading = polygonSurface(profile, (z, y) => [leadingX(y), y, z], rimUv);
+  // In (x, z), counter-clockwise shows -Y: the door's bottom.
+  const sill = polygonSurface(
+    [[rearX, SHELL_SPLIT_Z], [DOOR_LINES.frontDoorFoot, SHELL_SPLIT_Z], [DOOR_LINES.frontDoorFoot, BODY.halfWidth], [rearX, BODY.halfWidth]],
+    (x, z) => [x, yBottom, z],
+    rimUv,
+  );
+  body.push(trailing.flipped(), leading, sill.flipped());
+  doorSurfaces.push(trailing, leading.flipped(), sill);
+  return { body, door: doorSurfaces };
+}
+
 /** The steel shell: right side slab (mirrored for the left) and the centre body. */
-function shellSurfaces(): { readonly side: Surface[]; readonly centre: Surface[] } {
-  const side = prismZ(elevation(shellOutline(BODY.sill, BODY.rearBottom)), SHELL_SPLIT_Z, BODY.halfWidth, {
-    chamfer: 0.014,
+function shellSurfaces(): { readonly side: Surface[]; readonly door: Surface[]; readonly centre: Surface[] } {
+  const slab = sideSlabSurfaces({
+    chamfer: SHELL_CHAMFER,
     creaseRadians: 0.5,
     faceUv: sideMap,
     // Its inner face shows only under the floor pan and in the arches.
@@ -159,7 +274,7 @@ function shellSurfaces(): { readonly side: Surface[]; readonly centre: Surface[]
     // No lid at the belt: the cabin and the cargo bay are open to the glasshouse.
     openRim: (point) => Math.abs(point[1] - h(BODY.belt)) < 0.02 && point[0] < GLASSHOUSE.screenFootX - 0.005 && point[0] > BODY.rear + 0.005,
   });
-  return { side, centre };
+  return { side: slab.body, door: slab.door, centre };
 }
 
 /** A flare: a black moulding round an arch, from foot to foot, standing proud of the flank. */
@@ -415,8 +530,17 @@ interface GlasshouseParts {
   readonly glass: Surface[];
 }
 
-/** A panel's outer skin, inner trim, reveals and glass. */
-function buildPanel(panel: Panel, parts: GlasshouseParts, innerFinish: CarFinish): void {
+/**
+ * A panel's outer skin, inner trim, reveals and glass. With a `door`, the
+ * panel's part inside the door's region (convex, in the panel's (a, b)) and
+ * the openings wholly inside it go to the door's parts instead.
+ */
+function buildPanel(
+  panel: Panel,
+  parts: GlasshouseParts,
+  innerFinish: CarFinish,
+  door?: { readonly region: readonly HalfPlane[]; readonly parts: GlasshouseParts },
+): void {
   const n = planeNormal(panel.place);
   const offset = (depth: number) => (a: number, b: number): Vec3Tuple => {
     const p = panel.place(a, b);
@@ -424,14 +548,27 @@ function buildPanel(panel: Panel, parts: GlasshouseParts, innerFinish: CarFinish
   };
   const inner = offset(SKIN);
   const glass = offset(GLASS_DEPTH);
+  const skin = (piece: readonly Point2[], into: GlasshouseParts): void => {
+    into.outer.push(polygonSurface(piece, panel.place, panel.outerUv));
+    into.inner.push(polygonSurface(piece, inner, swatch(innerFinish)).flipped());
+  };
   for (const piece of panel.pieces) {
-    parts.outer.push(polygonSurface(piece, panel.place, panel.outerUv));
-    parts.inner.push(polygonSurface(piece, inner, swatch(innerFinish)).flipped());
+    if (!door) {
+      skin(piece, parts);
+      continue;
+    }
+    const ccw = signedArea(piece) > 0 ? piece : [...piece].reverse();
+    const split = splitByRegion(ccw, door.region);
+    if (split.inside) skin(split.inside, door.parts);
+    for (const outside of split.outside) skin(outside, parts);
   }
   for (const opening of panel.openings) {
     const ccw = signedArea(opening) > 0 ? opening : [...opening].reverse();
-    parts.outer.push(...revealBand(ccw.map(([a, b]) => panel.place(a, b)), [-n[0] * SKIN, -n[1] * SKIN, -n[2] * SKIN], swatch("seal")));
-    parts.glass.push(polygonSurface(ccw, glass, swatch("seal")));
+    const into = door && ccw.every(([a, b]) => door.region.every((plane) => plane.a * a + plane.b * b + plane.c >= -1e-9))
+      ? door.parts
+      : parts;
+    into.outer.push(...revealBand(ccw.map(([a, b]) => panel.place(a, b)), [-n[0] * SKIN, -n[1] * SKIN, -n[2] * SKIN], swatch("seal")));
+    into.glass.push(polygonSurface(ccw, glass, swatch("seal")));
   }
 }
 
@@ -451,7 +588,7 @@ function sidePanel(): Panel {
   const b1 = SIDE_WINDOW_BOTTOM;
   const b2 = SIDE_WINDOW_TOP;
   const b3 = GLASSHOUSE.head;
-  const pillar = 0.075;
+  const pillar = A_PILLAR_WIDTH;
   const [frontDoor, rearDoor, quarter] = SIDE_WINDOWS;
   const windowFront = (height: number): number => screenX(height) - pillar;
   const band = (from: number, to: number): Point2[] => [
@@ -677,7 +814,7 @@ function underbodySurfaces(): { readonly symmetric: Surface[]; readonly single: 
 export const EXHAUST_TIP: Vec3Tuple = Object.freeze([RA - 0.86, h(0.52), -0.72]) as Vec3Tuple;
 
 /** The cabin's inner skin below the belt: floors, door cards and armrests, the cargo bay's walls. */
-function cabinShellSurfaces(): { readonly symmetric: Surface[]; readonly single: Surface[] } {
+function cabinShellSurfaces(): { readonly symmetric: Surface[]; readonly single: Surface[]; readonly door: Surface[] } {
   // Just inside the side slabs' inner faces: the door tops above are the slabs' painted steel.
   const wall = SHELL_SPLIT_Z - 0.005;
   const cabinFloor = 0.68;
@@ -694,15 +831,25 @@ function cabinShellSurfaces(): { readonly symmetric: Surface[]; readonly single:
     // The barn doors' inside.
     quad([back, h(cargoFloor), -wall], [back, h(cargoFloor), wall], [back, h(BODY.belt), wall], [back, h(BODY.belt), -wall], trim).flipped(),
   ];
+  // The side wall in three: the kick panel, the front door's card (it swings
+  // with the door) and the rest.
+  const doorFront = DOOR_LINES.frontDoorFoot;
+  const doorRear = DOOR_LINES.frontDoorRear;
+  const wallPanel = (from: number, to: number): Surface =>
+    quad([from, h(cabinFloor), wall], [to, h(cabinFloor), wall], [to, h(BODY.belt), wall], [from, h(BODY.belt), wall], trim);
   const symmetric: Surface[] = [
-    quad([front, h(cabinFloor), wall], [back, h(cabinFloor), wall], [back, h(BODY.belt), wall], [front, h(BODY.belt), wall], trim),
+    wallPanel(front, doorFront),
+    wallPanel(doorRear, back),
     // The rear wheels' tubs, boxed in under the bench and the cargo floor.
     ...box([RA - ARCH.halfWidth, h(cabinFloor - 0.02), 0.56], [RA + ARCH.halfWidth, h(ARCH.height + WHEEL_HEIGHT + 0.03), wall + 0.004], trim, 0.04),
+    // The rear door's armrest.
+    ...box([-1.3, h(1.07), wall - 0.05], [-0.44, h(1.12), wall + 0.005], trim, 0.012),
   ];
-  for (const [from, to] of [[0.72, -0.38], [-0.44, -1.3]] as const) {
-    symmetric.push(...box([to, h(1.07), wall - 0.05], [from, h(1.12), wall + 0.005], trim, 0.012));
-  }
-  return { symmetric, single };
+  const door: Surface[] = [
+    wallPanel(doorFront, doorRear),
+    ...box([-0.38, h(1.07), wall - 0.05], [Math.min(0.72, doorFront - 0.01), h(1.12), wall + 0.005], trim, 0.012),
+  ];
+  return { symmetric, single, door };
 }
 
 export interface CarBodySurfaces {
@@ -710,6 +857,12 @@ export interface CarBodySurfaces {
   readonly symmetric: readonly Surface[];
   readonly single: readonly Surface[];
   readonly glass: readonly Surface[];
+  /**
+   * The right front door, cut from the slab, the glasshouse and the cabin's
+   * wall (the left is its mirror image): its painted and trimmed parts, and
+   * its window's glass. Shut, it lies exactly in the body's place.
+   */
+  readonly door: { readonly body: readonly Surface[]; readonly glass: readonly Surface[] };
 }
 
 /** Every static part of the body and its glass, body frame. */
@@ -719,7 +872,8 @@ export function carBodySurfaces(): CarBodySurfaces {
   const under = underbodySurfaces();
   const cabin = cabinShellSurfaces();
   const side: GlasshouseParts = { outer: [], inner: [], glass: [] };
-  buildPanel(sidePanel(), side, "trim");
+  const doorSide: GlasshouseParts = { outer: [], inner: [], glass: [] };
+  buildPanel(sidePanel(), side, "trim", { region: frontDoorGlasshouseRegion(), parts: doorSide });
   const ends: GlasshouseParts = { outer: [], inner: [], glass: [] };
   buildPanel(screenPanel(), ends, "dash");
   buildPanel(rearPanel(), ends, "trim");
@@ -760,6 +914,10 @@ export function carBodySurfaces(): CarBodySurfaces {
       headliner,
     ],
     glass: [...side.glass, ...side.glass.map((surface) => surface.mirrored()), ...ends.glass],
+    door: {
+      body: [...shell.door, ...doorSide.outer, ...doorSide.inner, ...cabin.door],
+      glass: doorSide.glass,
+    },
   };
 }
 

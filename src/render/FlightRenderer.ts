@@ -3453,6 +3453,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       } else {
         this.poseSurfaceVehicle(state, this.surfaceVehicle, this.bodyQuaternion, this.bodyMatrix);
       }
+      const doors = state.walking?.doors;
+      this.surfaceVehicle.setDoors?.(doors?.[0] ?? 0, doors?.[1] ?? 0);
       this.posePerson(state);
     } else if (!this.viewerMode) {
       this.aircraft.root.position.set(
