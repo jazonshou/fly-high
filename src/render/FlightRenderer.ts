@@ -2274,6 +2274,11 @@ export class FlightRenderer implements FlightRenderingSystem {
     return out;
   }
 
+  cameraUnderwaterDepth(): number {
+    const underwater = this.underwater;
+    return underwater?.submerged ? underwater.camera.depth : 0;
+  }
+
   /** The character camera's heading and pitch, radians: the walker moves and swims relative to them. */
   characterView(): { readonly heading: number; readonly pitch: number } {
     return this.characterCamera;
