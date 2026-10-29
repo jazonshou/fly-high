@@ -11,7 +11,7 @@ import {
   type RenderDiagnostics,
 } from "../src/game/types";
 import type { FlightRenderer, RendererBenchProbe } from "../src/render/FlightRenderer";
-import type { FlightRenderingSystem, ScreenPoint } from "../src/render/types";
+import { createHudCamera, type FlightRenderingSystem, type ScreenPoint } from "../src/render/types";
 
 /**
  * The `?bench=1` renderer decorator, around a fake renderer. FlightGame calls
@@ -48,6 +48,7 @@ function fakeRenderer() {
     setGovernorHold: vi.fn(),
     discardNextFrameInterval: vi.fn(),
     projectWorldPointToRef: vi.fn(() => true),
+    readHudCameraToRef: vi.fn(() => true),
     setTerrainAuthorityPublisher: vi.fn(),
     setAtmosphere: vi.fn(),
     render: vi.fn<(state: FlightVisualState, deltaSeconds: number) => void>(() => {
@@ -103,6 +104,7 @@ describe("the bench renderer decorator", () => {
     const { inner, canvas, diagnostics } = fakeRenderer();
     const bench = new BenchRenderer(inner as BenchProbedRenderer, fakePort().port);
     const point: ScreenPoint = { x: 0, y: 0, inFront: false, width: 0, height: 0 };
+    const hudCamera = createHudCamera();
     const publisher = { publishTerrainPage: vi.fn(), publishTerrainMacro: vi.fn() };
     const clock = { dayOfYear: 171, solarTimeHours: 12.5 };
     const cadence = { frameCapHz: 60, divisor: 2, displayPeriodMs: 1_000 / 120, periodConfirmed: true } as const;
@@ -122,6 +124,7 @@ describe("the bench renderer decorator", () => {
       setGovernorHold: () => bench.setGovernorHold(true),
       discardNextFrameInterval: () => bench.discardNextFrameInterval(),
       projectWorldPointToRef: () => expect(bench.projectWorldPointToRef(1, 2, 3, point)).toBe(true),
+      readHudCameraToRef: () => expect(bench.readHudCameraToRef(hudCamera)).toBe(true),
       setTerrainAuthorityPublisher: () => bench.setTerrainAuthorityPublisher(publisher),
       setAtmosphere: () => bench.setAtmosphere(clock, "clear"),
       render: () => undefined,
@@ -143,6 +146,7 @@ describe("the bench renderer decorator", () => {
     expect(inner.setGovernorHold).toHaveBeenCalledWith(true);
     expect(inner.discardNextFrameInterval).toHaveBeenCalledOnce();
     expect(inner.projectWorldPointToRef).toHaveBeenCalledWith(1, 2, 3, point);
+    expect(inner.readHudCameraToRef).toHaveBeenCalledWith(hudCamera);
     expect(inner.setTerrainAuthorityPublisher).toHaveBeenCalledWith(publisher);
     expect(inner.setAtmosphere).toHaveBeenCalledWith(clock, "clear");
     expect(inner.getDiagnostics).toHaveBeenCalledOnce();
