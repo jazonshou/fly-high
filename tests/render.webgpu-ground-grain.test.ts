@@ -14,6 +14,7 @@ import { TOKSVIG_ROUGHNESS_GAIN } from "../src/render/webgpu/terrain/MaterialArr
 import {
   DEFAULT_ANISOTROPY_LIMIT,
   GROUND_GRAIN_ANISOTROPY_LIMIT,
+  GROUND_GRAIN_CRUNCH,
   GROUND_GRAIN_GAINS,
   GROUND_GRAIN_RELIEF_FADE,
   GROUND_GRAIN_SCALES,
@@ -112,7 +113,7 @@ describe("the grain is a pure, tiling, mean-neutral field", () => {
       GROUND_GRAIN_CHANNEL_STD.tone,
       GROUND_GRAIN_CHANNEL_STD.moisture,
       GROUND_GRAIN_CHANNEL_STD.clumps,
-      GROUND_GRAIN_CHANNEL_STD.height,
+      GROUND_GRAIN_CHANNEL_STD.crunch,
     ];
     targets.forEach((target, index) => {
       const measured = std(channel(layer.albedoHeight, index)) / 255;
@@ -120,6 +121,39 @@ describe("the grain is a pure, tiling, mean-neutral field", () => {
       expect(measured, `channel ${index}`).toBeLessThan(target * 1.1);
     });
     expect(std(channel(layer.normalMaterial, 0))).toBeGreaterThan(10);
+  });
+
+  it("keeps the crunch's contrast at every mip, where the tone's sits in its broadest", () => {
+    // The crunch exists because the other channels are red: what a mip level
+    // adds over the level above it (its Laplacian band) is the contrast a
+    // pixel reading that level sees at its own scale. The tone's finest band
+    // is a fraction of its broadest, so a fine footprint saw smooth ground;
+    // the crunch's equal octaves keep every band within a factor of two.
+    const plan = planMippedTextureArray([layer.albedoHeight], EDGE, "box");
+    const chains = plan.layerChains[0]!;
+    const bands = (index: number): number[] => {
+      const out: number[] = [];
+      for (let level = 0; EDGE >> (level + 2) >= 1; level += 1) {
+        const edge = EDGE >> level;
+        const fine = chains[level]!;
+        const coarse = chains[level + 1]!;
+        const differences: number[] = [];
+        for (let y = 0; y < edge; y += 1) {
+          for (let x = 0; x < edge; x += 1) {
+            differences.push(fine[(y * edge + x) * 4 + index]!
+              - coarse[((y >> 1) * (edge >> 1) + (x >> 1)) * 4 + index]!);
+          }
+        }
+        out.push(std(differences) / 255);
+      }
+      return out;
+    };
+    const crunch = bands(3).slice(0, 5);
+    const tone = bands(0).slice(0, 5);
+    expect(crunch[0]).toBeGreaterThan(0.06);
+    for (const band of crunch) expect(band).toBeGreaterThan(crunch[0]! * 0.45);
+    expect(Math.max(...crunch)).toBeLessThan(crunch[0]! * 1.2);
+    expect(tone[0]).toBeLessThan(Math.max(...tone) * 0.4);
   });
 
   it("has no seam at the wrap", () => {
@@ -274,5 +308,52 @@ describe("the shader reads the grain safely", () => {
     }
     expect(GROUND_GRAIN_GAINS.tone.snow).toBeLessThan(GROUND_GRAIN_GAINS.tone.vegetation / 4);
     expect(GROUND_GRAIN_GAINS.clumps.snow).toBe(0);
+  });
+});
+
+describe("the crunch shadows the sward, and the sward is matte", () => {
+  const plugin = readSource("src/render/webgpu/terrain/TerrainSurfacePlugin.ts");
+
+  it("reads the crunch from the three texels already fetched", () => {
+    // No new fetch: the crunch is the albedo array's fourth channel, and the
+    // composite has exactly the three reads it had before it.
+    expect(plugin).toContain(
+      "let terrainGrainCrunch = terrainGrain0.w + 0.8 * terrainGrain1.w + terrainGrain2.w;",
+    );
+    expect(plugin.split("terrainGroundGrainFetch(\n").length - 1).toBe(3);
+  });
+
+  it("dims the sun through the direct multiplier and the sky through the cavity", () => {
+    // Direct and ambient each once: the sun's share rides the same multiplier
+    // as the canopy and scrub shadows, faded out under runway paint.
+    expect(plugin).toContain("* mix(terrainGrainDirect, 1.0, clamp(terrainRunwayPaved, 0.0, 1.0));");
+    expect(plugin).toContain("terrainCavity *= max(0.25, 1.0 + ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.ambient)}");
+    // Looking down-sun the gaps hide behind what shades them.
+    expect(plugin).toContain("terrainGrainShadowsSeen * terrainGrainCrunch");
+    expect(GROUND_GRAIN_CRUNCH.hotspot).toBeGreaterThan(0);
+    expect(GROUND_GRAIN_CRUNCH.hotspot).toBeLessThan(1);
+  });
+
+  it("puts the most crunch on vegetation and the least on snow", () => {
+    const { gains } = GROUND_GRAIN_CRUNCH;
+    expect(gains.vegetation).toBe(Math.max(gains.vegetation, gains.rock, gains.snow, gains.other));
+    expect(gains.snow).toBe(Math.min(gains.vegetation, gains.rock, gains.snow, gains.other));
+    // Bounded both ways: a gap never goes black, and never brightens past
+    // what a lit top can.
+    expect(plugin).toContain("terrainGrainDirect = max(0.25, 1.0 + ");
+  });
+
+  it("trims the sward's specular to the vegetation materials' own", () => {
+    // Grass and shrub crowns already render at CANOPY_SURFACE_SPECULAR; the
+    // ground under them carried the full lobe, the milky sheen.
+    expect(plugin).toContain(
+      "terrainF0 * (1.0 - ${terrainWgslFloat(1 - CANOPY_SURFACE_SPECULAR)} * terrainSwardShare)",
+    );
+    const share = plugin.slice(plugin.indexOf("let terrainSwardShare = "));
+    expect(share.slice(0, 220)).toContain("terrainGroundVegetation");
+    // Paint, the canopy's own trimmed share and wet ground keep theirs.
+    expect(share.slice(0, 220)).toContain("(1.0 - clamp(terrainRunwayPaved, 0.0, 1.0))");
+    expect(share.slice(0, 220)).toContain("(1.0 - terrainCanopySurface)");
+    expect(share.slice(0, 220)).toContain("(1.0 - terrainWetness)");
   });
 });
