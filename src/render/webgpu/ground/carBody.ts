@@ -1,5 +1,5 @@
 import { polygonSurface, Surface, type Vec3Tuple } from "../boat/boatMeshData";
-import { finishUv, grilleUv, sideUv, type CarFinish } from "./carAtlas";
+import { finishUv, grilleUv, rearUv, sideUv, type CarFinish } from "./carAtlas";
 import {
   arc,
   bar,
@@ -44,6 +44,8 @@ import {
   LC76_REAR_TRACK,
   LC76_TYRE_LOADED_RADIUS,
   MIRROR,
+  REAR_DOOR_SPLIT_Z,
+  SHELL_SPLIT_Z,
   SIDE_WINDOW_BOTTOM,
   SIDE_WINDOW_TOP,
   SIDE_WINDOWS,
@@ -78,14 +80,13 @@ const swatch = (finish: CarFinish): UvFor => {
   return () => uv;
 };
 const sideMap: UvFor = (point) => sideUv(point[0], point[1] - GROUND_Y);
+const rearMap: UvFor = (point) => rearUv(point[2], point[1] - GROUND_Y);
 
 const FA = LC76_FRONT_AXLE_X;
 const RA = LC76_REAR_AXLE_X;
 /** The wheel centres' height above the ground at rest: the arches' centres. */
 const WHEEL_HEIGHT = LC76_TYRE_LOADED_RADIUS;
 
-/** Where the side slabs meet the centre body: the bonnet's and the barn doors' shut lines. */
-export const SHELL_SPLIT_Z = BODY.halfWidth - 0.1;
 /** The cabin and cargo floors' undersides, above the ground. */
 export const FLOOR_PAN = Object.freeze({ cabin: 0.62, cargo: 0.72 });
 /** The glasshouse's skin: its inner trim stands this far in from the outer panels. */
@@ -150,13 +151,24 @@ function elevation(points: readonly Point2[]): Point2[] {
   return points.map(([x, height]) => [x, h(height)]);
 }
 
-/** The shell's rim: dark in the wheel tubs and underneath, paint everywhere else. */
-/** The shell's rim: underbody below the sills and in the arches, else the side map, so the tail's and nose's faces wear the flanks' dust. */
+/**
+ * The shell's rim: underbody below the sills and in the arches, the rear map
+ * on the tail's face (the barn doors' dust and shut lines), else the side
+ * map, so the nose's faces wear the flanks' dust.
+ */
 const shellRimUv = (midpoint: Vec3Tuple, point: Vec3Tuple): readonly [number, number] => {
   const height = midpoint[1] - GROUND_Y;
   if (height < 0.66 || inArch(midpoint[0], height, 1.04)) return finishUv("underbody");
-  return sideMap(point);
+  return midpoint[0] < BODY.rear + 0.01 ? rearMap(point) : sideMap(point);
 };
+
+/**
+ * The round where the side slabs meet the centre body: a 4 mm groove, but
+ * none on the tail's face, where the barn doors' edges are drawn in the rear
+ * map. A groove that narrow is under a pixel from the chase camera and broke
+ * into dots whenever the car turned.
+ */
+const shutRadius = (point: Vec3Tuple): number => (point[0] < BODY.rear + 0.01 ? 0 : 0.004);
 
 /** 0 below `from`, 1 past `to` (either way round), smooth between. */
 function smoothstep(from: number, to: number, value: number): number {
@@ -220,7 +232,7 @@ function shellSurfaces(): { readonly side: Surface[]; readonly centre: Surface[]
     if (piece.length < 3) continue;
     side.push(...roundedPrismZ(resampleOutline(piece, 0.06), SHELL_SPLIT_Z, BODY.halfWidth, {
       farRadius: flankRadius,
-      nearRadius: 0.004,
+      nearRadius: shutRadius,
       segments: 3,
       creaseRadians: 0.5,
       faceUv: sideMap,
@@ -238,8 +250,8 @@ function shellSurfaces(): { readonly side: Surface[]; readonly centre: Surface[]
     swatch("seal"),
   ));
   const centre = roundedPrismZ(resampleOutline(elevation(shellOutline(FLOOR_PAN.cabin, FLOOR_PAN.cargo)), 0.2), -SHELL_SPLIT_Z, SHELL_SPLIT_Z, {
-    farRadius: 0.004,
-    nearRadius: 0.004,
+    farRadius: shutRadius,
+    nearRadius: shutRadius,
     segments: 2,
     creaseRadians: 0.5,
     faceUv: swatch("paint"),
@@ -949,9 +961,9 @@ function screenPanel(): Panel {
 }
 
 /** The rear barn doors' upper half: 60/40 split, a window in each. (a, b) = (z, height). */
-export const REAR_DOOR_SPLIT_Z = -0.17;
 function rearPanel(): Panel {
-  const b0 = BODY.belt;
+  // Its foot laps 15 mm down over the doors' face, so no seam can open along the belt onto the cargo bay.
+  const b0 = BODY.belt - 0.015;
   const b1 = BODY.belt + 0.07;
   const b2 = GLASSHOUSE.head - 0.09;
   const b3 = GLASSHOUSE.head;
@@ -985,7 +997,7 @@ function rearPanel(): Panel {
       strip(at(split + mullion), (height) => outer(height) - frame),
     ],
     place: (z, height) => [rearX(height), h(height), z],
-    outerUv: swatch("paint"),
+    outerUv: rearMap,
     trimSpan: (height) => [-outer(height) + D_PILLAR_TRIM, outer(height) - D_PILLAR_TRIM],
   };
 }
@@ -1105,8 +1117,8 @@ function pressedBand(outline: readonly Point2[], x: number): Surface[] {
   const ramp = 0.025;
   const ccw = signedArea(outline) > 0 ? outline : [...outline].reverse();
   const top = insetOutline(ccw, ramp);
-  // The side map's column at the tail, so the band wears the doors' dust.
-  const uv = sideMap;
+  // The rear map, so the band wears the doors' dust.
+  const uv = rearMap;
   const facing: Vec3Tuple = [-1, 0, 0];
   const edge = new Surface();
   // From 1 mm inside the panel, so the ramp leaves it without a crack.
@@ -1120,13 +1132,14 @@ function pressedBand(outline: readonly Point2[], x: number): Surface[] {
   return [edge, polygonSurface(top, (a, b) => [x - rise, b, a], uv)];
 }
 
-/** The rear doors' split line, handle and plate, and the quarters' seams. */
+/**
+ * The rear doors' handle, plate, pressed band and hinges, the mud flaps and
+ * the tail lamps' housings. The doors' shut lines are drawn in the rear map.
+ */
 function rearDetailSurfaces(): Surface[] {
   const surfaces: Surface[] = [];
   const x = BODY.rear - 0.0015;
   const z = REAR_DOOR_SPLIT_Z;
-  // The split between the barn doors: a dark gap with the doors' edges either side.
-  surfaces.push(quad([x, h(BODY.rearBottom + 0.02), z - 0.003], [x, h(BODY.rearBottom + 0.02), z + 0.003], [x, h(BODY.belt), z + 0.003], [x, h(BODY.belt), z - 0.003], swatch("seal")));
   // The right door's handle, by the split, and the plate under it.
   surfaces.push(...roundedBox([x - 0.028, h(1.168), z + 0.06], [x + 0.005, h(1.205), z + 0.2], 0.008, swatch("blackPlastic")));
   surfaces.push(...plateSurfaces(x, -1, 0.74, 0.3));

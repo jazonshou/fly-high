@@ -89,7 +89,8 @@ export const GLASSHOUSE = Object.freeze({
   /** The windscreen's foot and head stations. */
   screenFootX: BODY.cowlX - 0.02,
   screenHeadX: BODY.cowlX - 0.29,
-  rearFootX: BODY.rear + 0.01,
+  /** The rear doors' stations: flush with the tail at the belt, one skin as the barn doors are, leaning in above it. */
+  rearFootX: BODY.rear,
   rearHeadX: BODY.rear + 0.045,
   footHalfWidth: 0.84,
   headHalfWidth: 0.778,
@@ -125,6 +126,11 @@ export const DOOR_LINES = Object.freeze({
   frontDoorRear: -0.375,
   rearDoorRear: -1.315,
 });
+
+/** Where the side slabs meet the centre body, z: the bonnet's shut lines along the guards, and the barn doors' outer edges. */
+export const SHELL_SPLIT_Z = BODY.halfWidth - 0.1;
+/** The 60/40 split between the barn doors, z: from the doors' foot up through the windows' mullion to the gutter. */
+export const REAR_DOOR_SPLIT_Z = -0.17;
 
 /** The headlamps: round 7-inch LED units at the grille's ends. */
 export const HEADLAMP = Object.freeze({
