@@ -23,6 +23,7 @@ import {
   FlightSimulator,
   heldElevator,
   JetStabilityAugmentation,
+  pitchGearingFactor,
   TRIM_ELEVATOR_AUTHORITY,
   type FlightControls,
   type AircraftKind,
@@ -111,6 +112,13 @@ const attractControls: ControlState = { ...DEFAULT_CONTROLS };
  */
 const scenicControls: ControlState = { ...DEFAULT_CONTROLS };
 const scenicAltitudeHold = new ScenicAltitudeHold();
+/**
+ * The PLAYER's controls with the pitch axis geared down for speed, for Direct
+ * and Pilot -- see `pitchGearing` in the catalogue. Separate for the same
+ * reason as `scenicControls`: pitch retention and the dampers must still read
+ * the pilot's own hand, which is `controls`.
+ */
+const gearedControls: ControlState = { ...DEFAULT_CONTROLS };
 const attractOutput = { pitch: 0, roll: 0, throttle: 0 };
 let attractHold: AttractHold | null = null;
 /** Look-ahead scan, refreshed on travel rather than every step (see below). */
@@ -556,6 +564,14 @@ function assistedControls(): FlightControls {
     requestedControls = scenicControls;
   } else if (!attractMode) {
     scenicAltitudeHold.reset();
+    // Direct and Pilot hand the stick to the elevator, whose bite grows with
+    // dynamic pressure; Scenic commands an attitude and needs no gearing.
+    copyControlState(gearedControls, controls);
+    gearedControls.pitch = controls.pitch * pitchGearingFactor(
+      aircraftSpec(aircraftKind).pitchGearing,
+      telemetry.indicatedAirspeed,
+    );
+    requestedControls = gearedControls;
   }
   const selectedControls = applyFlightAssistance(
     assistedTarget,
