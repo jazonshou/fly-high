@@ -301,6 +301,7 @@ export class GovernorTrace {
         signals.gpuP95Ms,
         signals.cpuP95Ms,
         signals.intervalP95Ms,
+        signals.lateFraction ?? null,
       ] as const));
     } else {
       this.decisionsTruncated = true;

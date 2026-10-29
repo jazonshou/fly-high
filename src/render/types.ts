@@ -8,6 +8,7 @@ import type {
 import type { EnvironmentClock } from "@/src/world/environmentClock";
 import type { AirportDefinition } from "@/src/world/types";
 import type { RenderingMode } from "@/src/settings";
+import type { PresentationCadence } from "@/src/render/webgpu/core/presentationCadence";
 import type {
   TerrainMacroGrid,
   TerrainPagePublication,
@@ -102,6 +103,23 @@ export interface FlightRenderingSystem {
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void;
   /** §1.6: the rendering inputs are the two continuous clock scalars. */
   setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void;
+  /**
+   * The frame pacer's cadence (PR B), on the first rendered frame after it
+   * changes. Null, which captures and perf:ab never change, is today's
+   * behaviour: every refresh, judged against the tier's own target.
+   */
+  setPresentationCadence(cadence: PresentationCadence | null): void;
+  /**
+   * True while the flight is paused (PR B): the governor judges no window
+   * of the static scene, so a pause neither sheds nor gives back work.
+   */
+  setGovernorHold(held: boolean): void;
+  /**
+   * The next frame follows ticks the frame loop skipped on purpose (the
+   * pacer's re-probe on pause, or a tick it skips to measure the display):
+   * its interval is left out of diagnostics and the governor's window.
+   */
+  discardNextFrameInterval(): void;
   render(state: FlightVisualState, deltaSeconds: number): void;
   getDiagnostics(): RenderDiagnostics;
   /** Starts the 1A-1 GPU budget-probe sweep; returns whether it began. */

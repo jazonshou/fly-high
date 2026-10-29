@@ -279,7 +279,7 @@ describe("FlightRenderer applies scale changes at frame start (B1)", () => {
     const apply = render.indexOf("this.applyPendingRenderScale();");
     expect(apply).toBeGreaterThan(0);
     expect(apply).toBeLessThan(render.indexOf("this.engine.beginFrame();"));
-    expect(apply).toBeLessThan(render.indexOf("this.captureFrameInterval(started);"));
+    expect(apply).toBeLessThan(render.indexOf("this.captureFrameInterval(started, deltaSeconds);"));
     expect(render.indexOf("this.updateGovernor();"))
       .toBeGreaterThan(render.indexOf("this.engine.endFrame();"));
   });

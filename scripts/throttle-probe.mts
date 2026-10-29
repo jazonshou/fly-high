@@ -35,9 +35,17 @@
  *   PROFILE_S>0  V8 sampling profile of the main thread -> <label>.cpuprofile
  *                (summarise with scripts/cpuprofile-summary.mts)
  *
+ * Frame rate (FRAME_RATE=60|display|30): the game's Frame rate setting, 60
+ * by default as players get it. FRAME_RATE=display draws every refresh, the
+ * loop the 2026-09-29 baseline measured, and only it keeps the baseline's
+ * labels; the others add -fps60 or -fps30. Every frame statistic counts
+ * DRAWN frames (a tick on which the game took a canvas texture), because a
+ * paced game skips ticks: at the 60 setting on a 120 Hz display a tick is
+ * half a frame. The raw requestAnimationFrame ticks are kept as `ticks`.
+ *
  * Usage:  tsx scripts/throttle-probe.mts <outDir> <url> [label]
- * Environment: SCENARIO RATE WORKERS QUALITY MODE AIRCRAFT AGL_M WIDTH HEIGHT
- *   SEED DIAGNOSTICS CAMERA SETTLE_S MEASURE_S ROTATE_KT TRIALS
+ * Environment: SCENARIO RATE WORKERS QUALITY MODE FRAME_RATE AIRCRAFT AGL_M
+ *   WIDTH HEIGHT SEED DIAGNOSTICS CAMERA SETTLE_S MEASURE_S ROTATE_KT TRIALS
  *   AFTER_LIFTOFF_S TRACE_S PROFILE_S
  *
  * A URL cannot prove which checkout serves it (shared-machine rule): the
@@ -59,6 +67,8 @@ const RATE = Number(env("RATE", "4"));
 const THROTTLE_WORKERS = env("WORKERS", "0") === "1";
 const QUALITY = env("QUALITY", "low");
 const MODE = env("MODE", "performance");
+const FRAME_RATE = env("FRAME_RATE", "60");
+if (!["60", "display", "30"].includes(FRAME_RATE)) throw new Error(`unknown FRAME_RATE ${FRAME_RATE}`);
 const AIRCRAFT = env("AIRCRAFT", "trainer");
 /** METRES above the terrain datum (protocol.ts). 914 m = 3,000 ft. */
 const AGL_M = Number(env("AGL_M", "914"));
@@ -93,7 +103,8 @@ const HOLD_S = Number(env("HOLD_S", "20"));
 const FREEZE_TIME_S = Number(env("FREEZE_TIME_S", "1000"));
 const KNOTS_PER_MPS = 1.943_844_5;
 const label = labelArg
-  ?? `${SCENARIO}-${AIRCRAFT}-${QUALITY}-${MODE}-x${RATE}${THROTTLE_WORKERS ? "w" : ""}`;
+  ?? `${SCENARIO}-${AIRCRAFT}-${QUALITY}-${MODE}${FRAME_RATE === "display" ? "" : `-fps${FRAME_RATE}`}-x${RATE}`
+    + `${THROTTLE_WORKERS ? "w" : ""}`;
 mkdirSync(outDir, { recursive: true });
 
 const browser = await chromium.launch({
@@ -112,7 +123,7 @@ page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text(
 page.on("pageerror", (e) => consoleErrors.push(`pageerror: ${e.message}`));
 
 await page.addInitScript((opts: {
-  quality: string; mode: string; aircraft: string; diagnostics: boolean; agl: number;
+  quality: string; mode: string; frameRate: string; aircraft: string; diagnostics: boolean; agl: number;
 }) => {
   const w = globalThis as unknown as Record<string, unknown>;
   w.__name ??= (fn: unknown) => fn;
@@ -132,11 +143,24 @@ await page.addInitScript((opts: {
       dayOfYear: 171,
       solarTimeHours: 12.5,
       showDiagnostics: opts.diagnostics,
+      frameRate: opts.frameRate,
     }));
   } catch { /* storage unavailable */ }
 
-  // First frame drawn to the canvas: Babylon asks the WebGPU context for its
-  // swap-chain texture once per presented frame.
+  // Frame collector: one extra rAF callback per tick, timestamps only. It is
+  // requested before any page script, so it runs first in every tick and
+  // `tickNow` is the tick the game's own callback is drawing in.
+  const frames: number[] = [];
+  const drawn: number[] = [];
+  w.__probeFrames = frames;
+  w.__probeDrawn = drawn;
+  let tickNow = Number.NaN;
+  const tick = (now: number) => { frames.push(now); tickNow = now; requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+
+  // Drawn frames: Babylon asks the WebGPU context for its swap-chain texture
+  // once per presented frame, and a tick the pacer skips asks for none. Each
+  // is timed by its tick, which is vsync-aligned like the rAF series.
   try {
     const proto = (globalThis as unknown as { GPUCanvasContext?: { prototype: Record<string, unknown> } })
       .GPUCanvasContext?.prototype;
@@ -144,6 +168,7 @@ await page.addInitScript((opts: {
     if (proto && original) {
       proto.getCurrentTexture = function wrapped(this: unknown, ...args: unknown[]) {
         if (w.__probeFirstFrame === undefined) w.__probeFirstFrame = performance.now();
+        if (Number.isFinite(tickNow) && drawn.at(-1) !== tickNow) drawn.push(tickNow);
         return original.apply(this, args);
       };
     }
@@ -155,12 +180,6 @@ await page.addInitScript((opts: {
     }
   });
   startObserver.observe(document, { childList: true, subtree: true });
-
-  // Frame collector: one extra rAF callback per frame, timestamps only.
-  const frames: number[] = [];
-  w.__probeFrames = frames;
-  const tick = (now: number) => { frames.push(now); requestAnimationFrame(tick); };
-  requestAnimationFrame(tick);
 
   // Main-thread long tasks (> 50 ms).
   const longTasks: { start: number; duration: number }[] = [];
@@ -252,7 +271,7 @@ await page.addInitScript((opts: {
     }
   }
   globalThis.Worker = CountingWorker as unknown as typeof Worker;
-}, { quality: QUALITY, mode: MODE, aircraft: AIRCRAFT, diagnostics: DIAGNOSTICS, agl: AGL_M });
+}, { quality: QUALITY, mode: MODE, frameRate: FRAME_RATE, aircraft: AIRCRAFT, diagnostics: DIAGNOSTICS, agl: AGL_M });
 
 // ---------------------------------------------------------------- helpers
 
@@ -338,6 +357,7 @@ async function resetCollectors(): Promise<number> {
     const w = globalThis as unknown as Record<string, unknown>;
     w.__name ??= (fn: unknown) => fn;
     (w.__probeFrames as number[]).length = 0;
+    (w.__probeDrawn as number[]).length = 0;
     (w.__probeLongTasks as unknown[]).length = 0;
     const ws = w.__probeWorkers as { messages: number; snapshots: number; log: unknown[] };
     ws.messages = 0; ws.snapshots = 0; ws.log.length = 0;
@@ -355,7 +375,10 @@ const round = (v: number) => Math.round(v * 100) / 100;
 interface WindowStats {
   longFrames: unknown[];
   seconds: number;
+  /** Drawn frames; every statistic below but `ticks` is over them. */
   frames: number;
+  /** requestAnimationFrame ticks, drawn or skipped by the game's frame pacer. */
+  ticks: { count: number; fpsMean: number; p50: number };
   fpsMean: number;
   fpsMedian: number;
   intervalMs: { p50: number; p95: number; p99: number; max: number };
@@ -379,7 +402,8 @@ async function collect(fromMs: number | null = null): Promise<WindowStats> {
     const diag = document.querySelector('[aria-label="Performance diagnostics"]') as HTMLElement | null;
     return {
       now: performance.now(),
-      frames: (w.__probeFrames as number[]).slice(),
+      ticks: (w.__probeFrames as number[]).slice(),
+      frames: (w.__probeDrawn as number[]).slice(),
       longTasks: (w.__probeLongTasks as { start: number; duration: number }[]).slice(),
       longFrames: ((w.__probeLongFrames as { start: number; duration: number }[] | undefined) ?? [])
         .filter((f) => f.duration >= 100),
@@ -395,6 +419,10 @@ async function collect(fromMs: number | null = null): Promise<WindowStats> {
   for (let i = 1; i < frames.length; i += 1) intervals.push(frames[i]! - frames[i - 1]!);
   const sorted = intervals.slice().sort((a, b) => a - b);
   const span = frames.length > 1 ? (frames.at(-1)! - frames[0]!) / 1_000 : Number.NaN;
+  const ticks = fromMs === null ? raw.ticks : raw.ticks.filter((t) => t >= fromMs);
+  const tickIntervals: number[] = [];
+  for (let i = 1; i < ticks.length; i += 1) tickIntervals.push(ticks[i]! - ticks[i - 1]!);
+  const tickSpan = ticks.length > 1 ? (ticks.at(-1)! - ticks[0]!) / 1_000 : Number.NaN;
   // Median fps over 1 s buckets: what a pilot reads off a counter.
   const perSecond: number[] = [];
   if (frames.length > 1) {
@@ -435,6 +463,11 @@ async function collect(fromMs: number | null = null): Promise<WindowStats> {
     longFrames,
     seconds: round(seconds),
     frames: frames.length,
+    ticks: {
+      count: ticks.length,
+      fpsMean: round(tickIntervals.length / (Number.isFinite(tickSpan) ? tickSpan : 1)),
+      p50: round(quantile(tickIntervals.sort((a, b) => a - b), 0.5)),
+    },
     fpsMean: round(intervals.length / seconds),
     fpsMedian: quantile(perSecond, 0.5),
     intervalMs: {
@@ -547,6 +580,9 @@ async function installStateSampler(): Promise<boolean> {
         // The resolution ladder is a governor lever too: an arm that stepped
         // it differs in pixels for a reason that is not the change under test.
         scale: d.renderScale, insensitive: d.resolutionInsensitive, active: d.activeGovernor,
+        // PR B's cadence-aware governor: null on builds that predate it.
+        target: d.presentationTargetMs ?? null, late: d.lateFraction ?? null,
+        trial: d.governorTrial ?? null, cadence: d.presentationCadence ?? null,
         pendingTerrainPages: d.pendingTerrainPages, pendingDetailWork: d.pendingDetailWork,
         residentTerrainPages: d.residentTerrainPages, drawCalls: d.drawCalls,
         hydrology: h ? {
@@ -578,6 +614,8 @@ async function sampleDiagnostics(): Promise<{
       governor.push({
         active: d.activeGovernor, cpuL: d.cpuWorkLevel, gpuL: d.gpuWorkLevel,
         cpuLever: d.cpuWorkLever, scale: d.renderScale, insensitive: d.resolutionInsensitive,
+        target: d.presentationTargetMs ?? null, late: d.lateFraction ?? null,
+        trial: d.governorTrial ?? null, cadence: d.presentationCadence ?? null,
       });
     }
     await page.waitForTimeout(1_000);
@@ -746,7 +784,10 @@ const report: Record<string, unknown> = {
   label,
   scenario: SCENARIO,
   capturedAtIso: new Date().toISOString(),
-  settings: { quality: QUALITY, mode: MODE, aircraft: AIRCRAFT, camera: CAMERA, seed: SEED, aglM: AGL_M, width: WIDTH, height: HEIGHT },
+  settings: {
+    quality: QUALITY, mode: MODE, frameRate: FRAME_RATE, aircraft: AIRCRAFT, camera: CAMERA, seed: SEED, aglM: AGL_M,
+    width: WIDTH, height: HEIGHT,
+  },
   rate: RATE,
   throttleWorkers: THROTTLE_WORKERS,
 };

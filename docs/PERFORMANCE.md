@@ -13,6 +13,11 @@ fly high's active renderer is a Babylon.js `WebGPUEngine` implementation. It kee
 - There is **no WebGL fallback and no Canvas fallback**. An unsupported device receives a startup error rather than a reduced renderer.
 - The engine runs with compatibility mode disabled, a right-handed scene, reversed-Z depth, MSAA on the offscreen beauty target per tier, a 0.08 m near plane, and a 45 km far plane (1C-4: the shared aerial perspective is ≥95% opaque beyond it).
 - Continuous `timestamp-query` observers are disabled in gameplay: a controlled reference capture measured a 4.7 ms p95 observer tax and only 49 resolved samples in 240 frames. A pinned diagnostic capture can request them explicitly before device creation; they are never required for rendering.
+- The frame loop draws on every Nth display refresh (Settings → Frame rate, `src/game/framePacer.ts`).
+  - "60 fps (smooth)", the default at every tier, uses N = floor(refresh / 60), so frames stay evenly spaced: 60-100 Hz displays draw every refresh, 120 and 240 Hz draw 60, 144 Hz draws 72 and 165 Hz draws 82.5.
+  - "30 fps" uses N = round(refresh / 30). "Match display" draws every refresh, the loop every build before PR B ran.
+  - The period is confirmed only on evidence render cost cannot stretch, so a slow machine cannot relax its own target: ticks that draw nothing for a reason render cost cannot touch (the startup probe's quiet lead, which renderer creation waits for at every setting, a re-probe while paused or when the pause menu turns pacing on, ticks the pacer skips with time to spare or to measure the display), or drawn ticks faster than the rate held before. The lead lasts 24 ticks or 300 ms, and longer, up to 1 s, until 13 ticks have come with no 250 ms gap between them, so a late first frame or a stall cannot leave it too short to read, however many ticks came before the stall; only stalls that leave no 13 such ticks within the 1 s can. A tick that draws nothing only asks for the next frame, so the tick after a skip comes one refresh later: a ring of those one slower refresh apart is a display that slowed down, followed without a pause. Firefox on macOS can stamp a tick several ms early, never late, so under frames of two refreshes the pacer's own skips are the early-stamped ticks: those, and probe ticks during renderer creation, never confirm a rate. A faster period wins only on runs of quiet deltas, or on most spans of four deltas where dense jitter leaves too few quiet ones. A grid fit over every tick says which rate near the clean evidence the display runs at, common or not (112, 175 or 222 Hz), and withdraws a confirmation the ticks keep contradicting; it moves no rate on its own, and none runs over the probe ticks of renderer creation, which miss vsyncs at random (`src/game/framePacer.ts`). The re-probe skips 24 ticks when the flight pauses, and again on the first paused tick after the tab was hidden or the loop stalled; where frames of two refreshes may hide a faster display, or the ticks contradict the held rate, the pacer skips up to 24 single ticks to measure it, once per rate it holds until the flight pauses. The frame that ends either gap is left out of diagnostics and the governor's window, so neither shows as a stall. A variable-refresh display that presents each frame when it is ready gives the ticks no grid to sit on, so there the confirmation can come and go a few times a minute, but no further round of skips repeats frames. What no tick shows stays unmeasured until a pause. At "60", a display that slows to a rate whose ticks all sit on the old rate's grid (240 or 120 to 60 Hz) is drawn on every tick, so the frames are right while the reported rate stays the old one; so does a change of under 6% between rates drawn on every refresh (72 and 75 Hz, 48 and 50 Hz) at a light load, and 144 to 100 Hz under frames of two refreshes or more can take tens of seconds. "Match display" skips no tick and re-probes on no pause, so there a display that changes rate is followed only where it speeds up by more than 10%: the frames are the same at every rate, and the governor reads the old period, unconfirmed where the ticks contradict it.
+  - The capture, perf:ab and perf:flight harnesses call `render()` themselves and never pace.
 - Device loss is terminal for the current renderer instance. Simulation/rendering pause and the user must reload to recreate the adapter, device, and every GPU resource.
 - WebGPU normally requires a secure browser context; local development at `localhost` is accepted.
 
@@ -436,8 +441,13 @@ Gate A adds only small, fixed steady allocations. The worst live aircraft surfac
 - A final contrast-adaptive sharpen (AMD FidelityFX RCAS) restores the acutance FXAA and the browser's bilinear canvas upscale remove, at every tier that sets `sharpenAmount` above zero (tier 1 0.7, tiers 2/3 0.4; tier 0 off). Where FXAA runs it is FUSED into the FXAA pass (`FxaaSharpenPass`, 2026-10-24): FXAA already fetches the centre and its four-neighbour cross, which is RCAS's whole footprint, so the sharpen adds a few dozen ALU per pixel and no fetch, pass, draw or target. At the multisampled tiers it is a pass of its own after the tone map (`SharpenPass`: 5 taps, one LDR target counted in the framebuffer row, one more full-screen draw). Whichever runs is last: `applyProfile` detaches both and re-attaches the profile's one.
 - Bloom (7-5) runs between rod vision and the tone map, on scene-referred linear radiance: a full-resolution soft-knee bright pass, a half-resolution separable Gaussian (9 taps, sigma 2.0), and an additive composite at intensity 0.08. It is enabled at tier 1 only — tier 0 is unmeasured rather than refused, tiers 2 and Ultra are unfunded. The bright pass is full resolution deliberately: it becomes the first post-process whenever the scotopic pass detaches, and the first pass's ratio sets the size of the target the scene renders into.
 - The device pixel ratio is capped per tier (1/1.5/2/2) and the total scale product is clamped by the tier's absolute pixel cap (1A-6a) — no display can raise rendered pixels past it.
-- Two governors adapt per 120-frame window (1A-6b, repaired by R-11): Governor A uses presentation interval minus measured CPU time as its normal GPU/pacing proxy, steps resolution by 0.05 down / 0.025 up to a 0.75 floor, undoes and latches against steps that do not improve the same timing domain, and — when latched or floored — sheds GPU-cost work levers (cloud-shadow cadence, shadow-caster distance, vegetation distance). Governor B sheds CPU-cost levers (terrain-page requests, detail generation slice, animal budget) only on CPU-bound windows. Explicit timestamp captures can substitute a GPU signal, but unlike the old policy normal gameplay does not burn frame time merely to decide how to save it.
-- Diagnostics additionally track a rolling 600-frame window for p95s and the Z-2 hitch metrics (max frame, p999, hitch count against 2× the tier frame target); >250 ms stalls are counted there even though the governors' own p95 ignores them.
+- Two governors adapt per 120-frame window (1A-6b, repaired by R-11 and PR B). They read the frame loop's requestAnimationFrame deltas, the cadence the pilot sees presented; diagnostics keep the start-to-start interval. While the flight is paused they judge nothing, since the static scene says nothing about flight, and the window restarts on pause and on resume. Each window is first judged against the presentation cadence. The target is 16.67 ms, and 33.3 ms on Ultra. The 30 fps setting judges against its paced interval: 33.3 ms where 30 divides the refresh rate, 40 ms at 50 and 75 Hz, 34.7 ms at 144 Hz and 36.4 ms at 165 Hz. A presented interval is late when it is more than half a refresh past the slowest whole number of refreshes the target allows (25 ms at 60 Hz, 20.8 ms on a 120 Hz display paced to 60), so no interval vsync can produce sits on the threshold. Until the display period is confirmed (on ticks that draw nothing, or a faster period than any frame could make), late means 15% over the target (19.17 ms; 38.33 ms on Ultra), lowered by the same rule only for a period observed faster than 128 Hz.
+  - A window with at most 5% of its frames late is **on cadence**, and nothing is shed. After four on-cadence windows whose pooled late share is at most 2.5%, one step recovers: a GPU-cost rung first, then a CPU-cost rung (only while render() p95 is within 0.9 of the target, or of the longest interval still on time where that is shorter: 12.5 ms at 144 Hz, where a frame makes two refreshes or is late), then +0.025 scale. It recovers on trial: two windows, or for the terrain-page, detail, animal and vegetation rungs four windows and a streaming backlog no higher than when the rung came back and not growing (in flight it rarely reads 0), waiting at most two windows more for that. A trial that goes off cadence restores the step and backs that ladder off for 30, 60, then 120 s. The strikes outlive a passed trial, one is forgiven per 120 s without a failure, and a re-shed within 30 s of a passed trial counts as a failure. These spans are counted in windows of frames at the paced interval: 15, 30, 60, 60 and 15 at 60 fps, 18, 36, 72, 72 and 18 at 72 fps.
+  - Off cadence, a render() p95 over the GPU target (13.7 ms; 30 ms on Ultra) reads as CPU-bound: vsync puts the presented p95 on a whole refresh (33.3 ms at 60 Hz once more than 5% of frames are late), so the interval cannot split such a frame any finer. Under that, Governor A uses presentation interval minus measured CPU time as its GPU proxy; a split that neither the proxy nor the CPU explains is pacing-bound. It steps resolution 0.05 down to a 0.75 floor, on presented intervals only after two off-cadence windows in a row. A step counts only if the next window, in the same timing domain, is on cadence or cuts the late share by a quarter (from over 2% late, and by at least 3 frames), the mean interval by 4% or the p95 by 4%. Two steps that do not are undone and latched.
+  - When latched or floored, Governor A sheds GPU-cost rungs, each relative to the tier's own setting: shared compute ×0.6/×0.35, cloud-shadow cadence +1/+2 frames, shadow-caster distance ×0.7/×0.5, vegetation distance ×0.75, ground-cover gate ×0.6/×0.3.
+  - Governor B sheds CPU-cost rungs (terrain-page requests 8/4/2 per update, detail generation slice ×0.66/×0.33, animal budget ×0.5/×0.25) on CPU-bound windows, and on pacing-bound ones once resolution is latched, before any GPU rung. With its ladder spent, a CPU-bound window holds while render() p95 is at or over 0.9 of the target. Under that a resolution step may still be tried; GPU rungs follow only when steps that worked took the scale to its floor, and a latch from such windows holds while they last.
+  - Explicit timestamp captures can substitute a GPU signal, but normal gameplay does not burn frame time merely to decide how to save it. A pinned capture freezes both governors at level 0, where every rung hands its subsystem the profile's own value.
+- Diagnostics additionally track a rolling 600-frame window for p95s and the Z-2 hitch metrics (max frame, p999, hitch count against 2× the tier frame target: 27.4 ms, 60 ms on Ultra; only the 30 fps setting raises it, to twice its GPU target (the paced interval less 3.33 ms), which is 60 ms at 60, 120 and 240 Hz, 62.8 ms at 144 Hz and 73.3 ms at 50 and 75 Hz; never slow frames); >250 ms stalls are counted there even though the governors' own p95 ignores them.
 
 ## Diagnostics and regression testing
 
@@ -3607,9 +3617,10 @@ delivery.
 `?bench=1` turns the game into a benchmark anyone can run in their own
 browser, on the deployed build:
 `https://jazonshou.github.io/fly-high/?bench=1`. It measures what a player's
-machine does with the shipped game, tier by tier, so the coming tier work
-(the 60 fps cap, the governor's recovery, Auto moving weak machines to Low)
-has a "before" from real computers rather than from SwiftShader. Without the
+machine does with the shipped game, tier by tier, so the tier work (PR B:
+the governor's recovery and the 60 fps frame pacing; next, Auto moving weak
+machines to Low) has a "before" and an "after" from real computers rather
+than from SwiftShader. Without the
 flag a player runs nothing new: FlightGame parses the URL once more and
 finds nothing, the bench's code and styles sit in their own chunk that only a
 dynamic `import()` under the flag fetches, and the frame loop is the one
@@ -3644,6 +3655,7 @@ at the start and the end to show it.
 | `tiers=1,0,2,1` | the tiers to fly, in order (0 Low, 1 Medium, 2 High, 3 Ultra), one to eight; the default flies Medium, Low, High and Medium again |
 | `mode=pinned` | the GPU comparison pass: each tier renders its whole pixel budget at a fixed scale, with per-pass GPU timing on, whatever the governor would do |
 | `hud=0` | flies without the HUD (it is on by default, as a player sees it) |
+| `fps=display` | the Frame rate setting every flight uses: `60`, `display` or `30`. Without it, shipped mode flies the players' default (60) and pinned mode Match display, so a fast display does not cap a GPU comparison; any other value makes the report non-standard. Run and step URLs always carry it |
 | `quick=1` | for development: 20 s flights, and an 8 s settle cap with rest checks 30 frames apart so it can rest inside it; the report says it is non-standard |
 
 **How long it takes.** Each flight is a page load, a 1 s idle frame-rate
@@ -3667,11 +3679,23 @@ are measured: `ground`, from 3 s into the roll to lift-off, and `air`, from
 **What the report says.** Every frame's interval is taken from the
 `requestAnimationFrame` timestamps of the frame loop; the report gives, per
 window, fps (1000 over the mean interval), the interval percentiles, slow
-frames per 240 (over 27.4 ms; 60 ms on Ultra, whose target is 30 fps),
+frames per 240 (over 27.4 ms; 60 ms on Ultra; at the 30 fps setting
+twice its GPU target, the paced interval less 3.33 ms: 60 ms where 30
+divides the refresh rate and 62.8 ms at 144 Hz),
 stutters over 50 and 100 ms, `render()`'s main-thread time, pipelines
 compiled, long tasks, the governor's decisions and shares, and, in pinned
-mode, GPU milliseconds. Each tier gets a plain label, the worse of its two
-windows:
+mode, GPU milliseconds. Each flight also records its pacing: the frame-rate
+setting and what the build does with it, the cadence at the first and last
+frames (the divisor, the display rate, and whether the rate was confirmed on
+ticks that drew nothing or a faster period than any frame could make), and
+the bench's rAF ticks against the frames the game rendered. Missed refreshes
+are counted against the paced cadence, and the vsync buckets count paced
+slots. At every setting the game waits for its display probe's quiet lead
+before it creates the renderer (0.3 s, up to 1 s where the first frames come
+late or stall), which builds before PR B did not; the start-up trace charges
+that wait to its first stage, WebGPU capability discovery, so that stage
+reads up to 0.3 s longer than before PR B, and up to 1 s on such a start.
+Each tier gets a plain label, the worse of its two windows:
 
 | Label | Meaning |
 | --- | --- |
@@ -3698,7 +3722,8 @@ numbers, and the first flight in the tab is marked, because it pays the
 cold shader and pipeline caches.
 
 **Where reports go.** **Download report (.json)** saves the full report
-(`fly-high.bench/1`, `fly-high-bench-<vendor>-<time>.json`); it is the one
+(`fly-high.bench/2`, `fly-high-bench-<vendor>-<time>.json`; a `/1` report
+was flown without frame pacing); it is the one
 to keep. **Open GitHub issue** copies a compact report to the clipboard and
 opens a prefilled issue to paste it into, and **Copy short summary** gives a
 few lines for a chat. A report kept as evidence is committed as

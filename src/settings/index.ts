@@ -14,6 +14,13 @@ import { VEHICLE_KINDS, type VehicleKind } from "@/src/vehicles/kinds";
 import type { LandformsOption } from "@/src/world";
 
 export type UnitSystem = "aviation" | "metric";
+/**
+ * PR B's frame-rate setting: "60" draws every Nth display refresh so frames
+ * stay evenly spaced near 60 fps, "display" draws every refresh, "30" every
+ * Nth near 30 fps (src/game/framePacer.ts).
+ */
+export type FrameRateSetting = "60" | "display" | "30";
+export const FRAME_RATE_SETTINGS = ["60", "display", "30"] as const satisfies readonly FrameRateSetting[];
 export type HudMode = "minimal" | "full" | "off";
 export type RenderingMode = RequestedRenderingMode;
 
@@ -47,6 +54,11 @@ export interface GameSettings {
   /** @deprecated Retained only to migrate older stored preferences. */
   cameraShake: boolean;
   showDiagnostics: boolean;
+  /**
+   * PR B: how often the frame loop draws. "60" at every tier by default;
+   * stored blobs from before it load with the default.
+   */
+  frameRate: FrameRateSetting;
   /**
    * UI preset label only (§1.6). After 1C-1 the renderer never branches on
    * this name; the two clock scalars below are the rendering inputs. The
@@ -113,6 +125,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   reducedMotion: false,
   cameraShake: false,
   showDiagnostics: false,
+  frameRate: "60",
   timeOfDay: "day",
   weather: "breezy",
   dayOfYear: TIME_OF_DAY_PRESET_CLOCKS.day.dayOfYear,
@@ -192,6 +205,7 @@ export function validateSettings(value: unknown): GameSettings {
       typeof source.showDiagnostics === "boolean"
         ? source.showDiagnostics
         : DEFAULT_SETTINGS.showDiagnostics,
+    frameRate: oneOf(source.frameRate, FRAME_RATE_SETTINGS, DEFAULT_SETTINGS.frameRate),
     timeOfDay,
     weather: oneOf(
       source.weather,
@@ -337,8 +351,19 @@ export interface BenchUrlRequest {
   readonly hud: boolean;
   /** `quick=1`: short timings for development; the report says non-standard. */
   readonly quick: boolean;
+  /** `fps=60|display|30`: the frame-rate setting every flight uses; the mode's default without one. */
+  readonly frameRate: FrameRateSetting;
   readonly run: string | null;
   readonly step: number | "report" | null;
+}
+
+/**
+ * The bench's frame rate without `fps=`. Shipped mode flies what players
+ * get. Pinned mode measures the GPU's capacity, which a 60 fps cap would
+ * hide on a fast display, so it draws every refresh.
+ */
+export function defaultBenchFrameRate(mode: BenchUrlRequest["mode"]): FrameRateSetting {
+  return mode === "pinned" ? "display" : DEFAULT_SETTINGS.frameRate;
 }
 
 /** Medium first and last, so a run can check itself for drift. */
@@ -360,8 +385,8 @@ export function parseBenchTiers(text: string): number[] | null {
  * `?bench=1` only. URL only and never persisted, like `?world=`: the bench
  * keeps its progress in its own tab-scoped store (src/bench/store.ts), never
  * in the settings. Anything but exactly `bench=1` is the normal game. A bad
- * `tiers` list falls back to the default; a bad `run` or `step` reads as null,
- * which means the intro page.
+ * `tiers` list or `fps` falls back to the default; a bad `run` or `step`
+ * reads as null, which means the intro page.
  */
 export function readBenchFromUrl(url?: string): BenchUrlRequest | undefined {
   const source = url ?? (typeof window !== "undefined" ? window.location.href : "http://local/");
@@ -371,11 +396,13 @@ export function readBenchFromUrl(url?: string): BenchUrlRequest | undefined {
     const tiers = parseBenchTiers(params.get("tiers") ?? "");
     const run = params.get("run");
     const step = params.get("step");
+    const mode = params.get("mode") === "pinned" ? "pinned" : "shipped";
     return {
       tiers: tiers ?? [...DEFAULT_BENCH_TIERS],
-      mode: params.get("mode") === "pinned" ? "pinned" : "shipped",
+      mode,
       hud: params.get("hud") !== "0",
       quick: params.get("quick") === "1",
+      frameRate: oneOf(params.get("fps"), FRAME_RATE_SETTINGS, defaultBenchFrameRate(mode)),
       run: run !== null && /^[a-z0-9]{6,16}$/.test(run) ? run : null,
       step: step === "report" ? "report" : step !== null && /^\d{1,2}$/.test(step) ? Number(step) : null,
     };

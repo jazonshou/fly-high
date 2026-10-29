@@ -26,6 +26,23 @@ describe("settings panel rendering preference", () => {
     expect(markup).not.toContain("<option");
   });
 
+  it("offers the frame rate in plain words, 60 fps first", () => {
+    const markup = renderToStaticMarkup(createElement(SettingsPanel, {
+      settings: DEFAULT_SETTINGS,
+      onChange: () => undefined,
+    }));
+
+    expect(markup).toContain('id="settings-frame-rate-label"');
+    expect(markup).toContain(">Frame rate<");
+    expect(markup).toContain("60 fps (smooth)");
+    expect(markup).toContain("Match display");
+    expect(markup).toContain("30 fps");
+    expect(markup).toMatch(/data-value="60"[^>]*aria-selected="true"/);
+    expect(markup).toContain("72 or 82 fps");
+    expect(markup).toContain("Screens up to");
+    expect(markup.indexOf(">Frame rate<")).toBeGreaterThan(markup.indexOf(">Rendering<"));
+  });
+
   it("wraps settings in a labelled modal with an explicit close control", () => {
     const markup = renderToStaticMarkup(createElement(SettingsDialog, {
       settings: DEFAULT_SETTINGS,

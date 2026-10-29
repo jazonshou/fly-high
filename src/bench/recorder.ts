@@ -12,6 +12,7 @@ import type {
   ScreenPoint,
   TerrainAuthorityPublisher,
 } from "@/src/render/types";
+import type { PresentationCadence } from "@/src/render/webgpu/core/presentationCadence";
 import type { RenderingMode } from "@/src/settings";
 import type { EnvironmentClock } from "@/src/world/environmentClock";
 import type { AirportDefinition } from "@/src/world/types";
@@ -179,6 +180,20 @@ export class BenchRenderer implements FlightRenderingSystem {
 
   setAirports(airports: readonly Readonly<AirportDefinition>[]): void {
     this.inner.setAirports(airports);
+  }
+
+  /** Always forwarded: the cadence is part of what a player's game does, so the bench measures it. */
+  setPresentationCadence(cadence: PresentationCadence | null): void {
+    this.inner.setPresentationCadence(cadence);
+  }
+
+  /** Forwarded for the same reason; the bench's flight never pauses. */
+  setGovernorHold(held: boolean): void {
+    this.inner.setGovernorHold(held);
+  }
+
+  discardNextFrameInterval(): void {
+    this.inner.discardNextFrameInterval();
   }
 
   projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean {

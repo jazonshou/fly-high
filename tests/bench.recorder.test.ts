@@ -44,6 +44,9 @@ function fakeRenderer() {
     setRenderingMode: vi.fn(),
     setReducedMotion: vi.fn(),
     setAirports: vi.fn(),
+    setPresentationCadence: vi.fn(),
+    setGovernorHold: vi.fn(),
+    discardNextFrameInterval: vi.fn(),
     projectWorldPointToRef: vi.fn(() => true),
     readHudCameraToRef: vi.fn(() => true),
     setTerrainAuthorityPublisher: vi.fn(),
@@ -104,6 +107,7 @@ describe("the bench renderer decorator", () => {
     const hudCamera = createHudCamera();
     const publisher = { publishTerrainPage: vi.fn(), publishTerrainMacro: vi.fn() };
     const clock = { dayOfYear: 171, solarTimeHours: 12.5 };
+    const cadence = { frameCapHz: 60, divisor: 2, displayPeriodMs: 1_000 / 120, periodConfirmed: true } as const;
 
     // Typed against the interface, so a member added to it fails to compile here.
     const exercised: Record<keyof FlightRenderingSystem, () => unknown> = {
@@ -116,6 +120,9 @@ describe("the bench renderer decorator", () => {
       setRenderingMode: () => bench.setRenderingMode("ultra"),
       setReducedMotion: () => bench.setReducedMotion(true),
       setAirports: () => bench.setAirports([]),
+      setPresentationCadence: () => bench.setPresentationCadence(cadence),
+      setGovernorHold: () => bench.setGovernorHold(true),
+      discardNextFrameInterval: () => bench.discardNextFrameInterval(),
       projectWorldPointToRef: () => expect(bench.projectWorldPointToRef(1, 2, 3, point)).toBe(true),
       readHudCameraToRef: () => expect(bench.readHudCameraToRef(hudCamera)).toBe(true),
       setTerrainAuthorityPublisher: () => bench.setTerrainAuthorityPublisher(publisher),
@@ -135,6 +142,9 @@ describe("the bench renderer decorator", () => {
     expect(inner.setRenderingMode).toHaveBeenCalledWith("ultra");
     expect(inner.setReducedMotion).toHaveBeenCalledWith(true);
     expect(inner.setAirports).toHaveBeenCalledWith([]);
+    expect(inner.setPresentationCadence).toHaveBeenCalledWith(cadence);
+    expect(inner.setGovernorHold).toHaveBeenCalledWith(true);
+    expect(inner.discardNextFrameInterval).toHaveBeenCalledOnce();
     expect(inner.projectWorldPointToRef).toHaveBeenCalledWith(1, 2, 3, point);
     expect(inner.readHudCameraToRef).toHaveBeenCalledWith(hudCamera);
     expect(inner.setTerrainAuthorityPublisher).toHaveBeenCalledWith(publisher);
@@ -216,6 +226,7 @@ describe("the bench renderer decorator", () => {
     bench.setCameraMode("chase");
     bench.cutCamera();
     bench.setAirports([]);
+    bench.setPresentationCadence(null);
 
     expect(inner.setQuality).toHaveBeenCalledExactlyOnceWith("medium");
     expect(inner.setRenderingMode).not.toHaveBeenCalled();
@@ -225,6 +236,8 @@ describe("the bench renderer decorator", () => {
     expect(inner.setCameraMode).toHaveBeenCalledExactlyOnceWith("chase");
     expect(inner.cutCamera).toHaveBeenCalledOnce();
     expect(inner.setAirports).toHaveBeenCalledOnce();
+    // The pacer's cadence is what a player's game does: never swallowed.
+    expect(inner.setPresentationCadence).toHaveBeenCalledExactlyOnceWith(null);
     expect(bench.ignoredRendererCalls).toBe(6);
     expect(bench.ignoredCalls).toEqual({
       setQuality: 1,

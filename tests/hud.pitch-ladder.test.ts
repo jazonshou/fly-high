@@ -442,7 +442,12 @@ describe("the ladder's markup and its per-frame writer", () => {
     const placed = loop.indexOf("renderer.readHudCameraToRef(hudCamera) ? pitchLadderToRef(hudCamera, pitchLadderFrame) : null");
     expect(drawn).toBeGreaterThan(-1);
     expect(placed).toBeGreaterThan(drawn);
-    expect(placed).toBeLessThan(loop.indexOf("animationFrame = requestAnimationFrame(renderLoop);"));
+    // A tick the frame pacer skips re-arms and returns before the draw, so
+    // the ladder stays where the last drawn frame put it.
+    const skipped = loop.indexOf("if (!paced.render) {");
+    expect(skipped).toBeGreaterThan(-1);
+    expect(skipped).toBeLessThan(drawn);
+    expect(placed).toBeLessThan(loop.indexOf("animationFrame = requestAnimationFrame(renderLoop);", drawn));
     const renderer = readFileSync(new URL("../src/render/FlightRenderer.ts", import.meta.url), "utf8");
     const read = renderer.slice(renderer.indexOf("readHudCameraToRef(result: HudCamera): boolean {"));
     const body = read.slice(0, read.indexOf("\n  }\n"));
