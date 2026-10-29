@@ -9,7 +9,8 @@ import { Hud } from "@/src/ui/Hud";
  * The HUD props the chase-view markup pin renders (tests/ui.hud-cockpit-layout.test.ts),
  * shared with the script that captured its golden
  * (tests/fixtures/hud-exterior-markup.json, captured on de91cef before the cockpit
- * layout existed, and re-captured with the flap block on 2026-09-30). Every camera but the cockpit, both visible HUD modes, a cruise
+ * layout existed, re-captured with the flap block on 2026-09-30 and with the camera-drawn
+ * pitch ladder on 2026-10-28). Every camera but the cockpit, both visible HUD modes, a cruise
  * state and an alert state, on every airframe, plus the unit and mouse variants.
  */
 export interface HudMarkupCase {

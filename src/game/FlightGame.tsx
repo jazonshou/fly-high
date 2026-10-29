@@ -11,7 +11,8 @@ import {
 import { FlightAudio } from "@/src/audio";
 import { InputManager, type InputAction } from "@/src/input";
 import { FlightRenderer } from "@/src/render/FlightRenderer";
-import { type FlightRenderingSystem, type ScreenPoint } from "@/src/render/types";
+import { createHudCamera, type FlightRenderingSystem, type ScreenPoint } from "@/src/render/types";
+import type { PresentationCadence } from "@/src/render/webgpu/core/presentationCadence";
 import type { BenchSession } from "@/src/bench/types";
 import {
   createRandomSeed,
@@ -42,12 +43,20 @@ import {
   type AirportMarkerView,
 } from "@/src/ui/airportMarker";
 import {
+  applyPitchLadder,
+  createPitchLadderFrame,
+  createPitchLadderView,
+  pitchLadderToRef,
+  type PitchLadderView,
+} from "@/src/ui/pitchLadder";
+import {
   AirportNetworkController,
   describeNearestAirport,
   type NearestAirportInfo,
 } from "./AirportNetworkController";
 import { DisposableScope } from "./DisposableScope";
 import { DiagnosticsPoller, nearestAirportReadoutKey } from "./diagnosticsCadence";
+import { FramePacer, startIdleProbe, type IdleProbe } from "./framePacer";
 import { FreeFlyController } from "./freeFly";
 import { SimulationClient } from "./SimulationClient";
 import { sessionStartPoint } from "./surfaceSpawn";
@@ -160,6 +169,8 @@ export function FlightGame() {
   const airportMarkerRef = useRef<HTMLDivElement>(null);
   /** The marker's "STQK · 4.2 NM" label, rebuilt with the readout, not per frame. */
   const airportMarkerTextRef = useRef("");
+  /** The HUD's pitch ladder, drawn through the camera every frame (src/ui/pitchLadder.ts). */
+  const pitchLadderRef = useRef<HTMLDivElement>(null);
   /**
    * The autoland as of the latest snapshot, and that snapshot's sim time: on
    * the snapshot where it is gone the pilot's input takes over its levers,
@@ -656,6 +667,12 @@ export function FlightGame() {
     let disposed = false;
     let rendererTerminal = false;
     let lastFrame = performance.now();
+    // PR B: which rAF ticks draw (Settings → Frame rate). A cadence the
+    // pacer emits on a tick that draws nothing waits here for the next one
+    // that does, so the renderer only hears of it inside the frame's `try`.
+    const framePacer = new FramePacer();
+    let pendingCadence: PresentationCadence | null = null;
+    let idleProbe: IdleProbe | null = null;
     let lastNearestAirportUpdate = Number.NEGATIVE_INFINITY;
     // B3: what the HUD's readout last showed; null until this run publishes.
     let nearestAirportReadout: string | null = null;
@@ -663,6 +680,9 @@ export function FlightGame() {
     const airportMarkerPoint: ScreenPoint = { x: 0, y: 0, inFront: false, width: 0, height: 0 };
     const airportMarkerPlacement = createAirportMarkerPlacement();
     let airportMarkerView: AirportMarkerView | null = null;
+    const hudCamera = createHudCamera();
+    const pitchLadderFrame = createPitchLadderFrame();
+    let pitchLadderView: PitchLadderView | null = null;
     const startupAbortController = new AbortController();
     const startupResources = new DisposableScope();
     readyRef.current = false;
@@ -737,7 +757,20 @@ export function FlightGame() {
         ...(urlFarSward ? { terrainFarSwardRead: urlFarSward } : {}),
         ...(bench ? bench.rendererOptions(canvas) : {}),
       };
-      const created = await FlightRenderer.create(rendererOptions);
+      // The startup idle probe measures the display on ticks that draw
+      // nothing, while the player waits for the renderer anyway. It gets a
+      // short lead (300 ms, up to 1 s where the first frames come late or
+      // stall) before creation makes the main thread busy, at every setting:
+      // the governor judges against the period it confirms at "Match display"
+      // too, and the pause menu can turn pacing on.
+      idleProbe = startIdleProbe(framePacer);
+      let created: FlightRenderer;
+      try {
+        await idleProbe.lead;
+        created = await FlightRenderer.create(rendererOptions);
+      } finally {
+        idleProbe.stop();
+      }
       // `?bench=1` only: the decorator draws the benchmark's scripted flight.
       const renderer: FlightRenderingSystem = bench ? bench.attach(created, world) : created;
       if (disposed) {
@@ -867,6 +900,12 @@ export function FlightGame() {
       );
       const renderLoop = (now: number) => {
         if (disposed || rendererTerminal) return;
+        const paced = framePacer.tick(now, settingsRef.current.frameRate, phaseRef.current === "paused");
+        if (paced.cadence !== null) pendingCadence = paced.cadence;
+        if (!paced.render) {
+          animationFrame = requestAnimationFrame(renderLoop);
+          return;
+        }
         const deltaSeconds = Math.min(0.1, Math.max(1 / 240, (now - lastFrame) / 1_000));
         lastFrame = now;
         const freeFly = phaseRef.current === "viewer" ? freeFlyRef.current : null;
@@ -885,6 +924,13 @@ export function FlightGame() {
           });
         }
         try {
+          // A paused flight draws a static scene, which says nothing about flight.
+          renderer.setGovernorHold(phaseRef.current === "paused");
+          if (paced.afterReprobe) renderer.discardNextFrameInterval();
+          if (pendingCadence !== null) {
+            renderer.setPresentationCadence(pendingCadence);
+            pendingCadence = null;
+          }
           renderer.render(frameState, deltaSeconds);
         } catch (renderError) {
           console.error("Flight renderer stopped after an unrecoverable frame error", renderError);
@@ -912,6 +958,16 @@ export function FlightGame() {
             airportMarkerView,
             markerVisible ? placeAirportMarker(airportMarkerPoint, airportMarkerPlacement) : null,
             airportMarkerTextRef.current,
+          );
+        }
+        // After the frame is drawn, through the camera it was drawn with: the
+        // ladder lies on that frame's horizon, not the last React update's.
+        const ladder = pitchLadderRef.current;
+        if (ladder) {
+          if (pitchLadderView?.element !== ladder) pitchLadderView = createPitchLadderView(ladder);
+          applyPitchLadder(
+            pitchLadderView,
+            renderer.readHudCameraToRef(hudCamera) ? pitchLadderToRef(hudCamera, pitchLadderFrame) : null,
           );
         }
         diagnosticsPoller.tick(now, settingsRef.current.showDiagnostics, phaseRef.current);
@@ -948,6 +1004,8 @@ export function FlightGame() {
     void initialize();
 
     const handleVisibility = () => {
+      // The ticks either side of a hidden spell are no measure of the display.
+      framePacer.reset();
       if (document.hidden) {
         if (phaseRef.current === "flying") pauseFlight();
         else if (phaseRef.current === "menu") simulationRef.current?.setPaused(true);
@@ -960,6 +1018,7 @@ export function FlightGame() {
       invalidatePendingTransitions();
       disposed = true;
       startupAbortController.abort();
+      idleProbe?.stop();
       cancelAnimationFrame(animationFrame);
       controlPump?.dispose();
       controlPump = null;
@@ -1046,6 +1105,7 @@ export function FlightGame() {
           nearestAirportShown={nearestAirportShown}
           onToggleNearestAirport={toggleNearestAirport}
           onToggleAutoland={toggleAutoland}
+          pitchLadderRef={pitchLadderRef}
         />
       ) : null}
 

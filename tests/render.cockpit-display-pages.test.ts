@@ -201,11 +201,13 @@ describe("the PFD's attitude ball", () => {
     return a.x < b.x ? { left: a, right: b } : { left: b, right: a };
   }
 
-  it("clamps the pitch offset at 25 degrees, h/40 a degree, nose-up moving the horizon DOWN", () => {
+  it("moves the horizon h/40 a degree all the way to the vertical, nose-up moving it DOWN", () => {
     expect(pfdHorizonOffsetPx(10, H)).toBeCloseTo(75, 9);
     expect(pfdHorizonOffsetPx(-10, H)).toBeCloseTo(-75, 9);
-    expect(pfdHorizonOffsetPx(60, H)).toBe(pfdHorizonOffsetPx(25, H));
-    expect(pfdHorizonOffsetPx(-90, H)).toBe(pfdHorizonOffsetPx(-25, H));
+    // Until 2026-10-28 it stopped at 25 degrees, so a steeper climb read as 25.
+    expect(pfdHorizonOffsetPx(60, H)).toBeCloseTo(450, 9);
+    expect(pfdHorizonOffsetPx(-90, H)).toBeCloseTo(-675, 9);
+    expect(pfdHorizonOffsetPx(-120, H)).toBe(pfdHorizonOffsetPx(-90, H));
   });
 
   it("turns the ball by MINUS the bank", () => {
@@ -249,10 +251,41 @@ describe("the PFD's attitude ball", () => {
     // the horizon has dropped 0.5 h: the +20 rung is at the centre and the +10 at 0.25 h; the -10 and -20 are off the disc
     expect(noseUp.filter((t) => t === "20")).toHaveLength(2);
     expect(noseUp.filter((t) => t === "10")).toHaveLength(2);
-    // no anchor leaves the page at the pitch clamp under a steep bank
-    for (const p of transformedPoints(draw(drawPfd, stateWith({ pitchDeg: 25, bankDeg: 60 }))).filter((p) => p.method === "strokeText")) {
-      expect(p.y).toBeGreaterThan(0);
-      expect(p.y).toBeLessThan(H);
+    // no anchor leaves the page, steep or banked
+    for (const pitchDeg of [25, 47, 90, -63]) {
+      for (const p of transformedPoints(draw(drawPfd, stateWith({ pitchDeg, bankDeg: 60 }))).filter((p) => p.method === "strokeText")) {
+        expect(p.y).toBeGreaterThan(0);
+        expect(p.y).toBeLessThan(H);
+      }
+    }
+  });
+
+  it("reads a steep climb or dive by its own rung, with the horizon off the ball", () => {
+    const halos = (state: DisplayState) => draw(drawPfd, state).filter((c) => c.method === "strokeText").map((c) => String(c.args[0]));
+    // 40 nose up: the 40 rung is at the centre and the 30 and 50 at 0.25 h; the horizon, 1.0 h down, is off the ball.
+    const climb = halos(stateWith({ pitchDeg: 40 }));
+    for (const rung of ["30", "40", "50"]) expect(climb.filter((t) => t === rung), rung).toHaveLength(2);
+    expect(climb.filter((t) => t === "20" || t === "60")).toHaveLength(0);
+    // 70 nose down: likewise, negative rungs numbered by their size.
+    const dive = halos(stateWith({ pitchDeg: -70 }));
+    for (const rung of ["60", "70", "80"]) expect(dive.filter((t) => t === rung), rung).toHaveLength(2);
+    // The ball is all sky or all ground there: that fill reaches past the disc above and below. Wings
+    // level the ball's only transforms are the moves to its centre and down by the offset, so the
+    // fill's rows are its arguments moved by those two.
+    const { ballCentre, ballRadius, horizonHalfLength } = pfdGeometry(W, H);
+    for (const [pitchDeg, colour] of [[40, DISPLAY_COLOURS.sky], [-70, DISPLAY_COLOURS.ground], [90, DISPLAY_COLOURS.sky]] as const) {
+      let fill: string | null = null;
+      const rows: [number, number][] = [];
+      for (const call of draw(drawPfd, stateWith({ pitchDeg, bankDeg: 0 }))) {
+        if (call.method === "set:fillStyle") fill = String(call.args[0]);
+        if (call.method === "fillRect" && fill === colour && call.args[2] === 2 * horizonHalfLength) {
+          const top = ballCentre.y + pfdHorizonOffsetPx(pitchDeg, H) + Number(call.args[1]);
+          rows.push([top, top + Number(call.args[3])]);
+        }
+      }
+      expect(rows, `${pitchDeg}`).toHaveLength(1);
+      expect(rows[0]![0], `${pitchDeg}`).toBeLessThan(ballCentre.y - ballRadius);
+      expect(rows[0]![1], `${pitchDeg}`).toBeGreaterThan(ballCentre.y + ballRadius);
     }
   });
 });

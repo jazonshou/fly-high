@@ -124,6 +124,9 @@ import {
   governorConfigForProfile,
   nextGovernorDecision,
   observeRenderScaleApplication,
+  rebaseGovernorState,
+  sameGovernorTargets,
+  summariseIntervals,
   workLeverSettingsFor,
   type GovernorConfig,
   type GovernorSignals,
@@ -219,7 +222,13 @@ import {
 import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
 import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
-import type { FlightRenderingSystem, ScreenPoint, TerrainAuthorityPublisher } from "./types";
+import { resolveGovernedWork, type GovernedWork } from "./governedWork";
+import type { FlightRenderingSystem, HudCamera, ScreenPoint, TerrainAuthorityPublisher } from "./types";
+import {
+  cadenceDisplayHz,
+  sameCadence,
+  type PresentationCadence,
+} from "./webgpu/core/presentationCadence";
 import {
   type TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
@@ -611,6 +620,8 @@ export interface RendererBenchProbe {
   pinned: boolean;
   /** GPU milliseconds resolved during this frame; null without timing or a fresh sample. */
   gpuFrameMs: number | null;
+  /** The frame pacer's cadence as last set; null until FlightGame sets one. */
+  presentationCadence: PresentationCadence | null;
 }
 
 function finiteState(state: FlightVisualState): boolean {
@@ -917,8 +928,16 @@ export class FlightRenderer implements FlightRenderingSystem {
   /** Perf capture only; null for every player. See `FlightRendererOptions`. */
   private readonly cockpitRigOverride: CockpitRigOverride | null;
   private workLeverSettings: WorkLeverSettings = workLeverSettingsFor(0, 0);
+  /** PR B (G3): the levers resolved against the profile; what each subsystem is handed. */
+  private governedWork: GovernedWork;
   private governedProfileCache: WebGpuQualityProfile;
   private lastSignals: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null };
+  /** PR B: the frame pacer's cadence; null for captures, perf:ab and perf:flight, which never pace. */
+  private presentationCadence: PresentationCadence | null = null;
+  /** A cadence change already restarted the governor's window in flight (at most once per window). */
+  private governorRebasedThisWindow = false;
+  /** The flight is paused: the static scene's frames are no measure of flight, so no window is judged. */
+  private governorHeld = false;
   private budgetProbe: FrameGraphBudgetProbe | null = null;
   private budgetProbeReport: RenderDiagnostics["budgetProbeReport"] = null;
   private probeDisabledPass: string | null = null;
@@ -1077,6 +1096,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.governorConfig = this.resolveGovernorConfig();
     this.governorState = createGovernorState(this.governorConfig);
     this.governedProfileCache = this.profile;
+    this.governedWork = resolveGovernedWork(this.profile, this.workLeverSettings);
     this.renderScale = this.governorState.renderScale;
     this.renderScaleQueue = new RenderScaleQueue(
       this.engine,
@@ -2207,6 +2227,27 @@ export class FlightRenderer implements FlightRenderingSystem {
     return true;
   }
 
+  readHudCameraToRef(result: HudCamera): boolean {
+    const canvas = this.domElement;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (width <= 0 || height <= 0) return false;
+    // The matrix this frame was drawn with, and the axes of what it follows
+    // (`updatePresentation`): the aircraft's, or the viewer's own in free
+    // flight. The floating origin moves points, not directions, so the
+    // ladder, which projects only directions, needs no rebasing.
+    result.transform = this.camera.getTransformationMatrix().m;
+    result.width = width;
+    result.height = height;
+    result.forward.x = this.forward.x;
+    result.forward.y = this.forward.y;
+    result.forward.z = this.forward.z;
+    result.up.x = this.up.x;
+    result.up.y = this.up.y;
+    result.up.z = this.up.z;
+    return true;
+  }
+
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void {
     this.terrainAuthorityPublisher = publisher;
     if (publisher) this.terrainEvolution.publishMacroOnce(publisher);
@@ -2275,6 +2316,51 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.ocean.setShelter(ellipses);
   }
 
+  /**
+   * PR B: the governor's targets follow the cadence (the 30 fps setting
+   * raises them; the 60 setting on a fast panel moves only the late
+   * threshold). When the targets move, the window in flight was judged
+   * against the old ones and restarts, at most once per window, so a cadence
+   * that flickers cannot starve the governor of decisions. Never a resize, a
+   * level change or a diagnostics reset.
+   */
+  setPresentationCadence(cadence: PresentationCadence | null): void {
+    if (sameCadence(cadence, this.presentationCadence)) return;
+    this.presentationCadence = cadence;
+    const next = this.resolveGovernorConfig();
+    const moved = !sameGovernorTargets(next, this.governorConfig);
+    this.governorConfig = next;
+    if (!moved || next.frozen || this.governorRebasedThisWindow) return;
+    this.governorState = rebaseGovernorState(this.governorState);
+    this.resetTimingSamples();
+    this.governorRebasedThisWindow = true;
+  }
+
+  /**
+   * PR B: while the flight is paused the scene is static and nothing
+   * streams, so render() falls and the backlog drains. Judged, those windows
+   * gave back flight-only sheds that the resume then paid for again. Held,
+   * the governor judges nothing and the window in flight restarts on each
+   * change; levels, scale, latch, trial and recovery records stay as they
+   * were.
+   */
+  setGovernorHold(held: boolean): void {
+    if (held === this.governorHeld) return;
+    this.governorHeld = held;
+    this.resetTimingSamples();
+  }
+
+  /**
+   * PR B: the next frame follows ticks the frame loop skipped on purpose
+   * (the pacer's re-probe of the display when the flight pauses, or one of
+   * the ticks it skips to measure a display that frames hide). Its
+   * interval is no frame time, so it is kept out of the diagnostics ring
+   * and the governor's window, as a hidden tab's gap is.
+   */
+  discardNextFrameInterval(): void {
+    this.previousFrameStartedAt = null;
+  }
+
   setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void {
     if (!this.atmosphereTracker.update(clock, weather)) return;
     this.environmentState = resolveEnvironmentState({
@@ -2332,7 +2418,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     // timing reset land where the old out-of-frame resize put them.
     this.applyPendingRenderScale();
     const started = performance.now();
-    this.captureFrameInterval(started);
+    this.captureFrameInterval(started, deltaSeconds);
     this.currentState = this.presentedState(state);
     this.currentDeltaSeconds = Math.max(1 / 300, Math.min(0.1, deltaSeconds));
     this.frameIndex += 1;
@@ -2439,7 +2525,7 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   private resolveGovernorConfig(): GovernorConfig {
-    const config = governorConfigForProfile(this.profile);
+    const config = governorConfigForProfile(this.profile, this.presentationCadence);
     if (this.pinnedRenderScale === null) return config;
     return Object.freeze({
       ...config,
@@ -2681,6 +2767,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     into.gpuFrameMs = this.lastGpuTimingFrameIndex === this.frameIndex
       ? this.lastGpuFrameMilliseconds
       : null;
+    into.presentationCadence = this.presentationCadence;
   }
 
   /**
@@ -2921,7 +3008,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // consumed, which was every committed capture).
     // The threshold is a product contract, not something a slower workload
     // may redefine until its own misses disappear. A tier-1 frame above
-    // 27.4 ms is a visible missed delivery and must remain visible here.
+    // 27.4 ms is a visible missed delivery and must remain visible here. PR
+    // B: only the player's own 30 fps choice raises it (to 60 ms where 30
+    // divides the refresh rate, as on Ultra, and a little more where it does
+    // not); a cadence measured from slow frames never does.
     const inventoryLanes = this.inventoryGpuMemoryBreakdown();
     // One viewport for both estimates. Two reads of `clientWidth` could differ
     // across a resize and make the restricted figure incomparable to the one
@@ -2931,7 +3021,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       cssHeight: Math.max(1, this.domElement.clientHeight),
       devicePixelRatio: window.devicePixelRatio || 1,
     };
-    const hitchThresholdMs = hitchThresholdMilliseconds(this.profile);
+    const hitchThresholdMs = hitchThresholdMilliseconds(this.profile, this.presentationCadence);
     let hitchCount = 0;
     let maxFrameMs: number | null = null;
     for (const interval of this.diagnosticIntervalDurations) {
@@ -2998,10 +3088,20 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       maxFrameMs,
       p999FrameMs,
       hitchCount,
+      hitchThresholdMs,
       cpuWorkLevel: this.governorState.cpuWorkLevel,
       cpuWorkLever: this.governorState.lastLever,
       gpuWorkLevel: this.governorState.gpuWorkLevel,
       resolutionInsensitive: this.governorState.resolutionInsensitive,
+      presentationTargetMs: this.governorConfig.presentationTargetMs,
+      lateFraction: this.lastSignals.lateFraction ?? null,
+      governorTrial: this.governorState.trial?.ladder ?? null,
+      presentationCadence: this.presentationCadence === null ? null : {
+        frameCapHz: this.presentationCadence.frameCapHz,
+        divisor: this.presentationCadence.divisor,
+        displayHz: cadenceDisplayHz(this.presentationCadence),
+        confirmed: this.presentationCadence.periodConfirmed,
+      },
       renderPixels: this.engine.getRenderWidth() * this.engine.getRenderHeight(),
       topPassesByCpuMs: this.passTimingHistory
         .topByP95(4)
@@ -4276,7 +4376,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       windGust01: Math.abs(wind.gust) * 0.5 + wind.turbulence * 0.5,
       simulationTimeSeconds: state.simulationTime,
       // `6-9`/`P-5`: the GPU ladder's ground-cover rung, the last one on it.
-      gateScale: this.workLeverSettings.groundCoverGateScale,
+      gateScale: this.governedWork.groundCoverGateScale,
     });
     this.wildlife.update(
       {
@@ -4298,7 +4398,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     const active = new Map<number, Mesh>();
     const collect = (mesh: Mesh) => active.set(mesh.uniqueId, mesh);
     // The shadow-caster-distance lever (GPU ladder since R-11) shortens reach.
-    this.terrain.addShadowCasters(collect, this.workLeverSettings.shadowCasterDistanceMeters);
+    this.terrain.addShadowCasters(collect, this.governedWork.shadowCasterDistanceMeters);
     this.detail.addShadowCasters(collect);
     this.wildlife.addShadowCasters(collect);
     this.spawnedAirfields?.addShadowCasters(collect);
@@ -4462,6 +4562,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * a resolution step that buys nothing is undone and latched against.
    */
   private updateGovernor(): void {
+    if (this.governorHeld) {
+      this.resetTimingSamples();
+      return;
+    }
     const gpuTimingIsFresh = freshFrameTiming(
       this.lastGpuFrameMilliseconds,
       this.lastGpuTimingFrameIndex,
@@ -4473,8 +4577,17 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       : null;
     const cpuP95Ms = frameTimingPercentile95(this.cpuFrameDurations);
     const intervalP95Ms = frameTimingPercentile95(this.frameIntervalDurations);
+    const { mean, late } = summariseIntervals(this.frameIntervalDurations, this.governorConfig.lateIntervalMs);
     this.resetTimingSamples();
-    this.lastSignals = { gpuP95Ms, cpuP95Ms, intervalP95Ms };
+    this.governorRebasedThisWindow = false;
+    this.lastSignals = {
+      gpuP95Ms,
+      cpuP95Ms,
+      intervalP95Ms,
+      intervalMeanMs: mean,
+      lateFraction: late,
+      streamingBacklog: this.streamingBacklog(),
+    };
 
     const previous = this.governorState;
     let state = nextGovernorDecision(previous, this.lastSignals, this.governorConfig);
@@ -4504,45 +4617,59 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.governorState = state;
   }
 
-  /** Push both ladders' notches into every lever's subsystem seam (R-11). */
+  /**
+   * PR B: detail cells, ground-cover rows and terrain pages still to come,
+   * which a streaming rung's trial waits on. Once per governor window: the
+   * terrain's statistics allocate and the detail count walks every cell.
+   */
+  private streamingBacklog(): number {
+    const terrain = this.terrain.statistics;
+    return terrain.pendingPages + terrain.slotsGenerating
+      + this.detail.pendingWorkItems + this.groundCover.pendingTileRows;
+  }
+
+  /**
+   * Push both ladders' notches into every lever's subsystem seam (R-11),
+   * resolved against the current profile (PR B, G3).
+   */
   private applyWorkLevels(cpuLevel: number, gpuLevel: number): void {
     const settings = workLeverSettingsFor(cpuLevel, gpuLevel);
+    const work = resolveGovernedWork(this.profile, settings);
     this.workLeverSettings = settings;
-    this.terrain.setRequestBudgetPerUpdate(settings.terrainPageRequestsPerUpdate);
+    this.governedWork = work;
+    this.terrain.setRequestBudgetPerUpdate(work.terrainPageRequestsPerUpdate);
     // 4-0b rung 0: the shared compute cap moves before any visible lever.
-    this.terrain.setComputeBudgetScale(settings.computeBudgetScale);
-    this.detail.setGenerationBudgetCap(
-      settings.detailCellBudgetMs >= 2 && settings.detailCellCap >= 24
-        ? null
-        : {
-            maximumCells: settings.detailCellCap,
-            maximumMilliseconds: settings.detailCellBudgetMs,
-          },
-    );
-    this.clouds.setShadowIntervalFloor(settings.cloudShadowIntervalFrames);
+    this.terrain.setComputeBudgetScale(work.computeBudgetScale);
+    this.detail.setGenerationBudgetCap(work.detailGenerationCap);
+    this.clouds.setShadowIntervalFloor(work.cloudShadowIntervalFloor);
     this.governedProfileCache = this.resolveGovernedProfile();
   }
 
-  /** The profile with the governed animal and vegetation caps applied. */
+  /** The profile with the governed animal budget and vegetation reach applied. */
   private resolveGovernedProfile(): WebGpuQualityProfile {
-    const settings = this.workLeverSettings;
+    const work = this.governedWork;
     if (
-      settings.activeAnimalBudgetCap === Number.POSITIVE_INFINITY
-      && settings.vegetationDistanceScale === 1
+      work.activeAnimalBudget === this.profile.activeAnimalBudget
+      && work.vegetationDistance === this.profile.vegetationDistance
     ) {
       return this.profile;
     }
     return {
       ...this.profile,
-      activeAnimalBudget: Math.min(
-        this.profile.activeAnimalBudget,
-        settings.activeAnimalBudgetCap,
-      ),
-      vegetationDistance: this.profile.vegetationDistance * settings.vegetationDistanceScale,
+      activeAnimalBudget: work.activeAnimalBudget,
+      vegetationDistance: work.vegetationDistance,
     };
   }
 
-  private captureFrameInterval(started: number): void {
+  /**
+   * `started` is this frame's `performance.now()` and `deltaSeconds` the
+   * game's rAF delta since its last rendered frame. PR B: the governor's
+   * window takes the rAF delta, which is vsync-aligned and so lands on the
+   * refresh multiples the late threshold is placed between, and is blind to
+   * main-thread work done before `render()` in the same tick. Diagnostics,
+   * present attribution and the usability gate keep the start-to-start clock.
+   */
+  private captureFrameInterval(started: number, deltaSeconds: number): void {
     const previous = this.previousFrameStartedAt;
     this.previousFrameStartedAt = started;
     if (previous === null) return;
@@ -4561,7 +4688,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       return;
     }
     this.lastFrameIntervalMilliseconds = interval;
-    this.frameIntervalDurations.push(interval);
+    const presentedMilliseconds = deltaSeconds * 1_000;
+    if (isUsableFrameTiming(presentedMilliseconds)) {
+      this.frameIntervalDurations.push(presentedMilliseconds);
+    }
     // The interval ending at this frame start belongs to the CPU work saved
     // from the preceding render. Babylon's WebGPU PerfCounter does not expose
     // the submitted frame id for its asynchronous timestamp result, so that

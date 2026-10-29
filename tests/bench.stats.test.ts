@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  benchCadence,
   compileDelta,
   compileTotal,
   countOver,
@@ -13,6 +14,7 @@ import {
   nearestRank,
   onePercentLowFps,
   overheadSummary,
+  pacedHz,
   perSecondRows,
   rafReport,
   recordFrame,
@@ -61,10 +63,11 @@ function logOf(stream: Stream, startMs = 1_000): BenchFrameLog {
   return log;
 }
 
-function context(refreshHz: number | null, granularityMs: number | null = 0.005): FrameWindowContext {
+function context(refreshHz: number | null, granularityMs: number | null = 0.005, divisor = 1): FrameWindowContext {
   return {
     flightStartMs: 1_000,
     refreshMs: refreshHz === null ? null : 1_000 / refreshHz,
+    divisor,
     granularityMs,
     tierThresholdMs: 27.4,
   };
@@ -100,7 +103,7 @@ describe("synthetic display streams", () => {
       expect(window.frames).toBe(frames);
       expect(window.seconds).toBeCloseTo((frames * period) / 1_000, 6);
       expect(window.displayCapped).toBe(true);
-      expect(window.vsyncBuckets).toMatchObject({ x1: frames, x2: 0, x3: 0, x4plus: 0, irregular: 0 });
+      expect(window.vsyncBuckets).toMatchObject({ divisor: 1, x1: frames, x2: 0, x3: 0, x4plus: 0, offSlot: 0, irregular: 0 });
       expect(window.missedRefresh).toEqual({ count: 0, per240: 0, longestStreak: 0 });
       expect(window.over["27.4"].count).toBe(0);
       expect(window.onePercentLowFps).toBeCloseTo(hz, 6);
@@ -128,7 +131,7 @@ describe("synthetic display streams", () => {
     const buckets = window.vsyncBuckets!;
     expect(buckets.irregular).toBeGreaterThan(buckets.x1 + buckets.x2 + buckets.x3);
     expect(window.displayCapped).toBe(false);
-    expect(buckets.x1 + buckets.x2 + buckets.x3 + buckets.x4plus + buckets.irregular).toBe(2_000);
+    expect(buckets.x1 + buckets.x2 + buckets.x3 + buckets.x4plus + buckets.offSlot + buckets.irregular).toBe(2_000);
   });
 
   it("long stalls land in x4plus and in the 50 and 100 ms counts", () => {
@@ -366,6 +369,74 @@ describe("refresh, cadence and timers", () => {
     expect(coarse.toleranceMs).toBe(2);
     expect(coarse.x1).toBe(1);
     expect(missedRefresh([period, 30, 30, period, 30], period)).toEqual({ count: 3, per240: 144, longestStreak: 2 });
+  });
+});
+
+describe("paced display streams (PR B)", () => {
+  it("a flight paced to every Nth refresh keeps up in x1, display-capped at its slot, missing nothing", () => {
+    for (const [hz, divisor] of [[120, 2], [144, 2], [165, 2], [240, 4], [60, 2], [120, 4]] as const) {
+      const period = 1_000 / hz;
+      const next = random(hz * divisor);
+      const intervals = Array.from({ length: 1_200 }, () => divisor * period + (next() - 0.5) * 0.04 * period);
+      const window = summarizeWindow(logOf({ intervals }), WHOLE, context(hz, 0.005, divisor));
+      const label = `${hz} Hz / ${divisor}`;
+      expect(window.fps, label).toBeCloseTo(hz / divisor, 0);
+      expect(window.displayCapped, label).toBe(true);
+      expect(window.vsyncBuckets, label).toMatchObject({ divisor, x1: 1_200, x2: 0, x3: 0, x4plus: 0, offSlot: 0, irregular: 0 });
+      expect(window.missedRefresh, label).toEqual({ count: 0, per240: 0, longestStreak: 0 });
+      // Read as every refresh, the same flight would miss every one.
+      expect(summarizeWindow(logOf({ intervals }), WHOLE, context(hz)).missedRefresh!.count, label).toBe(1_200);
+    }
+  });
+
+  it("counts a missed refresh against the paced slot: at 120 Hz paced to 60, 16.7 ms is on time and 25 ms is not", () => {
+    const period = 1_000 / 120;
+    expect(missedRefresh([2 * period, 3 * period, 2 * period, 3 * period, 3 * period], period, 2))
+      .toEqual({ count: 3, per240: 144, longestStreak: 2 });
+    expect(missedRefresh([2 * period, 2.49 * period], period, 2).count).toBe(0);
+    expect(missedRefresh([2.51 * period], period, 2).count).toBe(1);
+    // A divisor of 1 is the old rule: 1.5 refresh periods.
+    expect(missedRefresh([1.49 * period, 1.51 * period], period).count).toBe(1);
+    expect(missedRefresh([1.49 * period, 1.51 * period], period, 1)).toEqual(missedRefresh([1.49 * period, 1.51 * period], period));
+  });
+
+  it("buckets in slots, with a refresh past the slot apart from irregular frames", () => {
+    // 240 Hz paced to 60: one slot is four refreshes.
+    const period = 1_000 / 240;
+    const buckets = vsyncBuckets(
+      [4, 5, 6, 7, 8, 12, 14, 16, 2, 4.5].map((refreshes) => refreshes * period),
+      period,
+      0.005,
+      4,
+    );
+    expect(buckets).toMatchObject({ divisor: 4, x1: 1, offSlot: 3, x2: 1, x3: 1, x4plus: 2, irregular: 2 });
+    // The 30 fps setting on a 60 Hz panel: 33.3 ms keeps up, 50 ms missed by a refresh, 66.7 ms by a slot.
+    const sixty = 1_000 / 60;
+    expect(vsyncBuckets([2 * sixty, 3 * sixty, 4 * sixty], sixty, 0.005, 2))
+      .toMatchObject({ x1: 1, offSlot: 1, x2: 1, irregular: 0 });
+    // Every refresh drawn: no interval is off its slot.
+    expect(vsyncBuckets([sixty, 2 * sixty, 3 * sixty], sixty, 0.005).offSlot).toBe(0);
+  });
+
+  it("records a cadence by its rate, a common one as its whole number", () => {
+    const at = (hz: number, divisor: number) =>
+      ({ frameCapHz: 60, divisor, displayPeriodMs: 1_000 / hz, periodConfirmed: true }) as const;
+    expect(benchCadence(at(165, 2))).toEqual({ frameCapHz: 60, divisor: 2, displayHz: 165, confirmed: true });
+    expect(pacedHz(at(165, 2))).toBe(82.5);
+    expect(pacedHz(at(144, 2))).toBe(72);
+    expect(pacedHz(at(60, 1))).toBe(60);
+    expect(benchCadence({ ...at(60, 1), displayPeriodMs: null })!.displayHz).toBeNull();
+    expect(pacedHz({ ...at(60, 1), displayPeriodMs: null })).toBeNull();
+    expect(benchCadence(null)).toBeNull();
+    expect(pacedHz(null)).toBeNull();
+  });
+
+  it("at 165 Hz paced to every 2nd refresh, a frame one refresh late is missed and off its slot", () => {
+    const period = 1_000 / 165;
+    const late = 3 * period;
+    expect(late).toBeCloseTo(18.18, 2);
+    expect(missedRefresh([late], period, 2).count).toBe(1);
+    expect(vsyncBuckets([late], period, 0.005, 2)).toMatchObject({ x1: 0, offSlot: 1 });
   });
 });
 

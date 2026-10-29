@@ -1806,6 +1806,37 @@ export const GROUND_GRAIN_GAINS = Object.freeze({
 });
 
 /**
+ * The crunch: the grain's fourth channel (`GroundGrainSynthesis.ts`) read as
+ * the sward's own shadow. It is what kept a meadow looking like one smooth
+ * sheet. Rendered with a flat grey albedo, main's meadow at 1,600 ft was lit
+ * almost uniformly (2-3% contrast in every band, where the rock beside it
+ * showed crisp relief): the grain's normal is a gentle slope, and under a
+ * high sun a gentle slope barely moves N.L. Grass, crops and scrub are lit
+ * tops over shadowed gaps at every scale, so the crunch dims the light by
+ * where those gaps are, not by which way the ground tilts.
+ *
+ * - `gains`: per cover, as in `GROUND_GRAIN_GAINS`. Vegetation is where the
+ *   gaps are; rock has its own crag relief, snow fills its hollows, and sand,
+ *   gravel and bare litter ("other") sit in between.
+ * - `direct`: how far the summed channel dims the sun, per unit.
+ * - `ambient`: the same for the sky, through the cavity (AO only).
+ * - `hotspot`, `hotspotDegrees`: looking down-sun, each gap's shadow hides
+ *   behind the blade that casts it (the opposition effect), so within this
+ *   angle of the anti-solar point most of the sun's dimming goes.
+ * - `slopeFade`: the planar read's stretch turns fine gaps into streaks down
+ *   a steep face before it shows in the tone.
+ */
+export const GROUND_GRAIN_CRUNCH = Object.freeze({
+  gains: Object.freeze({ vegetation: 1.0, rock: 0.6, snow: 0.2, other: 0.45 }),
+  direct: 0.35,
+  ambient: 0.35,
+  hotspot: 0.8,
+  hotspotDegrees: 12,
+  /** `1 - n.y` over which it fades off slopes (41-63 degrees; the rest of the grain goes at 57-78). */
+  slopeFade: Object.freeze({ start: 0.25, end: 0.55 }),
+});
+
+/**
  * Most anisotropy the grain's fetches use, where the materials ask for the
  * full `DEFAULT_ANISOTROPY_LIMIT`. At 1 the reads are isotropic: one
  * trilinear tap each, at the mip the footprint's long axis picks, which the
@@ -2073,6 +2104,7 @@ const GROUND_GRAIN_COMPOSITE_WGSL = /* wgsl */ `
 // exactly when the arrays carry the layer, so a build without it never reads
 // past the ten materials.
 var terrainGrainCanopy = vec3f(1.0);
+var terrainGrainDirect = 1.0;
 if (uniforms.terrainSurfaceTuning.z > 0.5) {
 ${groundGrainReadsWgsl("terrain", {
   xz: "terrainAbsolutePosition.xz + terrainWarp",
@@ -2093,7 +2125,28 @@ ${groundGrainReadsWgsl("terrain", {
     * (1.0 - 0.6 * terrainGroundAirfield);
   let terrainGrainCover = vec4f(
     terrainGrainVegetation, terrainGrainRock, terrainGrainSnow, terrainGrainOther) * terrainGrainFlat;
-${groundGrainAlbedoWgsl("terrain", "terrainAlbedo")}${groundGrainReliefWgsl("terrain")}  terrainNormal = normalize(terrainNormal)
+${groundGrainAlbedoWgsl("terrain", "terrainAlbedo")}  // The crunch (GROUND_GRAIN_CRUNCH): the sward's gaps, as shadow. From the
+  // three texels already fetched, so it costs arithmetic only. The sun's
+  // share rides terrainCanopyDirect at the end of this hook; the sky's goes
+  // into the cavity, which feeds ambient occlusion and nothing else.
+  // The broadest scale is not tapered as the tone's is: a gap is a gap at
+  // every size, and where the finest has faded (oblique and distant ground,
+  // footprints past ~10 m) it carries most of what is left at the pixel.
+  let terrainGrainCrunch = terrainGrain0.w + 0.8 * terrainGrain1.w + terrainGrain2.w;
+  // The planar read stretches by 1 / n.y down a slope, and the crunch's
+  // fine gaps show that as streaks long before the tone's soft patches do, so
+  // it leaves slopes earlier than the rest of the grain.
+  let terrainGrainCrunchGain = dot(terrainGrainCover, vec4f(${wgslGains(GROUND_GRAIN_CRUNCH.gains)}))
+    * (1.0 - smoothstep(${terrainWgslFloat(GROUND_GRAIN_CRUNCH.slopeFade.start)}, ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.slopeFade.end)}, terrainSlope));
+  let terrainGrainToEye = normalize(scene.vEyePosition.xyz - fragmentInputs.vPositionW);
+  let terrainGrainPhase = dot(terrainGrainToEye, uniforms.terrainSunDirection.xyz);
+  let terrainGrainShadowsSeen = 1.0 - ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.hotspot)}
+    * smoothstep(${terrainWgslFloat(Math.cos((GROUND_GRAIN_CRUNCH.hotspotDegrees * Math.PI) / 180))}, 1.0, terrainGrainPhase);
+  terrainGrainDirect = max(0.25, 1.0 + ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.direct)}
+    * terrainGrainCrunchGain * terrainGrainShadowsSeen * terrainGrainCrunch);
+  terrainCavity *= max(0.25, 1.0 + ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.ambient)}
+    * terrainGrainCrunchGain * terrainGrainCrunch);
+${groundGrainReliefWgsl("terrain")}  terrainNormal = normalize(terrainNormal)
     + vec3f(-terrainGrainSlope.x, 0.0, -terrainGrainSlope.y) * terrainGrainNormalGain;
   // Distant forest: the canopy handoff below paints one colour; this is the
   // crown-to-crown and stand-to-stand variation it would otherwise lack.
@@ -4023,6 +4076,7 @@ var terrainGroundDirect = 1.0;
 }
 
 var terrainCanopyShade = 0.0;
+var terrainCanopySurface = 0.0;
 #ifdef TERRAIN_SURFACE_PAGE_CHANNELS
 {
   let terrainCanopyCover = terrainGroundCanopyClosure;
@@ -4036,6 +4090,7 @@ var terrainCanopyShade = 0.0;
     // The surface half: the ground becomes the canopy's own material, at the
     // impostor's measured response rather than at a chosen colour.
     let canopySurface = canopySplit.surface;
+    terrainCanopySurface = canopySurface;
     // Climate provinces: the paint takes the colour of the crowns the
     // province draws (ProvinceFarTone.ts), so a taiga's canopy does not
     // brighten, nor a tropical one dull, where its stems hand over. The
@@ -4076,7 +4131,20 @@ normalW = normalize(
 // the ambientOcclusionBlock call and roughness/F0 at their declarations.
 var terrainSurfaceRoughness = clamp(terrainRoughness, 0.02, 1.0);
 var terrainSurfaceCavity = clamp(terrainCavity, 0.0, 1.0);
-var terrainSurfaceF0 = clamp(terrainF0, 0.0, 1.0);
+// Sward specular masking: in a grass or shrub sward the blades shadow and
+// hide most of each other's highlights, which is why the vegetation materials
+// run at CANOPY_SURFACE_SPECULAR. The ground under them carried the full
+// dielectric lobe, and at noon that lobe was about a fifth of a meadow's
+// brightness: the milky "plastic" sheen. Paint, wet ground and the canopy's
+// own (already trimmed) share keep theirs.
+let terrainSwardShare = terrainGroundVegetation
+  * (1.0 - clamp(terrainRunwayPaved, 0.0, 1.0))
+  * (1.0 - terrainCanopySurface)
+  * (1.0 - terrainWetness);
+var terrainSurfaceF0 = clamp(
+  terrainF0 * (1.0 - ${terrainWgslFloat(1 - CANOPY_SURFACE_SPECULAR)} * terrainSwardShare),
+  0.0,
+  1.0);
 var terrainSurfaceDiffuseRoughness = clamp(terrainDiffuseRoughness, 0.0, 1.0);
 // Wave Q (plastic-ground fix): Babylon leaves Fresnel F90 at 1.0, so a low
 // sun runs a 2-6% dielectric up to FULL WHITE grazing reflectance across
@@ -4096,8 +4164,11 @@ var terrainSurfaceF90 = ${terrainSurfaceF90Wgsl("terrainSurfaceF0", "terrainSurf
 // W-1: the scrub's cast shadow rides the same DIRECT-light multiplier, for the
 // same reason the canopy deficit does — a crown occludes the sun, and putting
 // it into ambient as well would darken one occluder's ground twice.
+// The grain's crunch is the sward's own self-shadow, so it rides here too;
+// paint laid over the ground has no gaps to shadow.
 let terrainCanopyDirect = (1.0 - terrainCanopyShade * ${TERRAIN_CANOPY_SHADE})
-  * terrainGroundDirect;
+  * terrainGroundDirect
+  * mix(terrainGrainDirect, 1.0, clamp(terrainRunwayPaved, 0.0, 1.0));
 `;
 
 /**

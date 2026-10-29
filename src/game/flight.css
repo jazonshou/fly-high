@@ -1355,33 +1355,53 @@
   mask-image: radial-gradient(ellipse at center, black 20%, transparent 72%);
 }
 
-.attitude__horizon {
+/* The pitch ladder is drawn through the camera (src/ui/pitchLadder.ts), so its
+   window follows the nose: FlightGame moves .pitch-ladder__window, the symbol
+   and each line every frame. This box only anchors it, centred over the
+   attitude box, and in the cockpit carries the deck-line clip. */
+.pitch-ladder {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 300px;
-  height: 1px;
-  border-top: 1px solid rgba(238, 247, 245, 0.58);
-  transition: transform 45ms linear;
+  width: 420px;
+  height: 340px;
+  transform: translate(-50%, -50%);
 }
 
-.attitude__line {
+.pitch-ladder__window {
   position: absolute;
-  left: 50%;
-  display: block;
-  width: 35px;
-  border-top: 1px solid rgba(238, 247, 245, 0.38);
-  transform: translateX(-50%);
+  inset: 0;
+  overflow: hidden;
 }
 
-.attitude__line--wide {
-  width: 90px;
+.pitch-ladder__lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  fill: none;
+  stroke: rgba(238, 247, 245, 0.5);
+  stroke-width: 1px;
+  mask-image: radial-gradient(ellipse closest-side at center, black 55%, transparent 100%);
 }
 
-.attitude__line--up-one { top: -35px; }
-.attitude__line--up-two { top: -70px; width: 24px; }
-.attitude__line--down-one { top: 35px; }
-.attitude__line--down-two { top: 70px; width: 24px; }
+.pitch-ladder__line--horizon {
+  stroke: rgba(238, 247, 245, 0.62);
+}
+
+.pitch-ladder__line--dive,
+.pitch-ladder__line--nadir {
+  stroke-dasharray: 6 4;
+}
+
+.pitch-ladder__line text {
+  fill: rgba(238, 247, 245, 0.66);
+  stroke: none;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  dominant-baseline: central;
+}
 
 .attitude__aircraft {
   position: absolute;
@@ -1903,10 +1923,15 @@
   top: min(50%, calc(var(--hud-deck-line) - 85px));
 }
 
-/* The attitude box (340 x 230, centred) is cut at the deck line. Its pitch
-   ladder moves with pitch, so this is the guard, not the placement. */
+/* The attitude box (340 x 230, centred) and the pitch ladder's box over it
+   (420 x 340) are cut at the deck line, each by its own half-height. The
+   ladder's lines move with pitch, so this is the guard, not the placement. */
 .flight-hud--cockpit .attitude {
   clip-path: inset(0 0 max(0px, calc(115px + 12px - min(50vw, 88.889vh) * var(--deck-k))) 0);
+}
+
+.flight-hud--cockpit .pitch-ladder {
+  clip-path: inset(0 0 max(0px, calc(170px + 12px - min(50vw, 88.889vh) * var(--deck-k))) 0);
 }
 
 .pause-screen {

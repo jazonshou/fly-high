@@ -392,7 +392,7 @@ describe("Governor GPU ladder: the ground-cover rung (6-9 / P-5)", () => {
     expect(workLeverSettingsFor(0, GPU_WORK_MAX_LEVEL).groundCoverGateScale).toBeLessThan(1);
   });
 
-  it("recovers only from a calm, non-GPU-bound window (R-11)", () => {
+  it("recovers only on cadence (G1)", () => {
     const gpuBound: GovernorSignals = { gpuP95Ms: 20, cpuP95Ms: 4, intervalP95Ms: 21 };
     let state = createGovernorState(config);
     state = nextGovernorDecision(state, gpuBound, config);
@@ -401,6 +401,7 @@ describe("Governor GPU ladder: the ground-cover rung (6-9 / P-5)", () => {
       state = nextGovernorDecision(state, gpuBound, config);
     }
     expect(workLeverSettingsFor(0, state.gpuWorkLevel).groundCoverGateScale).toBeLessThan(1);
+    // 16 ms presented: on cadence, and calm.
     const calm: GovernorSignals = { gpuP95Ms: 5, cpuP95Ms: 5, intervalP95Ms: 16 };
     const top = state.gpuWorkLevel;
     for (let window = 0; window < 8; window += 1) {
@@ -437,7 +438,7 @@ describe("Governor B rung 0 (4-0b)", () => {
   });
 
   // Assertion 72.
-  it("never recovers a work step while the frame is GPU-bound", () => {
+  it("never recovers a work step while off cadence", () => {
     const gpuBound: GovernorSignals = { gpuP95Ms: 20, cpuP95Ms: 4, intervalP95Ms: 21 };
     let state = createGovernorState(config);
     state = nextGovernorDecision(state, gpuBound, config);

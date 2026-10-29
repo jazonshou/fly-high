@@ -194,7 +194,9 @@ function showFailure(host: BenchHost, request: BenchUrlRequest, error: unknown):
     clearBenchStore(host.storage);
     host.go(href);
   };
-  const options: BenchUrlOptions = { tiers: request.tiers, mode: request.mode, hud: request.hud, quick: request.quick };
+  const options: BenchUrlOptions = {
+    tiers: request.tiers, mode: request.mode, hud: request.hud, quick: request.quick, frameRate: request.frameRate,
+  };
   benchUi("report").show({
     kind: "failed",
     failure: {
@@ -279,7 +281,9 @@ class IntroPage {
     request: BenchUrlRequest,
     private readonly page: Extract<BenchPage, { kind: "intro" }>,
   ) {
-    this.options = { tiers: request.tiers, mode: request.mode, hud: request.hud, quick: request.quick };
+    this.options = {
+      tiers: request.tiers, mode: request.mode, hud: request.hud, quick: request.quick, frameRate: request.frameRate,
+    };
     this.storage = page.storage;
     this.ignoredParams = ignoredBenchParams(host.href);
   }
@@ -578,7 +582,7 @@ class StepPage {
     this.tierIndex = step.tierIndex;
     this.gpuTimingFailed = step.gpuTimingFailed === true;
     this.timings = benchTimings(page.run.plan.quick);
-    this.settings = benchGameSettings(this.tierIndex);
+    this.settings = benchGameSettings(this.tierIndex, page.run.plan.frameRate);
     if (page.notice) this.startCards.push({ kind: "notice", notice: page.notice });
     if (page.previous && page.attempt > 1) {
       this.startCards.push({
@@ -664,6 +668,7 @@ class StepPage {
         setup: {
           tierIndex: this.tierIndex,
           mode: this.run.plan.mode,
+          frameRate: this.run.plan.frameRate,
           timings: this.timings,
           expectedFingerprint: this.run.plan.pathFingerprint,
           firstRendererInTab: this.stepIndex === 0 && this.attempt === 1 && this.run.firstLoad !== null,

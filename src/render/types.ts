@@ -10,6 +10,7 @@ import type { HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
 import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import type { AirportDefinition } from "@/src/world/types";
 import type { RenderingMode } from "@/src/settings";
+import type { PresentationCadence } from "@/src/render/webgpu/core/presentationCadence";
 import type {
   TerrainMacroGrid,
   TerrainPagePublication,
@@ -41,6 +42,28 @@ export interface ScreenPoint {
   /** Canvas size the point was projected into, CSS pixels. */
   width: number;
   height: number;
+}
+
+/**
+ * The camera a frame was drawn with, as the HUD draws through it (the pitch
+ * ladder, src/ui/pitchLadder.ts), written in place by `readHudCameraToRef`.
+ */
+export interface HudCamera {
+  /**
+   * View times projection, exactly as Babylon holds it: row vectors, clip =
+   * (p, 1) * M. The camera's own array, so it is read the frame it was taken.
+   */
+  transform: ArrayLike<number>;
+  /** Canvas size, CSS pixels. */
+  width: number;
+  height: number;
+  /** The followed body's nose and roof, world space, unit length. */
+  readonly forward: { x: number; y: number; z: number };
+  readonly up: { x: number; y: number; z: number };
+}
+
+export function createHudCamera(): HudCamera {
+  return { transform: [], width: 0, height: 0, forward: { x: 1, y: 0, z: 0 }, up: { x: 0, y: 1, z: 0 } };
 }
 
 export interface FlightRenderingSystem {
@@ -85,10 +108,33 @@ export interface FlightRenderingSystem {
    * for the per-frame HUD overlay.
    */
   projectWorldPointToRef(x: number, y: number, z: number, result: ScreenPoint): boolean;
+  /**
+   * Writes the camera the last frame was drawn with, and the nose and roof of
+   * what it follows, into `result`; false (and `result` untouched) while the
+   * canvas has no size. Allocation-free, for the per-frame HUD overlay.
+   */
+  readHudCameraToRef(result: HudCamera): boolean;
   /** Attach the worker-owned height authority after renderer startup. */
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void;
   /** §1.6: the rendering inputs are the two continuous clock scalars. */
   setAtmosphere(clock: EnvironmentClock, weather: WeatherPreset): void;
+  /**
+   * The frame pacer's cadence (PR B), on the first rendered frame after it
+   * changes. Null, which captures and perf:ab never change, is today's
+   * behaviour: every refresh, judged against the tier's own target.
+   */
+  setPresentationCadence(cadence: PresentationCadence | null): void;
+  /**
+   * True while the flight is paused (PR B): the governor judges no window
+   * of the static scene, so a pause neither sheds nor gives back work.
+   */
+  setGovernorHold(held: boolean): void;
+  /**
+   * The next frame follows ticks the frame loop skipped on purpose (the
+   * pacer's re-probe on pause, or a tick it skips to measure the display):
+   * its interval is left out of diagnostics and the governor's window.
+   */
+  discardNextFrameInterval(): void;
   render(state: FlightVisualState, deltaSeconds: number): void;
   getDiagnostics(): RenderDiagnostics;
   /** Starts the 1A-1 GPU budget-probe sweep; returns whether it began. */

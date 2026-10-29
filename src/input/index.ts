@@ -97,6 +97,15 @@ export function slewAxis(
   return current + Math.sign(difference) * maximumStep;
 }
 
+/**
+ * The keyboard's pitch axis at the default sensitivity: how long the lightest
+ * tap holds its full request, and the slew rates toward it and back. Exported
+ * so the sim's tests and probes fly the same tap the player does.
+ */
+export const KEYBOARD_PITCH_TAP_SECONDS = 0.16;
+export const KEYBOARD_PITCH_ENGAGE_RATE = 1.7;
+export const KEYBOARD_PITCH_RELEASE_RATE = 2.8;
+
 const ACTION_KEYS: Partial<Record<string, InputAction>> = {
   Escape: "pause",
   KeyP: "pause",
@@ -392,8 +401,8 @@ export class InputManager {
       this.pitch = slewAxis(
         this.pitch,
         keyboardPitch,
-        1.7 * sensitivityScale,
-        2.8,
+        KEYBOARD_PITCH_ENGAGE_RATE * sensitivityScale,
+        KEYBOARD_PITCH_RELEASE_RATE,
         deltaSeconds,
       );
     } else {
@@ -632,7 +641,7 @@ export class InputManager {
       this.rollTapRemaining = 0.16;
     } else if (event.code === "KeyS" || event.code === "KeyW") {
       this.pitchTapDirection = event.code === "KeyS" ? 1 : -1;
-      this.pitchTapRemaining = 0.16;
+      this.pitchTapRemaining = KEYBOARD_PITCH_TAP_SECONDS;
     } else if (event.code === "KeyE" || event.code === "KeyQ") {
       this.yawTapDirection = event.code === "KeyE" ? 1 : -1;
       this.yawTapRemaining = 0.14;
