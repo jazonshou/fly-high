@@ -327,6 +327,7 @@ describe("the roads' surface system", () => {
       shape: { atlasEdge: 1, slotEdge: 1, gutter: 0, gridEdge: 1 },
     },
     surfaceMaterialArrays: { albedoHeight: {} as BaseTexture, normalMaterial: {} as BaseTexture },
+    sunDirection: [0, 1, 0],
   };
 
   beforeAll(() => {

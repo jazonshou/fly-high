@@ -2071,6 +2071,39 @@ export function groundGrainAlbedoWgsl(p: string, target: string): string {
 `;
 }
 
+/**
+ * The grain's crunch by the cover `${p}GrainCover`: the sun's share into
+ * `${p}GrainDirect` and the sky's into `${p}Cavity`, both declared by the
+ * caller, which also supplies `${p}Slope` and the `${p}SunDirection` uniform
+ * (toward the sun). Its broadest scale is a patch tens of metres across, so a
+ * surface drawn over the paint takes it too, or it reads lighter or darker
+ * than the ground beside it.
+ */
+export function groundGrainCrunchWgsl(p: string): string {
+  return `  // The crunch (GROUND_GRAIN_CRUNCH): the sward's gaps, as shadow. From the
+  // three texels already fetched, so it costs arithmetic only. The sun's
+  // share multiplies the sun's direct light; the sky's goes into the cavity,
+  // which feeds ambient occlusion and nothing else.
+  // The broadest scale is not tapered as the tone's is: a gap is a gap at
+  // every size, and where the finest has faded (oblique and distant ground,
+  // footprints past ~10 m) it carries most of what is left at the pixel.
+  let ${p}GrainCrunch = ${p}Grain0.w + 0.8 * ${p}Grain1.w + ${p}Grain2.w;
+  // The planar read stretches by 1 / n.y down a slope, and the crunch's
+  // fine gaps show that as streaks long before the tone's soft patches do, so
+  // it leaves slopes earlier than the rest of the grain.
+  let ${p}GrainCrunchGain = dot(${p}GrainCover, vec4f(${wgslGains(GROUND_GRAIN_CRUNCH.gains)}))
+    * (1.0 - smoothstep(${terrainWgslFloat(GROUND_GRAIN_CRUNCH.slopeFade.start)}, ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.slopeFade.end)}, ${p}Slope));
+  let ${p}GrainToEye = normalize(scene.vEyePosition.xyz - fragmentInputs.vPositionW);
+  let ${p}GrainPhase = dot(${p}GrainToEye, uniforms.${p}SunDirection.xyz);
+  let ${p}GrainShadowsSeen = 1.0 - ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.hotspot)}
+    * smoothstep(${terrainWgslFloat(Math.cos((GROUND_GRAIN_CRUNCH.hotspotDegrees * Math.PI) / 180))}, 1.0, ${p}GrainPhase);
+  ${p}GrainDirect = max(0.25, 1.0 + ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.direct)}
+    * ${p}GrainCrunchGain * ${p}GrainShadowsSeen * ${p}GrainCrunch);
+  ${p}Cavity *= max(0.25, 1.0 + ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.ambient)}
+    * ${p}GrainCrunchGain * ${p}GrainCrunch);
+`;
+}
+
 /** The grain's relief from its two finer scales, as `${p}GrainSlope` (world xz, before the normal gain). */
 export function groundGrainReliefWgsl(p: string): string {
   return `  // Relief from the two finer scales only: the broadest is hill-sized, and
@@ -2125,28 +2158,7 @@ ${groundGrainReadsWgsl("terrain", {
     * (1.0 - 0.6 * terrainGroundAirfield);
   let terrainGrainCover = vec4f(
     terrainGrainVegetation, terrainGrainRock, terrainGrainSnow, terrainGrainOther) * terrainGrainFlat;
-${groundGrainAlbedoWgsl("terrain", "terrainAlbedo")}  // The crunch (GROUND_GRAIN_CRUNCH): the sward's gaps, as shadow. From the
-  // three texels already fetched, so it costs arithmetic only. The sun's
-  // share rides terrainCanopyDirect at the end of this hook; the sky's goes
-  // into the cavity, which feeds ambient occlusion and nothing else.
-  // The broadest scale is not tapered as the tone's is: a gap is a gap at
-  // every size, and where the finest has faded (oblique and distant ground,
-  // footprints past ~10 m) it carries most of what is left at the pixel.
-  let terrainGrainCrunch = terrainGrain0.w + 0.8 * terrainGrain1.w + terrainGrain2.w;
-  // The planar read stretches by 1 / n.y down a slope, and the crunch's
-  // fine gaps show that as streaks long before the tone's soft patches do, so
-  // it leaves slopes earlier than the rest of the grain.
-  let terrainGrainCrunchGain = dot(terrainGrainCover, vec4f(${wgslGains(GROUND_GRAIN_CRUNCH.gains)}))
-    * (1.0 - smoothstep(${terrainWgslFloat(GROUND_GRAIN_CRUNCH.slopeFade.start)}, ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.slopeFade.end)}, terrainSlope));
-  let terrainGrainToEye = normalize(scene.vEyePosition.xyz - fragmentInputs.vPositionW);
-  let terrainGrainPhase = dot(terrainGrainToEye, uniforms.terrainSunDirection.xyz);
-  let terrainGrainShadowsSeen = 1.0 - ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.hotspot)}
-    * smoothstep(${terrainWgslFloat(Math.cos((GROUND_GRAIN_CRUNCH.hotspotDegrees * Math.PI) / 180))}, 1.0, terrainGrainPhase);
-  terrainGrainDirect = max(0.25, 1.0 + ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.direct)}
-    * terrainGrainCrunchGain * terrainGrainShadowsSeen * terrainGrainCrunch);
-  terrainCavity *= max(0.25, 1.0 + ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.ambient)}
-    * terrainGrainCrunchGain * terrainGrainCrunch);
-${groundGrainReliefWgsl("terrain")}  terrainNormal = normalize(terrainNormal)
+${groundGrainAlbedoWgsl("terrain", "terrainAlbedo")}${groundGrainCrunchWgsl("terrain")}${groundGrainReliefWgsl("terrain")}  terrainNormal = normalize(terrainNormal)
     + vec3f(-terrainGrainSlope.x, 0.0, -terrainGrainSlope.y) * terrainGrainNormalGain;
   // Distant forest: the canopy handoff below paints one colour; this is the
   // crown-to-crown and stand-to-stand variation it would otherwise lack.
@@ -4393,7 +4405,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
   private seasonBlend = 0;
   private pageAtlasShape: readonly [number, number, number, number] = [1, 1, 1, 0];
   private pageAtlasGrid: readonly [number, number, number, number] = [1, 512, 1, 0.02];
-  private sunDirection: readonly [number, number, number] = [0, 1, 0];
+  private towardSun: readonly [number, number, number] = [0, 1, 0];
   private heightAtlasTexture: BaseTexture | null = null;
   private heightAtlasShape: readonly [number, number, number, number] = [1, 1, 0, 1];
   /** The climate province window (ClimateProvinceField.ts); null reads the temperate zero field. */
@@ -4791,11 +4803,16 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
 
   /**
    * The direction TOWARD the sun, in world space (Babylon's directional light
-   * points the other way). Only the horizon shadow reads it.
+   * points the other way). The horizon shadow and the grain's crunch read it.
    */
   setSunDirection(x: number, y: number, z: number): void {
     const length = Math.hypot(x, y, z);
-    this.sunDirection = length > 1e-6 ? [x / length, y / length, z / length] : [0, 1, 0];
+    this.towardSun = length > 1e-6 ? [x / length, y / length, z / length] : [0, 1, 0];
+  }
+
+  /** The unit direction toward the sun that `setSunDirection` last set. */
+  get sunDirection(): readonly [number, number, number] {
+    return this.towardSun;
   }
 
   override prepareDefines(defines: MaterialDefines): void {
@@ -5027,7 +5044,7 @@ export class TerrainSurfacePlugin extends MaterialPluginBase {
     uniformBuffer.updateFloat4("terrainPageAtlasGrid", ...this.pageAtlasGrid);
     // w carries the season cross-fade: one vec4 rather than a second one for
     // a single scalar, and the two are read in the same block.
-    uniformBuffer.updateFloat4("terrainSunDirection", ...this.sunDirection, this.seasonBlend);
+    uniformBuffer.updateFloat4("terrainSunDirection", ...this.towardSun, this.seasonBlend);
     uniformBuffer.updateFloat4("terrainCanopyBands", ...this.canopyBands);
     uniformBuffer.updateFloat4("terrainHeightAtlasShape", ...this.heightAtlasShape);
     uniformBuffer.updateFloat4(

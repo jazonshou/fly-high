@@ -394,6 +394,17 @@ describe("the roads' ribbon carries the grain the paint under it has", () => {
     // A seal takes the tone and not the relief: it is rolled flat, as the terrain's pavement is.
     expect(ribbon).toMatch(/if \(!roadSealed\) \{\n  \/\/ Relief from the two finer scales/);
   });
+
+  it("with the terrain's crunch, on a seal too, through the sun's direct light and the cavity", () => {
+    // The crunch is light, not relief, and its broadest scale is a patch tens
+    // of metres across: a ribbon without it reads lighter or darker than the
+    // paint beside it (10% on the tone test's gravel when it had none).
+    const crunch = (wgsl: string, p: string) => between(wgsl, `let ${p}GrainCrunch = `, `* ${p}GrainCrunchGain * ${p}GrainCrunch);\n`);
+    expect(crunch(ribbon, "road")).toBe(asRibbon(crunch(terrain, "terrain")));
+    expect(ribbon.indexOf("let roadGrainCrunch = ")).toBeLessThan(ribbon.indexOf("if (!roadSealed) {"));
+    expect(ribbon).toContain("var roadSurfaceCavity = clamp(roadTexel.cavity * roadCavity, 0.0, 1.0);");
+    expect(ribbon).toContain("diffuse$2.rgb * roadGrainDirect,");
+  });
 });
 
 describe("the crunch shadows the sward, and the sward is matte", () => {
@@ -405,7 +416,8 @@ describe("the crunch shadows the sward, and the sward is matte", () => {
   it("reads the crunch from the three texels already fetched", () => {
     // No new fetch: the crunch is the albedo array's fourth channel, and the
     // composite has exactly the three reads it had before it.
-    expect(plugin).toContain(
+    expect(plugin).toContain("let ${p}GrainCrunch = ${p}Grain0.w + 0.8 * ${p}Grain1.w + ${p}Grain2.w;");
+    expect(fragment).toContain(
       "let terrainGrainCrunch = terrainGrain0.w + 0.8 * terrainGrain1.w + terrainGrain2.w;",
     );
     expect(fragment.split("terrainGroundGrainFetch(\n").length - 1).toBe(3);
@@ -415,9 +427,9 @@ describe("the crunch shadows the sward, and the sward is matte", () => {
     // Direct and ambient each once: the sun's share rides the same multiplier
     // as the canopy and scrub shadows, faded out under runway paint.
     expect(plugin).toContain("* mix(terrainGrainDirect, 1.0, clamp(terrainRunwayPaved, 0.0, 1.0));");
-    expect(plugin).toContain("terrainCavity *= max(0.25, 1.0 + ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.ambient)}");
+    expect(plugin).toContain("${p}Cavity *= max(0.25, 1.0 + ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.ambient)}");
     // Looking down-sun the gaps hide behind what shades them.
-    expect(plugin).toContain("terrainGrainShadowsSeen * terrainGrainCrunch");
+    expect(plugin).toContain("${p}GrainShadowsSeen * ${p}GrainCrunch");
     expect(GROUND_GRAIN_CRUNCH.hotspot).toBeGreaterThan(0);
     expect(GROUND_GRAIN_CRUNCH.hotspot).toBeLessThan(1);
   });
@@ -428,7 +440,7 @@ describe("the crunch shadows the sward, and the sward is matte", () => {
     expect(gains.snow).toBe(Math.min(gains.vegetation, gains.rock, gains.snow, gains.other));
     // Bounded both ways: a gap never goes black, and never brightens past
     // what a lit top can.
-    expect(plugin).toContain("terrainGrainDirect = max(0.25, 1.0 + ");
+    expect(plugin).toContain("${p}GrainDirect = max(0.25, 1.0 + ");
   });
 
   it("trims the sward's specular to the vegetation materials' own", () => {

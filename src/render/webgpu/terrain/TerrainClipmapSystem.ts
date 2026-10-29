@@ -1345,9 +1345,14 @@ export class TerrainClipmapSystem {
     return this.computeBudget;
   }
 
-  /** The direction TOWARD the sun; only 4-7's horizon shadow reads it. */
+  /** The direction TOWARD the sun; 4-7's horizon shadow and the grain's crunch read it. */
   setSunDirection(x: number, y: number, z: number): void {
     this.surfacePlugin.setSunDirection(x, y, z);
+  }
+
+  /** The unit direction toward the sun the ground is shaded by, for the roads' ribbon. */
+  get sunDirection(): readonly [number, number, number] {
+    return this.surfacePlugin.sunDirection;
   }
 
   /**

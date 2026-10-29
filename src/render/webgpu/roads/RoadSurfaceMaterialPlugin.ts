@@ -18,6 +18,7 @@ import { rockReliefShareOf } from "../terrain/RockRelief";
 import {
   DEFAULT_DETILE_WARP,
   groundGrainAlbedoWgsl,
+  groundGrainCrunchWgsl,
   groundGrainFunctionsWgsl,
   groundGrainReadsWgsl,
   groundGrainReliefWgsl,
@@ -428,7 +429,13 @@ ${terrainMacroWashNoiseWgsl("road", "roadPosition", "roadSurfaceValue")}${terrai
 // A road never lies under the sea, so none of it is faded there. A seal is
 // rolled flat: it takes the grain's tone but not its relief, which drew
 // tufts on the asphalt; the terrain's own pavement (RunwaySurface) has none
-// either, and the asphalt paint under a seal is covered by it.
+// either, and the asphalt paint under a seal is covered by it. Both take the
+// crunch, as the paint under them does: it is light, not relief, and its
+// broadest scale is a patch tens of metres across, so a ribbon without it
+// reads lighter or darker than the paint beside it. Its sun share goes on the
+// sun's direct light (below) and its sky share on the cavity.
+var roadGrainDirect = 1.0;
+var roadCavity = 1.0;
 if (roadGroundPatchworkOn > 0.5) {
 ${groundGrainReadsWgsl("road", {
   xz: "roadPosition + roadSurfaceDetileWarp(roadPosition, roadFootprint)",
@@ -437,7 +444,7 @@ ${groundGrainReadsWgsl("road", {
   albedo: "roadSurfaceAlbedo",
   shown: "1.0",
 })}  let roadGrainCover = roadGroundCover * (1.0 - smoothstep(0.45, 0.8, roadSlope));
-${groundGrainAlbedoWgsl("road", "roadAlbedo")}  if (!roadSealed) {
+${groundGrainAlbedoWgsl("road", "roadAlbedo")}${groundGrainCrunchWgsl("road")}  if (!roadSealed) {
 ${groundGrainReliefWgsl("road")}    roadGroundTilt += roadGrainSlope * roadGrainNormalGain;
   }
 }
@@ -458,7 +465,7 @@ surfaceAlbedo = roadAlbedo;
 // The material's BRDF as the terrain's (its terrainSurface* values), for the
 // injections below; the edge lines take the asphalt's.
 var roadSurfaceRoughness = clamp(roadTexel.roughness + roadMesoRoughness, 0.02, 1.0);
-var roadSurfaceCavity = clamp(roadTexel.cavity, 0.0, 1.0);
+var roadSurfaceCavity = clamp(roadTexel.cavity * roadCavity, 0.0, 1.0);
 var roadSurfaceF0 = select(${GRAVEL.f0}, ${ASPHALT.f0}, roadSealed);
 var roadSurfaceDiffuseRoughness = select(${GRAVEL.diffuseRoughness}, ${ASPHALT.diffuseRoughness}, roadSealed);
 var roadSurfaceF90 = ${terrainSurfaceF90Wgsl("roadSurfaceF0", "roadSurfaceRoughness")};
@@ -477,9 +484,18 @@ var roadSurfaceF90 = ${terrainSurfaceF90Wgsl("roadSurfaceF0", "roadSurfaceRoughn
 `;
 
 // The terrain's injections (TerrainSurfacePlugin's FRAGMENT_WGSL), at its
-// anchors, with the ribbon's values: the cavity occludes ambient light only,
-// and roughness, diffuse roughness, F0 and F90 replace Babylon's.
+// anchors, with the ribbon's values: the crunch's sun share dims each
+// directional light's diffuse, the cavity occludes ambient light only, and
+// roughness, diffuse roughness, F0 and F90 replace Babylon's.
 const RIBBON_FRAGMENT_INJECTIONS = Object.freeze({
+  [TERRAIN_SURFACE_INJECTION_ANCHORS.sunLightColor]: /* wgsl */ `$1
+#ifdef DIRLIGHT$2
+diffuse$2 = vec4f(
+  diffuse$2.rgb * roadGrainDirect,
+  diffuse$2.a,
+);
+#endif
+`,
   [TERRAIN_SURFACE_INJECTION_ANCHORS.ambientOcclusion]: /* wgsl */ `$1
 aoOut.ambientOcclusionColor *= vec3f(roadSurfaceCavity);
 `,
@@ -509,6 +525,7 @@ export interface RoadSurfaceArrays {
 export class RoadSurfaceMaterialPlugin extends MaterialPluginBase {
   private bound: RoadSurfaceBinding | null = null;
   private arrays: RoadSurfaceArrays | null = null;
+  private towardSun: readonly [number, number, number] = [0, 1, 0];
 
   constructor(material: Material, readonly role: RoadSurfaceRole) {
     super(material, `road-surface-${role}`, 190, { ROAD_SURFACE_RIBBON: false, ROAD_SURFACE_RAIL: false }, true, false);
@@ -531,6 +548,11 @@ export class RoadSurfaceMaterialPlugin extends MaterialPluginBase {
     if (arrays === this.arrays) return;
     this.arrays = arrays;
     this.updateEnabled();
+  }
+
+  /** The unit direction toward the sun the terrain is shaded by (the grain's crunch reads it). */
+  setSunDirection(direction: readonly [number, number, number]): void {
+    this.towardSun = direction;
   }
 
   get ready(): boolean {
@@ -567,6 +589,7 @@ export class RoadSurfaceMaterialPlugin extends MaterialPluginBase {
       ubo: [
         ...TERRAIN_DRAWN_HEIGHT_UNIFORMS.map((uniform) => ({ ...uniform })),
         { name: "roadAnchor", size: 4, type: "vec4" },
+        { name: "roadSunDirection", size: 4, type: "vec4" },
       ],
     };
   }
@@ -577,6 +600,7 @@ export class RoadSurfaceMaterialPlugin extends MaterialPluginBase {
     binding.lookup.bind(uniformBuffer, binding.atlas, binding.atlasShape, binding.anchorX, binding.anchorZ);
     uniformBuffer.updateFloat4("roadAnchor", binding.anchorX, binding.anchorZ, binding.anchorCx, binding.anchorCz);
     if (this.role === "ribbon" && this.arrays) {
+      uniformBuffer.updateFloat4("roadSunDirection", ...this.towardSun, 0);
       uniformBuffer.setTexture("roadSurfaceAlbedo", this.arrays.albedoHeight);
       uniformBuffer.setTexture("roadSurfaceNormal", this.arrays.normalMaterial);
     }

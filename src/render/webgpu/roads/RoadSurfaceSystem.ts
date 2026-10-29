@@ -72,6 +72,8 @@ export interface RoadSurfaceTerrain {
   refreshDrawnHeight(x: number, z: number, radiusMeters: number): void;
   readonly drawnHeightAtlas: { readonly texture: BaseTexture | null; readonly shape: TerrainDrawnAtlasShape };
   readonly surfaceMaterialArrays: RoadMaterialArrays | null;
+  /** The unit direction toward the sun the ground is shaded by, which the ribbon's grain reads too. */
+  readonly sunDirection: readonly [number, number, number];
 }
 
 export interface RoadSurfaceRanges {
@@ -292,7 +294,10 @@ export class RoadSurfaceSystem {
           continue;
         }
         this.bind(layer, lookup, atlas.texture, atlas.shape);
-        if (layer.role === "ribbon") layer.plugin.setArrays(arrays);
+        if (layer.role === "ribbon") {
+          layer.plugin.setArrays(arrays);
+          layer.plugin.setSunDirection(this.terrain.sunDirection);
+        }
         const ready = layer.plugin.ready;
         layer.mesh.setEnabled(ready);
         if (ready) this.draws += 1;
@@ -416,7 +421,10 @@ export class RoadSurfaceSystem {
           layer.placeholder = true;
         }
         this.bind(layer, this.terrain.drawnHeight(range + ROAD_SURFACE_REACH_SLACK_METERS), atlas.texture, atlas.shape);
-        if (layer.role === "ribbon") layer.plugin.setArrays(arrays);
+        if (layer.role === "ribbon") {
+          layer.plugin.setArrays(arrays);
+          layer.plugin.setSunDirection(this.terrain.sunDirection);
+        }
       }
       if (!layer.plugin.ready) continue;
       const status = warmUp.warmUp(layer.mesh, false);

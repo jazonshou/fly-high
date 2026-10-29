@@ -114,6 +114,7 @@ describe("the roads' ribbon and rail materials on the GPU", () => {
         refreshDrawnHeight: (x, z, radius) => lookup?.refresh(frame.records, x, z, radius),
         drawnHeightAtlas: { texture: atlas, shape: frame.atlas.shape },
         surfaceMaterialArrays: { albedoHeight: layer(150, 140, 130, 128), normalMaterial: layer(128, 128, 200, 255) },
+        sunDirection: [0, 1, 0],
       };
       const x = DRAWN_FRAME_CAMERA.x;
       const z = DRAWN_FRAME_CAMERA.z;

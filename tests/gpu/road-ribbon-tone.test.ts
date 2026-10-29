@@ -55,7 +55,10 @@ import { DRAWN_FRAME_CAMERA, buildDrawnFrame } from "../support/terrainDrawnFram
  * with the grain, the paint is drawn again with its grain switched off, and
  * the ribbon again from arrays without the layer: band by band down each
  * road, what the grain does to the ribbon is what it does to the paint (on a
- * seal its tone; the seal is rolled flat).
+ * seal its tone; the seal is rolled flat). The grain's crunch is centred
+ * too, but its broadest scale is a patch tens of metres across, so over one
+ * stretch of road it moves the paint's light: before the ribbon took it, the
+ * gravel here read 10% darker than the paint beside it.
  */
 
 const CANVAS = 256;
@@ -262,6 +265,7 @@ describe("the road ribbon against the terrain's paint", () => {
         refreshDrawnHeight: (px, pz, radius) => lookup?.refresh(frame.records, px, pz, radius),
         drawnHeightAtlas: { texture: atlas, shape: frame.atlas.shape },
         surfaceMaterialArrays: arrays,
+        sunDirection: paint.sunDirection,
       };
       const region: RoadSurfaceRegion = {
         key: "tone",
