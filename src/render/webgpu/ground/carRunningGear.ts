@@ -34,12 +34,16 @@ const swatch = (finish: CarFinish): UvFor => {
 
 /**
  * The tyre's sidewalls, (radius, z) from the inner bead up to the tread's
- * shoulder; +z is the wheel's outer face. The tread between the shoulders is
- * the grooves' floor, and its blocks stand on it.
+ * shoulder; +z is the wheel's outer face. A rim protector rolls out over the
+ * bead before the wall bulges. The tread between the shoulders is the
+ * grooves' floor, and its blocks stand on it.
  */
 const SIDEWALL_PROFILE: readonly Point2[] = [
   [0.212, 0.104],
-  [0.245, 0.118],
+  [0.221, 0.113],
+  [0.229, 0.121],
+  [0.237, 0.12],
+  [0.245, 0.119],
   [0.29, 0.127],
   [0.335, 0.13],
   [0.355, 0.128],
@@ -123,6 +127,18 @@ export function wheelSurfaces(): Surface[] {
   // The outer wall runs in from the shoulder to the bead (showing +z), the inner one out from its bead (showing -z).
   surfaces.push(latheZ([...SIDEWALL_PROFILE].reverse(), AROUND, () => sidewall));
   surfaces.push(latheZ(SIDEWALL_PROFILE.map(([radius, z]) => [radius, -z] as Point2), AROUND, () => sidewall));
+  // Raised lettering round the outer wall in two arcs opposite each other:
+  // blocks of a letter's stroke and gaps between words, not text, so it reads
+  // as moulded relief from any distance and never mirrored.
+  const lettering = swatch("sidewall");
+  const strokes = [0.011, 0.005, 0.011, 0.011, 0.016, 0.005, 0.011, 0.011, 0.005, 0.011, 0.016, 0.011];
+  for (const start of [0.35, 0.35 + Math.PI]) {
+    let along = 0;
+    for (const [k, width] of strokes.entries()) {
+      surfaces.push(...treadBlock(start + (along + width / 2) / 0.305, width, 0.296, 0.314, 0.122, 0.1315, lettering));
+      along += width + (k % 4 === 3 ? 0.014 : 0.004);
+    }
+  }
   const groove = finishUv("rubber");
   surfaces.push(latheZ(TREAD_FLOOR, AROUND, () => groove));
   const tread = swatch("tread");
