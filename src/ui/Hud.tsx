@@ -7,13 +7,14 @@ import type {
 } from "@/src/game/types";
 import type { HudMode, UnitSystem } from "@/src/settings";
 import { aircraftDefinition, type AircraftKind } from "@/src/sim";
-import type { CSSProperties } from "react";
+import type { CSSProperties, Ref } from "react";
 import { aircraftSpec } from "@/src/aircraft/catalogue";
 import { cockpitDeckKStyleValue } from "@/src/ui/cockpitHudLayout";
 import { formatAirportDistance } from "@/src/ui/airportMarker";
 import type { NearestAirportInfo } from "@/src/game/AirportNetworkController";
 import { BoatHud } from "@/src/ui/BoatHud";
 import { formatHeading, MetricTape } from "@/src/ui/hudParts";
+import { PITCH_LADDER_HORIZON_HALF_LENGTH, PITCH_LADDER_PITCHES, PITCH_LADDER_WINDOW } from "@/src/ui/pitchLadder";
 
 interface HudProps {
   state: FlightVisualState;
@@ -36,6 +37,8 @@ interface HudProps {
   onToggleNearestAirport?: () => void;
   /** Engages or hands back the autoland; the button is drawn only when given. */
   onToggleAutoland?: () => void;
+  /** The pitch ladder's element, which FlightGame places every frame (src/ui/pitchLadder.ts). */
+  pitchLadderRef?: Ref<HTMLDivElement>;
 }
 
 const AUTOLAND_PHASE_LABELS: Record<AutolandVisualState["phase"], string> = {
@@ -67,13 +70,77 @@ function runwayNumber(headingDegrees: number): string {
 }
 
 /**
- * The fixed aircraft symbol marks where the nose points on the attitude
- * horizon, which means something only when the camera looks roughly along the
- * nose. The orbit view circles the aeroplane, the top view looks down on it
- * and the front view looks back at it, so none of them shows it.
+ * The pitch ladder and the aircraft symbol are drawn through the camera
+ * (src/ui/pitchLadder.ts): the symbol where the nose points, the rungs where
+ * those pitches are. That means something only when the camera looks along the
+ * nose. The orbit view circles the aeroplane, the top view looks down on it and
+ * the front view looks back at it, so none of them shows either.
  */
-export function hudShowsAircraftReticle(cameraMode: CameraMode): boolean {
+export function hudShowsPitchLadder(cameraMode: CameraMode): boolean {
   return cameraMode !== "cinematic" && cameraMode !== "top" && cameraMode !== "front";
+}
+
+/**
+ * One line of the ladder, drawn level and centred on its own origin; FlightGame
+ * turns and places it. Its local +y points to lower pitch, so the tips at its
+ * ends point at the horizon from either side, as on a fighter's HUD; the dive
+ * rungs are dashed. The gap in the middle holds the aircraft symbol.
+ */
+function PitchLadderLine({ pitch }: { pitch: number }) {
+  const common = { "data-pitch": pitch, display: "none" } as const;
+  if (pitch === 0) {
+    const end = PITCH_LADDER_HORIZON_HALF_LENGTH;
+    return (
+      <g {...common} className="pitch-ladder__line pitch-ladder__line--horizon">
+        <path d={`M ${-end} 0 H -60 M 60 0 H ${end}`} />
+      </g>
+    );
+  }
+  if (Math.abs(pitch) === 90) {
+    return (
+      <g {...common} className={`pitch-ladder__line pitch-ladder__line--${pitch > 0 ? "zenith" : "nadir"}`}>
+        <circle r="7" />
+        {pitch < 0 ? <path d="M -5 -5 L 5 5 M -5 5 L 5 -5" /> : null}
+      </g>
+    );
+  }
+  const numbered = pitch % 10 === 0;
+  const end = numbered ? 104 : 86;
+  const tip = pitch > 0 ? 6 : -6;
+  return (
+    <g {...common} className={`pitch-ladder__line pitch-ladder__line--${pitch > 0 ? "climb" : "dive"}`}>
+      <path d={`M ${-end} ${tip} V 0 H -60 M 60 0 H ${end} V ${tip}`} />
+      {numbered ? (
+        <>
+          <text x={-end - 5} textAnchor="end">{pitch}</text>
+          <text x={end + 5}>{pitch}</text>
+        </>
+      ) : null}
+    </g>
+  );
+}
+
+/**
+ * The ladder and the aircraft symbol, in a window that follows the nose. Hidden
+ * until FlightGame has placed it, and drawn by it every frame from then on; this
+ * markup never changes, so React never touches what it writes.
+ */
+function PitchLadder({ ladderRef }: { ladderRef: Ref<HTMLDivElement> | undefined }) {
+  const { width, height } = PITCH_LADDER_WINDOW;
+  return (
+    <div ref={ladderRef} className="pitch-ladder" hidden aria-hidden="true">
+      <div className="pitch-ladder__window" data-pitch-ladder-window="">
+        <svg className="pitch-ladder__lines" viewBox={`${-width / 2} ${-height / 2} ${width} ${height}`} focusable="false">
+          {PITCH_LADDER_PITCHES.map((pitch) => <PitchLadderLine key={pitch} pitch={pitch} />)}
+        </svg>
+        <div className="attitude__aircraft" data-pitch-ladder-aircraft="">
+          <span />
+          <i />
+          <span />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function renderTechniqueLabel(diagnostics: RenderDiagnostics): string {
@@ -111,6 +178,7 @@ export function Hud({
   nearestAirportShown = false,
   onToggleNearestAirport,
   onToggleAutoland,
+  pitchLadderRef,
 }: HudProps) {
   if (mode === "off") return null;
   // A surface vehicle has its own panel; the aircraft HUD below is exactly
@@ -141,7 +209,6 @@ export function Hud({
   const speedUnit = aviation ? "KT" : "KM/H";
   const altitudeUnit = aviation ? "FT" : "M";
   const verticalUnit = aviation ? "FT/M" : "M/S";
-  const pitchPixels = Math.max(-95, Math.min(95, state.pitch * 2.25));
   const autoland = state.autoland ?? null;
   const autolandDistance = autoland && (autoland.phase === "approach" || autoland.phase === "final")
     ? formatAirportDistance(autoland.distanceToTouchdown, aviation)
@@ -270,24 +337,8 @@ export function Hud({
         </>
       ) : null}
 
+      {hudShowsPitchLadder(cameraMode) ? <PitchLadder ladderRef={pitchLadderRef} /> : null}
       <div className="attitude" aria-label={`Pitch ${Math.round(state.pitch)} degrees, bank ${Math.round(state.bank)} degrees`}>
-        <div
-          className="attitude__horizon"
-          style={{ transform: `translate(-50%, calc(-50% + ${pitchPixels}px)) rotate(${-state.bank}deg)` }}
-        >
-          <span className="attitude__line attitude__line--wide" />
-          <span className="attitude__line attitude__line--up-one" />
-          <span className="attitude__line attitude__line--up-two" />
-          <span className="attitude__line attitude__line--down-one" />
-          <span className="attitude__line attitude__line--down-two" />
-        </div>
-        {hudShowsAircraftReticle(cameraMode) ? (
-          <div className="attitude__aircraft">
-            <span />
-            <i />
-            <span />
-          </div>
-        ) : null}
         <div className="attitude__heading">
           <small>HDG</small>
           <strong>{formatHeading(state.heading)}</strong>

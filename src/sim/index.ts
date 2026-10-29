@@ -56,6 +56,7 @@ export {
   heldElevator,
 } from "./handoffTrim";
 export { DirectPitchRetention } from "./pitchRetention";
+export { pitchGearingFactor, type PitchGearing } from "./pitchGearing";
 export {
   SCENIC_HOLD_CAPTURE_SECONDS,
   SCENIC_HOLD_CAPTURE_VERTICAL_SPEED,
