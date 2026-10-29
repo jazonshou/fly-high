@@ -740,6 +740,12 @@ interface Panel {
   readonly openings: readonly (readonly Point2[])[];
   readonly place: (a: number, b: number) => Vec3Tuple;
   readonly outerUv: UvFor;
+  /**
+   * How far along a the inner trim reaches at height b: a skin's depth short
+   * of the glasshouse's corners, so its edge never lies in the next panel's
+   * face, where it fought that face's depth in a dashed line down each pillar.
+   */
+  readonly trimSpan: (b: number) => readonly [number, number];
 }
 
 interface GlasshouseParts {
@@ -759,7 +765,11 @@ function buildPanel(panel: Panel, parts: GlasshouseParts, innerFinish: CarFinish
   const glass = offset(GLASS_DEPTH);
   for (const piece of panel.pieces) {
     parts.outer.push(polygonSurface(piece, panel.place, panel.outerUv));
-    parts.inner.push(polygonSurface(piece, inner, swatch(innerFinish)).flipped());
+    const trim = piece.map(([a, b]): Point2 => {
+      const [from, to] = panel.trimSpan(b);
+      return [Math.min(to, Math.max(from, a)), b];
+    });
+    parts.inner.push(polygonSurface(trim, inner, swatch(innerFinish)).flipped());
   }
   for (const opening of panel.openings) {
     const ccw = signedArea(opening) > 0 ? opening : [...opening].reverse();
@@ -767,6 +777,30 @@ function buildPanel(panel: Panel, parts: GlasshouseParts, innerFinish: CarFinish
     parts.outer.push(gasket(ccw, offset(-GASKET.proud), n));
     parts.glass.push(polygonSurface(ccw, glass, swatch("seal")));
   }
+}
+
+/**
+ * How far short of the rear corners the side and rear trims stop. Trim up to
+ * a skin's depth from the corner still lay in the shadow map's back faces a
+ * few centimetres behind the lit panels, as a dashed line down each D pillar
+ * seen from the chase camera; a chamfer joins the two trims instead.
+ */
+const D_PILLAR_TRIM = 0.12;
+
+/** The D pillars' inner trim: a chamfer across the right rear corner from the side trim's end to the rear trim's. */
+function dPillarTrim(): Surface {
+  const sideNormal = planeNormal((x, height) => [x, h(height), tumble(height)]);
+  const rearNormal = planeNormal((z, height) => [rearX(height), h(height), z]);
+  const inset = (point: Vec3Tuple, n: Vec3Tuple): Vec3Tuple => [point[0] - n[0] * SKIN, point[1] - n[1] * SKIN, point[2] - n[2] * SKIN];
+  const side = (height: number): Vec3Tuple => inset([rearX(height) + D_PILLAR_TRIM, h(height), tumble(height)], sideNormal);
+  const rear = (height: number): Vec3Tuple => inset([rearX(height), h(height), tumble(height) - D_PILLAR_TRIM], rearNormal);
+  const surface = new Surface();
+  const uv = finishUv("trim");
+  const [a, b, c, d] = [side(BODY.belt), side(GLASSHOUSE.head), rear(GLASSHOUSE.head), rear(BODY.belt)].map((point) => surface.vertexAt(point, uv));
+  const facing: Vec3Tuple = [1, 0, -1];
+  surface.triFacing(a!, b!, c!, facing);
+  surface.triFacing(a!, c!, d!, facing);
+  return surface;
 }
 
 /** The windows' black rubber: a band over the panel round each opening, its inner edge rounded into the glass. */
@@ -879,6 +913,7 @@ function sidePanel(): Panel {
     ],
     place: (x, height) => [x, h(height), tumble(height)],
     outerUv: sideMap,
+    trimSpan: (height) => [rearX(height) + D_PILLAR_TRIM, screenX(height) - SKIN],
   };
 }
 
@@ -907,6 +942,7 @@ function screenPanel(): Panel {
     openings: [[[-innerEdge(b1), b1], [innerEdge(b1), b1], [innerEdge(b2), b2], [-innerEdge(b2), b2]]],
     place: (a, height) => screenPoint(-a, height),
     outerUv: swatch("paint"),
+    trimSpan: (height) => [-outer(height) + SKIN, outer(height) - SKIN],
   };
 }
 
@@ -948,6 +984,7 @@ function rearPanel(): Panel {
     ],
     place: (z, height) => [rearX(height), h(height), z],
     outerUv: swatch("paint"),
+    trimSpan: (height) => [-outer(height) + D_PILLAR_TRIM, outer(height) - D_PILLAR_TRIM],
   };
 }
 
@@ -955,7 +992,7 @@ function rearPanel(): Panel {
  * The roof: a crowned panel on the glasshouse whose crown is flat across the
  * middle and rolls down at its sides, front and rear, pressed with four
  * shallow channels along it, as the 76's steel roof is. A drip rail runs
- * along each side over the doors, and the pillars' outer edges are rolled.
+ * along each side over the doors, and the A pillars' outer edges are rolled.
  */
 const ROOF_CHANNELS = Object.freeze({ at: [0.2, 0.5] as const, halfWidth: 0.028, depth: 0.004 });
 
@@ -994,23 +1031,20 @@ function roofSurfaces(): { readonly symmetric: Surface[]; readonly single: Surfa
   const roof = new Surface();
   const paint = finishUv("paint");
   roof.grid(rows, () => paint);
-  // The drip rail over the side glass, and the rolled edges of the A and D pillars.
+  // The drip rail over the side glass, and the rolled edge of the A pillars.
   const rail: Vec3Tuple[] = [
     [rear + 0.01, h(GLASSHOUSE.head - 0.004), width + 0.004],
     [front - 0.01, h(GLASSHOUSE.head - 0.004), width + 0.004],
   ];
   const aPillar: Vec3Tuple[] = [];
-  const dPillar: Vec3Tuple[] = [];
   for (let k = 0; k <= 6; k += 1) {
     const height = BODY.belt + ((GLASSHOUSE.head - BODY.belt) * k) / 6;
     aPillar.push([screenX(height) - 0.004, h(height), tumble(height) - 0.004]);
-    dPillar.push([rearX(height) + 0.006, h(height), tumble(height) - 0.006]);
   }
   return {
     symmetric: [
       ...tube(rail, 0.009, 8, swatch("paint")),
       ...tube(aPillar, 0.011, 8, swatch("paint")),
-      ...tube(dPillar, 0.013, 8, swatch("paint")),
     ],
     single: [roof],
   };
@@ -1058,6 +1092,31 @@ function snorkelSurfaces(): Surface[] {
   ];
 }
 
+/**
+ * A band pressed 4 mm proud of the rear panel at `x`, `outline` in (z, y):
+ * its edges ramp up over 2.5 cm rather than roll, so from the chase camera
+ * they shade as a soft crease a few pixels wide, not a sub-pixel highlight
+ * that breaks into dashes.
+ */
+function pressedBand(outline: readonly Point2[], x: number): Surface[] {
+  const rise = 0.004;
+  const ramp = 0.025;
+  const ccw = signedArea(outline) > 0 ? outline : [...outline].reverse();
+  const top = insetOutline(ccw, ramp);
+  const uv = swatch("paint");
+  const facing: Vec3Tuple = [-1, 0, 0];
+  const edge = new Surface();
+  // From 1 mm inside the panel, so the ramp leaves it without a crack.
+  const foot = ccw.map(([a, b]) => edge.vertexAt([x + 0.001, b, a], uv([x, b, a])));
+  const head = top.map(([a, b]) => edge.vertexAt([x - rise, b, a], uv([x, b, a])));
+  for (let index = 0; index < ccw.length; index += 1) {
+    const next = (index + 1) % ccw.length;
+    edge.triFacing(foot[index]!, foot[next]!, head[next]!, facing);
+    edge.triFacing(foot[index]!, head[next]!, head[index]!, facing);
+  }
+  return [edge, polygonSurface(top, (a, b) => [x - rise, b, a], uv)];
+}
+
 /** The rear doors' split line, handle and plate, and the quarters' seams. */
 function rearDetailSurfaces(): Surface[] {
   const surfaces: Surface[] = [];
@@ -1068,14 +1127,9 @@ function rearDetailSurfaces(): Surface[] {
   // The right door's handle, by the split, and the plate under it.
   surfaces.push(...roundedBox([x - 0.028, h(1.168), z + 0.06], [x + 0.005, h(1.205), z + 0.2], 0.008, swatch("blackPlastic")));
   surfaces.push(...plateSurfaces(x, -1, 0.74, 0.3));
-  // A pressed band across both doors at the lamps' height: its rolled edges catch the light.
+  // A pressed band across both doors at the lamps' height.
   for (const [from, to] of [[-SHELL_SPLIT_Z + 0.06, z - 0.03], [z + 0.03, SHELL_SPLIT_Z - 0.06]] as const) {
-    surfaces.push(...roundedPrismX(
-      roundedRect(from, h(0.9), to, h(0.98), 0.02, 3),
-      BODY.rear - 0.003,
-      BODY.rear + 0.004,
-      { farRadius: 0, nearRadius: 0.0028, segments: 2, faceUv: swatch("paint"), skipFarFace: true },
-    ));
+    surfaces.push(...pressedBand(roundedRect(from, h(0.9), to, h(0.98), 0.02, 3), BODY.rear));
   }
   // The doors' exposed hinges on their outer edges, two each, and the tail lamps' black housings.
   for (const side of [-1, 1]) {
@@ -1189,6 +1243,7 @@ export function carBodySurfaces(): CarBodySurfaces {
       ...mirrorSurfaces(),
       ...side.outer,
       ...side.inner,
+      dPillarTrim(),
       ...roof.symmetric,
       ...under.symmetric,
       ...cabin.symmetric,
