@@ -3495,6 +3495,113 @@ unpinned. They have no committed baseline, and a capture only reports them.
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
 delivery.
 
+## Terrain texture: the sward's shadow and sheen (2026-10-27, PR #32)
+
+Jason: "most of the time the ground looks like a flat piece of plastic". Two
+measurements on SwiftShader renders of `terrain-material-1600ft-down` (half
+scale, the meadow in the middle of the frame) found why:
+
+- **The meadow's lighting was flat.** With the albedo forced to a flat 0.18
+  grey, it showed 1.9-2.9% contrast in every band from 1 to 16 pixels, while
+  the rock beside it kept its relief. The grain's normal is a gentle slope,
+  and under a high sun a gentle slope barely moves N·L. So all of its texture
+  was paint, and the paint was red: 2.9% at the pixel against 7.8% at 16
+  pixels.
+- **It carried a full dielectric highlight.** With F0 and F90 at zero it read
+  21% darker (0.110 → 0.087 linear luminance), a milky sheen. Grass and shrub
+  crowns render at `CANOPY_SURFACE_SPECULAR` (0.4); the ground under them did
+  not. Rock does need its lobe: without it the crags went flat.
+
+**What changed.**
+
+- `GroundGrainSynthesis.ts`: array A's fourth channel, which held a height the
+  shader never read, now holds the **crunch**: an fBm with equal octaves (gain
+  1), kept on its low side through a smooth step, so it reads as dark gaps in
+  lit ground. Through the box mips each level keeps about the contrast of the
+  one below it. At the 512 edge, the tone's finest band holds an eighth of its
+  broadest band's contrast. The normal is still built from the old height
+  field, which is no longer stored.
+- `TerrainSurfacePlugin.ts`, `GROUND_GRAIN_CRUNCH`: the crunch, summed over
+  the three grain scales (weights 1, 0.8, 1), dims the sun through the direct
+  multiplier the canopy and scrub shadows ride, and dims the sky through the
+  cavity (AO only). Gains: vegetation 1, rock 0.6, bare ground 0.45, snow 0.2.
+  It fades off slopes over 41-63° (`1 - n.y` 0.25-0.55), where the planar read
+  stretches fine gaps into streaks, and out under runway paint. Within 12° of
+  the anti-solar point, 80% of the sun's share goes (the opposition effect).
+- Sward specular: F0, and through it F90, scales by `1 - 0.6 × vegetated
+  share` (the vegetation materials' 0.4). Paint, wet ground, rock and the
+  canopy handoff's own already-trimmed share are excluded.
+
+**Cost.** No new texture reads, textures, memory, passes or draws: the crunch
+comes from the three grain texels already fetched, and the channel it replaced
+was stored and unread. Per terrain fragment where the grain is on (tiers 1-3),
+it adds one normalize, two dots, two smoothsteps and a few multiply-adds
+inside the existing grain branch. Tier 0 builds no grain, so it gets no
+crunch; the specular trim is three multiplies on every tier. On the PR's macOS
+capture at `7c31403`, with main's Boats PR merged in (gpu-tests run
+40559669040), draw calls, triangles and estimated GPU memory equal main's
+capture at `3f4b36b` (run 40558759493) on all thirty-nine shots, so no ceiling
+moves. The first capture, at `ebda69b` before that merge, matched main's
+`ac2c76c` capture (run 40442800011) the same way.
+
+**A/B**: Performance A/B run 40559669338, head `7c31403` against main
+`3f4b36b` (SwiftShader GPU time, Hodges-Lehmann estimate and its 95% interval;
+CPU time is the guard):
+
+| shot | GPU time | CPU time (guard) | draw calls | GPU work |
+| --- | --- | --- | --- | --- |
+| `approach-500ft` | same +1.2% (+1.1% to +1.2%) | same -1.5% | 247 → 247 | identical |
+| `cruise-horizon` | same +0.3% (+0.0% to +0.7%) | same -1.2% | 200 → 200 | identical |
+| `forest-500ft-sunbehind` | same -0.9% (-1.1% to -0.7%) | same +2.4% | 248 → 248 | identical |
+| `ground-2m-lowsun` | same +0.0% (-0.7% to +0.3%) | inconclusive +5.4% (-3.3% to +18.8%) | 121 → 121 | identical |
+| `water-25ft` | same +0.3% (+0.1% to +0.5%) | same -3.2% | 224 → 224 | identical |
+
+The macOS runner's advisory run reads same on all five (frame wall time -1.1%
+to +0.7%), and its CPU guard on `ground-2m-lowsun` reads same +0.9% (-1.5% to
++3.2%). The change adds no main-thread work, so the SwiftShader guard's wide
+interval there is that runner's noise. The first run, at `ebda69b` against
+`ac2c76c` (run 40453086243), was all same too.
+
+**Frames** (SwiftShader, half scale, main → PR, pixel-scale band contrast /
+mean linear luminance): `terrain-material-1600ft-down` meadow 2.9% → 5.9% /
+0.110 → 0.101; `high-10000ft-down` 3.0% → 5.1%; `mountain-close` 4.0% → 5.7%;
+`veg-seam-1600ft-oblique` lower half 6.7% → 7.7%; high-desert
+`terrain-material-1600ft-down` 3.2% → 5.7%. The grazing mid-ground at 500 ft
+barely changes: the grain reads isotropically at the footprint's long axis,
+and haze covers it.
+
+**All thirty-nine baselines promoted 2026-10-29 from the hosted macOS runner's
+2026-10-27 capture**, the same way as 2026-10-13. Jason approved the look from
+the PR's before/after frames. Source: the PR's capture at `7c31403`, after
+main's Boats PR and its new sea were merged in (gpu-tests run 40559669040,
+artifact `perf-capture-40559669040-1`, zip sha256 `18a0b40523a20fcc…5a86`).
+Before promotion it failed 72 visual gates on 24 of its 43 shots, every one a
+divergence from the committed baselines; no draw, triangle or memory gate
+failed. The four `boat-*` shots still have no committed baseline. Main's own
+capture at `3f4b36b` (gpu-tests run 40558759493) sits within 0.03/255 of the
+committed baselines on every shot, so all of the change below is this PR's.
+
+By shot, main's capture → this capture (mean absolute difference per channel,
+/255; pixels with any channel past 4/255; mean sRGB level change, /255):
+
+| shots | mean abs diff /255 | pixels past 4/255 | mean level |
+| --- | --- | --- | --- |
+| `lake-island-piercing` (open meadow at 300 ft) | 14.3 | 81% | -6.3 |
+| `terrain-material-1600ft-down`, `high-10000ft-down`, `canopy-1200ft`, `veg-seam-near-500ft`, `approach-lights-outboard`, `cliff-60m`, `veg-seam-1600ft-oblique`, `mountain-close` | 4.7-8.1 | 45-68% | -1.2 to -4.3 |
+| `grove-forest-2m`, `horizon-shadow-far-annulus`, `forest-line-highsun`, `grove-meadow-2m`, `runway-on-approach` | 2.4-4.0 | 24-53% | +0.3 to -1.7 |
+| the other fourteen ground shots, low sun and dusk included (`approach-500ft`, `slant-10km`, `ground-2m-lowsun`, `apron-hangar-variety`, the two blind turns, ...) | 0.75-1.7 | 5-16% | -0.7 to +0.6 |
+| sky, water and night: `water-*`, `coast-10km-lowsun`, `golden-hour`, `sunset-sunward`, `blue-hour`, `cruise-horizon`, `night*` | 0.06-0.56 | 0.03-4.3% | -0.34 to -0.05 |
+| the four `boat-*` shots (no baseline) | 0.06-0.12 | 0.4-1.1% | -0.08 to -0.04 |
+
+Every shot with grass in frame darkens a little (the trimmed sheen) and gains
+texture, and no tiling shows at 1,600 or 10,000 ft. No shot gains blown-out
+pixels. One gains near-black ones: in `sunset-sunward`, ground in the lowest
+quarter of the frame that faces the sun and sat at 4-10/255 drops to 3/255 or
+below, 0.24% of the frame.
+
+**Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
+delivery.
+
 ## In-app benchmark (?bench=1)
 
 `?bench=1` turns the game into a benchmark anyone can run in their own
