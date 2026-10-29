@@ -106,8 +106,8 @@ const LENS_COLOURS: readonly (readonly [number, number, number])[] = [
   [226, 226, 228],
   [205, 112, 22],
   [150, 20, 18],
-  [0, 0, 0],
-  [0, 0, 0],
+  [176, 182, 188],
+  [178, 184, 190],
 ];
 
 /** The lamps' emissive texels for a lamp state: what each lens gives off. */
@@ -128,8 +128,10 @@ export function carLampTexels(lamps: CarLampState, out: Uint8Array<ArrayBuffer> 
   set(CAR_LAMP_TEXELS.reverse, white, lamps.reverse);
   set(CAR_LAMP_TEXELS.indicator, [255, 140, 20], 0);
   set(CAR_LAMP_TEXELS.highStop, red, lamps.brake);
-  set(6, white, 0);
-  set(7, white, 0);
+  // A lit lamp fills its reflector bowl, fuller on main beam.
+  set(CAR_LAMP_TEXELS.reflector, white, lamps.main > 0 ? 0.9 : lamps.dipped * 0.65);
+  // The fog lamps have no switch of their own: dark.
+  set(CAR_LAMP_TEXELS.fog, white, 0);
   return out;
 }
 
@@ -164,10 +166,14 @@ export function createWebGpuCar(scene: Scene, kind: SurfaceVehicleKind): CarVisu
   body.emissiveColor = Color3.White();
   // The gauges' markings by day; the glow law multiplies it at night.
   body.emissiveIntensity = 0.35;
-  // Glossy paint under a clear coat, as a new car's is.
+  // Glossy paint under a clear coat, as a new car's is: the atlas's red
+  // channel says how much of it each finish wears (the paint all of it, the
+  // plastics and rubber none), its green scales the coat's roughness.
   body.clearCoat.isEnabled = true;
-  body.clearCoat.intensity = 0.35;
-  body.clearCoat.roughness = 0.08;
+  body.clearCoat.intensity = 1;
+  body.clearCoat.roughness = 0.15;
+  body.clearCoat.texture = atlas.metallicRoughness;
+  body.clearCoat.useRoughnessFromMainTexture = true;
 
   // Tinted glass blended over the cabin and the scene; its depth pre-pass
   // keeps only the nearest pane, so a far window never doubles the tint.

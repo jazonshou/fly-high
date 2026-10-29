@@ -1,6 +1,6 @@
 import type { CarVisualState } from "@/src/game/types";
 import { Surface, type Vec3Tuple } from "../boat/boatMeshData";
-import { finishUv, TREAD_REPEATS, treadUv, type CarFinish } from "./carAtlas";
+import { finishUv, type CarFinish } from "./carAtlas";
 import { bar, box, cross3, disc, dot3, ellipsoid, latheZ, normalize3, tube, type Point2, type UvFor } from "./carShapes";
 import {
   BODY,
@@ -32,78 +32,175 @@ const swatch = (finish: CarFinish): UvFor => {
   return () => uv;
 };
 
-/** The tyre's section, (radius, z) from the inner bead over the tread to the outer bead; +z is the wheel's outer face. */
-const TYRE_PROFILE: readonly Point2[] = [
-  [0.212, -0.104],
-  [0.245, -0.118],
-  [0.29, -0.127],
-  [0.335, -0.13],
-  [0.362, -0.126],
-  [0.377, -0.116],
-  [0.383, -0.1],
-  [0.385, -0.05],
-  [0.3855, 0],
-  [0.385, 0.05],
-  [0.383, 0.1],
-  [0.377, 0.116],
-  [0.362, 0.126],
-  [0.335, 0.13],
-  [0.29, 0.127],
-  [0.245, 0.118],
+/**
+ * The tyre's sidewalls, (radius, z) from the inner bead up to the tread's
+ * shoulder; +z is the wheel's outer face. The tread between the shoulders is
+ * the grooves' floor, and its blocks stand on it.
+ */
+const SIDEWALL_PROFILE: readonly Point2[] = [
   [0.212, 0.104],
+  [0.245, 0.118],
+  [0.29, 0.127],
+  [0.335, 0.13],
+  [0.355, 0.128],
+  [0.367, 0.121],
+  [0.372, 0.112],
 ];
-const TREAD_FROM = 5;
-const TREAD_TO = 11;
+/** The grooves' floor across the tread, shoulder to shoulder. */
+const TREAD_FLOOR: readonly Point2[] = [
+  [0.372, -0.112],
+  [0.3735, -0.06],
+  [0.374, 0],
+  [0.3735, 0.06],
+  [0.372, 0.112],
+];
 
-/** The steel wheel's face, (radius, z) from the flange in to the centre cap. */
-const RIM_PROFILE: readonly Point2[] = [
-  [0.216, 0.1],
-  [0.207, 0.104],
-  [0.2, 0.096],
-  [0.198, 0.07],
-  [0.185, 0.056],
-  [0.165, 0.046],
-  [0.12, 0.043],
-  [0.09, 0.046],
-];
-const HUB_PROFILE: readonly Point2[] = [
-  [0.09, 0.046],
-  [0.085, 0.06],
-  [0.062, 0.066],
-  [0.05, 0.073],
-  [0, 0.075],
-];
+/**
+ * The all-terrain tread's blocks: four lanes round the tyre, the shoulders'
+ * chunky blocks running over the shoulder and the centre rows staggered
+ * half a pitch, each block standing 12 mm proud of the grooves' floor, so
+ * the tyre's silhouette is lugged as a real one is.
+ */
+export const TREAD = Object.freeze({
+  blocks: 30,
+  /** The blocks' tops: the drawn tyre's radius. */
+  top: 0.3855,
+  shoulderTop: 0.383,
+  lanes: Object.freeze([
+    Object.freeze({ from: 0.06, to: 0.118, fill: 0.72, phase: 0.25, shoulder: true }),
+    Object.freeze({ from: 0.007, to: 0.054, fill: 0.68, phase: 0.75, shoulder: false }),
+    Object.freeze({ from: -0.054, to: -0.007, fill: 0.68, phase: 0.25, shoulder: false }),
+    Object.freeze({ from: -0.118, to: -0.06, fill: 0.72, phase: 0.75, shoulder: true }),
+  ]),
+});
+
+/** The alloy wheel's face: the hub's mounting face, the spokes' dish out to the rim's lip. */
+const WHEEL_FACE = Object.freeze({ hub: 0.1, rim: 0.199, spokes: 6, hubZ: 0.058, rimZ: 0.088 });
 
 /** The six-stud pattern: 6 x 139.7 mm. */
 export const WHEEL_STUDS = Object.freeze({ count: 6, pitchRadius: 0.1397 / 2 });
 
 const AROUND = 48;
 
+/** A block or lug of the tread: a box turned `angle` about the wheel's axis, its radial span r0..r1, across z0..z1. */
+function treadBlock(angle: number, length: number, r0: number, r1: number, z0: number, z1: number, uv: UvFor): Surface[] {
+  const block = box([-length / 2, r0, z0], [length / 2, r1, z1], uv);
+  const c = Math.cos(angle - Math.PI / 2);
+  const s = Math.sin(angle - Math.PI / 2);
+  return block.map((surface) => {
+    const turned = new Surface();
+    for (let index = 0; index < surface.positions.length; index += 3) {
+      const x = surface.positions[index]!;
+      const y = surface.positions[index + 1]!;
+      turned.positions.push(x * c - y * s, x * s + y * c, surface.positions[index + 2]!);
+    }
+    turned.uvs.push(...surface.uvs);
+    turned.indices.push(...surface.indices);
+    return turned;
+  });
+}
+
+/** The spoke's dish: z of the wheel's face at a radius, from the hub's face out to the lip. */
+function dishZ(radius: number): number {
+  const t = Math.min(1, Math.max(0, (radius - WHEEL_FACE.hub) / (WHEEL_FACE.rim - WHEEL_FACE.hub)));
+  return WHEEL_FACE.hubZ + (WHEEL_FACE.rimZ - WHEEL_FACE.hubZ) * Math.sqrt(t);
+}
+
+/** Whether a point of the wheel's face at (radius, angle) is in a window between the spokes. */
+function inWindow(radius: number, angle: number): boolean {
+  if (radius < 0.122 || radius > 0.188) return false;
+  const pitch = (Math.PI * 2) / WHEEL_FACE.spokes;
+  const local = Math.abs((((angle % pitch) + pitch) % pitch) - pitch / 2);
+  // Spokes taper from the hub out: the window widens with the radius.
+  const spokeHalf = 0.16 + (0.11 - 0.16) * ((radius - 0.122) / (0.188 - 0.122));
+  return local > spokeHalf;
+}
+
 /** One wheel, in its own frame: centred on the tread, the axle along z, its outer face toward +z. */
 export function wheelSurfaces(): Surface[] {
   const surfaces: Surface[] = [];
   const sidewall = finishUv("sidewall");
-  surfaces.push(latheZ(TYRE_PROFILE.slice(0, TREAD_FROM + 1), AROUND, () => sidewall));
-  surfaces.push(latheZ(TYRE_PROFILE.slice(TREAD_TO), AROUND, () => sidewall));
-  // The tread: one lathe arc per repeat of the map, so the pattern wraps without a seam smear.
-  const tread = TYRE_PROFILE.slice(TREAD_FROM, TREAD_TO + 1);
-  const perRepeat = AROUND / TREAD_REPEATS;
-  for (let repeat = 0; repeat < TREAD_REPEATS; repeat += 1) {
-    const from = (repeat / TREAD_REPEATS) * Math.PI * 2;
-    const to = ((repeat + 1) / TREAD_REPEATS) * Math.PI * 2;
-    surfaces.push(latheZ(tread, perRepeat, (_point, around, along) => treadUv(around, along), false, [0, 0, 0], from, to));
+  // The outer wall runs in from the shoulder to the bead (showing +z), the inner one out from its bead (showing -z).
+  surfaces.push(latheZ([...SIDEWALL_PROFILE].reverse(), AROUND, () => sidewall));
+  surfaces.push(latheZ(SIDEWALL_PROFILE.map(([radius, z]) => [radius, -z] as Point2), AROUND, () => sidewall));
+  const groove = finishUv("rubber");
+  surfaces.push(latheZ(TREAD_FLOOR, AROUND, () => groove));
+  const tread = swatch("tread");
+  for (const lane of TREAD.lanes) {
+    const top = lane.shoulder ? TREAD.shoulderTop : TREAD.top;
+    for (let k = 0; k < TREAD.blocks; k += 1) {
+      const angle = ((k + lane.phase) / TREAD.blocks) * Math.PI * 2;
+      const length = ((Math.PI * 2 * top) / TREAD.blocks) * lane.fill;
+      surfaces.push(...treadBlock(angle, length, 0.37, top, lane.from, lane.to, tread));
+      // Every other shoulder block runs on down the sidewall as a lug.
+      if (lane.shoulder && k % 2 === 0) {
+        const z = Math.sign(lane.from) > 0 ? [0.11, 0.1295] : [-0.1295, -0.11];
+        surfaces.push(...treadBlock(angle, length * 0.6, 0.35, 0.371, z[0]!, z[1]!, tread));
+      }
+    }
   }
-  const steel = finishUv("steelWheel");
-  surfaces.push(latheZ(RIM_PROFILE, AROUND, () => steel));
+  // The alloy wheel: its lip, the barrel seen through the windows, the spokes' dish, the hub and its nuts.
+  const alloy = finishUv("alloy");
+  surfaces.push(latheZ(
+    [[0.216, 0.094], [0.212, 0.1], [0.205, 0.101], [0.2, 0.096], [WHEEL_FACE.rim, WHEEL_FACE.rimZ]],
+    AROUND, () => alloy,
+  ));
+  surfaces.push(latheZ([[0.197, WHEEL_FACE.rimZ - 0.004], [0.196, -0.09]], AROUND, () => finishUv("barrel")));
+  // The face: a polar grid over the dish, open in the windows, their walls running back 30 mm.
+  const face = new Surface();
+  const walls = new Surface();
+  const rings = [WHEEL_FACE.hub, 0.11, 0.122, 0.135, 0.15, 0.165, 0.178, 0.188, WHEEL_FACE.rim];
+  const segments = 72;
+  const at = (radius: number, angle: number, back = 0): Vec3Tuple => [Math.cos(angle) * radius, Math.sin(angle) * radius, dishZ(radius) - back];
+  for (let j = 0; j < rings.length - 1; j += 1) {
+    for (let k = 0; k < segments; k += 1) {
+      const a0 = (k / segments) * Math.PI * 2;
+      const a1 = ((k + 1) / segments) * Math.PI * 2;
+      const r0 = rings[j]!;
+      const r1 = rings[j + 1]!;
+      const open = inWindow((r0 + r1) / 2, (a0 + a1) / 2);
+      if (open) continue;
+      const ids = [at(r0, a0), at(r0, a1), at(r1, a1), at(r1, a0)].map((point) => face.vertexAt(point, alloy));
+      face.triFacing(ids[0]!, ids[1]!, ids[2]!, [0, 0, 1]);
+      face.triFacing(ids[0]!, ids[2]!, ids[3]!, [0, 0, 1]);
+      // A wall wherever this cell borders a window.
+      const edges: readonly (readonly [number, number, number, number, Vec3Tuple])[] = [
+        [r0, a0, r0, a1, [0, 0, 0]],
+        [r1, a0, r1, a1, [0, 0, 0]],
+        [r0, a0, r1, a0, [0, 0, 0]],
+        [r0, a1, r1, a1, [0, 0, 0]],
+      ];
+      const neighbours: readonly (readonly [number, number])[] = [
+        [j > 0 ? (rings[j - 1]! + r0) / 2 : r0 - 0.005, (a0 + a1) / 2],
+        [j < rings.length - 2 ? (r1 + rings[j + 2]!) / 2 : r1 + 0.005, (a0 + a1) / 2],
+        [(r0 + r1) / 2, a0 - Math.PI / segments],
+        [(r0 + r1) / 2, a1 + Math.PI / segments],
+      ];
+      for (const [index, [er0, ea0, er1, ea1]] of edges.entries()) {
+        const [nr, na] = neighbours[index]!;
+        if (!inWindow(nr, na)) continue;
+        const mid = at((er0 + er1) / 2, (ea0 + ea1) / 2);
+        const towards = at(nr, na);
+        const facing: Vec3Tuple = [towards[0] - mid[0], towards[1] - mid[1], 0];
+        const w = [at(er0, ea0), at(er1, ea1), at(er1, ea1, 0.03), at(er0, ea0, 0.03)].map((point) => walls.vertexAt(point, alloy));
+        walls.triFacing(w[0]!, w[1]!, w[2]!, facing);
+        walls.triFacing(w[0]!, w[2]!, w[3]!, facing);
+      }
+    }
+  }
+  surfaces.push(face, walls);
+  // The hub's mounting face is the dish's centre; the centre cap stands on it.
   const hub = finishUv("hub");
-  surfaces.push(latheZ(HUB_PROFILE, 24, () => hub));
+  surfaces.push(latheZ([[WHEEL_FACE.hub, WHEEL_FACE.hubZ], [0.046, WHEEL_FACE.hubZ], [0.046, WHEEL_FACE.hubZ + 0.012], [0.04, WHEEL_FACE.hubZ + 0.018], [0, WHEEL_FACE.hubZ + 0.02]], 24, () => alloy));
+  void hub;
   for (let stud = 0; stud < WHEEL_STUDS.count; stud += 1) {
-    const angle = (stud / WHEEL_STUDS.count) * Math.PI * 2;
+    const angle = ((stud + 0.5) / WHEEL_STUDS.count) * Math.PI * 2;
     const x = Math.cos(angle) * WHEEL_STUDS.pitchRadius;
     const y = Math.sin(angle) * WHEEL_STUDS.pitchRadius;
-    surfaces.push(...bar([x, y, 0.044], [x, y, 0.062], 0.0105, 6, swatch("lugNut")));
+    surfaces.push(...bar([x, y, WHEEL_FACE.hubZ - 0.002], [x, y, WHEEL_FACE.hubZ + 0.016], 0.0105, 6, swatch("lugNut")));
   }
-  // The wheel's back, seen from under the car through the inner bead.
+  // The brake disc behind the spokes, and the wheel's back, seen from under the car through the inner bead.
+  surfaces.push(disc([0, 0, -0.005], [0, 0, 1], 0.17, 32, swatch("brakeDisc")));
   surfaces.push(disc([0, 0, -0.03], [0, 0, -1], 0.206, 24, swatch("hub")));
   return surfaces;
 }
