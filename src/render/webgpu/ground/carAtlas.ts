@@ -3,7 +3,17 @@ import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 import { createRawTextureFromMipChain } from "@/src/render/webgpu/core/MipChainUpload";
 import { hashLatticeCoordinates, unitFloatFromHash } from "@/src/world/seed";
-import { BODY, DOOR_LINES, GLASSHOUSE, GRILLE_INSERT, SIDE_WINDOW_BOTTOM } from "./lc76Lines";
+import {
+  ARCH,
+  BODY,
+  DOOR_LINES,
+  GLASSHOUSE,
+  GRILLE_INSERT,
+  LC76_FRONT_AXLE_X,
+  LC76_REAR_AXLE_X,
+  LC76_TYRE_LOADED_RADIUS,
+  SIDE_WINDOW_BOTTOM,
+} from "./lc76Lines";
 
 /**
  * The LandCruiser 76's ONE texture atlas: every opaque part of the car wears
@@ -67,7 +77,7 @@ interface Finish {
  * moulded black plastic, the cabin grey vinyl and cloth.
  */
 const FINISHES = {
-  paint: { albedo: [236, 233, 222], roughness: 0.34, clearCoat: 1 },
+  paint: { albedo: [226, 222, 208], roughness: 0.3, clearCoat: 1 },
   blackPlastic: { albedo: [30, 31, 32], roughness: 0.72 },
   /** The over-fenders' moulded black, a touch duller than the trim. */
   flare: { albedo: [26, 27, 28], roughness: 0.8 },
@@ -77,7 +87,8 @@ const FINISHES = {
   chassis: { albedo: [20, 20, 21], roughness: 0.78 },
   underbody: { albedo: [38, 37, 35], roughness: 0.9 },
   rubber: { albedo: [24, 24, 24], roughness: 0.9 },
-  sidewall: { albedo: [30, 30, 31], roughness: 0.82 },
+  /** Rubber under a film of the road it runs on. */
+  sidewall: { albedo: [46, 44, 41], roughness: 0.86 },
   steelWheel: { albedo: [168, 170, 172], roughness: 0.38, metallic: 0.65 },
   hub: { albedo: [46, 46, 48], roughness: 0.5, metallic: 0.4 },
   lugNut: { albedo: [196, 198, 200], roughness: 0.25, metallic: 1 },
@@ -102,8 +113,8 @@ const FINISHES = {
   /** The GXL's dark grey alloy wheels, and their barrels' dull inside. */
   alloy: { albedo: [70, 72, 76], roughness: 0.32, metallic: 0.75, clearCoat: 0.6 },
   barrel: { albedo: [40, 41, 43], roughness: 0.6, metallic: 0.4 },
-  /** The tread's blocks: rubber a shade lighter than the grooves between them. */
-  tread: { albedo: [36, 36, 37], roughness: 0.86 },
+  /** The tread's blocks: their tops worn and dusty, lighter than the grooves between them. */
+  tread: { albedo: [60, 56, 50], roughness: 0.9 },
   /** The grille's TOYOTA letters: satin silver. */
   lettering: { albedo: [178, 180, 184], roughness: 0.3, metallic: 0.9 },
 } as const satisfies Record<string, Finish>;
@@ -375,23 +386,75 @@ function sideTexel(x: number, height: number): readonly [number, number] {
   return [u * ATLAS_WIDTH, v * ATLAS_HEIGHT];
 }
 
+/** The road dust a working 76 wears: a pale, dry tan. */
+const DUST: readonly [number, number, number] = [150, 134, 110];
+
+/** 0 at `from`, 1 at `to` (either way round), smooth between. */
+function smoothstep(from: number, to: number, value: number): number {
+  const t = Math.min(1, Math.max(0, (value - from) / (to - from)));
+  return t * t * (3 - 2 * t);
+}
+
+/** Smooth value noise in 0..1 over a lattice of unit cells. */
+function valueNoise(seed: number, x: number, y: number): number {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const fx = x - ix;
+  const fy = y - iy;
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+  const at = (cx: number, cy: number): number => unitFloatFromHash(hashLatticeCoordinates(seed, cx, cy));
+  const top = at(ix, iy) + (at(ix + 1, iy) - at(ix, iy)) * sx;
+  const bottom = at(ix, iy + 1) + (at(ix + 1, iy + 1) - at(ix, iy + 1)) * sx;
+  return top + (bottom - top) * sy;
+}
+
 /**
- * The body's sides: paint, with the door shut lines as dark hairlines, the
- * door handles, the fuel flap behind the rear door, and the satin-black
- * B and C pillar trims a GXL wears between its windows. Both sides wear the
- * one map (the left mirrors the right), so nothing here may read as text.
+ * How much road dust a point of the flanks wears, 0 to 1, at body station x
+ * and height above the ground: thickest along the sills and lower doors, a
+ * halo the tyres throw round each arch (heaviest behind the wheel), the
+ * tail's dust drawn in behind a moving wagon, all broken by streaks where it
+ * ran down in rain, which vary faster along the body than down it.
+ */
+function sideGrime(x: number, height: number): number {
+  const low = smoothstep(0.98, 0.45, height);
+  let thrown = 0;
+  for (const centre of [LC76_FRONT_AXLE_X, LC76_REAR_AXLE_X]) {
+    const dx = Math.abs(x - centre) / ARCH.halfWidth;
+    const dy = Math.abs(height - LC76_TYRE_LOADED_RADIUS) / ARCH.height;
+    const r = Math.cbrt(dx ** 3 + dy ** 3);
+    thrown = Math.max(thrown, smoothstep(1.75, 1.05, r) * (x < centre ? 1 : 0.5));
+  }
+  const tail = smoothstep(BODY.rear + 0.3, BODY.rear, x) * smoothstep(1.45, 0.6, height);
+  const streaks = valueNoise(0x6d_0517, x / 0.035, height / 0.4) * 0.6 + valueNoise(0x6d_0518, x / 0.3, height / 0.25) * 0.4;
+  const amount = Math.max(0.6 * low + 0.45 * thrown, 0.55 * tail);
+  return Math.min(1, Math.max(0, amount * (0.45 + 0.75 * streaks)));
+}
+
+/**
+ * The body's sides: paint under a film of road dust, with the door shut
+ * lines as dark hairlines, the door handles, the fuel flap behind the rear
+ * door, and the satin-black B and C pillar trims a GXL wears between its
+ * windows. Both sides wear the one map (the left mirrors the right), so
+ * nothing here may read as text.
  */
 function paintSides(painter: AtlasPainter): void {
   const gap: readonly [number, number, number] = [62, 60, 56];
   const width = 1.6;
-  // A faint gloss gradient: the lower body a touch darker, as a white car's flanks read under sky.
+  const p = FINISHES.paint.albedo;
   for (let y = SIDE_TOP; y < SIDE_TOP + SIDE_ROWS; y += 1) {
     const t = (y - SIDE_TOP) / SIDE_ROWS;
-    const shade = Math.round(-6 * t);
+    // The texel's own station and height, as sideUv addresses it.
+    const height = SIDE_SPAN.maxHeight - (SIDE_SPAN.maxHeight - SIDE_SPAN.minHeight) * ((y - SIDE_TOP) / (SIDE_ROWS - 1));
+    // A faint gloss gradient: the lower body a touch darker, as a white car's flanks read under sky.
+    const shade = -6 * t;
     for (let x = 0; x < ATLAS_WIDTH; x += 1) {
+      const station = SIDE_SPAN.minX + (SIDE_SPAN.maxX - SIDE_SPAN.minX) * (x / (ATLAS_WIDTH - 1));
       const grain = (unitFloatFromHash(hashLatticeCoordinates(0x7c_0a1, x, y)) - 0.5) * 2;
-      const p = FINISHES.paint.albedo;
-      painter.set(x, y, [p[0] + shade + grain, p[1] + shade + grain, p[2] + shade + grain], FINISHES.paint.roughness, 0, NO_GLOW, 1);
+      const dust = sideGrime(station, height) * 0.8;
+      const colour = [0, 1, 2].map((k) => Math.round((p[k]! + shade + grain) * (1 - dust) + DUST[k]! * dust)) as [number, number, number];
+      // Dust is matte: it dulls the paint and its coat.
+      painter.set(x, y, colour, FINISHES.paint.roughness + (0.82 - FINISHES.paint.roughness) * dust, 0, NO_GLOW, 1 - 0.75 * dust);
     }
   }
   const vertical = (x: number, bottom: number, top: number): void => {

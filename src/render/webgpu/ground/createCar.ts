@@ -177,13 +177,17 @@ export function createWebGpuCar(scene: Scene, kind: SurfaceVehicleKind): CarVisu
 
   // Tinted glass blended over the cabin and the scene; its depth pre-pass
   // keeps only the nearest pane, so a far window never doubles the tint.
-  const glass = build.material(`${kind}-glass`, 0x1b272d, {
-    roughness: 0.04,
+  // A neutral grey-green tint the dark cabin shows through, under the sky's
+  // reflection: a pane's two faces and the coat between them reflect about
+  // twice what one surface's Fresnel gives, rising to a mirror at grazing.
+  const glass = build.material(`${kind}-glass`, 0x0e1413, {
+    roughness: 0.03,
     metallic: 0,
-    alpha: 0.34,
+    alpha: 0.4,
     doubleSided: true,
     clearCoat: { intensity: 1, roughness: 0.02, indexOfRefraction: 1.5 },
   });
+  glass.environmentIntensity = 2;
 
   const lensPixels = new Uint8Array(CAR_LAMP_TEXEL_COUNT * 4);
   for (const [texel, colour] of LENS_COLOURS.entries()) lensPixels.set([...colour, 255], texel * 4);

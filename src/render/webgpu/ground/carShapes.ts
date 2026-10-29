@@ -249,8 +249,12 @@ export interface RoundedPrismOptions {
   readonly faceUv: UvFor;
   /** The same for the face at c0, when it is another finish. */
   readonly nearFaceUv?: UvFor;
-  /** The rim's UV, ONE per quad at its midpoint, so the rim can change finish along the outline. */
-  readonly rimUv?: UvFor;
+  /**
+   * The rim's UV, chosen per quad from its midpoint, so the rim can change
+   * finish along the outline; `point` is the corner being placed, for a
+   * finish mapped over the rim (a side map) rather than one swatch.
+   */
+  readonly rimUv?: (midpoint: Vec3Tuple, point: Vec3Tuple) => readonly [number, number];
   readonly skipNearFace?: boolean;
   readonly skipFarFace?: boolean;
   /** Rim and round quads to leave out, by their midpoints: an opening along the outline. */
@@ -392,11 +396,10 @@ function roundedPrism(
         (corners[0]![2] + corners[1]![2] + corners[2]![2] + corners[3]![2]) / 4,
       ];
       if (options.openRim?.(midpoint)) continue;
-      // The rim between the two rounds takes one UV; each round takes its face's UV point by point.
+      // The rim between the two rounds takes its finish from the quad's midpoint; each round takes its face's UV point by point.
       const isRim = r0.band === "far" && r1.band === "near";
-      const quadUv = isRim ? rimUv(midpoint) : null;
       const uvOf = (point: Vec3Tuple, band: "far" | "rim" | "near"): readonly [number, number] =>
-        quadUv ?? (band === "near" ? nearUv(point) : options.faceUv(point));
+        isRim ? rimUv(midpoint, point) : band === "near" ? nearUv(point) : options.faceUv(point);
       const cornerIndex = [index, next, next, index] as const;
       const cornerSide = ["after", "before", "before", "after"] as const;
       const cornerRow = [row, row, row + 1, row + 1] as const;

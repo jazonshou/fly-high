@@ -40,6 +40,7 @@ import {
   HEADLAMP,
   LC76_FRONT_AXLE_X,
   LC76_REAR_AXLE_X,
+  LC76_FRONT_TRACK,
   LC76_REAR_TRACK,
   LC76_TYRE_LOADED_RADIUS,
   MIRROR,
@@ -150,10 +151,11 @@ function elevation(points: readonly Point2[]): Point2[] {
 }
 
 /** The shell's rim: dark in the wheel tubs and underneath, paint everywhere else. */
-const shellRimUv: UvFor = (point) => {
-  const height = point[1] - GROUND_Y;
-  if (height < 0.66 || inArch(point[0], height, 1.04)) return finishUv("underbody");
-  return finishUv("paint");
+/** The shell's rim: underbody below the sills and in the arches, else the side map, so the tail's and nose's faces wear the flanks' dust. */
+const shellRimUv = (midpoint: Vec3Tuple, point: Vec3Tuple): readonly [number, number] => {
+  const height = midpoint[1] - GROUND_Y;
+  if (height < 0.66 || inArch(midpoint[0], height, 1.04)) return finishUv("underbody");
+  return sideMap(point);
 };
 
 /** 0 below `from`, 1 past `to` (either way round), smooth between. */
@@ -1033,8 +1035,8 @@ function roofSurfaces(): { readonly symmetric: Surface[]; readonly single: Surfa
   roof.grid(rows, () => paint);
   // The drip rail over the side glass, and the rolled edge of the A pillars.
   const rail: Vec3Tuple[] = [
-    [rear + 0.01, h(GLASSHOUSE.head - 0.004), width + 0.004],
-    [front - 0.01, h(GLASSHOUSE.head - 0.004), width + 0.004],
+    [rear + 0.01, h(GLASSHOUSE.head - 0.006), width + 0.008],
+    [front - 0.01, h(GLASSHOUSE.head - 0.006), width + 0.008],
   ];
   const aPillar: Vec3Tuple[] = [];
   for (let k = 0; k <= 6; k += 1) {
@@ -1043,7 +1045,7 @@ function roofSurfaces(): { readonly symmetric: Surface[]; readonly single: Surfa
   }
   return {
     symmetric: [
-      ...tube(rail, 0.009, 8, swatch("paint")),
+      ...tube(rail, 0.013, 8, swatch("paint")),
       ...tube(aPillar, 0.011, 8, swatch("paint")),
     ],
     single: [roof],
@@ -1103,7 +1105,8 @@ function pressedBand(outline: readonly Point2[], x: number): Surface[] {
   const ramp = 0.025;
   const ccw = signedArea(outline) > 0 ? outline : [...outline].reverse();
   const top = insetOutline(ccw, ramp);
-  const uv = swatch("paint");
+  // The side map's column at the tail, so the band wears the doors' dust.
+  const uv = sideMap;
   const facing: Vec3Tuple = [-1, 0, 0];
   const edge = new Surface();
   // From 1 mm inside the panel, so the ramp leaves it without a crack.
@@ -1137,8 +1140,9 @@ function rearDetailSurfaces(): Surface[] {
       const z0 = side * (SHELL_SPLIT_Z - 0.1);
       surfaces.push(...roundedBox([x - 0.02, h(height - 0.035), Math.min(z0, z0 + side * 0.05)], [x + 0.004, h(height + 0.035), Math.max(z0, z0 + side * 0.05)], 0.007, swatch("blackPlastic")));
     }
-    // The mud flap behind each rear wheel.
+    // The mud flaps behind each wheel, the front ones clear of the tyre at full lock.
     surfaces.push(...roundedBox([RA - 0.5, h(0.24), side * (LC76_REAR_TRACK / 2) - 0.15], [RA - 0.488, h(0.6), side * (LC76_REAR_TRACK / 2) + 0.15], 0.005, swatch("rubber")));
+    surfaces.push(...roundedBox([FA - 0.5, h(0.27), side * (LC76_FRONT_TRACK / 2) - 0.14], [FA - 0.488, h(0.6), side * (LC76_FRONT_TRACK / 2) + 0.14], 0.005, swatch("rubber")));
     const zIn = TAIL_LAMP.inner;
     const zOut = TAIL_LAMP.outer;
     const [z0, z1] = side > 0 ? [zIn, zOut] : [-zOut, -zIn];
