@@ -13,7 +13,8 @@ import { cockpitDeckKStyleValue } from "@/src/ui/cockpitHudLayout";
 import { formatAirportDistance } from "@/src/ui/airportMarker";
 import type { NearestAirportInfo } from "@/src/game/AirportNetworkController";
 import { BoatHud } from "@/src/ui/BoatHud";
-import { formatHeading, MetricTape } from "@/src/ui/hudParts";
+import { CarHud } from "@/src/ui/CarHud";
+import { formatHeading, MetricTape, NearestAirportControl } from "@/src/ui/hudParts";
 import { PITCH_LADDER_HORIZON_HALF_LENGTH, PITCH_LADDER_PITCHES, PITCH_LADDER_WINDOW } from "@/src/ui/pitchLadder";
 
 interface HudProps {
@@ -196,6 +197,23 @@ export function Hud({
       />
     );
   }
+  if (state.vehicle?.kind === "car") {
+    return (
+      <CarHud
+        state={state}
+        car={state.vehicle}
+        mode={mode}
+        flightMode={flightMode}
+        units={units}
+        cameraMode={cameraMode}
+        cameraLabel={cameraLabel}
+        seedLabel={seedLabel}
+        nearestAirport={nearestAirport}
+        nearestAirportShown={nearestAirportShown}
+        onToggleNearestAirport={onToggleNearestAirport}
+      />
+    );
+  }
   const spec = aircraftSpec(aircraft);
   // Read from the FLIGHT MODEL, not from a presentation copy of the number.
   // The bar marks where thrust actually changes, so a HUD that disagreed with
@@ -256,37 +274,12 @@ export function Hud({
           <span>WORLD {seedLabel}</span>
         </div>
         {onToggleNearestAirport && nearestAirport ? (
-          <div className={`hud-nearest${nearestAirportShown ? " is-active" : ""}`}>
-            <button
-              type="button"
-              className="hud-nearest__toggle"
-              aria-pressed={nearestAirportShown}
-              title="Show the nearest airport (N)"
-              // Keep focus on the canvas: a focused button would also take the
-              // Space bar, which is the brake.
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={onToggleNearestAirport}
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                <path d="M 8 1 L 15 8 L 8 15 L 1 8 Z" />
-                <path d="M 8 4.5 L 8 11.5" />
-              </svg>
-              <span>NEAREST AIRPORT</span>
-              <kbd>N</kbd>
-            </button>
-            {nearestAirportShown ? (
-              <div
-                className="hud-nearest__readout"
-                aria-label={`Nearest airport ${nearestAirport.ident}, runway ${nearestAirport.runways}, bearing ${nearestAirport.bearingDegrees} degrees, ${formatAirportDistance(nearestAirport.distanceMeters, aviation)}`}
-              >
-                <strong>{nearestAirport.ident}</strong>
-                {nearestAirport.isHome ? <em>HOME</em> : null}
-                <span>RWY {nearestAirport.runways}</span>
-                <span>BRG {nearestAirport.bearingDegrees.toString().padStart(3, "0")}°</span>
-                <span>{formatAirportDistance(nearestAirport.distanceMeters, aviation)}</span>
-              </div>
-            ) : null}
-          </div>
+          <NearestAirportControl
+            nearestAirport={nearestAirport}
+            shown={nearestAirportShown}
+            onToggle={onToggleNearestAirport}
+            aviation={aviation}
+          />
         ) : null}
         {onToggleAutoland ? (
           <button

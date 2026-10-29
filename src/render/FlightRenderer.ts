@@ -36,6 +36,7 @@ import {
   AIRCRAFT_CAST_POOLS,
   aircraftWashLights,
   castPoolWorldPosition,
+  cockpitInstrumentGlow,
   observerAzimuthDegrees,
   resolveAircraftLights,
 } from "./webgpu/lighting/AircraftLighting";
@@ -75,10 +76,9 @@ import { oceanSpectrumSeed, seaSpectrumWindSpeed } from "@/src/sim/water/seaStat
 import type { SeaShelterEllipse } from "@/src/sim/water/types";
 import { aircraftSpec, rampAtSpeed } from "@/src/aircraft/catalogue";
 import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/catalogue";
-import { isAircraftKind, isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
+import { isAircraftKind, isSurfaceVehicleKind, vehicleClass, type VehicleKind } from "@/src/vehicles/kinds";
 import {
   infrastructureIndex,
-  infrastructurePlantExclusions,
   withAirports,
   type AirportDefinition,
   type TerrainSample,
@@ -86,14 +86,21 @@ import {
 } from "@/src/world";
 import { MAX_WIND_SPEED, sampleWind } from "@/src/world";
 import { homeMarina } from "@/src/world/marina";
+import { infrastructureChangeTouches, infrastructurePlantExclusionsIn } from "@/src/world/infrastructure";
+import { RoadStreamRuntime } from "./roads/RoadStreamRuntime";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
 import type { OceanHullClip } from "./webgpu/boat/oceanHullClip";
 import type { UndrawnSeaHeave } from "./webgpu/boat/undrawnSeaHeave";
 import { createBoatEffects, type BoatEffects } from "./webgpu/boat/BoatEffects";
+import type { CarBowWave } from "./webgpu/ground/CarBowWave";
+import { createCarEffects, type CarEffects } from "./webgpu/ground/CarEffects";
+import type { CarParticleSystem } from "./webgpu/ground/CarParticleSystem";
+import type { CarTrackSystem } from "./webgpu/ground/CarTrackSystem";
 import type { BoatSpraySystem } from "./webgpu/boat/BoatSpraySystem";
 import type { BoatWakeSystem } from "./webgpu/boat/BoatWakeSystem";
 import { resolveBoatLights, type BoatWashLight } from "./webgpu/boat/boatLights";
+import { CAR_HEADLAMP_POOLS, carLampState, carPoolIntensity } from "./webgpu/ground/carLights";
 import { surfaceVehicleWashLights } from "./webgpu/boat/createBoat";
 import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
 import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiverRegistry";
@@ -150,7 +157,9 @@ import {
   type WebGpuQualityProfile,
 } from "./webgpu/core/QualityProfile";
 import { AirportSystem } from "./webgpu/detail/AirportSystem";
+import { airportRoadFenceOpening } from "@/src/world/roads/roadNodes";
 import { MarinaSystem } from "./webgpu/marina/MarinaSystem";
+import { RoadSurfaceSystem } from "./webgpu/roads/RoadSurfaceSystem";
 import {
   SpawnedAirfieldManager,
   spawnedFloodReserve,
@@ -188,7 +197,7 @@ import {
 } from "./webgpu/terrain/TerrainConsumerAuthority";
 import type { TerrainAuxPagePublication } from "./webgpu/terrain/TerrainPageAtlas";
 import { WildlifeSystem } from "./webgpu/wildlife";
-import { HydrologySystem } from "./webgpu/water/HydrologySystem";
+import { HydrologySystem, type HydrologyWaterPublisher } from "./webgpu/water/HydrologySystem";
 import {
   resolveSunShadowCascadeLayout,
   type SunShadowCascadeLayout,
@@ -265,7 +274,11 @@ const GPU_TIMING_STALE_AFTER_FRAMES = 30;
  */
 const DIAGNOSTIC_WINDOW_FRAMES = 600;
 /** The present pass cannot be probed off — cutting it blacks the frame. */
-const BUDGET_PROBE_EXCLUDED_PASSES: ReadonlySet<string> = new Set(["hdr-present"]);
+const BUDGET_PROBE_EXCLUDED_PASSES: ReadonlySet<string> = new Set([
+  "hdr-present",
+  // No GPU work of its own; off, the roads would only stop streaming.
+  "road-stream",
+]);
 /**
  * B6: main-thread milliseconds a frame spends sampling a sliced sky rebake
  * (`SkyEnvironmentProbe.advanceRebake`, which always samples one 16-texel
@@ -418,6 +431,24 @@ export function chaseCameraProfile(
   return out;
 }
 
+/**
+ * The drawn lakes and rivers for the simulation's water, in a car session
+ * alone: the car is the only vehicle that reads them (an aircraft has no
+ * water, and the boat keeps its sea twin until its own inland water comes),
+ * so no other session packs and posts every region for nothing.
+ */
+export function hydrologyWaterPublisher(
+  vehicle: VehicleKind | null | undefined,
+  publisher: TerrainAuthorityPublisher | null,
+): HydrologyWaterPublisher | null {
+  if (!vehicle || vehicleClass(vehicle) !== "car") return null;
+  if (!publisher?.publishHydrology || !publisher.evictHydrology) return null;
+  return {
+    publishHydrology: (key, region) => publisher.publishHydrology?.(key, region),
+    evictHydrology: (key) => publisher.evictHydrology?.(key),
+  };
+}
+
 export function atmosphereFogNear(weather: WeatherPreset): number {
   return weather === "cloudy" ? 2_200 : weather === "clear" ? 4_500 : 3_800;
 }
@@ -509,6 +540,13 @@ export interface FlightRendererOptions {
   renderingMode: RenderingMode;
   reducedMotion: boolean;
   runway?: Readonly<AirportDefinition>;
+  /**
+   * Where the session will start in plan (the spawn the simulation is given:
+   * the car on the apron, the boat at its berth, the aircraft on the runway
+   * or in the air off it). Startup waits for the streamed roads round it, so
+   * the first pages bake with them. Unset: the home airport's centre.
+   */
+  startPoint?: { readonly x: number; readonly z: number };
   signal?: AbortSignal;
   onDeviceLost?: (reason: string) => void;
   /**
@@ -628,6 +666,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly boatHullClip: OceanHullClip | null;
   /** The swell this tier does not draw, which the drawn boat is lowered by. */
   private readonly boatHeave: UndrawnSeaHeave | null;
+  /** What the car throws into the air, the prints it leaves and its bow wave; null outside a car session. */
+  private readonly carParticles: CarParticleSystem | null;
+  private readonly carTracks: CarTrackSystem | null;
+  private readonly carBowWave: CarBowWave | null;
   /** Whether the surface vehicle, not the aircraft, is the one on screen. */
   private surfaceActive = false;
   /** The surface follow's level frame: the bow's heading and world up. */
@@ -675,6 +717,10 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly airport: AirportSystem | null;
   private readonly detail: WorldDetailRuntime;
   private readonly groundCover: GroundCoverSystem;
+  /** The streamed roads (null in an eroded world, which has no stage). */
+  private readonly roads: RoadStreamRuntime | null;
+  /** The roads' ribbons and guardrails near the camera, on the ground as drawn; with the streamed roads. */
+  private readonly roadSurface: RoadSurfaceSystem | null;
   private readonly wildlife: WildlifeSystem;
   private readonly toneMap: ImageProcessingPostProcess;
   /** FXAA with the final sharpen fused in; attached only where MSAA is off. */
@@ -917,6 +963,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     aircraft: AircraftVisual,
     surfaceVehicle: VehicleVisual | null,
     boatEffects: BoatEffects | null,
+    carEffects: CarEffects | null,
     terrain: TerrainClipmapSystem,
     terrainEvolution: TerrainEvolutionRuntime,
     terrainConsumerAuthority: TerrainConsumerAuthority | null,
@@ -932,6 +979,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     airport: AirportSystem | null,
     detail: WorldDetailRuntime,
     groundCover: GroundCoverSystem,
+    roads: RoadStreamRuntime | null,
+    roadSurface: RoadSurfaceSystem | null,
     wildlife: WildlifeSystem,
     toneMap: ImageProcessingPostProcess,
     fxaa: FxaaSharpenPass,
@@ -972,6 +1021,9 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.boatWake = boatEffects?.wake ?? null;
     this.boatHullClip = boatEffects?.hullClip ?? null;
     this.boatHeave = boatEffects?.heave ?? null;
+    this.carParticles = carEffects?.particles ?? null;
+    this.carTracks = carEffects?.tracks ?? null;
+    this.carBowWave = carEffects?.bowWave ?? null;
     this.terrain = terrain;
     this.terrainEvolution = terrainEvolution;
     this.terrainConsumerAuthority = terrainConsumerAuthority;
@@ -993,6 +1045,23 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.airport = airport;
     this.detail = detail;
     this.groundCover = groundCover;
+    this.roads = roads;
+    this.roadSurface = roadSurface;
+    // Every change to the streamed roads, in the order that keeps each copy
+    // of the ground true (`RoadStreamRuntime`): the workers first, on the
+    // ports their ground arrives on, then the CPU and GPU consumers here.
+    roads?.setConsumers({
+      publishInfrastructure: (update) => this.terrainAuthorityPublisher?.publishInfrastructure?.(update),
+      detailInfrastructureChanged: (update, change) => {
+        this.detail.infrastructureChanged(update, change);
+      },
+      groundCoverInfrastructureChanged: (change) => {
+        this.groundCover.invalidateWhere((minX, minZ, maxX, maxZ) =>
+          infrastructureChangeTouches(change, { minX, minZ, maxX, maxZ }));
+      },
+      infrastructureChanged: (change) => this.terrain.infrastructureChanged(change),
+      roadSurfaceChanged: (install, remove) => this.roadSurface?.apply(install, remove),
+    });
     this.wildlife = wildlife;
     this.toneMap = toneMap;
     this.fxaa = fxaa;
@@ -1243,9 +1312,25 @@ export class FlightRenderer implements FlightRenderingSystem {
         options.world.prevailingWindRadians,
       );
       cleanup.push(() => atmosphere.dispose());
-      const terrain = new TerrainClipmapSystem(scene, options.world, profile);
+      const terrain = new TerrainClipmapSystem(scene, options.world, profile, {
+        // A car's ground: the observer is the car, and Low draws L0 round it.
+        vehicleNearField: options.vehicle !== undefined
+          && isSurfaceVehicleKind(options.vehicle)
+          && vehicleClass(options.vehicle) === "car",
+      });
       cleanup.push(() => terrain.dispose());
       if (options.terrainFarSwardRead) terrain.setFarSwardRead(options.terrainFarSwardRead);
+      // The streamed roads: their worker starts on the regions round the
+      // session's start now, beside the rest of startup, and the first bake
+      // waits for them (`roadsPrimed`, before the terrain pre-warm), so the
+      // first pages are built with their roads rather than rebuilt under the
+      // car. An eroded world has no stage.
+      const roads = options.world.worldEvolution === "eroded" ? null : new RoadStreamRuntime(options.world);
+      if (roads) cleanup.push(() => roads.dispose());
+      const roadsPrimed = roads?.prime(
+        options.startPoint?.x ?? options.world.airport?.centerX ?? 0,
+        options.startPoint?.z ?? options.world.airport?.centerZ ?? 0,
+      ) ?? Promise.resolve();
       checkpointRendererStartup("core scene and terrain construction", "sync");
       const evolutionResult = await awaitRendererStartup(
         terrainEvolutionPromise,
@@ -1353,6 +1438,10 @@ export class FlightRenderer implements FlightRenderingSystem {
       }
       checkpointRendererStartup("aircraft construction", "sync");
       const airportDefinition = options.runway ?? options.world.airport;
+      // The access road leaves the home field through its fence.
+      const fenceOpening = roads && airportDefinition === options.world.airport
+        ? airportRoadFenceOpening(options.world)
+        : null;
       // 3-9: the hangars are the only airport meshes left, and the apron they
       // stood on is gone — they read the ground the earthworks made.
       const airport = airportDefinition
@@ -1361,6 +1450,7 @@ export class FlightRenderer implements FlightRenderingSystem {
           airportDefinition,
           (x, z) => options.terrainSample(x, z).height,
           options.world.seedHash,
+          fenceOpening ? [fenceOpening] : [],
         )
         : null;
       if (airport) cleanup.push(() => airport.dispose());
@@ -1377,6 +1467,15 @@ export class FlightRenderer implements FlightRenderingSystem {
       });
       cleanup.push(() => marina.dispose());
       checkpointRendererStartup("marina construction", "sync");
+      // The roads' ribbons and rails: two meshes, enabled once something is
+      // in reach and the terrain's lookup and material arrays exist. Their
+      // pipelines compile off the frame, warmed as the first roads install:
+      // a ribbon a frame late shows the splat's paint under it.
+      const roadSurface = roads ? new RoadSurfaceSystem(scene, terrain, profile, pipelineCompiles) : null;
+      if (roadSurface) {
+        cleanup.push(() => roadSurface.dispose());
+        if (pipelineCompiles) for (const material of roadSurface.materials) pipelineCompiles.defer(material);
+      }
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
         terrainSample: liveTerrainSample,
@@ -1408,8 +1507,15 @@ export class FlightRenderer implements FlightRenderingSystem {
         seedHash: options.world.sourceSeedHash,
         seaLevelMeters: options.world.seaLevel,
         // Built ground (infrastructure segments with a plant clearance): no
-        // blades, the detail scatter's own gate. None in a world without it.
-        plantExclusions: infrastructurePlantExclusions(infrastructureIndex(options.world)),
+        // blades, the detail scatter's own gate, from the stage as it is when
+        // each row slice bakes. None in a world without it.
+        plantExclusionsIn: (minX, minZ, maxX, maxZ) => infrastructurePlantExclusionsIn(
+          infrastructureIndex(options.world),
+          minX,
+          minZ,
+          maxX,
+          maxZ,
+        ),
         pipelineWarmUp: pipelineCompiles,
       });
       cleanup.push(() => groundCover.dispose());
@@ -1538,6 +1644,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       if (surfaceVehicle) cloudShadowReceivers.registerMeshes(surfaceVehicle.meshes);
       if (airport) cloudShadowReceivers.registerMeshes(airport.root.getChildMeshes(false));
       cloudShadowReceivers.registerMeshes(marina.meshes);
+      if (roadSurface) cloudShadowReceivers.registerMeshes(roadSurface.meshes);
       detail.addPbrMaterials((material) => {
         cloudShadowReceivers.registerMaterial(material);
       });
@@ -1556,6 +1663,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       if (surfaceVehicle) aerialReceivers.registerMeshes(surfaceVehicle.meshes);
       if (airport) aerialReceivers.registerMeshes(airport.root.getChildMeshes(false));
       aerialReceivers.registerMeshes(marina.meshes);
+      if (roadSurface) aerialReceivers.registerMeshes(roadSurface.meshes);
       detail.addPbrMaterials((material) => {
         aerialReceivers.registerMaterial(material);
       });
@@ -1680,9 +1788,9 @@ export class FlightRenderer implements FlightRenderingSystem {
           : {}),
       });
       cleanup.push(() => steam.dispose());
-      // Only with a surface vehicle, so an aircraft session builds and
-      // compiles none of it. Before the readiness gate, as the steam is.
-      const boatEffects = surfaceVehicle
+      // Only with a boat, so an aircraft or car session builds and compiles
+      // none of it. Before the readiness gate, as the steam is.
+      const boatEffects = surfaceVehicle && vehicleClass(surfaceVehicle.kind) === "boat"
         ? createBoatEffects(scene, {
           profile,
           world: options.world,
@@ -1694,6 +1802,22 @@ export class FlightRenderer implements FlightRenderingSystem {
       if (boatEffects) {
         cleanup.push(() => boatEffects.spray.dispose());
         cleanup.push(() => boatEffects.wake.dispose());
+      }
+      // Only with a car, as the boat's are.
+      const carEffects = surfaceVehicle && vehicleClass(surfaceVehicle.kind) === "car"
+        ? createCarEffects(scene, {
+          profile,
+          world: options.world,
+          atmosphere: atmosphere.snapshot,
+          groundHeight: liveTerrainHeight,
+          sea: { ocean, seaLevel: options.world.seaLevel },
+          pipelineCompiles,
+        })
+        : null;
+      if (carEffects) {
+        cleanup.push(() => carEffects.particles.dispose());
+        cleanup.push(() => carEffects.tracks.dispose());
+        cleanup.push(() => carEffects.bowWave.dispose());
       }
       // 7-4b: the clustered ILLUMINATION surface, beside the billboards that
       // are the lamps you SEE. Constructed with no definitions on purpose —
@@ -1896,6 +2020,12 @@ export class FlightRenderer implements FlightRenderingSystem {
       checkpointRendererStartup("scene shader readiness", "async");
       gpuUncapturedErrorGuard.throwIfFailed();
       throwIfRendererStartupAborted(options.signal);
+      // The streamed roads round the start, primed beside everything above:
+      // the pre-warm below bakes the first real page, and every page, cell
+      // and tile after it bakes with them. The detail worker, started above,
+      // is caught up when the renderer attaches the stream's consumers.
+      await awaitRendererStartup(roadsPrimed, options.signal, "road priming", SCENE_STARTUP_TIMEOUT_MILLISECONDS);
+      checkpointRendererStartup("road priming", "async");
       // `4.5-C2(a)`: pay for the four terrain compute pipelines here, behind
       // the load screen. Babylon 9.21 calls `createComputePipeline`
       // synchronously on first dispatch and three of these shaders inline the
@@ -1929,6 +2059,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         aircraft,
         surfaceVehicle,
         boatEffects,
+        carEffects,
         terrain,
         terrainEvolution,
         terrainConsumerAuthority,
@@ -1944,6 +2075,8 @@ export class FlightRenderer implements FlightRenderingSystem {
         airport,
         detail,
         groundCover,
+        roads,
+        roadSurface,
         wildlife,
         toneMap,
         fxaa,
@@ -2056,6 +2189,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     //    The wildlife's cached cells were generated from the old one.
     this.airportGround.setWorld(next);
     this.airportHeight.setWorld(next);
+    this.roads?.setWorld(next);
     this.wildlife.invalidateCellCache();
     // 3. Vegetation: off the new platform and out of its structures; only the
     //    cells the change reaches regenerate.
@@ -2117,6 +2251,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   setTerrainAuthorityPublisher(publisher: TerrainAuthorityPublisher | null): void {
     this.terrainAuthorityPublisher = publisher;
     if (publisher) this.terrainEvolution.publishMacroOnce(publisher);
+    // The drawn lakes and rivers, for the car's water.
+    this.hydrology.setWaterPublisher(hydrologyWaterPublisher(this.surfaceVehicle?.kind, publisher));
     const needsEvolvedConsumers = this.terrainConsumerAuthority !== null;
     this.terrain.setCollisionPagePublisher(
       publisher || needsEvolvedConsumers
@@ -2127,6 +2263,9 @@ export class FlightRenderer implements FlightRenderingSystem {
 
   /** Copy before either worker detaches its transfer-owned publication. */
   private publishTerrainConsumerPage(page: TerrainPagePublication): void {
+    // Baked before a road change that reached it: the workers dropped their
+    // copies at the change, and the terrain is rebuilding it.
+    if (this.roads?.holdsBack(page)) return;
     const authority = this.terrainConsumerAuthority;
     if (authority) {
       authority.publish({ ...page, heights: page.heights.slice() });
@@ -2256,6 +2395,8 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.boatWake?.setAtmosphere(this.atmosphere.snapshot);
     this.boatSpray?.setAtmosphere(this.atmosphere.snapshot);
     this.boatHeave?.setWeather(weather);
+    this.carParticles?.setAtmosphere(this.atmosphere.snapshot);
+    this.carBowWave?.setAtmosphere(this.atmosphere.snapshot);
     this.hydrology.setAtmosphere(this.atmosphere.snapshot);
     // The snapshot carries no albedo; the occluded lake reflection's ground
     // bounce is the same `skyHorizon * albedo * 1.15` the light rig built
@@ -2965,8 +3106,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       topPassesByCpuMs: this.passTimingHistory
         .topByP95(4)
         .map((pass) => ({ name: pass.name, p95Ms: pass.p95Ms })),
-      pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating,
-      pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows,
+      // Road regions still coming bring page rebuilds with them: a capture waits.
+      pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating + (this.roads?.pendingRegions ?? 0),
+      // Road changes and chunks still to draw (a frame's budget at a time): a capture waits.
+      pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows
+        + (this.roadSurface?.pendingWork ?? 0),
       terrainComputeDispatches: terrain.workersBusy,
       estimatedGpuMemoryMiB: estimateGpuMemoryMiB(
         this.profile,
@@ -3059,6 +3203,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         }
       },
       () => this.terrain.dispose(),
+      () => this.roads?.dispose(),
+      () => this.roadSurface?.dispose(),
       () => this.terrainEvolution.dispose(),
       () => this.bathymetry.dispose(),
       () => this.wildlife.dispose(),
@@ -3071,6 +3217,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.steam.dispose(),
       () => this.boatSpray?.dispose(),
       () => this.boatWake?.dispose(),
+      () => this.carParticles?.dispose(),
+      () => this.carTracks?.dispose(),
+      () => this.carBowWave?.dispose(),
       () => this.hydrology.dispose(),
       () => this.ocean.dispose(),
       () => this.cloudShadowReceivers.dispose(),
@@ -3091,12 +3240,32 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       phase: "simulation",
       execute: () => this.updatePresentation(),
     });
+    // Its own pass, so a frame's install, composition and GPU pack of the
+    // streamed roads read as one number (perf:flight's `passMs`).
+    if (this.roads) {
+      this.graph.register({
+        name: "road-stream",
+        phase: "visibility",
+        after: ["flight-presentation"],
+        execute: () => this.updateRoadStream(),
+      });
+    }
     this.graph.register({
       name: "world-page-visibility",
       phase: "visibility",
-      after: ["flight-presentation"],
+      after: this.roads ? ["flight-presentation", "road-stream"] : ["flight-presentation"],
       execute: () => this.updateWorldVisibility(),
     });
+    // After the terrain wrote this frame's node records: the ribbons and
+    // rails in reach, and the drawn ground they lie on.
+    if (this.roadSurface) {
+      this.graph.register({
+        name: "road-surface",
+        phase: "visibility",
+        after: ["world-page-visibility"],
+        execute: () => this.roadSurface?.update(this.cameraWorld.x, this.cameraWorld.z),
+      });
+    }
     // 2-10: the shared-planar-water-reflection node is retired with its
     // capture system — the environment probe carries water reflections, and
     // 5-12 rebuilds the lake capture around the preserved plane-selection
@@ -3126,8 +3295,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
           this.ocean.setWaterEnvironmentField(this.waterEnvironment);
         }
         this.ocean.update(this.cameraWorld, frame.timeSeconds, frame.deltaSeconds);
-        // The wake lies on the waves this frame's sea is drawn with.
+        // The wake and the car's bow wave lie on the waves this frame's sea is drawn with.
         this.boatWake?.bindOcean();
+        this.carBowWave?.bindOcean();
         // 6-5: the wet-sand half of 6-2's run-up is drawn by the TERRAIN (the
         // ocean disk is depth-tested away above the waterline), so the sea
         // state and the WATER's own clock cross here — same node, same frame,
@@ -3380,6 +3550,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.steam.update(this.cameraWorld.x, this.cameraWorld.z, state.simulationTime);
     this.boatSpray?.update(state);
     this.boatWake?.update(state);
+    this.carParticles?.update(state);
+    this.carTracks?.update(state);
+    this.carBowWave?.update(state);
     this.updateAerialPerspective();
   }
 
@@ -3505,6 +3678,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.steam.setAerialPerspective(binding);
     this.boatSpray?.setAerialPerspective(binding);
     this.boatWake?.setAerialPerspective(binding);
+    this.carParticles?.setAerialPerspective(binding);
+    this.carBowWave?.setAerialPerspective(binding);
     this.refreshSkyProbe(binding);
   }
 
@@ -3652,6 +3827,10 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     visual.root.rotationQuaternion?.copyFrom(this.bodyQuaternion);
     this.boatHullClip?.setPose(visual.root.position, this.bodyQuaternion);
     visual.update(state, this.currentDeltaSeconds);
+    if (state.vehicle?.kind !== "boat") {
+      this.poseCarLights(state);
+      return;
+    }
     // The boat's lamp law, from the observer's bearing as the aircraft's is.
     const toCamera = this.camera.position.subtract(visual.root.position);
     const bodyForward = Vector3.TransformNormal(Vector3.Right(), this.bodyMatrix);
@@ -3686,6 +3865,46 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         wash.intensity * lights[wash.driver] * this.lastDaylightAttenuation,
       );
     }
+  }
+
+  /**
+   * The car's lamps follow its own switches (the visual reads them from the
+   * payload); the scene gives only the panel glow. Its headlamp pools take
+   * over the aircraft's two cast-pool slots, dipped on the taxi pool's and
+   * main beam on the landing pool's (`CAR_HEADLAMP_POOLS` has why), under the
+   * daylight attenuation every pool takes; the washes go dark.
+   */
+  private poseCarLights(state: FlightVisualState): void {
+    const car = state.vehicle?.kind === "car" ? state.vehicle : null;
+    this.surfaceVehicle?.setLightState({
+      portNav: 0,
+      starboardNav: 0,
+      tailNav: 0,
+      beacon: 0,
+      strobe: 0,
+      landing: 0,
+      cockpitGlow: cockpitInstrumentGlow(this.environmentState.sun.direction[1], horizontalIlluminanceLux(this.environmentState)),
+    });
+    const lamps = carLampState(car);
+    const bodyForward = Vector3.TransformNormal(Vector3.Right(), this.bodyMatrix);
+    const bodyUp = Vector3.TransformNormal(Vector3.Up(), this.bodyMatrix);
+    const bodyStarboard = Vector3.TransformNormal(Vector3.Forward(true), this.bodyMatrix);
+    for (const pool of AIRCRAFT_CAST_POOLS) {
+      const beam = CAR_HEADLAMP_POOLS.find((candidate) => candidate.slot === pool.name);
+      const intensity = beam ? carPoolIntensity(beam, lamps, this.lastDaylightAttenuation) : 0;
+      if (beam && intensity > 0) {
+        const at = castPoolWorldPosition(
+          [state.position.x, state.position.y, state.position.z],
+          [bodyForward.x, bodyForward.y, bodyForward.z],
+          [bodyUp.x, bodyUp.y, bodyUp.z],
+          [bodyStarboard.x, bodyStarboard.y, bodyStarboard.z],
+          beam.offset,
+        );
+        this.clusteredLighting.setPosition(pool.name, at[0], at[1], at[2]);
+      }
+      this.clusteredLighting.setIntensity(pool.name, intensity);
+    }
+    for (const slot of aircraftWashLights(this.aircraftKind)) this.clusteredLighting.setIntensity(slot.name, 0);
   }
 
   private updateCamera(state: FlightVisualState): void {
@@ -4004,6 +4223,18 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     return height / (2 * Math.tan(Math.max(0.05, verticalFov) / 2));
   }
 
+  /** Before the terrain updates: a change installed now reaches every bake this frame batches. */
+  private updateRoadStream(): void {
+    const state = this.currentState;
+    if (!state || !this.roads) return;
+    this.roads.update({
+      x: state.position.x,
+      z: state.position.z,
+      velocityX: state.velocity.x,
+      velocityZ: state.velocity.z,
+    }, performance.now());
+  }
+
   private updateWorldVisibility(): void {
     const state = this.currentState;
     if (!state) return;
@@ -4199,8 +4430,12 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.lightPoints.setFloatingOrigin(this.originX, this.originZ);
     this.steam.setFloatingOrigin(this.originX, this.originZ);
     this.marina.setFloatingOrigin(this.originX, this.originZ);
+    this.roadSurface?.setFloatingOrigin(this.originX, this.originZ);
     this.boatSpray?.setFloatingOrigin(this.originX, this.originZ);
     this.boatWake?.setFloatingOrigin(this.originX, this.originZ);
+    this.carParticles?.setFloatingOrigin(this.originX, this.originZ);
+    this.carTracks?.setFloatingOrigin(this.originX, this.originZ);
+    this.carBowWave?.setFloatingOrigin(this.originX, this.originZ);
     // 7-4b: the clustered ILLUMINATION rebases with the billboards it sits
     // under. A clustered light gets an unrebased origin worse than a billboard
     // does — the inverse-square falloff reads the position too, so it would not
@@ -4249,6 +4484,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.boatSpray?.setCap(this.profile.boatSprayParticleCap);
     this.boatWake?.setTrailSeconds(this.profile.boatWakeTrailSeconds);
     this.boatHeave?.setDrawnCascades(this.profile.oceanCascades);
+    this.carParticles?.setCap(this.profile.vehicleParticleBudget);
+    this.carTracks?.setCap(this.profile.tyreTrackSegments);
+    this.roadSurface?.setRanges(this.profile);
     this.spawnedAirfields?.setLimits(this.profile.spawnedAirfields);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;

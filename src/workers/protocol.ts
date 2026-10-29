@@ -1,26 +1,41 @@
 import type {
+  CarSetup,
   ControlState,
   FlightMode,
   FlightVisualState,
   WeatherPreset,
 } from "@/src/game/types";
 import type { AircraftKind } from "@/src/sim";
-import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
+import type { HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
+import { vehicleClass, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type { AirportDefinition, WorldDefinition } from "@/src/world";
+import type { InfrastructureRegionsPost } from "@/src/world/infrastructureSync";
 import type { TerrainMacroGrid, TerrainPagePublication } from "./terrainAuthority";
 
 /** Where an aeroplane starts. */
 export type AircraftSpawnKind = "airborne" | "runway";
 
 /**
- * Where a flight starts. Aircraft start `"airborne"` or on the `"runway"`; a
- * boat always starts moored at the home marina's start berth, `"dock"`
- * (decision D4, 2026-10-26).
+ * Where a surface vehicle starts. A boat always starts moored at the home
+ * marina's start berth, `"dock"` (decision D4, 2026-10-26); the car starts on
+ * the home airport's apron, `"airfield"`, beside its access road.
  */
-export type SpawnKind = AircraftSpawnKind | "dock";
+export type SurfaceSpawnKind = "dock" | "airfield";
+
+/** Where a flight starts: an aircraft's or a surface vehicle's. */
+export type SpawnKind = AircraftSpawnKind | SurfaceSpawnKind;
 
 export function isAircraftSpawn(kind: SpawnKind): kind is AircraftSpawnKind {
   return kind === "airborne" || kind === "runway";
+}
+
+export function isSurfaceSpawn(kind: SpawnKind): kind is SurfaceSpawnKind {
+  return kind === "dock" || kind === "airfield";
+}
+
+/** The one start a surface vehicle has. */
+export function surfaceSpawnKind(kind: SurfaceVehicleKind): SurfaceSpawnKind {
+  return vehicleClass(kind) === "car" ? "airfield" : "dock";
 }
 
 /** Airborne starts are configured in metres above the terrain/runway datum. */
@@ -44,15 +59,32 @@ export type SimulationCommand =
        * this one.
        */
       surfaceVehicle: SurfaceVehicleKind | null;
+      /** The car's gearbox and clutch choice, from settings; read only for a car. */
+      carSetup: CarSetup;
       mode: FlightMode;
       spawn: SpawnKind;
       airborneStartAgl: number;
       attractMode: boolean;
       weather: WeatherPreset;
+      /**
+       * The streamed infrastructure regions (roads) the main thread holds now,
+       * as a reset: installed before the spawn is placed, so a car starting on
+       * a road fill stands on it.
+       */
+      infrastructure: InfrastructureRegionsPost;
+      /**
+       * The calendar day the renderer paints the terrain for (settings'
+       * `dayOfYear`): the car's seasonal snow follows it.
+       */
+      dayOfYear: number;
     }
   | { type: "controls"; controls: ControlState }
   | { type: "mode"; mode: FlightMode }
   | { type: "weather"; weather: WeatherPreset }
+  /** The car's gearbox and clutch, taken at its next start. */
+  | { type: "carSetup"; carSetup: CarSetup }
+  /** A new calendar day, sent with the renderer's: the car's surfaces repaint for it. */
+  | { type: "dayOfYear"; dayOfYear: number }
   | { type: "attract"; enabled: boolean }
   /**
    * `trimSeed` is the player's trim in `controls.trim` units, decided on the
@@ -64,6 +96,8 @@ export type SimulationCommand =
   | { type: "pause"; paused: boolean }
   | { type: "reset"; spawn: SpawnKind; airborneStartAgl: number }
   | { type: "restartAfterCrash"; airborneStartAgl: number }
+  /** R in a car session: the car back on its newest safe spot, in place. */
+  | { type: "recover" }
   /** Final L0 core from the render atlas; its ArrayBuffer is transferred. */
   | { type: "terrainPage"; page: TerrainPagePublication }
   /** Once-per-world macro fallback; its ArrayBuffer is transferred. */
@@ -75,6 +109,22 @@ export type SimulationCommand =
    * reading `world.airports` sees the new runway from the next step.
    */
   | { type: "airports"; airports: readonly AirportDefinition[] }
+  /**
+   * One change to the main thread's streamed infrastructure regions, posted
+   * the moment it is made (`InfrastructureRegionsForwarder`), so it arrives
+   * before any page baked against it. The worker installs the same regions
+   * and drops the L0 pages the change touches; its analytic fallback answers
+   * there from the new regions until the rebuilt pages arrive.
+   */
+  | { type: "infrastructure"; update: InfrastructureRegionsPost }
+  /**
+   * One hydrology region's lakes and rivers as the renderer draws them
+   * (`packHydrologyWater`; its buffers are transferred), for the car's
+   * water. Posting a key again replaces that region.
+   */
+  | { type: "hydrology"; key: string; region: HydrologyWaterRegion }
+  /** The renderer is done with a hydrology region: the worker drops it once the vehicle is about a kilometre clear. */
+  | { type: "hydrologyEvict"; key: string }
   /**
    * Engage the autoland on the nearest airport's runway, or hand back. The
    * worker refuses to engage on the ground and in the menu flight, and drops

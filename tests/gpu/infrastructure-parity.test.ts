@@ -29,9 +29,11 @@ import { landformCoreCenter } from "../../src/world/landforms";
 /**
  * The infrastructure stage's GPU twin (`TERRAIN_INFRASTRUCTURE_WGSL`) against
  * the CPU authority (`applyInfrastructure`) over every mode, the composition
- * order, round ends, a disc, a long diagonal road crossing many bins, and a
+ * order, round ends, a disc, a long diagonal road crossing many bins, a
  * site 30 km from the core centre, where a bare f32 world coordinate would be
- * a few millimetres coarse. Agreement within 1 mm, as the runway earthworks.
+ * a few millimetres coarse, and one 160 km out, as far from the others as
+ * streamed regions can be from the home marina (past the 65 km a dense bin
+ * grid could span). Agreement within 1 mm, as the runway earthworks.
  */
 
 const KERNEL = /* wgsl */ `
@@ -76,6 +78,7 @@ describe("infrastructure stage CPU/GPU parity", () => {
     const sites = [
       { x: core.x + 1_800, z: core.z - 2_300 },
       { x: core.x - 30_000, z: core.z + 21_000 },
+      { x: core.x + 140_000, z: core.z - 80_000 },
     ];
     const segments: InfrastructureSegment[] = [];
     for (const site of sites) {

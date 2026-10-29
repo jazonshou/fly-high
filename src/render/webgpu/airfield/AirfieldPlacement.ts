@@ -6,8 +6,6 @@ import {
   fuelTankPlacements,
   perimeterFenceStations,
   signPlacements,
-  TOWER_ALONG_FRACTION,
-  TOWER_LATERAL_OFFSET_METERS,
   WINDSOCK_LATERAL_OFFSET_METERS,
   windsockAxisDirectionToRef,
   windsockBoreScale,
@@ -15,6 +13,7 @@ import {
   windsockInflation,
 } from "../detail/AirfieldFurniture";
 import type { TowerAttachments, TowerGeometry, TowerPartName } from "../detail/towerGeometry";
+import { AIRFIELD_GROUND_SAMPLE_STEP_METERS, towerPlanPosition } from "./AirfieldSiting";
 import {
   HANGAR_SITING,
   MINIMUM_SKIRT_METERS,
@@ -39,14 +38,7 @@ import {
  * because that is the frame the root node supplies heading and elevation to.
  */
 
-/**
- * Ground-sample spacing under a hangar footprint.
- *
- * 2 m over 46 x 34 m is 408 samples per hangar. That is the resolution the
- * relief figures behind `7-10`'s seating rule were measured at, so the rule and
- * the bridge agree about what "the ground under it" means.
- */
-export const AIRFIELD_GROUND_SAMPLE_STEP_METERS = 2;
+export { AIRFIELD_GROUND_SAMPLE_STEP_METERS };
 
 /** World-space ground query: terrain height at (x, z), or non-finite on failure. */
 export type AirfieldGroundHeight = (x: number, z: number) => number;
@@ -131,8 +123,7 @@ export function towerSite(
   tower: TowerGeometry,
   groundHeight: AirfieldGroundHeight,
 ): TowerSite {
-  const towerAcross = definition.runwayWidth * 0.5 + TOWER_LATERAL_OFFSET_METERS;
-  const towerAlong = definition.runwayLength * TOWER_ALONG_FRACTION;
+  const { along: towerAlong, across: towerAcross } = towerPlanPosition(definition);
   const towerWorld = runwayToWorld(definition, towerAlong, towerAcross);
   const towerGround = groundHeight(towerWorld.x, towerWorld.z);
   // Same rule as the hangars: the root sits at the datum, so the tower's local
@@ -198,10 +189,8 @@ export function airfieldGroundPoints(definition: Readonly<AirportDefinition>): F
       push(local.along, local.across);
     }
   }
-  push(
-    definition.runwayLength * TOWER_ALONG_FRACTION,
-    definition.runwayWidth * 0.5 + TOWER_LATERAL_OFFSET_METERS,
-  );
+  const tower = towerPlanPosition(definition);
+  push(tower.along, tower.across);
   for (const station of perimeterFenceStations(definition)) push(station.along, station.across);
   for (const tank of fuelTankPlacements()) push(tank.along, tank.across);
   for (const sign of signPlacements(definition)) push(sign.along, sign.across);

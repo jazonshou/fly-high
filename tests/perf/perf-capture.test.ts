@@ -60,7 +60,8 @@ import {
   type ShotPlacement,
   type TemporalStability,
 } from "../../scripts/perf-capture.mts";
-import { boatShotState, resolveShotPlacement } from "./shotPlacement";
+import { carShotEffectsHistoryFrames } from "./carShotState";
+import { boatShotState, carShotState, resolveShotPlacement } from "./shotPlacement";
 
 /**
  * 1A-1c, rebuilt by Gate 2Z — the perf-capture driver. Boots the real
@@ -604,8 +605,8 @@ describe("perf capture (1A-1c / 2Z)", () => {
     // canonical shot has one) is a world boundary too, keyed by their JSON;
     // null is the natural world.
     let activeForcedKey: string | null = null;
-    // Boat shots build the renderer with the speedboat, behind the same boundary.
-    let activeBoat = false;
+    // Boat and car shots build the renderer with their vehicle, behind the same boundary.
+    let activeVehicle: "speedboat" | "landcruiser" | null = null;
     let world = createWorld(PERF_CAPTURE_SEED);
     let airportX = world.airport?.centerX ?? 0;
     let airportZ = world.airport?.centerZ ?? 0;
@@ -649,8 +650,9 @@ describe("perf capture (1A-1c / 2Z)", () => {
       // the left seat, and they must stay comparable with their baselines, so
       // this harness renders them with the previous rig. It is the ONLY caller
       // of the override (tests/render.cockpit-rig.test.ts scans for that). A
-      // boat shot's helm view is the gameplay one: no aircraft shot moves.
-      ...(activeBoat ? { vehicle: "speedboat" as const } : { cockpitRigOverride: PERF_COCKPIT_RIG }),
+      // boat's helm and a car's driver's seat are the gameplay ones: no
+      // aircraft shot moves.
+      ...(activeVehicle ? { vehicle: activeVehicle } : { cockpitRigOverride: PERF_COCKPIT_RIG }),
       // The baselines were made with every sky re-light in one frame; the
       // time pin also asks for that, this from the first frame on.
       skyRebake: "sync" as const,
@@ -719,11 +721,11 @@ describe("perf capture (1A-1c / 2Z)", () => {
       const shotForcedKey = shot.climateProvince === undefined && shot.landforms === undefined
         ? null
         : JSON.stringify({ climateProvince: shot.climateProvince ?? null, landforms: shot.landforms ?? null });
-      const shotBoat = shot.boat !== undefined;
+      const shotVehicle = shot.boat ? "speedboat" as const : shot.car ? "landcruiser" as const : null;
       if (
         shotWorldEvolution !== activeWorldEvolution
         || shotForcedKey !== activeForcedKey
-        || shotBoat !== activeBoat
+        || shotVehicle !== activeVehicle
       ) {
         removeGpuUncapturedErrorListener?.();
         removeGpuUncapturedErrorListener = null;
@@ -737,7 +739,7 @@ describe("perf capture (1A-1c / 2Z)", () => {
         airportX = world.airport?.centerX ?? 0;
         airportZ = world.airport?.centerZ ?? 0;
         canvas = createCaptureCanvas();
-        activeBoat = shotBoat;
+        activeVehicle = shotVehicle;
         renderer = await FlightRenderer.create(captureRendererOptions());
         removeGpuUncapturedErrorListener = renderer.addGpuUncapturedErrorListenerForCapture(
           (event) => gpuUncapturedErrors.push(serializeGpuUncapturedError(event)),
@@ -817,6 +819,8 @@ describe("perf capture (1A-1c / 2Z)", () => {
       const orientation = orientationFromYawPitchBank(yawDegrees, shot.pitchDownDegrees, 0);
       const state: FlightVisualState = shot.boat
         ? boatShotState(world, shot.boat, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
+        : shot.car
+        ? carShotState(world, shot.car, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
         : {
             ...INITIAL_VISUAL_STATE,
             position: { x: positionX, y: altitude, z: positionZ },
@@ -980,8 +984,19 @@ describe("perf capture (1A-1c / 2Z)", () => {
       );
       // `7-0-a` / `7-8`: the optional per-shot offset. Without it every shot
       // sits on the same lamp phase (see `simulationTimeOffsetSeconds`).
-      simulationTime = 500 + canonicalShotIndex * 120
+      const pinned = 500 + canonicalShotIndex * 120
         + (shot.simulationTimeOffsetSeconds ?? 0);
+      // A car shot whose effects are on screen first runs them up to the pin
+      // (`effectsHistorySeconds`), so the frame holds a settled dust cloud or
+      // spray; every other shot pins straight away, as it always has.
+      const history = carShotEffectsHistoryFrames(shot.car);
+      simulationTime = pinned - history / 60;
+      for (let frame = 0; frame < history; frame += 1) {
+        await nextAnimationFrame();
+        simulationTime += 1 / 60;
+        renderer.render({ ...state, simulationTime }, 1 / 60);
+      }
+      simulationTime = pinned;
       // Pinning TIME is not enough for the sea. The ocean decides which wave
       // cascades to evolve by an absolute FRAME count that one renderer carries
       // across every shot, so the every-4th-frame cascade's last update before
@@ -2191,5 +2206,5 @@ describe("perf capture (1A-1c / 2Z)", () => {
       );
       console.info(`Rebaseline candidate PASSED all gates: ${candidateDir}`);
     }
-  }, 2_100_000);
+  }, 3_000_000);
 });

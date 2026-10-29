@@ -20,7 +20,6 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { TerrainSample } from "@/src/world/types";
 import { TerrainBiome } from "@/src/world";
 import {
-  INFRASTRUCTURE_PLANT_BLEND_METERS,
   infrastructurePlantFactor,
   type InfrastructurePlantExclusion,
 } from "@/src/world/infrastructure";
@@ -144,11 +143,18 @@ export interface GroundCoverSystemOptions {
   readonly seedHash?: number;
   readonly seaLevelMeters?: number;
   /**
-   * Built ground no plant grows on (`infrastructurePlantExclusions`): the
-   * blades take the detail scatter's gate, so neither grows through a
-   * slipway. Absent or empty: every texel exactly as before.
+   * Built ground no plant grows on: the exclusions whose blend band can reach
+   * a rectangle (`infrastructurePlantExclusionsIn` over the live index), read
+   * as each slice of a tile row bakes. The blades take the detail scatter's
+   * gate, so neither grows through a slipway or onto a road. Absent, or none
+   * reaching: every texel exactly as before.
    */
-  readonly plantExclusions?: readonly InfrastructurePlantExclusion[];
+  readonly plantExclusionsIn?: (
+    minX: number,
+    minZ: number,
+    maxX: number,
+    maxZ: number,
+  ) => readonly InfrastructurePlantExclusion[];
   /**
    * `6-9` / §7 R4: opt in to the GPU-written indirect instance count. OFF by
    * default — the CPU-readback count is the shipped path — and asserts
@@ -490,9 +496,21 @@ export class GroundCoverSystem {
    * again. Anything else is untouched. Returns whether a tile was affected.
    */
   invalidateArea(minX: number, minZ: number, maxX: number, maxZ: number): boolean {
+    return this.invalidateWhere((tileMinX, tileMinZ, tileMaxX, tileMaxZ) =>
+      tileMinX < maxX && tileMaxX > minX && tileMinZ < maxZ && tileMaxZ > minZ);
+  }
+
+  /**
+   * `invalidateArea` for whatever ground the predicate says changed under a
+   * tile's rectangle: a streamed road's bins (`infrastructureChangeTouches`),
+   * which a region's whole square would overstate a hundredfold.
+   */
+  invalidateWhere(
+    changed: (minX: number, minZ: number, maxX: number, maxZ: number) => boolean,
+  ): boolean {
     const span = GROUND_COVER_TILE_SPAN_METERS;
     const overlaps = (originX: number, originZ: number): boolean =>
-      originX < maxX && originX + span > minX && originZ < maxZ && originZ + span > minZ;
+      changed(originX, originZ, originX + span, originZ + span);
     let affected = false;
     if (this.frontTileReady && overlaps(this.frontTileOriginX, this.frontTileOriginZ)) {
       this.frontTileStale = true;
@@ -956,20 +974,7 @@ export class GroundCoverSystem {
    * Dropping one never changes a texel: past radius + blend its factor is 1.
    */
   private rowPlantExclusions(z: number, minX: number, maxX: number): readonly InfrastructurePlantExclusion[] {
-    const exclusions = this.options.plantExclusions;
-    if (exclusions === undefined || exclusions.length === 0) return NO_PLANT_EXCLUSIONS;
-    let row: InfrastructurePlantExclusion[] | null = null;
-    for (const exclusion of exclusions) {
-      const reach = exclusion.radius + INFRASTRUCTURE_PLANT_BLEND_METERS;
-      if (
-        Math.min(exclusion.az, exclusion.bz) - reach > z
-        || Math.max(exclusion.az, exclusion.bz) + reach < z
-        || Math.min(exclusion.ax, exclusion.bx) - reach > maxX
-        || Math.max(exclusion.ax, exclusion.bx) + reach < minX
-      ) continue;
-      (row ??= []).push(exclusion);
-    }
-    return row ?? NO_PLANT_EXCLUSIONS;
+    return this.options.plantExclusionsIn?.(minX, z, maxX, z) ?? NO_PLANT_EXCLUSIONS;
   }
 
   /**

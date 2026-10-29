@@ -50,6 +50,17 @@ describe("pause menu contract", () => {
     expect(actions).toContain("settingsOpenRef.current");
   });
 
+  it("sends R in a car session to the car's recovery in place, and keeps the pause menu's Restart", () => {
+    const actions = source.match(/const handleActions[\s\S]*?\n  \);/u)?.[0] ?? "";
+    const recover = source.match(/const recoverCar[\s\S]*?\n  \}, \[[^\]]+\]\);/u)?.[0] ?? "";
+    expect(actions).toContain('latestStateRef.current.vehicle?.kind === "car"');
+    expect(actions).toContain("recoverCar()");
+    expect(recover).toContain("simulationRef.current?.recover()");
+    expect(recover).toContain("cutCamera()");
+    expect(recover).not.toContain("resetForSpawn");
+    expect(pauseMenu).toContain("onClick={() => void restartFlight()}");
+  });
+
   it("does not turn a paused replacement worker back into an attract flight", () => {
     expect(source).toContain('const initialAttractMode = initialPhase === "menu"');
     expect(source).toContain(

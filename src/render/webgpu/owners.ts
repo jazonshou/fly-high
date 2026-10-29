@@ -151,6 +151,28 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "boundary test by name.",
   },
   {
+    // The ground as the terrain DRAWS it, for whatever lies on it (the roads'
+    // ribbons and rails, later the tyre tracks). One lookup per terrain, read
+    // from the node records the terrain already wrote; a second copy of the
+    // terrain's displacement elsewhere would drift from the vertex code the
+    // drawn-height test pins.
+    artifact: "terrain-drawn-height",
+    owner: "terrain-geometry",
+    definitionSites: ["src/render/webgpu/terrain/TerrainDrawnHeight.ts"],
+    consumers: "any",
+    ownedSymbols: [
+      "TerrainDrawnHeight",
+      "TERRAIN_DRAWN_HEIGHT_WGSL",
+      "TERRAIN_DRAWN_HEIGHT_UNIFORMS",
+      "TERRAIN_DRAWN_HEIGHT_SAMPLERS",
+      "terrainDrawnSurfaceAt",
+      "terrainDrawnWindowCells",
+    ],
+    notes:
+      "Refreshed only while a consumer has something within reach, changed "
+      + "cells only; it never changes what the terrain draws.",
+  },
+  {
     // 4-0b: 6-10 pulled forward. Three amortised compute producers with hard
     // millisecond caps documented as "enforced by their schedulers", and no
     // scheduler — FrameGraphPass.cadence is an integer frame divisor and
@@ -220,8 +242,9 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
   {
     // The infrastructure stage's GPU half: the packed index (the
     // `terrainInfrastructureData` binding), the stage that applies it after
-    // the landforms, and the per-consumer binding that packs it. The profiles
-    // themselves are defined once, CPU and WGSL side by side, in
+    // the landforms, the pack kept in place as streamed regions come and go,
+    // and the per-consumer binding to the engine's one shared copy. The
+    // profiles themselves are defined once, CPU and WGSL side by side, in
     // src/world/infrastructureProfiles.ts.
     artifact: "terrain-infrastructure-index",
     owner: "terrain-geometry",
@@ -230,6 +253,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     ownedSymbols: [
       "TERRAIN_INFRASTRUCTURE_WGSL",
       "packTerrainInfrastructure",
+      "TerrainInfrastructurePack",
       "TerrainInfrastructureData",
       "TerrainInfrastructureDataBinding",
     ],
@@ -238,7 +262,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "landform core centre and points arrive split like the volcanic overlay's, "
       + "so precision holds anywhere a marina or road can be. The page and sea-depth "
       + "bakes read its heights; the splat bake reads only its surface paint "
-      + "(terrainInfrastructureSurface), since its heights are already in the atlas.",
+      + "(terrainInfrastructureSurfaceOver, over each texel), since its heights are already in the atlas.",
   },
   {
     artifact: "terrain-page-atlas",
@@ -336,6 +360,7 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     consumers: ["terrain-geometry"],
     ownedSymbols: [
       "selectTerrainNodes",
+      "selectTerrainNodeSets",
       "terrainNodeMorphK",
       "terrainScreenSpaceError",
       "writeTerrainNodeBuffers",

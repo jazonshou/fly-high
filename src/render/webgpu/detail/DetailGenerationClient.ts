@@ -10,6 +10,11 @@ import {
 } from "@/src/workers/detailProtocol";
 import type { TerrainMacroGrid, TerrainPagePublication } from "@/src/workers/terrainAuthority";
 import type { AirportDefinition, WorldDefinition, WorldSeed } from "@/src/world";
+import {
+  InfrastructureRegionsForwarder,
+  packInfrastructureRegionsUpdate,
+  type InfrastructureRegionsUpdate,
+} from "@/src/world/infrastructureSync";
 import type { TerrainAuxPagePublication } from "../terrain/TerrainPageAtlas";
 import type { DetailPresentationBuildCatalog } from "./presentationBuild";
 import type { GeneratedDetailCell } from "./types";
@@ -89,6 +94,8 @@ export class DetailGenerationClient {
   private disposed = false;
   private readonly onWorkerUnavailable: () => void;
   private readonly presentationAvailable: boolean;
+  /** What the worker's copy of the streamed infrastructure regions holds; null without a world. */
+  private readonly infrastructure: InfrastructureRegionsForwarder | null;
 
   constructor(
     options: DetailGenerationClientOptions,
@@ -97,6 +104,7 @@ export class DetailGenerationClient {
     this.queue = new BoundedPriorityQueue(options.maxQueued ?? 96);
     this.onWorkerUnavailable = onWorkerUnavailable;
     this.presentationAvailable = options.presentationCatalog !== undefined;
+    this.infrastructure = options.world ? new InfrastructureRegionsForwarder(options.world) : null;
     try {
       this.worker = (options.workerFactory ?? defaultWorkerFactory)();
       this.worker.addEventListener("message", this.handleMessage);
@@ -111,6 +119,7 @@ export class DetailGenerationClient {
         ...(options.presentationCatalog
           ? { presentationCatalog: options.presentationCatalog }
           : {}),
+        ...(this.infrastructure ? { infrastructure: packInfrastructureRegionsUpdate(this.infrastructure.initial()) } : {}),
       } satisfies DetailWorkerCommand);
     } catch {
       this.markUnavailable();
@@ -161,6 +170,24 @@ export class DetailGenerationClient {
     if (this.disposed || this.failed || !this.worker) return false;
     try {
       this.worker.postMessage({ type: "airports", airports } satisfies DetailWorkerCommand);
+      return true;
+    } catch {
+      this.markUnavailable();
+      return false;
+    }
+  }
+
+  /**
+   * One change to the streamed infrastructure regions (roads), posted in
+   * order with generation like `setAirports`: every request dispatched after
+   * it reads the new regions. Each change once; the whole set after a gap.
+   */
+  publishInfrastructure(update: InfrastructureRegionsUpdate): boolean {
+    if (this.disposed || this.failed || !this.worker || !this.infrastructure) return false;
+    const post = this.infrastructure.next(update);
+    if (!post) return true;
+    try {
+      this.worker.postMessage({ type: "infrastructure", update: packInfrastructureRegionsUpdate(post) } satisfies DetailWorkerCommand);
       return true;
     } catch {
       this.markUnavailable();

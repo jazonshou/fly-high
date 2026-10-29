@@ -91,8 +91,56 @@ const SPEEDBOAT: SurfaceVehicleSpec = Object.freeze({
   }),
 });
 
+/**
+ * The LandCruiser 76 GXL wagon: 2.8 litre 1GD-FTV four-cylinder turbo-diesel,
+ * part-time 4WD (the land plan, 2026-10-25). The top and front views are
+ * measured on the built model (`render.top-front-views`): the drawn car runs
+ * from the tow hitch 2.72 m behind the centre of gravity to the bumper 2.19 m
+ * ahead, and from the tyres' feet 0.82 m below it to the snorkel's head
+ * 1.19 m above, so the views aim 0.26 m aft of it and fill 60% of the frame.
+ * The chase stands 7.5 m behind the rear bumper (10.2 m behind the centre of
+ * gravity) and 2.6 m up, aimed 1 m ahead at the shared aim height, so the car
+ * fills about a fifth of the width with its roof at the frame's middle
+ * (`render.top-front-views`, chase framing).
+ * Right-hand drive: the driver's eye is to starboard, over the seat, and
+ * about 0.2 m lower than a seated driver's so the level cockpit lens holds
+ * the gauges through the wheel (`DRIVER_EYE` in the drawn car's lines).
+ */
+const LANDCRUISER: SurfaceVehicleSpec = Object.freeze({
+  kind: "landcruiser",
+  vehicleClass: "car",
+  name: "LandCruiser 76",
+  description: "4x4",
+  follow: "surface",
+  chase: Object.freeze({
+    distance: Object.freeze({ base: 10.2, knee: 8, slope: 0.08, cap: 2.5 }),
+    height: 2.6,
+    fieldOfView: Object.freeze({ base: 58, knee: 8, slope: 0.25, cap: 8 }),
+    aimAhead: Object.freeze({ base: 1, knee: 0, slope: 0, cap: 0 }),
+  }),
+  cinematic: Object.freeze({ radiusMeters: 12, heightMeters: 3, heightDriftMeters: 1 }),
+  topFront: Object.freeze({ centreForward: -0.26, centreUp: 0, topDistanceMeters: 13.45, frontDistanceMeters: 10.25 }),
+  cockpitEye: Object.freeze({ forward: -0.36, up: 0.7, right: 0.37 }),
+  engineReadout: Object.freeze({ label: "RPM", unit: "ENG", maximum: 4_500, roundTo: 50 }),
+  // A four-cylinder four-stroke fires twice per crank turn: the fundamental
+  // is rpm / 30, 25 Hz at the 750 rpm idle and 150 Hz at 4,500 rpm, which is
+  // exactly 0 + (rpm / 4,500) x 150. `CarVoice` (src/audio/carVoice.ts)
+  // layers the diesel's clatter, the turbo, the low-range whine, the tyres
+  // and the water over it, and silences it when the engine stops.
+  engineSound: Object.freeze({
+    baseHz: 0,
+    spanHz: 150,
+    gainBase: 0.12,
+    gainSpan: 0.28,
+    filterHz: 520,
+    filterQ: 0.7,
+    waveforms: Object.freeze(["sawtooth", "square"] as const) as readonly [OscillatorType, OscillatorType],
+  }),
+});
+
 export const SURFACE_VEHICLE_SPECS: Readonly<Record<SurfaceVehicleKind, SurfaceVehicleSpec>> = Object.freeze({
   speedboat: SPEEDBOAT,
+  landcruiser: LANDCRUISER,
 });
 
 export const SURFACE_VEHICLE_CATALOGUE: readonly SurfaceVehicleSpec[] = Object.freeze(

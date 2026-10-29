@@ -35,13 +35,18 @@ import {
   type AirportDefinition,
   type WorldDefinition,
 } from "@/src/world";
+import {
+  infrastructureChangeTouches,
+  type InfrastructureChange,
+} from "@/src/world/infrastructure";
 import { sampleErgFarWeight } from "@/src/world/landforms";
 import {
   diffTerrainAirports,
   sameTerrainAirports,
   terrainAirportReaches,
+  terrainPageAirportDomain,
   terrainPageInAirportReach,
-  type TerrainAirportReach,
+  type TerrainMutableWorldRect,
 } from "./AirportReach";
 import { GlobalHeightPyramid } from "./GlobalHeightPyramid";
 import {
@@ -74,21 +79,29 @@ import {
   type TerrainAtlasSlot,
 } from "./TerrainPageAtlas";
 import { terrainErosionAdmissionDependencies } from "./TerrainPageErosion";
+import {
+  TerrainDrawnHeight,
+  terrainDrawnWindowCells,
+  type TerrainDrawnAtlasShape,
+} from "./TerrainDrawnHeight";
 import type { TerrainSlotKey } from "./TerrainSpineContract";
 import {
   buildTerrainNodeGrid,
   createTerrainNodeBuffers,
   resolveTerrainResidentCornerMorphs,
-  selectTerrainNodes,
+  selectTerrainNodeSets,
+  terrainNearFloorNodeAllowance,
   writeTerrainNodeBuffers,
   type TerrainNode,
   type TerrainNodeBuffers,
   type TerrainNodeCornerMorphs,
+  type TerrainNodeSelectionInput,
 } from "./TerrainQuadtree";
 import {
   TERRAIN_CHANNEL_SLOT_EDGE,
   TERRAIN_HEIGHT_SLOT_EDGE,
   TERRAIN_PROVISIONAL_AXIS,
+  seasonBakeDayOfYear,
   seasonBucketBlend,
   TERRAIN_NODE_ATTRIBUTE_A,
   TERRAIN_NODE_ATTRIBUTE_B,
@@ -96,7 +109,7 @@ import {
   TERRAIN_HORIZON_PYRAMID_SPAN_METERS,
   terrainAtlasGridEdge,
 } from "./TerrainSpineContract";
-import { TerrainSurfacePlugin, type TerrainFarSwardRead } from "./TerrainSurfacePlugin";
+import { TERRAIN_MATERIAL_LIGHTING, TerrainSurfacePlugin, type TerrainFarSwardRead } from "./TerrainSurfacePlugin";
 // 6-5: the shore sea state travels as 6-2's own published type — one
 // definition, forwarded, never restated on the terrain side.
 import type { WaterShoreSwell } from "@/src/render/webgpu/water/WaterShaders";
@@ -135,6 +148,8 @@ export interface TerrainPageProducer {
   refresh?(slots: readonly TerrainAtlasSlot[]): Promise<readonly TerrainAtlasSlot[]>;
   /** Grade these airports (home field first) from the next dispatch on. */
   setAirports?(airports: readonly Readonly<AirportDefinition>[]): void;
+  /** Bring the stage's GPU copy to the streamed regions now (`TerrainPageGenerator.syncInfrastructure`). */
+  syncInfrastructure?(): void;
   /** Fill Phase-5 aux fields for channel slots admitted after height. */
   ensureHydrology?(slots: readonly TerrainAtlasSlot[]): Promise<void>;
   setCollisionPagePublisher?(publisher: TerrainCollisionPagePublisher | null): void;
@@ -263,6 +278,31 @@ export interface TerrainClipmapSystemOptions {
    * inject `computeFactory` pass one here to drive the refresh.
    */
   readonly landformIndex?: TerrainLandformIndex;
+  /**
+   * A car session: the observer is the car, and the tier's
+   * `vehicleNearTerrainL0RadiusMeters` drops the terrain's floor to L0 round
+   * it (`TerrainNodeSelectionInput.nearFloor`).
+   */
+  readonly vehicleNearField?: boolean;
+}
+
+/** The disc a car session draws L0 in, or undefined: no car, or a tier whose floor is L0. */
+function vehicleNearFloor(
+  profile: WebGpuQualityProfile,
+  options: TerrainClipmapSystemOptions,
+): TerrainNodeSelectionInput["nearFloor"] {
+  if (!options.vehicleNearField || !(profile.vehicleNearTerrainL0RadiusMeters > 0)) return undefined;
+  return {
+    level: 0,
+    radiusMeters: profile.vehicleNearTerrainL0RadiusMeters,
+    bandMeters: profile.vehicleNearTerrainL0BandMeters,
+  };
+}
+
+/** Instances the beauty node buffer holds: the budget, plus the near floor's own nodes. */
+function terrainNodeCapacity(profile: WebGpuQualityProfile, options: TerrainClipmapSystemOptions): number {
+  return (options.nodeBudgetOverride ?? profile.cdlodNodeBudget)
+    + terrainNearFloorNodeAllowance(vehicleNearFloor(profile, options), profile.finestResidentLevel);
 }
 
 /** `VolcanicSiteIndexStream` as the clipmap uses it. */
@@ -319,11 +359,50 @@ const NO_SLOTS: readonly TerrainAtlasSlot[] = Object.freeze([]);
  */
 export const AIRPORT_INVALIDATION_SLOTS_PER_FRAME = 64;
 
-/** One airport-list change whose reach is still being tested against the slots. */
+/**
+ * The coarsest pages wait for road changes while the observer flies on
+ * (`infrastructureChanged`). A page from this level up spans 16 km or more
+ * and paints a 7 m gravel road over 5% of a 128 m texel, yet nearly every
+ * region the road stream installs or drops lies inside one, so at jet speed
+ * they were rebuilt again and again: on a 90 s leg at 250 m/s from the home
+ * field, levels 5-9 were rebuilt 405 times, twice the 209 fresh pages of
+ * every level (fake producers, so every rebuild finished at once).
+ * Their rebuild is pooled while the observer is faster than
+ * `ROAD_DEFERRED_MIN_SPEED` and moved since the last frame, and goes ahead
+ * once it slows or stops, or has travelled `ROAD_DEFERRED_MAX_TRAVEL` since
+ * the oldest change waiting. Finer pages rebuild as before; so does every
+ * page under a car or a boat, and under a capture's aircraft, which holds
+ * still at its pose's speed.
+ */
+export const ROAD_DEFERRED_MIN_LEVEL = 5;
+/** Ground speed above which coarse rebuilds for roads wait, m/s: past a car's top speed. */
+export const ROAD_DEFERRED_MIN_SPEED = 50;
+/** Travel after which the waiting coarse rebuilds go ahead anyway, metres. */
+export const ROAD_DEFERRED_MAX_TRAVEL = 8_000;
+/** An observer that moved less than this since the last frame is holding still (a capture's), metres. */
+const ROAD_DEFERRED_STILL_METERS = 0.01;
+
+/** Road changes' coarse rebuilds waiting while the observer flies on: their bins together, and the latest version. */
+interface DeferredRoadRebuild {
+  readonly bins: Set<number>;
+  version: number;
+  readonly fromX: number;
+  readonly fromZ: number;
+}
+
+const NO_PLANT_BINS: ReadonlySet<number> = new Set();
+
+/**
+ * One change to the ground the pages bake, still being tested against the
+ * slots: an airport-list change (`setAirports`), or a change to the streamed
+ * infrastructure regions (`infrastructureChanged`), which share the airport
+ * machinery and its names.
+ */
 interface AirportInvalidation {
-  /** The list version the change produced: slots batched at or after it are current. */
+  /** The version the change produced: slots batched at or after it are current. */
   readonly version: number;
-  readonly reaches: readonly TerrainAirportReach[];
+  /** Whether the change reaches what a page samples. */
+  readonly reaches: (address: WorldPageAddress) => boolean;
   /** Snapshots taken when the scan starts; slots requested later are current. */
   heightSlots: readonly TerrainAtlasSlot[] | null;
   channelSlots: readonly TerrainAtlasSlot[] | null;
@@ -525,17 +604,10 @@ export function createTerrainMaterial(scene: Scene): PBRMaterial {
   // shipped answer, which is what the audit's uniform 0.93 was.
   material.roughness = 0.93;
   material.albedoColor = Color3.White();
-  // 1C-6: full-strength now that scene.environmentTexture exists — the
-  // old 0.64/0.22 were compensating for IBL that did not exist.
-  material.environmentIntensity = 1;
-  material.directIntensity = 1.03;
-  material.specularIntensity = 1;
-  // 1B-11: kill specular shimmer on ridge lines under motion. Its partner,
-  // anisotropicFilteringLevel = 16, is a per-texture setting and lands on
-  // the 3-1 arrays; the two are complementary — one fixes the normal map's
-  // lost variance (with the Toksvig reducer), the other the geometric
-  // normal's.
-  material.enableSpecularAntiAliasing = true;
+  material.environmentIntensity = TERRAIN_MATERIAL_LIGHTING.environmentIntensity;
+  material.directIntensity = TERRAIN_MATERIAL_LIGHTING.directIntensity;
+  material.specularIntensity = TERRAIN_MATERIAL_LIGHTING.specularIntensity;
+  material.enableSpecularAntiAliasing = TERRAIN_MATERIAL_LIGHTING.enableSpecularAntiAliasing;
   // 4-5: skirts are gone — the geomorph closes cracks analytically — so the
   // surface is a closed manifold and back faces are wasted fragments.
   material.backFaceCulling = true;
@@ -677,6 +749,15 @@ export class TerrainClipmapSystem {
   private casterBuffers: TerrainNodeBuffers[] = [];
   private instanceBuffersBound = false;
   private nodes: readonly TerrainNode[] = [];
+  /**
+   * What the casters draw: the tier's own selection, without the near floor's
+   * patch. The patch's relief is centimetres (L0 against L1, measured p90
+   * 1-10 cm), and drawing it into both cascades cost more GPU time on Low than
+   * drawing it on screen. The same array as `nodes` without a near floor.
+   */
+  private casterNodes: readonly TerrainNode[] = [];
+  /** The drawn-surface lookup, made on a consumer's first ask (`drawnHeight`). */
+  private drawnHeightLookup: TerrainDrawnHeight | null = null;
   private profile: WebGpuQualityProfile;
   private frameIndex = 0;
   private originX = 0;
@@ -726,10 +807,16 @@ export class TerrainClipmapSystem {
   /** The airport pumps' per-frame candidate lists, reused, never reallocated. */
   private readonly heightRegenerationScratch: TerrainAtlasSlot[] = [];
   private readonly channelRebakeScratch: TerrainAtlasSlot[] = [];
-  /** Bumped by every airport-list change; slots record it when batched. */
+  /** Bumped by every airport-list and infrastructure change; slots record it when batched. */
   private airportListVersion = 0;
+  /** `infrastructureChanged`'s page-domain scratch. */
+  private readonly infrastructureDomain: TerrainMutableWorldRect = { minX: 0, minZ: 0, maxX: 0, maxZ: 0 };
   /** Changes whose invalidation scan has not finished, oldest first. */
   private readonly airportInvalidations: AirportInvalidation[] = [];
+  /** Road changes' rebuilds of levels from `ROAD_DEFERRED_MIN_LEVEL`, waiting while the observer flies on. */
+  private deferredRoadRebuild: DeferredRoadRebuild | null = null;
+  /** Whether the last update's observer had moved since the one before. */
+  private observerMoved = false;
 
   constructor(
     private readonly scene: Scene,
@@ -799,9 +886,7 @@ export class TerrainClipmapSystem {
         ?? new MaterialSynthesisClient();
     }
 
-    this.beautyBuffers = createTerrainNodeBuffers(
-      options.nodeBudgetOverride ?? profile.cdlodNodeBudget,
-    );
+    this.beautyBuffers = createTerrainNodeBuffers(terrainNodeCapacity(profile, options));
     this.beautyMesh = new Mesh("terrain-cdlod", scene);
     buildTerrainNodeGrid().applyToMesh(this.beautyMesh, false);
     this.beautyMesh.material = this.material;
@@ -1033,8 +1118,16 @@ export class TerrainClipmapSystem {
     return {
       residentPages: this.heightAtlas.residency.residentCount,
       residencyReasons: this.residencyReasons,
+      // Pages owed an in-place rebuild (an airport or a road changed under
+      // them) are pending too: a capture waits for the ground it shows. The
+      // coarse pages a fast observer's road changes left waiting are not:
+      // nothing settles at that speed anyway, and they are queued the frame
+      // it slows.
       pendingPages: this.heightAtlas.residency.generatingCount
-        + (this.provinceField?.pending ? 1 : 0),
+        + (this.provinceField?.pending ? 1 : 0)
+        + this.airportInvalidations.length
+        + this.heightAirportRebuilds.size
+        + this.channelAirportRebuilds.size,
       triangles: trianglesPerNode * this.nodes.length,
       workersBusy: (this.generationInFlight ? 1 : 0) + (this.occlusionInFlight ? 1 : 0),
       residentSlots: this.heightAtlas.residency.residentCount,
@@ -1078,6 +1171,54 @@ export class TerrainClipmapSystem {
   /** The selected node set, so 4-10's capture can assert on it. */
   get selectedNodes(): readonly TerrainNode[] {
     return this.nodes;
+  }
+
+  /** The node set the shadow casters draw: `selectedNodes` without a near floor's patch. */
+  get selectedCasterNodes(): readonly TerrainNode[] {
+    return this.casterNodes;
+  }
+
+  /**
+   * The ground as this terrain draws it (`TerrainDrawnHeight`), for a
+   * consumer lying on it within `reachMeters` of the camera: made on the
+   * first ask, and made again, larger, for a reach its window cannot hold.
+   * Nothing here touches what the terrain itself draws: the lookup only reads
+   * the node records `writeNodeBuffers` wrote, and only when
+   * `refreshDrawnHeight` asks.
+   */
+  drawnHeight(reachMeters: number): TerrainDrawnHeight {
+    const current = this.drawnHeightLookup;
+    if (current && current.windowCells >= terrainDrawnWindowCells(reachMeters)) return current;
+    if (current) {
+      this.deferredDisposals.push({ retiredAtFrame: this.frameIndex, dispose: () => current.dispose() });
+    }
+    const engine = this.scene.getEngine() as { isWebGPU?: boolean };
+    this.drawnHeightLookup = new TerrainDrawnHeight(engine.isWebGPU ? this.scene : null, reachMeters);
+    return this.drawnHeightLookup;
+  }
+
+  /**
+   * Write the lookup round (x, z) from this frame's beauty records. A
+   * consumer calls it after the terrain's `update` and only on a frame it has
+   * something within reach.
+   */
+  refreshDrawnHeight(x: number, z: number, radiusMeters: number): void {
+    this.drawnHeightLookup?.refresh({
+      nodes: this.nodes,
+      laneA: this.beautyBuffers.laneA,
+      laneB: this.beautyBuffers.laneB,
+      count: this.beautyBuffers.count,
+    }, x, z, radiusMeters);
+  }
+
+  /** The height atlas the lookup's records index, and its shape, as the surface plugin binds them. */
+  get drawnHeightAtlas(): { readonly texture: BaseTexture | null; readonly shape: TerrainDrawnAtlasShape } {
+    return { texture: this.heightAtlas.texture(), shape: this.heightAtlasShape() };
+  }
+
+  /** The surface material arrays the ground samples, once built (null before, and under NullEngine). */
+  get surfaceMaterialArrays(): { readonly albedoHeight: BaseTexture; readonly normalMaterial: BaseTexture } | null {
+    return this.materialArrays;
   }
 
   setProfile(profile: WebGpuQualityProfile): void {
@@ -1173,11 +1314,7 @@ export class TerrainClipmapSystem {
     // memory (the atlas is sized for two either way) and quantises the
     // snowline to 15-day steps exactly when the user is looking at it.
     this.surfacePlugin.setSeasonBlend(seasonBucketBlend(dayOfYear).t);
-    const bucketDays = 365 / 24;
-    const offset = Math.round((dayOfYear - TERRAIN_REFERENCE_DAY_OF_YEAR) / bucketDays);
-    let bucketed = TERRAIN_REFERENCE_DAY_OF_YEAR + offset * bucketDays;
-    bucketed = ((bucketed % 365) + 365) % 365;
-    this.seasonDayOfYear = bucketed;
+    this.seasonDayOfYear = seasonBakeDayOfYear(dayOfYear);
   }
 
   /** Caps page admissions per pump. Governor B lowers it under CPU pressure. */
@@ -1208,9 +1345,14 @@ export class TerrainClipmapSystem {
     return this.computeBudget;
   }
 
-  /** The direction TOWARD the sun; only 4-7's horizon shadow reads it. */
+  /** The direction TOWARD the sun; 4-7's horizon shadow and the grain's crunch read it. */
   setSunDirection(x: number, y: number, z: number): void {
     this.surfacePlugin.setSunDirection(x, y, z);
+  }
+
+  /** The unit direction toward the sun the ground is shaded by, for the roads' ribbon. */
+  get sunDirection(): readonly [number, number, number] {
+    return this.surfacePlugin.sunDirection;
   }
 
   /**
@@ -1358,10 +1500,113 @@ export class TerrainClipmapSystem {
     this.pageGenerator?.setAirports?.(next);
     this.splatBake?.setAirports?.(next);
     if (added.length === 0 && removed.length === 0) return;
+    const reaches = [...added, ...removed].flatMap(terrainAirportReaches);
     this.airportListVersion += 1;
     this.airportInvalidations.push({
       version: this.airportListVersion,
-      reaches: [...added, ...removed].flatMap(terrainAirportReaches),
+      reaches: (address) => terrainPageInAirportReach(address, reaches),
+      heightSlots: null,
+      channelSlots: null,
+      cursor: 0,
+    });
+  }
+
+  /**
+   * The streamed infrastructure regions changed (roads came or went:
+   * `changeInfrastructureRegions`): bring every page whose sampled domain the
+   * change touches up to date, exactly as `setAirports` does for a spawned
+   * airport (its steps 2 and 3) — scanned over frames, rebuilt in place
+   * through the pumps and meter, an L0 page published again.
+   *
+   * The stage's GPU copy is written here, with the change (every bake's
+   * bind would bring it to the current regions anyway, so a page batched
+   * after the change reads them either way). A page the change does not
+   * touch is bit-identical either way, because outside the change's bins the
+   * stage's answer is the same. Cheap: one queued test per slot, spread like
+   * an airport change's.
+   *
+   * While the observer flies faster than `ROAD_DEFERRED_MIN_SPEED`, pages
+   * from `ROAD_DEFERRED_MIN_LEVEL` up are left out of the scan and pooled,
+   * every change's bins together, until it slows or has travelled
+   * `ROAD_DEFERRED_MAX_TRAVEL`; then they are scanned as one change.
+   */
+  infrastructureChanged(change: InfrastructureChange): void {
+    if (this.disposed) return;
+    this.pageGenerator?.syncInfrastructure?.();
+    if (change.bins.size === 0) return;
+    const domain = this.infrastructureDomain;
+    this.airportListVersion += 1;
+    const version = this.airportListVersion;
+    if (!this.deferringRoadRebuilds()) {
+      this.flushDeferredRoadRebuild();
+      this.airportInvalidations.push({
+        version,
+        reaches: (address) => infrastructureChangeTouches(change, terrainPageAirportDomain(address, domain)),
+        heightSlots: null,
+        channelSlots: null,
+        cursor: 0,
+      });
+      return;
+    }
+    this.airportInvalidations.push({
+      version,
+      reaches: (address) => address.level < ROAD_DEFERRED_MIN_LEVEL
+        && infrastructureChangeTouches(change, terrainPageAirportDomain(address, domain)),
+      heightSlots: null,
+      channelSlots: null,
+      cursor: 0,
+    });
+    const deferred = this.deferredRoadRebuild ??= {
+      bins: new Set(),
+      version,
+      fromX: this.streamingObserver.positionX,
+      fromZ: this.streamingObserver.positionZ,
+    };
+    for (const key of change.bins) deferred.bins.add(key);
+    deferred.version = version;
+  }
+
+  /**
+   * Whether the observer is flying fast enough that coarse pages wait for
+   * road changes (`ROAD_DEFERRED_MIN_LEVEL`): its speed, and moving at all,
+   * since a capture holds an aircraft still at its pose's speed and must
+   * wait for every page its roads reach.
+   */
+  private deferringRoadRebuilds(): boolean {
+    const observer = this.streamingObserver;
+    return this.observerMoved && Math.hypot(observer.velocityX, observer.velocityZ) > ROAD_DEFERRED_MIN_SPEED;
+  }
+
+  /**
+   * Queue the coarse rebuilds the road changes left waiting, as one change
+   * (their bins together, the latest version), once the observer has slowed
+   * or come `ROAD_DEFERRED_MAX_TRAVEL` from where the oldest was made.
+   */
+  private stepDeferredRoadRebuild(): void {
+    const deferred = this.deferredRoadRebuild;
+    if (!deferred) return;
+    const observer = this.streamingObserver;
+    const travelled = Math.hypot(observer.positionX - deferred.fromX, observer.positionZ - deferred.fromZ);
+    if (this.deferringRoadRebuilds() && travelled < ROAD_DEFERRED_MAX_TRAVEL) return;
+    this.flushDeferredRoadRebuild();
+  }
+
+  private flushDeferredRoadRebuild(): void {
+    const deferred = this.deferredRoadRebuild;
+    if (!deferred) return;
+    this.deferredRoadRebuild = null;
+    // Never added to again, as infrastructureChangeTouches' box cache needs.
+    const change: InfrastructureChange = {
+      version: deferred.version,
+      rects: [],
+      bins: deferred.bins,
+      plantBins: NO_PLANT_BINS,
+    };
+    const domain = this.infrastructureDomain;
+    this.airportInvalidations.push({
+      version: deferred.version,
+      reaches: (address) => address.level >= ROAD_DEFERRED_MIN_LEVEL
+        && infrastructureChangeTouches(change, terrainPageAirportDomain(address, domain)),
       heightSlots: null,
       channelSlots: null,
       cursor: 0,
@@ -1428,7 +1673,7 @@ export class TerrainClipmapSystem {
     // first dispatch needs nothing: it will read the new list.
     const recorded = state === "resident" || (state === "generating" && slot.generationSubmitted);
     if (!recorded || slot.airportListVersion >= change.version) return;
-    if (!terrainPageInAirportReach(slot.address, change.reaches)) return;
+    if (!change.reaches(slot.address)) return;
     slot.airportRebuildOwed = true;
     this.heightAirportRebuilds.add(slot);
     // Its channel page bakes FROM these heights, so it is re-baked after
@@ -1447,7 +1692,7 @@ export class TerrainClipmapSystem {
     // Never batched yet: its first bake reads the new list.
     if (state !== "resident" && state !== "generating") return;
     if (slot.airportListVersion < 0 || slot.airportListVersion >= change.version) return;
-    if (!terrainPageInAirportReach(slot.address, change.reaches)) return;
+    if (!change.reaches(slot.address)) return;
     slot.airportRebuildOwed = true;
     this.channelAirportRebuilds.add(slot);
   }
@@ -1457,6 +1702,10 @@ export class TerrainClipmapSystem {
     this.stepMaterialArrayBuild();
     this.frameIndex = frameIndex;
     this.drainDeferredDisposals();
+    this.observerMoved = Math.hypot(
+      observer.x - this.streamingObserver.positionX,
+      observer.z - this.streamingObserver.positionZ,
+    ) > ROAD_DEFERRED_STILL_METERS;
     this.streamingObserver = {
       positionX: observer.x,
       positionY: observer.y ?? 0,
@@ -1464,9 +1713,10 @@ export class TerrainClipmapSystem {
       velocityX: observer.velocityX,
       velocityZ: observer.velocityZ,
     };
+    this.stepDeferredRoadRebuild();
     this.provinceField?.update(observer.x, observer.z);
     const residentPage = createResidentInvariantPageLookup(this.heightAtlas.residency);
-    this.nodes = selectTerrainNodes({
+    const selection = selectTerrainNodeSets({
       cameraX: observer.x,
       cameraY: observer.y ?? 0,
       cameraZ: observer.z,
@@ -1475,6 +1725,7 @@ export class TerrainClipmapSystem {
       pixelThreshold: this.profile.cdlodPixelThreshold,
       nodeBudget: this.options.nodeBudgetOverride ?? this.profile.cdlodNodeBudget,
       finestResidentLevel: this.profile.finestResidentLevel,
+      nearFloor: vehicleNearFloor(this.profile, this.options),
       coarsestLevel: COARSEST_NODE_LEVEL,
       farPlaneMeters: 45_000,
       deviationFor: (address) => residentPage(address)?.stats.maxDeviationFromParent ?? null,
@@ -1483,6 +1734,8 @@ export class TerrainClipmapSystem {
         return slot ? [slot.stats.minHeightMeters, slot.stats.maxHeightMeters] : null;
       },
     });
+    this.nodes = selection.nodes;
+    this.casterNodes = selection.tierNodes;
     this.stepCasterReadiness();
     this.updateAtlasResidency();
     this.writeNodeBuffers();
@@ -1524,6 +1777,8 @@ export class TerrainClipmapSystem {
     this.pyramid?.dispose();
     this.provinceField?.dispose();
     this.provinceField = null;
+    this.drawnHeightLookup?.dispose();
+    this.drawnHeightLookup = null;
     this.landformStream?.dispose();
     this.debugOverlay.dispose();
     this.heightAtlas.dispose();
@@ -1531,6 +1786,7 @@ export class TerrainClipmapSystem {
     this.heightAirportRebuilds.clear();
     this.channelAirportRebuilds.clear();
     this.airportInvalidations.length = 0;
+    this.deferredRoadRebuild = null;
     for (const mesh of this.casterMeshes) mesh.dispose(false, false);
     this.casterMeshes = [];
     this.beautyMesh.dispose(false, false);
@@ -1708,13 +1964,17 @@ export class TerrainClipmapSystem {
     client.request(this.world.seed, edge, layerIds);
   }
 
-  private bindAtlasesToPlugin(): void {
-    this.surfacePlugin.setHeightAtlas(this.heightAtlas.texture(), {
+  private heightAtlasShape(): TerrainDrawnAtlasShape {
+    return {
       atlasEdge: this.heightAtlas.atlasEdge,
       slotEdge: TERRAIN_HEIGHT_SLOT_EDGE,
       gutter: WORLD_PAGE_GUTTER,
       gridEdge: terrainAtlasGridEdge(this.heightAtlas.residency.slotCount),
-    });
+    };
+  }
+
+  private bindAtlasesToPlugin(): void {
+    this.surfacePlugin.setHeightAtlas(this.heightAtlas.texture(), this.heightAtlasShape());
     this.surfacePlugin.setChannelAtlas(
       this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.occlusion),
       this.channelAtlas.texture(TERRAIN_CHANNEL_TEXTURES.horizonA),
@@ -1820,7 +2080,11 @@ export class TerrainClipmapSystem {
     const reasonFor = new Map<string, "drawn" | "parent" | "collision" | "seed">();
     const pageHasNearNode = new Map<string, boolean>();
     const shadowRadius = this.shadowCasterDistanceMeters;
-    for (const node of this.nodes) {
+    // The casters' tier-only nodes sit on the pages of the patch's parents
+    // nearly always, but a patch that splits all four children of a forced
+    // split leaves a grandparent page only the casters draw.
+    const drawnNodes = this.casterNodes === this.nodes ? this.nodes : [...this.nodes, ...this.casterNodes];
+    for (const node of drawnNodes) {
       const nodeKey = `${node.address.level}:${node.address.x}:${node.address.z}`;
       if (!reasonFor.has(nodeKey)) reasonFor.set(nodeKey, "drawn");
       // PAGES, not nodes — the same unit as `drawn`. Up to
@@ -2021,13 +2285,18 @@ export class TerrainClipmapSystem {
     const channelSlotFor = (address: WorldPageAddress): number =>
       this.channelAtlas.residency.slotIndexOf(invariantSlotKey(address));
     const provisionalAxisFor = (): number => terrainFallbackMaterialAxis();
-    // Resolve streaming fallbacks ONCE from the complete beauty partition.
-    // Recomputing on a cascade's distance-filtered subset can omit the evicted
-    // edge peer and make its packed boundary differ from beauty (and from the
-    // other cascades), even though all passes execute the same vertex shader.
-    const resolvedCorners = resolveTerrainResidentCornerMorphs(this.nodes, slotFor);
+    // Resolve streaming fallbacks ONCE per complete partition: the beauty
+    // one, and the casters' when a near floor's patch makes it a different
+    // one. Recomputing on a cascade's distance-filtered subset can omit the
+    // evicted edge peer and make its packed boundary differ from the other
+    // cascades, even though all passes execute the same vertex shader.
     const cornersByNode = new Map<TerrainNode, TerrainNodeCornerMorphs>();
-    this.nodes.forEach((node, index) => cornersByNode.set(node, resolvedCorners[index]!));
+    const resolvePartition = (nodes: readonly TerrainNode[]): void => {
+      const resolvedCorners = resolveTerrainResidentCornerMorphs(nodes, slotFor);
+      nodes.forEach((node, index) => cornersByNode.set(node, resolvedCorners[index]!));
+    };
+    resolvePartition(this.nodes);
+    if (this.casterNodes !== this.nodes) resolvePartition(this.casterNodes);
     const cornerMorphsFor = (node: TerrainNode): TerrainNodeCornerMorphs =>
       cornersByNode.get(node) ?? node.cornerMorphK;
     writeTerrainNodeBuffers({
@@ -2053,7 +2322,7 @@ export class TerrainClipmapSystem {
       // saving that does not measure.
       const outer = shadowReach * ((cascade + 1) / cascades);
       writeTerrainNodeBuffers({
-        nodes: this.nodes.filter((node) => node.distanceMeters <= outer),
+        nodes: this.casterNodes.filter((node) => node.distanceMeters <= outer),
         originX: this.originX,
         originZ: this.originZ,
         slotFor,

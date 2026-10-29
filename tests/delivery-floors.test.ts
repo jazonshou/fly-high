@@ -512,6 +512,13 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
     "boat-planing-35kn",
     "boat-helm",
     "boat-wake-lowsun",
+    // Cars: the LandCruiser in a forest clearing, climbing a dune, wading
+    // out of the sea and pulling away in its own dust, for the same reasons as
+    // the boats: new frames, an unpinned host, and a look still being tuned.
+    "car-clearing-chase",
+    "car-dune-cockpit",
+    "car-ford-chase",
+    "car-dust-chase",
   ].toSorted();
 
   it("the set of fully-unpinned probes is exactly the declared one", () => {

@@ -1,5 +1,17 @@
 export * from "./types";
 export { CalmWaterSurface } from "./calmWater";
+export { MOUTH_HIGH, MOUTH_LOW, WaterSurfaceComposite } from "./compositeWater";
+export {
+  HYDROLOGY_BIN_METERS,
+  HYDROLOGY_EVICTION_KEEP_METERS,
+  HydrologyWaterSource,
+  packHydrologyWater,
+  type HydrologyBedHeight,
+  type HydrologyWaterLake,
+  type HydrologyWaterRegion,
+  type HydrologyWaterRiver,
+  type HydrologyWaterRiverPoint,
+} from "./hydrologyWater";
 export {
   createSeaTwin,
   OceanPhaseClock,

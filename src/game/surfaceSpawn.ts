@@ -1,7 +1,12 @@
+import type { AircraftKind } from "@/src/sim";
 import type { SurfaceVehicleSpawn } from "@/src/sim/surface/types";
+import { sampleGroundHeight } from "@/src/sim/terrainGrid";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
+import { isSurfaceSpawn, type SpawnKind } from "@/src/workers/protocol";
 import { sampleTerrainHeight, type WorldDefinition } from "@/src/world";
 import { marinaStartPose } from "@/src/world/marina";
+import { airportRoadHead } from "@/src/world/roads/roadNodes";
+import { createSimulationSpawn } from "./spawn";
 
 /** Water at least this deep, with `OPEN_WATER_CLEARANCE` of it around, counts as open. */
 export const OPEN_WATER_DEPTH = 4;
@@ -96,9 +101,37 @@ function openWaterSpawn(world: WorldDefinition, originX: number, originZ: number
 }
 
 /**
+ * The car's start: at the home field's access road head, landside between the
+ * hangar row's last hangar and the fuel farm on the hangars' centre line
+ * (`AIRPORT_ROAD_HEAD`), facing out along the road, which leaves through the
+ * perimeter fence (`airportRoadFenceOpening`). A world without roads (an
+ * eroded one) starts it at the same spot, facing out the same way.
+ */
+function roadHeadCarSpawn(world: WorldDefinition): SurfaceVehicleSpawn {
+  // A world without an airport starts the car at the origin, as the marina searches from it.
+  const head = airportRoadHead(world);
+  if (!head) return uprightCarSpawn(world, 0, 0);
+  return {
+    position: { x: head.startX, y: sampleGroundHeight(world, head.startX, head.startZ), z: head.startZ },
+    heading: head.headingRadians,
+    moored: false,
+  };
+}
+
+/** After a wreck: back on its wheels where it came to rest. */
+function uprightCarSpawn(world: WorldDefinition, wreckX: number, wreckZ: number): SurfaceVehicleSpawn {
+  return {
+    position: { x: wreckX, y: sampleGroundHeight(world, wreckX, wreckZ), z: wreckZ },
+    heading: 0,
+    moored: false,
+  };
+}
+
+/**
  * Where a surface vehicle's session begins. A boat starts at the dock
  * (decision D4): moored in the home marina's start berth, bow out, on the
- * still sea there. The simulator settles the hull to its own draft.
+ * still sea there. The simulator settles the hull to its own draft. The car
+ * starts at the home field's access road head, on its wheels.
  */
 export function createSurfaceSpawn(
   world: WorldDefinition,
@@ -113,10 +146,12 @@ export function createSurfaceSpawn(
         moored: true,
       };
     }
+    case "landcruiser":
+      return roadHeadCarSpawn(world);
   }
 }
 
-/** After a wreck: upright and afloat in the open water nearest it. */
+/** After a wreck: a boat upright and afloat in the open water nearest it, the car upright where it lies. */
 export function createSurfaceRecoverySpawn(
   world: WorldDefinition,
   kind: SurfaceVehicleKind,
@@ -126,5 +161,28 @@ export function createSurfaceRecoverySpawn(
   switch (kind) {
     case "speedboat":
       return openWaterSpawn(world, wreckX, wreckZ);
+    case "landcruiser":
+      return uprightCarSpawn(world, wreckX, wreckZ);
   }
+}
+
+/**
+ * Where in plan a session given this spawn starts, as the simulation worker
+ * will place it (`createSurfaceSpawn`, `createSimulationSpawn`): what the
+ * renderer primes the streamed roads round (`FlightRendererOptions.startPoint`).
+ */
+export function sessionStartPoint(
+  world: WorldDefinition,
+  kind: SpawnKind,
+  airborneStartAgl: number,
+  aircraft: AircraftKind,
+  vehicle: SurfaceVehicleKind | null,
+): { x: number; z: number } {
+  if (isSurfaceSpawn(kind) && vehicle) {
+    const { position } = createSurfaceSpawn(world, vehicle);
+    return { x: position.x, z: position.z };
+  }
+  if (!world.airport && kind === "runway") return { x: 0, z: 0 };
+  const { position } = createSimulationSpawn(world, isSurfaceSpawn(kind) ? "airborne" : kind, airborneStartAgl, aircraft);
+  return { x: position?.x ?? 0, z: position?.z ?? 0 };
 }

@@ -1,5 +1,10 @@
+import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
+import { ShaderLanguage } from "@babylonjs/core/Materials/shaderLanguage";
+import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
 import { readSource } from "./support/sourceText";
+import { RoadSurfaceMaterialPlugin } from "../src/render/webgpu/roads/RoadSurfaceMaterialPlugin";
 import {
   GROUND_GRAIN_CHANNEL_STD,
   GROUND_GRAIN_LAYER,
@@ -13,6 +18,7 @@ import { planMippedTextureArray } from "../src/render/webgpu/core/TextureArrayMi
 import { TOKSVIG_ROUGHNESS_GAIN } from "../src/render/webgpu/terrain/MaterialArraySynthesis";
 import {
   DEFAULT_ANISOTROPY_LIMIT,
+  DEFAULT_DETILE_WARP,
   GROUND_GRAIN_ANISOTROPY_LIMIT,
   GROUND_GRAIN_CRUNCH,
   GROUND_GRAIN_GAINS,
@@ -20,6 +26,7 @@ import {
   GROUND_GRAIN_SCALES,
   GROUND_GRAIN_SEABED_FADE,
   GROUND_GRAIN_TONE_FADE,
+  TerrainSurfacePlugin,
 } from "../src/render/webgpu/terrain/TerrainSurfacePlugin";
 
 /**
@@ -173,14 +180,32 @@ describe("the grain is a pure, tiling, mean-neutral field", () => {
   });
 });
 
+/** A material plugin's fragment WGSL, every injection joined in order. */
+function fragmentWgsl(make: (material: PBRMaterial) => { getCustomCode: TerrainSurfacePlugin["getCustomCode"] }): string {
+  const engine = new NullEngine();
+  const scene = new Scene(engine);
+  const material = new PBRMaterial("ground-grain-test", scene);
+  try {
+    const code = make(material).getCustomCode("fragment", ShaderLanguage.WGSL) as Record<string, string>;
+    return Object.values(code).join("\n");
+  } finally {
+    material.dispose(true, true);
+    scene.dispose();
+    engine.dispose();
+  }
+}
+
 describe("the shader reads the grain safely", () => {
   const plugin = readSource("src/render/webgpu/terrain/TerrainSurfacePlugin.ts");
+  // The grain's reads are composed from generators the roads' ribbon shares,
+  // so their order and form are checked in the WGSL the terrain compiles.
+  const fragment = fragmentWgsl((material) => new TerrainSurfacePlugin(material));
 
   it("reads the layer only behind its uniform switch", () => {
     // tuning.z is 1 exactly when the bound arrays carry the layer; a build
     // without it must never read past the ten materials.
-    const gate = plugin.indexOf("if (uniforms.terrainSurfaceTuning.z > 0.5) {");
-    const firstFetch = plugin.indexOf("terrainGroundGrainFetch(\n      terrainGrainUv0");
+    const gate = fragment.indexOf("if (uniforms.terrainSurfaceTuning.z > 0.5) {");
+    const firstFetch = fragment.indexOf("terrainGroundGrainFetch(\n      terrainGrainUv0");
     expect(gate).toBeGreaterThan(-1);
     expect(firstFetch).toBeGreaterThan(gate);
     expect(plugin).toContain("setArrays(albedoHeight: BaseTexture, normalMaterial: BaseTexture, groundGrain = false)");
@@ -201,14 +226,14 @@ describe("the shader reads the grain safely", () => {
     // Every fetch sits behind its own share: a zero share costs no read, and
     // a skipped scale reads as zero, which the composite takes as no change.
     for (const index of [0, 1, 2]) {
-      const branch = plugin.indexOf(`if (terrainGrainShare${index} > 0.0) {`);
-      const fetch = plugin.indexOf(`terrainGroundGrainFetch(\n      terrainGrainUv${index}`);
+      const branch = fragment.indexOf(`if (terrainGrainShare${index} > 0.0) {`);
+      const fetch = fragment.indexOf(`terrainGroundGrainFetch(\n      terrainGrainUv${index}`);
       expect(branch).toBeGreaterThan(-1);
       expect(fetch).toBeGreaterThan(branch);
     }
     for (const index of [0, 1]) {
-      const branch = plugin.indexOf(`if (terrainGrainRelief${index} > 0.0) {`);
-      const fetch = plugin.indexOf(`terrainGroundGrainGradient(\n      terrainGrainUv${index}`);
+      const branch = fragment.indexOf(`if (terrainGrainRelief${index} > 0.0) {`);
+      const fetch = fragment.indexOf(`terrainGroundGrainGradient(\n      terrainGrainUv${index}`);
       expect(branch).toBeGreaterThan(-1);
       expect(fetch).toBeGreaterThan(branch);
     }
@@ -221,12 +246,12 @@ describe("the shader reads the grain safely", () => {
     expect(GROUND_GRAIN_TONE_FADE.end).toBeLessThan(1);
     // Under the sea, by the still water level the wetness block also reads.
     expect(GROUND_GRAIN_SEABED_FADE.start).toBeLessThan(GROUND_GRAIN_SEABED_FADE.end);
-    expect(plugin).toContain("uniforms.terrainSurfaceWetness.y - terrainAbsolutePosition.y);");
+    expect(fragment).toContain("uniforms.terrainSurfaceWetness.y - terrainAbsolutePosition.y);");
   });
 
   it("measures the footprint by its major axis, which is what sets an isotropic read's mip", () => {
-    expect(plugin).toContain("return max(max(length(worldDdx), length(worldDdy)), 1e-9);");
-    expect(plugin).toContain(
+    expect(fragment).toContain("return max(max(length(worldDdx), length(worldDdy)), 1e-9);");
+    expect(fragment).toContain(
       "let terrainGrainFootprint = terrainGroundGrainFootprint(terrainWorldDdx.xz, terrainWorldDdy.xz);",
     );
   });
@@ -245,17 +270,17 @@ describe("the shader reads the grain safely", () => {
     // sampler on every read.
     expect(GROUND_GRAIN_ANISOTROPY_LIMIT).toBe(1);
     expect(GROUND_GRAIN_ANISOTROPY_LIMIT).toBeLessThan(DEFAULT_ANISOTROPY_LIMIT);
-    expect(plugin).toContain(
-      "textureSampleLevel(terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler,\n    uv, ${GROUND_GRAIN_LAYER}, level);",
+    expect(fragment).toContain(
+      `textureSampleLevel(terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler,\n    uv, ${GROUND_GRAIN_LAYER}, level);`,
     );
-    expect(plugin).toContain(
-      "textureSampleLevel(terrainSurfaceNormal, terrainSurfaceNormalSampler,\n    uv, ${GROUND_GRAIN_LAYER}, level);",
+    expect(fragment).toContain(
+      `textureSampleLevel(terrainSurfaceNormal, terrainSurfaceNormalSampler,\n    uv, ${GROUND_GRAIN_LAYER}, level);`,
     );
     // A scale's level is log2 of the footprint in its own texels: the
     // frame's uniform scale is 1 / period.
     expect(plugin).toContain("return log2(footprintMeters * edgeTexels * ${inverse});");
     for (const index of [0, 1, 2]) {
-      expect(plugin).toContain(
+      expect(fragment).toContain(
         `let terrainGrainLevel${index} = terrainGroundGrainLevel${index}(terrainGrainFootprint, terrainGrainEdge);`,
       );
     }
@@ -311,25 +336,100 @@ describe("the shader reads the grain safely", () => {
   });
 });
 
+describe("the roads' ribbon carries the grain the paint under it has", () => {
+  const terrain = fragmentWgsl((material) => new TerrainSurfacePlugin(material));
+  const ribbon = fragmentWgsl((material) => new RoadSurfaceMaterialPlugin(material, "ribbon"));
+  // The terrain's names as the ribbon's: terrainSurfaceValue is roadSurfaceValue.
+  const asRibbon = (wgsl: string) => wgsl.replace(/terrain(?=[A-Z])/g, "road");
+  const between = (wgsl: string, start: string, end: string) => {
+    const from = wgsl.indexOf(start);
+    const to = wgsl.indexOf(end, from);
+    expect(from, start).toBeGreaterThan(-1);
+    expect(to, end).toBeGreaterThan(from);
+    return wgsl.slice(from, to);
+  };
+  const fn = (wgsl: string, name: string) => between(wgsl, `fn ${name}(`, "\n}\n");
+
+  it("reads it only from arrays that carry the layer", () => {
+    // The arrays carry the layer exactly where the tier runs the patchwork.
+    const gate = ribbon.indexOf(`textureNumLayers(roadSurfaceAlbedo) > ${GROUND_GRAIN_LAYER}u`);
+    const branch = ribbon.indexOf("if (roadGroundPatchworkOn > 0.5) {");
+    const fetch = ribbon.indexOf("roadGroundGrainFetch(\n      roadGrainUv0");
+    expect(gate).toBeGreaterThan(-1);
+    expect(branch).toBeGreaterThan(gate);
+    expect(fetch).toBeGreaterThan(branch);
+  });
+
+  it("at the point the terrain reads it, through the same noise and de-tile warp", () => {
+    for (const name of ["SurfaceHash", "SurfaceValue", "SurfaceValue2", "SurfaceValueGrad", "SurfaceDecodeNormal"]) {
+      expect(fn(ribbon, `road${name}`), name).toBe(asRibbon(fn(terrain, `terrain${name}`)));
+    }
+    // The terrain's warp amount is a uniform it never changes from its default.
+    expect(fn(ribbon, "roadSurfaceDetileWarp")).toBe(asRibbon(fn(terrain, "terrainSurfaceDetileWarp")
+      .replace("uniforms.terrainSurfaceTuning.x", String(DEFAULT_DETILE_WARP))));
+    expect(ribbon).toContain("let roadGrainXz = roadPosition + roadSurfaceDetileWarp(roadPosition, roadFootprint);");
+    expect(terrain).toContain("let terrainGrainXz = terrainAbsolutePosition.xz + terrainWarp;");
+    expect(terrain).toContain(
+      "let terrainWarp = terrainSurfaceDetileWarp(terrainAbsolutePosition.xz, terrainFootprintMajor);",
+    );
+  });
+
+  it("with the terrain's reads, fades, gains and relief (a seal's tone only)", () => {
+    for (const index of [0, 1, 2]) {
+      for (const name of ["Frame", "Level", "Uv"]) {
+        expect(fn(ribbon, `roadGroundGrain${name}${index}`)).toBe(asRibbon(fn(terrain, `terrainGroundGrain${name}${index}`)));
+      }
+    }
+    for (const name of ["Footprint", "Fetch", "Gradient"]) {
+      expect(fn(ribbon, `roadGroundGrain${name}`)).toBe(asRibbon(fn(terrain, `terrainGroundGrain${name}`)));
+    }
+    // The reads but their point and the sea's fade (a road never lies under the sea).
+    const reads = (wgsl: string, p: string) => between(wgsl, `let ${p}GrainUv0`, `let ${p}GrainShown`)
+      + between(wgsl, `let ${p}GrainShare0`, `${p}GrainLevel2);\n  }\n`);
+    expect(reads(ribbon, "road")).toBe(asRibbon(reads(terrain, "terrain")));
+    const tone = (wgsl: string, p: string) => between(wgsl, `let ${p}GrainToneGain`, `* ${p}GrainClump));`);
+    expect(tone(ribbon, "road")).toBe(asRibbon(tone(terrain, "terrain")));
+    const relief = (wgsl: string, p: string) => between(wgsl, "  // Relief from the two finer scales", `${p}GrainLevel1);\n  }\n`);
+    expect(relief(ribbon, "road")).toBe(asRibbon(relief(terrain, "terrain")));
+    // A seal takes the tone and not the relief: it is rolled flat, as the terrain's pavement is.
+    expect(ribbon).toMatch(/if \(!roadSealed\) \{\n  \/\/ Relief from the two finer scales/);
+  });
+
+  it("with the terrain's crunch, on a seal too, through the sun's direct light and the cavity", () => {
+    // The crunch is light, not relief, and its broadest scale is a patch tens
+    // of metres across: a ribbon without it reads lighter or darker than the
+    // paint beside it (10% on the tone test's gravel when it had none).
+    const crunch = (wgsl: string, p: string) => between(wgsl, `let ${p}GrainCrunch = `, `* ${p}GrainCrunchGain * ${p}GrainCrunch);\n`);
+    expect(crunch(ribbon, "road")).toBe(asRibbon(crunch(terrain, "terrain")));
+    expect(ribbon.indexOf("let roadGrainCrunch = ")).toBeLessThan(ribbon.indexOf("if (!roadSealed) {"));
+    expect(ribbon).toContain("var roadSurfaceCavity = clamp(roadTexel.cavity * roadCavity, 0.0, 1.0);");
+    expect(ribbon).toContain("diffuse$2.rgb * roadGrainDirect,");
+  });
+});
+
 describe("the crunch shadows the sward, and the sward is matte", () => {
   const plugin = readSource("src/render/webgpu/terrain/TerrainSurfacePlugin.ts");
+  // The reads come from a generator the roads' ribbon shares, so they are
+  // counted in the WGSL the terrain compiles.
+  const fragment = fragmentWgsl((material) => new TerrainSurfacePlugin(material));
 
   it("reads the crunch from the three texels already fetched", () => {
     // No new fetch: the crunch is the albedo array's fourth channel, and the
     // composite has exactly the three reads it had before it.
-    expect(plugin).toContain(
+    expect(plugin).toContain("let ${p}GrainCrunch = ${p}Grain0.w + 0.8 * ${p}Grain1.w + ${p}Grain2.w;");
+    expect(fragment).toContain(
       "let terrainGrainCrunch = terrainGrain0.w + 0.8 * terrainGrain1.w + terrainGrain2.w;",
     );
-    expect(plugin.split("terrainGroundGrainFetch(\n").length - 1).toBe(3);
+    expect(fragment.split("terrainGroundGrainFetch(\n").length - 1).toBe(3);
   });
 
   it("dims the sun through the direct multiplier and the sky through the cavity", () => {
     // Direct and ambient each once: the sun's share rides the same multiplier
     // as the canopy and scrub shadows, faded out under runway paint.
     expect(plugin).toContain("* mix(terrainGrainDirect, 1.0, clamp(terrainRunwayPaved, 0.0, 1.0));");
-    expect(plugin).toContain("terrainCavity *= max(0.25, 1.0 + ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.ambient)}");
+    expect(plugin).toContain("${p}Cavity *= max(0.25, 1.0 + ${terrainWgslFloat(GROUND_GRAIN_CRUNCH.ambient)}");
     // Looking down-sun the gaps hide behind what shades them.
-    expect(plugin).toContain("terrainGrainShadowsSeen * terrainGrainCrunch");
+    expect(plugin).toContain("${p}GrainShadowsSeen * ${p}GrainCrunch");
     expect(GROUND_GRAIN_CRUNCH.hotspot).toBeGreaterThan(0);
     expect(GROUND_GRAIN_CRUNCH.hotspot).toBeLessThan(1);
   });
@@ -340,7 +440,7 @@ describe("the crunch shadows the sward, and the sward is matte", () => {
     expect(gains.snow).toBe(Math.min(gains.vegetation, gains.rock, gains.snow, gains.other));
     // Bounded both ways: a gap never goes black, and never brightens past
     // what a lit top can.
-    expect(plugin).toContain("terrainGrainDirect = max(0.25, 1.0 + ");
+    expect(plugin).toContain("${p}GrainDirect = max(0.25, 1.0 + ");
   });
 
   it("trims the sward's specular to the vegetation materials' own", () => {

@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-import { generateDetailCell } from "@/src/render/webgpu/detail/generation";
+import { detailCellPlantExclusions, generateDetailCell } from "@/src/render/webgpu/detail/generation";
 import {
   DetailInstanceBounds,
   DetailInstanceWriter,
@@ -22,12 +22,15 @@ import {
 import {
   createWorld,
   infrastructureIndex,
-  infrastructurePlantExclusions,
   sampleTerrain,
   withAirports,
-  type InfrastructurePlantExclusion,
   type WorldDefinition,
 } from "@/src/world";
+import {
+  applyInfrastructureRegionsUpdate,
+  unpackInfrastructureRegionsPost,
+  type InfrastructureRegionsPost,
+} from "@/src/world/infrastructureSync";
 import {
   airfieldStructureExclusionSites,
   type StructureExclusionSite,
@@ -143,8 +146,6 @@ export class DetailWorkerRuntime {
    * hangars' own siting uses, NOT the seed string's hash.
    */
   private structureSites: readonly StructureExclusionSite[] = [];
-  /** Built ground no plant grows on, rebuilt with the world like the sites. */
-  private plantExclusions: readonly InfrastructurePlantExclusion[] = [];
   private cellSizeMeters = 512;
   private seaLevelMeters = 0;
   private presentationCatalog: DetailPresentationBuildCatalog | null = null;
@@ -193,6 +194,10 @@ export class DetailWorkerRuntime {
       case "airports":
         this.runDeferredGenerates();
         this.setAirports(command.airports);
+        return;
+      case "infrastructure":
+        this.runDeferredGenerates();
+        this.applyInfrastructure(command.update);
         return;
       case "terrainMacro":
         this.runDeferredGenerates();
@@ -254,6 +259,7 @@ export class DetailWorkerRuntime {
     this.cancelAllPresentationBuilds();
     this.retainedCells.clear();
     this.adoptWorld(command.world ?? createWorld(command.worldSeed));
+    if (command.infrastructure) this.applyInfrastructure(command.infrastructure);
     this.cellSizeMeters = command.cellSizeMeters;
     this.seaLevelMeters = command.seaLevelMeters;
     this.presentationCatalog = command.presentationCatalog ?? null;
@@ -296,7 +302,21 @@ export class DetailWorkerRuntime {
     // `airports` is absent only on a world built by hand before it existed.
     const airports = world.airports ?? (world.airport ? [world.airport] : []);
     this.structureSites = airfieldStructureExclusionSites(airports, world.seedHash);
-    this.plantExclusions = infrastructurePlantExclusions(infrastructureIndex(world));
+  }
+
+  /**
+   * The main thread's streamed regions (roads), into this worker's copy of
+   * the stage: every generate after it reads them, through the terrain
+   * sampler and the plant exclusions both. Pages the change reaches are
+   * dropped, as the simulation worker drops its own; retained cells are the
+   * main thread's to invalidate, as for an airport change.
+   */
+  private applyInfrastructure(post: InfrastructureRegionsPost): void {
+    if (!this.world) return;
+    const update = unpackInfrastructureRegionsPost(post);
+    const change = applyInfrastructureRegionsUpdate(this.world, update);
+    if (update.reset) this.terrainAuthority.applyInfrastructureReset();
+    else if (change) this.terrainAuthority.applyInfrastructureChange(change);
   }
 
   private generate(command: GenerateCommand): void {
@@ -322,7 +342,12 @@ export class DetailWorkerRuntime {
         ...(this.structureSites.length > 0
           ? { structureExclusionSites: this.structureSites }
           : {}),
-        ...(this.plantExclusions.length > 0 ? { plantExclusions: this.plantExclusions } : {}),
+        plantExclusions: detailCellPlantExclusions(
+          infrastructureIndex(activeWorld),
+          command.cellX,
+          command.cellZ,
+          this.cellSizeMeters,
+        ),
       });
       if (cell.key !== command.key) {
         throw new Error(`Detail worker generated ${cell.key} for request ${command.key}`);

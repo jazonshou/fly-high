@@ -1817,7 +1817,7 @@ export class BoatSimulator implements SurfaceVehicleSimulator {
   }
 
   /** The seam's snapshot: pose, engine, and the boat payload the HUD and renderer read. */
-  snapshot(): SurfaceVehicleSnapshot {
+  snapshot(): SurfaceVehicleSnapshot & { payload: BoatVisualState } {
     const body = this.body;
     const pt = this.powertrain;
     return {

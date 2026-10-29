@@ -1,4 +1,13 @@
-import { hangarFootprint } from "../airfield/AirfieldStructures";
+import {
+  FUEL_TANK_LENGTH_METERS,
+  FUEL_TANK_RADIUS_METERS,
+  FUEL_TANK_SADDLE_FRACTIONS,
+  fuelTankPlacements,
+  hangarFootprint,
+  TOWER_ALONG_FRACTION,
+  TOWER_LATERAL_OFFSET_METERS,
+  TOWER_PLAN_RADIUS_METERS,
+} from "../airfield/AirfieldSiting";
 import { DEFAULT_AIRPORT, runwayToWorld } from "../../../world/airport";
 import { AIRFIELD_LIGHTING_PROFILE } from "../lighting/AirfieldLighting";
 import { runwayPlatformHeight } from "../terrain/RunwayEarthworks";
@@ -390,18 +399,23 @@ export function buildWindsockPart(
 // `render.webgpu-airfield-layout.test.ts` asserts no two structures overlap in
 // both. A band of expressions cannot disagree with the code; a band of numbers
 // just did.
+//
+// The tower's and the fuel farm's placements are pure and live in
+// `AirfieldSiting`, where a worker can read them without Babylon.
 // ---------------------------------------------------------------------------
 
-/** The ATC tower's placement, exported so the band can derive rather than restate. */
-export const TOWER_LATERAL_OFFSET_METERS = 95;
-export const TOWER_ALONG_FRACTION = 0.06;
-/** Plan radius of the tower's widest element, for the band's across span. */
-export const TOWER_PLAN_RADIUS_METERS = 7;
-
-/** A bulk avgas tank: 12 m long, 2.5 m diameter, horizontal on saddles. */
-export const FUEL_TANK_LENGTH_METERS = 12;
-export const FUEL_TANK_RADIUS_METERS = 1.25;
-export const FUEL_FARM_LATERAL_OFFSET_METERS = 135;
+export {
+  FUEL_FARM_LATERAL_OFFSET_METERS,
+  FUEL_TANK_COUNT,
+  FUEL_TANK_LENGTH_METERS,
+  FUEL_TANK_PITCH_METERS,
+  FUEL_TANK_RADIUS_METERS,
+  FUEL_TANK_SADDLE_FRACTIONS,
+  fuelTankPlacements,
+  TOWER_ALONG_FRACTION,
+  TOWER_LATERAL_OFFSET_METERS,
+  TOWER_PLAN_RADIUS_METERS,
+} from "../airfield/AirfieldSiting";
 
 /** ICAO Annex 14 perimeter fencing: 2.4 m posts at 3 m centres. */
 export const FENCE_POST_HEIGHT_METERS = 2.4;
@@ -751,6 +765,18 @@ export function fenceApproachGapHalfWidthMeters(): number {
   return AIRFIELD_LIGHTING_PROFILE.approachCrossbarLengthMeters / 2 + 6;
 }
 
+/**
+ * Where a road passes through the perimeter's landside (+across) run: no post
+ * stands, and no rail runs, within `halfWidthMeters` of `along` (runway-local).
+ * The home field's access road (`airportRoadFenceOpening`) is the one there is.
+ */
+export interface FenceOpening {
+  readonly along: number;
+  readonly halfWidthMeters: number;
+}
+
+const NO_FENCE_OPENINGS: readonly FenceOpening[] = Object.freeze([]);
+
 export interface FenceStation {
   readonly along: number;
   readonly across: number;
@@ -769,6 +795,7 @@ export interface FenceStation {
  */
 export function perimeterFenceStations(
   airport: Readonly<AirportDefinition>,
+  openings: readonly FenceOpening[] = NO_FENCE_OPENINGS,
 ): readonly FenceStation[] {
   const halfLength = airport.runwayLength / 2 + airport.endSafetyArea;
   const halfWidth = FENCE_LATERAL_OFFSET_METERS;
@@ -794,6 +821,15 @@ export function perimeterFenceStations(
       // is. Leave that corridor open rather than standing a post in it.
       const onEndRun = Math.abs(spanAcross) > Math.abs(spanAlong);
       if (onEndRun && Math.abs(across) < gapHalfWidth) continue;
+      // A road through the landside run: neither this station's post nor
+      // the rail it runs to the next stands in the opening.
+      if (!onEndRun && across > 0) {
+        const next = along + spanAlong / bays;
+        const lo = Math.min(along, next);
+        const hi = Math.max(along, next);
+        if (openings.some((opening) =>
+          lo < opening.along + opening.halfWidthMeters && hi > opening.along - opening.halfWidthMeters)) continue;
+      }
       stations.push({ along, across, toNext: unit });
     }
   }
@@ -865,9 +901,10 @@ export function buildPerimeterFenceGeometry(
    * function pure for the winding guard, which does not have one.
    */
   heightAt: (along: number, across: number) => number = () => 0,
+  openings: readonly FenceOpening[] = NO_FENCE_OPENINGS,
 ): WindsockPartGeometry {
   const out = { positions: [] as number[], normals: [] as number[], indices: [] as number[] };
-  const stations = perimeterFenceStations(airport);
+  const stations = perimeterFenceStations(airport, openings);
   appendPerimeterFenceStations(out, stations, 0, stations.length, heightAt);
   return {
     positions: new Float32Array(out.positions),
@@ -920,34 +957,9 @@ export function appendPerimeterFenceStations(
 // ---------------------------------------------------------------------------
 // Fuel farm and signage. Both merged for the same reason the fence is — not
 // because they are large, but because a draw call is the scarce unit here and
-// there is no reason to spend six where one does.
+// there is no reason to spend six where one does. The tanks' count, pitch,
+// saddles and placements are `AirfieldSiting`'s.
 // ---------------------------------------------------------------------------
-
-/** Two tanks: avgas and jet A, which is what a field this size carries. */
-export const FUEL_TANK_COUNT = 2;
-/** Along-runway gap between tank centres, metres. */
-export const FUEL_TANK_PITCH_METERS = 18;
-/** Saddles per tank, at a quarter and three-quarters of its length. */
-export const FUEL_TANK_SADDLE_FRACTIONS: readonly number[] = Object.freeze([0.25, 0.75]);
-
-/**
- * Runway-local centres of each tank.
- *
- * On the POSITIVE `across` side, with the hangars — a fuel farm belongs beside
- * the apron, and the negative side carries the PAPI, which must not be occluded
- * from the approach.
- */
-export function fuelTankPlacements(): readonly { along: number; across: number }[] {
-  const out: { along: number; across: number }[] = [];
-  const span = (FUEL_TANK_COUNT - 1) * FUEL_TANK_PITCH_METERS;
-  for (let index = 0; index < FUEL_TANK_COUNT; index += 1) {
-    out.push({
-      along: -span / 2 + index * FUEL_TANK_PITCH_METERS,
-      across: FUEL_FARM_LATERAL_OFFSET_METERS,
-    });
-  }
-  return out;
-}
 
 /** The fuel farm as one mesh: tanks lying along the runway, on their saddles. */
 export function buildFuelFarmGeometry(

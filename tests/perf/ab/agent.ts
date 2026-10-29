@@ -73,7 +73,8 @@ import {
 import { setGpuPassLabelDecorator } from "../gpuPassLabels";
 import { armGpuPassTiming, collectGpuPassTiming, installGpuPassTiming } from "../gpuPassTiming";
 import { beginGpuWorkWindow, endGpuWorkWindow, installGpuWorkCounters } from "../gpuWorkCounters";
-import { boatShotState, resolveShotPlacement } from "../shotPlacement";
+import { carShotEffectsHistoryFrames } from "../carShotState";
+import { boatShotState, carShotState, resolveShotPlacement } from "../shotPlacement";
 import { FlightBakeProbe, readBakeStats } from "./bakeProbe";
 import { DetailWatchdogProbe, type DetailWatchdogSample } from "./detailWatchdog";
 import { renderAfterHitch } from "./flightHitch";
@@ -624,14 +625,19 @@ async function ensureRenderer(
   worldEvolution: WorldEvolution,
   climateProvince: PerfCaptureShotDefinition["climateProvince"],
   landforms: PerfCaptureShotDefinition["landforms"],
-  boat: boolean,
+  vehicle: "speedboat" | "landcruiser" | null,
   fresh = false,
 ): Promise<void> {
   if (!config) throw new Error("perf-ab agent: configure() first");
-  // A boat shot is a boundary too: its renderer is built with the speedboat.
-  const forcedKey = climateProvince === undefined && landforms === undefined && !boat
+  // A boat or car shot is a boundary too: its renderer is built with its vehicle.
+  const boat = vehicle === "speedboat";
+  const forcedKey = climateProvince === undefined && landforms === undefined && vehicle === null
     ? null
-    : JSON.stringify({ climateProvince: climateProvince ?? null, landforms: landforms ?? null, ...(boat ? { boat } : {}) });
+    : JSON.stringify({
+        climateProvince: climateProvince ?? null,
+        landforms: landforms ?? null,
+        ...(boat ? { boat } : vehicle ? { vehicle } : {}),
+      });
   if (!fresh && renderer && activeWorldEvolution === worldEvolution && activeForcedKey === forcedKey) return;
   // As the capture's W-7 swap: dispose fully BEFORE creating, so two worlds
   // are never resident at once.
@@ -677,8 +683,8 @@ async function ensureRenderer(
     pinnedRenderScale: profile.renderScale,
     // The capture's rig, for the same reason: the cockpit shots were placed
     // for it (tests/render.cockpit-rig.test.ts lists the callers). A boat's
-    // helm view is the gameplay one, as the capture's.
-    ...(boat ? { vehicle: "speedboat" as const } : { cockpitRigOverride: PERF_COCKPIT_RIG }),
+    // helm and a car's driver's seat are the gameplay ones, as the capture's.
+    ...(vehicle ? { vehicle } : { cockpitRigOverride: PERF_COCKPIT_RIG }),
     ...(activeWorld.airport ? { runway: activeWorld.airport } : {}),
   });
   activeWorldEvolution = worldEvolution;
@@ -837,7 +843,7 @@ const agent: PerfAgent = {
       shot.worldEvolution ?? "analytic",
       shot.climateProvince,
       shot.landforms,
-      shot.boat !== undefined,
+      shot.boat ? "speedboat" : shot.car ? "landcruiser" : null,
       request.freshRenderer,
     );
     const active = requireRenderer();
@@ -886,6 +892,8 @@ const agent: PerfAgent = {
     const heading = headingVectorFromYaw(yawDegrees);
     const state: FlightVisualState = shot.boat
       ? boatShotState(activeWorld, shot.boat, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
+      : shot.car
+      ? carShotState(activeWorld, shot.car, { x: positionX, z: positionZ, yawDegrees }, simulationTime)
       : {
           ...INITIAL_VISUAL_STATE,
           position: { x: positionX, y: altitude, z: positionZ },
@@ -1018,14 +1026,25 @@ const agent: PerfAgent = {
     const shot = requireContext();
     const renderer = requireRenderer();
     const fence = capability("waitForGpuIdleForCapture");
-    setGpuDrawsSuppressed(false);
-    await fence();
     // The capture's time pin and the two pins that go with it, in its order:
     // keyed on the CANONICAL index, then the ocean's cascade cadence and the
     // wildlife restarted at that instant, then the settle.
     const canonicalShotIndex = shot.canonicalShotIndex;
-    simulationTime = 500 + canonicalShotIndex * 120
+    const pinned = 500 + canonicalShotIndex * 120
       + (shot.shot.simulationTimeOffsetSeconds ?? 0);
+    // A car shot's effects first run up to the pin (`effectsHistorySeconds`),
+    // as in the capture; here with the draws still gated, as the stream was.
+    const history = carShotEffectsHistoryFrames(shot.shot.car);
+    simulationTime = pinned - history / 60;
+    for (let frame = 0; frame < history; frame += 1) {
+      simulationTime += 1 / 60;
+      renderFrame({ ...shot.state, simulationTime });
+      await yieldToTasks();
+      if (frame % 4 === 3) await fence();
+    }
+    setGpuDrawsSuppressed(false);
+    await fence();
+    simulationTime = pinned;
     renderer.pinOceanCascadePhaseForCapture();
     renderer.pinWildlifeForCapture();
     const countFrom = request.settleFrames - request.countFrames;

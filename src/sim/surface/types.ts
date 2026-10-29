@@ -1,8 +1,12 @@
 import type {
   BoatControlState,
+  CarControlState,
+  CarSetup,
   FlightMode,
   VehicleVisualPayload,
 } from "@/src/game/types";
+import type { TerrainCollisionSample, WorldDefinition } from "@/src/world/types";
+import type { ColliderWorld } from "../colliders";
 import type { Quaternion, Vec3 } from "../types";
 import type { VehicleSimulator } from "../vehicle";
 import type { HullWaterSampler, WaterSurfaceAuthority } from "../water/types";
@@ -18,6 +22,29 @@ export interface SurfaceVehicleEnvironment {
   wind: Vec3;
   /** Terrain (sea bed) height authority, the one aircraft collide with. */
   bedHeight: (x: number, z: number) => number;
+  /**
+   * The full contact sample from the same authority (`sampleGroundContact`):
+   * height, normal, runway and friction, into a caller-owned target. The
+   * worker always provides it; a boat's tests and probes may leave it out.
+   */
+  groundContact?: (x: number, z: number, target: TerrainCollisionSample) => TerrainCollisionSample;
+  /** The world, for the surface classifier's inputs; null before the worker has one. */
+  world?: WorldDefinition | null;
+  /** The world's static colliders (buildings, guardrails); null where none are built. */
+  colliders?: ColliderWorld | null;
+  /**
+   * Whether the published L0 terrain pages answer everywhere within `radius`
+   * of (x, z) (`TerrainAuthority.covers`). A car waits on it at its start so
+   * it never settles on a fallback height; absent (tests, probes), it never
+   * waits.
+   */
+  groundReady?: (x: number, z: number, radius: number) => boolean;
+  /**
+   * The calendar day the renderer paints the terrain for (its clock's
+   * `dayOfYear`), so the car's seasonal snow is where the snow is drawn.
+   * Absent, the reference day.
+   */
+  dayOfYear?: number;
   /** Positive gravitational acceleration, m/s². */
   gravity: number;
 }
@@ -29,6 +56,8 @@ export interface SurfaceVehicleEnvironment {
 export interface SurfaceVehicleControls {
   assist: FlightMode;
   boat: BoatControlState;
+  /** The car's block (`ControlState.car`); the worker always sets it, boat probes need not. */
+  car?: CarControlState;
 }
 
 /** The common pose and engine fields, plus the class payload the HUD and renderer read. */
@@ -59,7 +88,30 @@ export interface SurfaceVehicleSpawn {
   heading: number;
   /** Starts made fast to a berth (the dock start). */
   moored: boolean;
+  /** The car's gearbox and clutch choice; absent for a boat. */
+  car?: CarSetup;
 }
+
+export const NEUTRAL_CAR_CONTROLS: Readonly<CarControlState> = Object.freeze({
+  accelerator: 0,
+  brake: 0,
+  steer: 0,
+  handbrake: 0,
+  clutch: 0,
+  shiftUpPresses: 0,
+  shiftDownPresses: 0,
+  autoModePresses: 0,
+  rangePresses: 0,
+  lockPresses: 0,
+  downhillAssistPresses: 0,
+  headlightPresses: 0,
+  tyrePressure: "road",
+});
+
+export const DEFAULT_CAR_SETUP: Readonly<CarSetup> = Object.freeze({
+  gearbox: "automatic",
+  manualClutch: false,
+});
 
 export const NEUTRAL_BOAT_CONTROLS: Readonly<BoatControlState> = Object.freeze({
   lever: 0,

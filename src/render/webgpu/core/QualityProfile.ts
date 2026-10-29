@@ -418,6 +418,60 @@ export interface WebGpuQualityProfile {
    */
   readonly boatWakeTrailSeconds: number;
   /**
+   * The LandCruiser: the instance cap on what it throws into the air
+   * (`CarParticleSystem`): dust off dry ground, mud, water off the tyres in a
+   * ford, the bow splash and exhaust smoke. One instanced draw at every cap,
+   * none while nothing is in the air; the emitters scale their rates to the
+   * cap, so a low cap is a thinner cloud rather than a shorter one. Car
+   * sessions only.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly vehicleParticleBudget: number;
+  /**
+   * The LandCruiser: the ring of tyre-track segments every tyre's print is laid
+   * in (`CarTrackSystem`), one instanced draw. A straight segment runs 2 m, so
+   * 1,024 keep about half a kilometre of four prints. 0 is OFF: no mesh, no
+   * material and no draw. Car sessions only.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly tyreTrackSegments: number;
+  /**
+   * Car sessions only: how far round the car the terrain may draw L0 below
+   * `finestResidentLevel`, metres, so the ground under the wheels is the
+   * ground the physics drives on (its 2 m lattice) on a tier whose floor is
+   * L1. 0 where the floor is already L0. The patch geomorphs to L1 over its
+   * outer `vehicleNearTerrainL0BandMeters`, and its nodes come on top of
+   * `cdlodNodeBudget`: at most `terrainNearFloorNodeAllowance` more (183 at
+   * 160 m), with the closures that ring it in L1.
+   */
+  readonly vehicleNearTerrainL0RadiusMeters: number;
+  /**
+   * The outer band of `vehicleNearTerrainL0RadiusMeters` over which the L0
+   * patch geomorphs to L1, metres, reaching it at the disc's edge so a node
+   * leaving the disc merges invisibly. No wider than the radius.
+   */
+  readonly vehicleNearTerrainL0BandMeters: number;
+  /**
+   * The roads' ribbons (`RoadSurfaceSystem`): how far from the camera the
+   * crisp running surface, its shoulders, a track's two ruts and the sealed
+   * road's edge lines are drawn over the splat paint, metres, decided per
+   * 128 m chunk. One draw while any chunk is in reach and none otherwise;
+   * beyond it the splat alone paints the road. 0 is OFF. Every session.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly roadRibbonRangeMeters: number;
+  /**
+   * Guardrails: how far from the camera their posts and beams are drawn,
+   * metres, decided per 128 m chunk; one draw. 0 is OFF. The car's colliders
+   * are the simulation's and never depend on it. Every session.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly barrierDrawRangeMeters: number;
+  /**
    * The home marina's near meshes (decks, pontoons, walls and buildings, the
    * piles and posts, the moored boats) cast sun shadows: three thin-instanced
    * casters, 2 draws each at two cascades, and only while the camera is
@@ -535,6 +589,12 @@ function resolveBaseQualityProfile(
       volcanicSteamMaxWisps: 0,
       boatSprayParticleCap: 256,
       boatWakeTrailSeconds: 12,
+      vehicleParticleBudget: 32,
+      tyreTrackSegments: 0,
+      vehicleNearTerrainL0RadiusMeters: 160,
+      vehicleNearTerrainL0BandMeters: 64,
+      roadRibbonRangeMeters: 150,
+      barrierDrawRangeMeters: 300,
       marinaCastsShadows: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
@@ -642,6 +702,12 @@ function resolveBaseQualityProfile(
       volcanicSteamMaxWisps: 128,
       boatSprayParticleCap: 1_024,
       boatWakeTrailSeconds: 24,
+      vehicleParticleBudget: 128,
+      tyreTrackSegments: 256,
+      vehicleNearTerrainL0RadiusMeters: 0,
+      vehicleNearTerrainL0BandMeters: 0,
+      roadRibbonRangeMeters: 500,
+      barrierDrawRangeMeters: 600,
       marinaCastsShadows: true,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
@@ -738,6 +804,12 @@ function resolveBaseQualityProfile(
       volcanicSteamMaxWisps: 192,
       boatSprayParticleCap: 4_096,
       boatWakeTrailSeconds: 40,
+      vehicleParticleBudget: 256,
+      tyreTrackSegments: 512,
+      vehicleNearTerrainL0RadiusMeters: 0,
+      vehicleNearTerrainL0BandMeters: 0,
+      roadRibbonRangeMeters: 800,
+      barrierDrawRangeMeters: 900,
       marinaCastsShadows: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
@@ -836,6 +908,12 @@ function resolveBaseQualityProfile(
     volcanicSteamMaxWisps: 256,
     boatSprayParticleCap: 4_096,
     boatWakeTrailSeconds: 40,
+    vehicleParticleBudget: 384,
+    tyreTrackSegments: 1_024,
+    vehicleNearTerrainL0RadiusMeters: 0,
+    vehicleNearTerrainL0BandMeters: 0,
+    roadRibbonRangeMeters: 1_200,
+    barrierDrawRangeMeters: 1_200,
     marinaCastsShadows: true,
     spawnedAirfields: {
       maxStructureFields: 2,
