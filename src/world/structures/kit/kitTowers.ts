@@ -74,29 +74,58 @@ interface StairRun {
   readonly railColour: number;
   /** Railing on the outer edge (open towers) or the inner edge (the lighthouse's void). */
   readonly railOuter: boolean;
+  /** The stair comes up through a floor at `to` (the lighthouse's lamp room): its last walkway is flush with it. */
+  readonly capped?: boolean;
   readonly indoor: number;
+}
+
+interface Flight {
+  /** Index into SIDES. */
+  readonly side: number;
+  /** Floor it climbs from, its riser, its riser count and the walkway's top. */
+  readonly level: number;
+  readonly rise: number;
+  readonly k: number;
+  readonly top: number;
+  /** Along the side: where the first tread starts and where the walkway starts. */
+  readonly start: number;
+  readonly flightEnd: number;
+}
+
+/** The flights of a winding stair, bottom to top: one a side, round and round. */
+function stairFlights(run: StairRun): Flight[] {
+  const total = run.to - run.from;
+  const risers = Math.max(1, Math.round(total / 0.18));
+  const rise = total / risers;
+  const count = Math.ceil(risers / FLIGHT_RISERS);
+  const out: Flight[] = [];
+  let level = run.from;
+  let done = 0;
+  for (let j = 0; j < count; j += 1) {
+    const k = Math.min(FLIGHT_RISERS, risers - done);
+    const start = -run.half;
+    const top = level + k * rise;
+    out.push({ side: j % 4, level, rise, k, top, start, flightEnd: start + Math.max(0, k - 1) * STRUCTURE_STAIR_TREAD });
+    level = top;
+    done += k;
+  }
+  return out;
 }
 
 /**
  * Flights round the four sides from `from` up to `to`: each side starts with
  * a flight and carries on as a walkway to the next corner square. Returns
- * the side the last flight climbs and the along position its walkway starts.
+ * the side the last flight climbs, the along position its walkway starts
+ * and the highest walkway top at each side's far corner square.
  */
 function windingStair(b: KitBuilder, run: StairRun): { side: number; walkFrom: number; cornerTops: number[] } {
-  const total = run.to - run.from;
-  const risers = Math.max(1, Math.round(total / 0.18));
-  const rise = total / risers;
-  const flights = Math.ceil(risers / FLIGHT_RISERS);
-  let level = run.from;
-  let done = 0;
+  const flights = stairFlights(run);
   const cornerTops = [NaN, NaN, NaN, NaN];
   let last = { side: 0, walkFrom: -run.half, cornerTops };
-  for (let j = 0; j < flights; j += 1) {
-    const side = SIDES[j % 4]!;
-    const k = Math.min(FLIGHT_RISERS, risers - done);
-    const start = -run.half;
-    const flightEnd = start + Math.max(0, k - 1) * STRUCTURE_STAIR_TREAD;
-    const top = level + k * rise;
+  flights.forEach((f, j) => {
+    const side = SIDES[f.side]!;
+    const { level, rise, k, top, start, flightEnd } = f;
+    const final = j === flights.length - 1;
     if (b.closed && k > 1) {
       // Seen from outside a flight is a sloped slab between its stringers: one box.
       const mid = (run.c0 + run.c1) * 0.5;
@@ -128,7 +157,7 @@ function windingStair(b: KitBuilder, run: StairRun): { side: number; walkFrom: n
       const h = STRUCTURE_RAILING_HEIGHT - 0.045;
       beam(b, at(side, start, rc, level + h), at(side, flightEnd, rc, top + h), 0.08, "timber", run.railColour, FACE.long, run.indoor, 0.07);
       const far = run.half + (run.railOuter ? band : 0);
-      beam(b, at(side, flightEnd, rc, top + h), at(side, far, rc, top + h), 0.08, "timber", run.railColour, FACE.long, run.indoor, 0.07);
+      if (!(final && run.capped)) beam(b, at(side, flightEnd, rc, top + h), at(side, far, rc, top + h), 0.08, "timber", run.railColour, FACE.long, run.indoor, 0.07);
       if (run.railOuter) {
         const next = SIDES[(j + 1) % 4]!;
         beam(b, at(side, far - 0.04, rc, top + h), at(next, -run.half, rc, top + h), 0.08, "timber", run.railColour, FACE.long, run.indoor, 0.07);
@@ -140,7 +169,10 @@ function windingStair(b: KitBuilder, run: StairRun): { side: number; walkFrom: n
       const r1 = at(side, flightEnd, rc, top + STRUCTURE_RAILING_HEIGHT - 0.045);
       beam(b, r0, r1, 0.08, "timber", run.railColour, FACE.all, run.indoor, 0.07);
       b.capsule(r0, r1, 0.05, "fence");
-      railing(b, at(side, flightEnd, rc, 0), at(side, run.half + (run.railOuter ? band : 0), rc, 0), top, STRUCTURE_RAILING_HEIGHT, run.railColour, run.indoor, false);
+      // (The last walkway of a stair that comes up through a floor is flush with it: no railing.)
+      if (!(final && run.capped)) {
+        railing(b, at(side, flightEnd, rc, 0), at(side, run.half + (run.railOuter ? band : 0), rc, 0), top, STRUCTURE_RAILING_HEIGHT, run.railColour, run.indoor, false);
+      }
       if (run.railOuter) {
         // Round the corner square's outer side.
         const next = SIDES[(j + 1) % 4]!;
@@ -149,11 +181,9 @@ function windingStair(b: KitBuilder, run: StairRun): { side: number; walkFrom: n
         railing(b, cornerA, cornerB, top, STRUCTURE_RAILING_HEIGHT, run.railColour, run.indoor, false);
       }
     }
-    last = { side: j % 4, walkFrom: flightEnd, cornerTops };
-    cornerTops[j % 4] = Math.max(Number.isNaN(cornerTops[j % 4]!) ? -Infinity : cornerTops[j % 4]!, top);
-    level = top;
-    done += k;
-  }
+    last = { side: f.side, walkFrom: flightEnd, cornerTops };
+    cornerTops[f.side] = Math.max(Number.isNaN(cornerTops[f.side]!) ? -Infinity : cornerTops[f.side]!, top);
+  });
   return last;
 }
 
@@ -223,9 +253,10 @@ function buildOpenTower(b: KitBuilder, record: StructureRecord, look: StructureL
       }
     }
   }
-  // The platform (or cab floor) and the stair round the tower.
-  const deckHalfX = hw + 0.02;
-  const deckHalfZ = hd + 0.02;
+  // The platform (or cab floor) and the stair round the tower: the deck runs out to the stair's
+  // band, so the last walkway steps straight onto it.
+  const deckHalfX = hw + BAND_GAP;
+  const deckHalfZ = hd + BAND_GAP;
   b.box(-deckHalfX, deckHalfX, H - 0.18, H, -deckHalfZ, deckHalfZ, "floor", deckColour, b.block ? FACE.all & ~FACE.ny : FACE.all);
   b.solid(-deckHalfX, deckHalfX, H - 0.18, H, -deckHalfZ, deckHalfZ, "timber");
   const run: StairRun = {
@@ -366,22 +397,30 @@ function buildCab(b: KitBuilder, record: StructureRecord, look: StructureLook, h
     if (leafA + STRUCTURE_DOOR_WIDTH < half - t) {
       sideBox(b, arrivalSide, leafA, leafA + STRUCTURE_DOOR_WIDTH, half - t - 0.05, half - t - 0.005, H + 0.01, H + STRUCTURE_DOOR_HEIGHT - 0.01, "boards", look.doorColour, FACE.all & ~FACE.ny, indoor);
     }
-    // The walkway's railing goes round the top: the cab sits inside the gallery the stair band makes.
-    const railColour = shade(look.timberColour, 1.15);
-    for (let i = 0; i < 4; i += 1) {
-      const side = SIDES[i]!;
-      if (side === arrivalSide) continue;
-      const c1 = run.c1;
-      railing(b, at(side, -run.half, c1 - 0.04, 0), at(side, run.half + (c1 - run.c0), c1 - 0.04, 0), H, STRUCTURE_RAILING_HEIGHT, railColour, 0, false);
-      sideBox(b, side, -run.half, run.half + (c1 - run.c0), run.c0, run.c1, H - TREAD, H, "timber", shade(look.timberColour, 1.3), FACE.all);
-      sideSolid(b, side, -run.half, run.half + (c1 - run.c0), run.c0, run.c1, H - TREAD, H, "timber");
+  }
+  // The catwalk round the cab, on the side past the arrival alone: the arrival side carries its own
+  // walkway, and the walkways of the two flights before it run under the other two sides within
+  // 1.5 and 3 m, which need their headroom. The side after the arrival is a whole lap above its flight.
+  const railColour = shade(look.timberColour, 1.15);
+  const a = SIDES.indexOf(arrivalSide);
+  const band = run.c1 - run.c0;
+  const rc = run.c1 - 0.04;
+  for (const i of [(a + 1) % 4]) {
+    const side = SIDES[i]!;
+    sideBox(b, side, -run.half, run.half + band, run.c0, run.c1, H - TREAD, H, "timber", shade(look.timberColour, 1.3), b.open ? FACE.all : FACE.all & ~FACE.ny);
+    sideSolid(b, side, -run.half, run.half + band, run.c0, run.c1, H - TREAD, H, "timber");
+    if (b.open) {
+      railing(b, at(side, -run.half, rc, 0), at(side, run.half + band, rc, 0), H, STRUCTURE_RAILING_HEIGHT, railColour, 0, false);
+    } else {
+      beam(b, at(side, -run.half, rc, H + STRUCTURE_RAILING_HEIGHT - 0.045), at(side, run.half + band, rc, H + STRUCTURE_RAILING_HEIGHT - 0.045), 0.08, "timber", railColour, FACE.long, 0, 0.07);
     }
+  }
+  // Across the band where the catwalk stops, over the drop to the flights below.
+  const end = SIDES[(a + 2) % 4]!;
+  if (b.open) {
+    railing(b, at(end, -run.half - 0.04, run.c0 + 0.02, 0), at(end, -run.half - 0.04, run.c1 - 0.02, 0), H, STRUCTURE_RAILING_HEIGHT, railColour, 0, false);
   } else {
-    // The closed cab's catwalk, as a band round the top.
-    for (let i = 0; i < 4; i += 1) {
-      const side = SIDES[i]!;
-      sideBox(b, side, -run.half, run.half + (run.c1 - run.c0), run.c0, run.c1, H - TREAD, H, "timber", shade(look.timberColour, 1.3), FACE.all & ~FACE.ny);
-    }
+    beam(b, at(end, -run.half - 0.04, run.c0 + 0.02, H + STRUCTURE_RAILING_HEIGHT - 0.045), at(end, -run.half - 0.04, run.c1 - 0.02, H + STRUCTURE_RAILING_HEIGHT - 0.045), 0.08, "timber", railColour, FACE.long, 0, 0.07);
   }
   void record;
 }
@@ -452,6 +491,22 @@ function buildLighthouse(b: KitBuilder, record: StructureRecord, look: Structure
     });
     return out;
   };
+  // The lamp room's glazing: three panes a side over a parapet, the front's middle one over the gallery door.
+  const lw = 0.12;
+  const parapet = 0.9;
+  const lampPanes = (i: number) => {
+    const edge = half - 0.1;
+    const a0 = i % 2 === 0 ? -edge + lw : -edge;
+    const a1 = i % 2 === 0 ? edge - lw : edge;
+    const out: { s0: number; s1: number; y0: number; y1: number }[] = [];
+    for (let p = 0; p < 3; p += 1) {
+      const s0 = a0 + ((a1 - a0) * p) / 3;
+      const s1 = a0 + ((a1 - a0) * (p + 1)) / 3;
+      const overDoor = i === 3 && s0 < STRUCTURE_DOOR_WIDTH * 0.5 && s1 > -STRUCTURE_DOOR_WIDTH * 0.5;
+      out.push({ s0: s0 + 0.03, s1: s1 - 0.03, y0: overDoor ? H + STRUCTURE_DOOR_HEIGHT : H + parapet, y1: eaveY - 0.05 });
+    }
+    return out;
+  };
   if (b.open) {
     b.volume("shaft", -inner, inner, 0, H - 0.25, -inner, inner);
     b.volume("lamp room", -half + 0.12, half - 0.12, H, H + lampH, -half + 0.12, half - 0.12);
@@ -464,8 +519,10 @@ function buildLighthouse(b: KitBuilder, record: StructureRecord, look: Structure
         const c = at(side, (h.s0 + h.s1) * 0.5, half, (h.y0 + h.y1) * 0.5);
         b.windowLight({ x: c[0], y: c[1], z: c[2], nx: side.o[0], nz: side.o[2], width: h.s1 - h.s0, height: h.y1 - h.y0 });
       }
-      const c = at(side, 0, half - 0.06, H + 1.6);
-      b.windowLight({ x: c[0], y: c[1], z: c[2], nx: side.o[0], nz: side.o[2], width: 2 * half - 0.6, height: 1.5 });
+      for (const pane of lampPanes(i)) {
+        const pc = at(side, (pane.s0 + pane.s1) * 0.5, half - 0.16, (pane.y0 + pane.y1) * 0.5);
+        b.windowLight({ x: pc[0], y: pc[1], z: pc[2], nx: side.o[0], nz: side.o[2], width: pane.s1 - pane.s0, height: pane.y1 - pane.y0 });
+      }
     }
   }
   const light = b.open ? structureIndoorLight({ colliders: [], volumes: b.volumes, portals: b.portals, windows: b.windows }) : null;
@@ -523,13 +580,35 @@ function buildLighthouse(b: KitBuilder, record: StructureRecord, look: Structure
 
   // The gallery: the shaft's top slab, cantilevered out, with a railing.
   const out = half + 0.5;
-  b.box(-out, out, H - 0.25, H, -out, out, "concrete", band, b.block ? FACE.all & ~FACE.ny : FACE.all);
+  // The stair round the inside of the shaft (open level): its last two flights come up through a well in the slab.
+  const run: StairRun = {
+    c0: inner - 0.95, c1: inner, half: inner - 0.95, from: 0, to: H,
+    material: "stone", surface: "concrete", colour: 0xa8a49c, railColour: 0x2a2b2c, railOuter: false, indoor: shaftIndoor, capped: true,
+  };
+  if (b.open) {
+    // The ring outside the shaft, each strip's face towards the shaft left out (the walls' plaster is there).
+    const ring: [number, number, number, number, number][] = [
+      [-out, out, inner, out, FACE.all & ~FACE.nz],
+      [-out, out, -out, -inner, FACE.all & ~FACE.pz],
+      [-out, -inner, -inner, inner, FACE.all & ~FACE.px],
+      [inner, out, -inner, inner, FACE.all & ~FACE.nx],
+    ];
+    for (const [x0, x1, z0, z1, faces] of ring) {
+      b.box(x0, x1, H - 0.25, H, z0, z1, "concrete", band, faces);
+      b.solid(x0, x1, H - 0.25, H, z0, z1, "stone");
+    }
+    // The lamp room's floor over the shaft, less the well: plaster under it and round the well's edges.
+    const well = lampRoomWell(run, H - 0.28);
+    for (const r of rectMinus({ x0: -inner, x1: inner, z0: -inner, z1: inner }, well.rects)) {
+      b.box(r.x0, r.x1, H - 0.28, H - 0.02, r.z0, r.z1, "plaster", 0xe2ddd2, FACE.sides | FACE.ny, shaftIndoor);
+      b.box(r.x0, r.x1, H - 0.02, H, r.z0, r.z1, "floor", 0x8a6a48, FACE.sides | FACE.py, lampIndoor);
+      b.solid(r.x0, r.x1, H - 0.28, H, r.z0, r.z1, "stone");
+    }
+    for (const [a, c] of well.rails) railing(b, a, c, H, STRUCTURE_RAILING_HEIGHT, 0x2a2b2c, lampIndoor, false);
+  } else {
+    b.box(-out, out, H - 0.25, H, -out, out, "concrete", band, b.block ? FACE.all & ~FACE.ny : FACE.all);
+  }
   if (!b.block) {
-    // Cut round the stair's arrival: the slab inside the shaft is drawn and solid only outside the well.
-    b.solid(-out, out, H - 0.25, H, -out, inner - 0.95, "stone");
-    b.solid(-out, -inner + 0.95, H - 0.25, H, inner - 0.95, out, "stone");
-    b.solid(inner, out, H - 0.25, H, inner - 0.95, out, "stone");
-    b.solid(-inner + 0.95, inner, H - 0.25, H, inner, out, "stone");
     for (let i = 0; i < 4; i += 1) {
       const side = SIDES[i]!;
       railing(b, at(side, -out + 0.05, out - 0.05, 0), at(side, out - 0.05, out - 0.05, 0), H, STRUCTURE_RAILING_HEIGHT, 0x2a2b2c, 0, false);
@@ -537,8 +616,6 @@ function buildLighthouse(b: KitBuilder, record: StructureRecord, look: Structure
   }
 
   // The lamp room: a low wall, glazing all round, a door onto the gallery at the front.
-  const lw = 0.12;
-  const parapet = 0.9;
   if (b.block) {
     b.box(-half + 0.1, half - 0.1, H, eaveY, -half + 0.1, half - 0.1, "window", look.glazingColour, FACE.sides);
   } else {
@@ -556,14 +633,13 @@ function buildLighthouse(b: KitBuilder, record: StructureRecord, look: Structure
           sideSolid(b, side, piece.a, piece.c, edge - lw, edge, piece.y0, piece.y1, "stone");
         }
       }
-      // Glazing between the parapet and the eave, in four panes a side.
+      // Glazing between the parapet and the eave, in three panes a side.
       const g0 = H + parapet;
       const g1 = eaveY - 0.05;
-      const panes = 3;
-      for (let p = 0; p < panes; p += 1) {
-        const s0 = a0 + ((a1 - a0) * p) / panes;
-        const s1 = a0 + ((a1 - a0) * (p + 1)) / panes;
-        const paneLo = doorHere && s0 < STRUCTURE_DOOR_WIDTH * 0.5 && s1 > -STRUCTURE_DOOR_WIDTH * 0.5 ? H + STRUCTURE_DOOR_HEIGHT : g0;
+      for (const pane of lampPanes(i)) {
+        const s0 = pane.s0 - 0.03;
+        const s1 = pane.s1 + 0.03;
+        const paneLo = pane.y0;
         if (b.open) {
           sideBox(b, side, s0 + 0.03, s1 - 0.03, edge - 0.07, edge - 0.058, paneLo, g1, "glass", 0x9fb4bc, outwardFace(side) | inwardFace(side));
           sideSolid(b, side, s0 + 0.03, s1 - 0.03, edge - 0.07, edge - 0.058, paneLo, g1, "glass");
@@ -596,15 +672,93 @@ function buildLighthouse(b: KitBuilder, record: StructureRecord, look: Structure
 
   if (!b.open) return;
   // The stair round the inside of the shaft, the void railed, up through the well into the lamp room.
-  const run: StairRun = {
-    c0: inner - 0.95, c1: inner, half: inner - 0.95, from: 0, to: H,
-    material: "stone", surface: "concrete", colour: 0xa8a49c, railColour: 0x2a2b2c, railOuter: false, indoor: shaftIndoor,
-  };
   windingStair(b, run);
   // Floor of the shaft.
   b.box(-inner, inner, -0.05, 0, -inner, inner, "concrete", 0x9a968e, FACE.py, shaftIndoor);
   b.solid(-inner, inner, base, 0, -inner, inner, "stone");
-  // The lamp room's floor round the well, and the well's railing.
-  b.box(-inner, inner, H - 0.02, H, -inner, inner, "floor", 0x8a6a48, FACE.py, lampIndoor);
-  b.box(-inner, inner, H - 0.28, H - 0.25, -inner, inner, "plaster", 0xe2ddd2, FACE.ny, shaftIndoor);
+}
+
+interface Rect {
+  readonly x0: number;
+  readonly x1: number;
+  readonly z0: number;
+  readonly z1: number;
+}
+
+/**
+ * The well a capped winding stair needs through the floor at `run.to`
+ * (underside at `underside`): over the last side's whole band, and over the
+ * side before it from the first tread without 2 m of headroom on to the
+ * corner. Returns the well's rectangles and the railings round its edges on
+ * the floor's side (the walls close the rest).
+ */
+function lampRoomWell(run: StairRun, underside: number): { rects: Rect[]; rails: [Vec3, Vec3][] } {
+  const flights = stairFlights(run);
+  const last = flights[flights.length - 1]!;
+  const prev = flights[flights.length - 2];
+  const band = run.c1 - run.c0;
+  const rectOf = (side: Side, a0: number, a1: number): Rect => {
+    const p = at(side, a0, run.c0, 0);
+    const q = at(side, a1, run.c1, 0);
+    return { x0: Math.min(p[0], q[0]), x1: Math.max(p[0], q[0]), z0: Math.min(p[2], q[2]), z1: Math.max(p[2], q[2]) };
+  };
+  const lastSide = SIDES[last.side]!;
+  const rects = [rectOf(lastSide, -run.half, run.half + band)];
+  const rc = run.c0 - 0.06;
+  const rails: [Vec3, Vec3][] = [[at(lastSide, -run.half + 0.06, rc, 0), at(lastSide, last.flightEnd, rc, 0)]];
+  if (prev) {
+    // The first of the previous flight's treads (or its walkway) that would leave under 2 m below the floor.
+    let from = prev.flightEnd;
+    for (let i = 1; i < prev.k; i += 1) {
+      if (prev.level + i * prev.rise + 2.0 > underside) {
+        from = prev.start + (i - 1) * STRUCTURE_STAIR_TREAD;
+        break;
+      }
+    }
+    from -= 0.05;
+    const prevSide = SIDES[prev.side]!;
+    rects.push(rectOf(prevSide, from, run.half + band));
+    rails.push([at(prevSide, from - 0.06, rc, 0), at(prevSide, run.half - 0.06, rc, 0)]);
+    rails.push([at(prevSide, from - 0.06, run.c0 - 0.06, 0), at(prevSide, from - 0.06, run.c1, 0)]);
+  }
+  return { rects, rails };
+}
+
+/** A rectangle less some rectangles, as few rectangles: columns between the holes' x edges, merged when alike. */
+function rectMinus(outer: Rect, holes: readonly Rect[]): Rect[] {
+  const clampX = (v: number) => Math.min(outer.x1, Math.max(outer.x0, v));
+  const clampZ = (v: number) => Math.min(outer.z1, Math.max(outer.z0, v));
+  const xs = [...new Set([outer.x0, outer.x1, ...holes.flatMap((h) => [clampX(h.x0), clampX(h.x1)])])].sort((p, q) => p - q);
+  const zs = [...new Set([outer.z0, outer.z1, ...holes.flatMap((h) => [clampZ(h.z0), clampZ(h.z1)])])].sort((p, q) => p - q);
+  const out: Rect[] = [];
+  let open: { x0: number; x1: number; spans: [number, number][] } | null = null;
+  const flush = () => {
+    if (open) for (const [z0, z1] of open.spans) out.push({ x0: open.x0, x1: open.x1, z0, z1 });
+  };
+  for (let i = 0; i + 1 < xs.length; i += 1) {
+    const x0 = xs[i]!;
+    const x1 = xs[i + 1]!;
+    if (x1 - x0 < 1e-6) continue;
+    const xm = (x0 + x1) * 0.5;
+    const spans: [number, number][] = [];
+    for (let k = 0; k + 1 < zs.length; k += 1) {
+      const z0 = zs[k]!;
+      const z1 = zs[k + 1]!;
+      if (z1 - z0 < 1e-6) continue;
+      const zm = (z0 + z1) * 0.5;
+      if (holes.some((h) => xm > h.x0 && xm < h.x1 && zm > h.z0 && zm < h.z1)) continue;
+      const lastSpan = spans[spans.length - 1];
+      if (lastSpan && Math.abs(lastSpan[1] - z0) < 1e-9) lastSpan[1] = z1;
+      else spans.push([z0, z1]);
+    }
+    const same = open && open.spans.length === spans.length && open.spans.every((sp, n) => Math.abs(sp[0] - spans[n]![0]) < 1e-9 && Math.abs(sp[1] - spans[n]![1]) < 1e-9);
+    if (open && same && Math.abs(open.x1 - x0) < 1e-9) {
+      open.x1 = x1;
+    } else {
+      flush();
+      open = { x0, x1, spans };
+    }
+  }
+  flush();
+  return out;
 }

@@ -180,9 +180,10 @@ export function drawRoof(b: KitBuilder, spec: RoofSpec): RoofGeometry {
       );
       // Barge boards over the slab's ends, from the fascia's top to the ridge.
       for (const end of [1, -1] as const) {
-        const bc = add(add(U, scale(n, (t - 0.04) * 0.5)), scale(s, len * 0.5));
+        // Proud of the slab by 0.04 above and FASCIA_DROP below, so its foot stays on the eave line.
+        const bc = add(add(U, scale(n, (t + 0.04 - FASCIA_DROP) * 0.5)), scale(s, len * 0.5));
         const centreB = add(bc, scale(A, end * (aOut + FASCIA_THICKNESS * 0.5)));
-        b.obox(centreB, scale(A, FASCIA_THICKNESS * 0.5), scale(n, (t + 0.04) * 0.5), w, "trim", spec.trimColour, (end > 0 ? FACE.px : FACE.nx) | FACE.nz);
+        b.obox(centreB, scale(A, FASCIA_THICKNESS * 0.5), scale(n, (t + 0.04 + FASCIA_DROP) * 0.5), w, "trim", spec.trimColour, (end > 0 ? FACE.px : FACE.nx) | FACE.nz);
       }
     }
     // Ridge cap.
@@ -196,7 +197,6 @@ export function drawRoof(b: KitBuilder, spec: RoofSpec): RoofGeometry {
   const aT = halfA + overhang - FASCIA_THICKNESS;
   const ridgeHalf = Math.max(0, aT - cT);
   const yR = g.ridgeY;
-  const drop = t / cos;
   const faces: { corners: Vec3[]; normal: Vec3 }[] = [];
   for (const side of [1, -1] as const) {
     faces.push({
@@ -208,13 +208,20 @@ export function drawRoof(b: KitBuilder, spec: RoofSpec): RoofGeometry {
       normal: add(scale(A, side * sin), [0, cos, 0]),
     });
   }
-  for (const f of faces) {
-    polygonFacing(b, f.corners, f.normal, spec.covering, spec.colour);
-    if (!b.block) {
-      const under = f.corners.map((p) => [p[0], p[1] - drop, p[2]] as Vec3);
-      polygonFacing(b, under, scale(f.normal, -1), "timber", spec.soffitColour);
-    }
+  // The undersides: parallel planes a slab's thickness below, their eave edges pulled in by t sin(pitch).
+  const yU = spec.eaveY + FASCIA_DROP;
+  const aU = aT - t * sin;
+  const cU = cT - t * sin;
+  const yRU = g.undersideAt(0);
+  const unders: Vec3[][] = [];
+  for (const side of [1, -1] as const) {
+    unders.push([at(r, -aU, yU, side * cU), at(r, aU, yU, side * cU), at(r, ridgeHalf, yRU, 0), at(r, -ridgeHalf, yRU, 0)]);
+    unders.push([at(r, side * aU, yU, -cU), at(r, side * aU, yU, cU), at(r, side * ridgeHalf, yRU, 0)]);
   }
+  faces.forEach((f, i) => {
+    polygonFacing(b, f.corners, f.normal, spec.covering, spec.colour);
+    if (!b.block) polygonFacing(b, unders[i]!, scale(f.normal, -1), "timber", spec.soffitColour);
+  });
   if (b.block) return g;
   // Fascias all round; the ones across the ends run between the long ones.
   for (const side of [1, -1] as const) {

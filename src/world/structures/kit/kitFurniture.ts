@@ -390,44 +390,46 @@ function walkable(room: PlanRoom, blocked: readonly PlanRect[], anchors: readonl
   const cell = 0.1;
   const nx = Math.max(1, Math.round((room.x1 - room.x0) / cell));
   const nz = Math.max(1, Math.round((room.z1 - room.z0) / cell));
-  const free = new Uint8Array(nx * nz);
   const r = WALKER_RADIUS;
-  for (let i = 0; i < nx; i += 1) {
-    const x = room.x0 + (i + 0.5) * cell;
-    for (let k = 0; k < nz; k += 1) {
-      const z = room.z0 + (k + 0.5) * cell;
-      // The capsule's centre keeps its radius off the walls (the doorways' anchors sit at the walls).
-      let ok = true;
-      for (const b of blocked) {
-        if (x > b.x0 - r && x < b.x1 + r && z > b.z0 - r && z < b.z1 + r) {
-          ok = false;
-          break;
-        }
-      }
-      free[i * nz + k] = ok ? 1 : 0;
-    }
+  // Where the capsule's centre may stand: a radius off the walls and off every piece.
+  const free = new Uint8Array(nx * nz);
+  const cellRange = (lo: number, hi: number, origin: number, n: number): [number, number] => [
+    Math.max(0, Math.ceil((lo - origin) / cell - 0.5)),
+    Math.min(n - 1, Math.floor((hi - origin) / cell - 0.5)),
+  ];
+  const [fi0, fi1] = cellRange(room.x0 + r, room.x1 - r, room.x0, nx);
+  const [fk0, fk1] = cellRange(room.z0 + r, room.z1 - r, room.z0, nz);
+  for (let i = fi0; i <= fi1; i += 1) free.fill(1, i * nz + fk0, i * nz + fk1 + 1);
+  for (const b of blocked) {
+    // Cells whose centre lies strictly inside the piece grown by the radius.
+    const [i0, i1] = cellRange(b.x0 - r + 1e-9, b.x1 + r - 1e-9, room.x0, nx);
+    const [k0, k1] = cellRange(b.z0 - r + 1e-9, b.z1 + r - 1e-9, room.z0, nz);
+    for (let i = i0; i <= i1; i += 1) if (k1 >= k0) free.fill(0, i * nz + k0, i * nz + k1 + 1);
   }
+  // A doorway's anchor sits at the wall: step it in to where the capsule stands.
   const index = (p: { x: number; z: number }) => {
-    const i = Math.min(nx - 1, Math.max(0, Math.floor((p.x - room.x0) / cell)));
-    const k = Math.min(nz - 1, Math.max(0, Math.floor((p.z - room.z0) / cell)));
+    const x = Math.min(room.x1 - r - 0.05, Math.max(room.x0 + r + 0.05, p.x));
+    const z = Math.min(room.z1 - r - 0.05, Math.max(room.z0 + r + 0.05, p.z));
+    const i = Math.min(nx - 1, Math.max(0, Math.floor((x - room.x0) / cell)));
+    const k = Math.min(nz - 1, Math.max(0, Math.floor((z - room.z0) / cell)));
     return i * nz + k;
   };
   const start = index(anchors[0]!);
   if (!free[start]) return false;
   const seen = new Uint8Array(nx * nz);
-  const queue = [start];
+  const queue = new Int32Array(nx * nz);
+  let head = 0;
+  let tail = 0;
+  queue[tail++] = start;
   seen[start] = 1;
-  while (queue.length) {
-    const c = queue.pop()!;
-    const i = Math.floor(c / nz);
-    const k = c % nz;
-    const next = [i > 0 ? c - nz : -1, i < nx - 1 ? c + nz : -1, k > 0 ? c - 1 : -1, k < nz - 1 ? c + 1 : -1];
-    for (const n of next) {
-      if (n >= 0 && free[n] && !seen[n]) {
-        seen[n] = 1;
-        queue.push(n);
-      }
-    }
+  while (head < tail) {
+    const c = queue[head++]!;
+    const i = (c / nz) | 0;
+    const k = c - i * nz;
+    if (i > 0 && free[c - nz] && !seen[c - nz]) { seen[c - nz] = 1; queue[tail++] = c - nz; }
+    if (i < nx - 1 && free[c + nz] && !seen[c + nz]) { seen[c + nz] = 1; queue[tail++] = c + nz; }
+    if (k > 0 && free[c - 1] && !seen[c - 1]) { seen[c - 1] = 1; queue[tail++] = c - 1; }
+    if (k < nz - 1 && free[c + 1] && !seen[c + 1]) { seen[c + 1] = 1; queue[tail++] = c + 1; }
   }
   return anchors.every((a) => seen[index(a)] === 1);
 }
