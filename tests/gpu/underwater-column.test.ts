@@ -94,7 +94,7 @@ function readPixels(): Uint8ClampedArray {
   return context.getImageData(0, 0, WIDTH, HEIGHT).data;
 }
 
-async function render(samples: number, strength: number): Promise<Uint8ClampedArray> {
+async function render(samples: number, strength: number, adaptation = 1): Promise<Uint8ClampedArray> {
   const scene = new Scene(engine);
   scene.useRightHandedSystem = true;
   scene.clearColor = new Color4(0.3, 0.3, 0.3, 1);
@@ -116,6 +116,7 @@ async function render(samples: number, strength: number): Promise<Uint8ClampedAr
   pass.setEnabled(camera, true);
   pass.setCameraDepth(-CAMERA_Y, -CAMERA_Y);
   pass.setStrength(strength);
+  pass.setAdaptation(adaptation);
   const output = new PassPostProcess(
     "underwater-column-out", 1, camera, Constants.TEXTURE_NEAREST_SAMPLINGMODE, engine, false,
     Constants.TEXTURETYPE_UNSIGNED_BYTE,
@@ -171,6 +172,19 @@ describe("underwater water column", () => {
       expect(misses).toEqual([]);
     });
   }
+
+  it("scales all it shows by the eye's adaptation", async () => {
+    const adaptation = 1.5;
+    const image = await render(1, 1, adaptation);
+    expect(gpuErrors).toEqual([]);
+    const misses: string[] = [];
+    for (const row of [4, 30, 44, 56, 90]) {
+      const want = expected(WIDTH / 2, row) * adaptation;
+      const got = green(image, WIDTH / 2, row);
+      if (Math.abs(got - want) > 3 / 255) misses.push(`row ${row}: ${got.toFixed(3)} vs ${want.toFixed(3)}`);
+    }
+    expect(misses).toEqual([]);
+  });
 
   it("passes the scene through untouched at strength 0", async () => {
     const image = await render(1, 0);

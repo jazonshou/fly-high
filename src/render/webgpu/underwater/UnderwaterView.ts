@@ -17,7 +17,7 @@ import {
 } from "./cameraWater";
 import { OceanUnderside, type OceanUndersideOptions } from "./OceanUnderside";
 import { UnderwaterBubbles } from "./UnderwaterBubbles";
-import { UnderwaterLight } from "./underwaterLight";
+import { UnderwaterAdaptation, underwaterAdaptationTarget, UnderwaterLight } from "./underwaterLight";
 import { WaterColumnPass, type WaterColumnCaustics } from "./WaterColumnPass";
 
 export interface UnderwaterViewOptions {
@@ -42,7 +42,8 @@ export interface UnderwaterViewOptions {
  * camera is submerged the underwater path is switched on: the water column
  * (`WaterColumnPass`) at the head of the post chain, lit by the camera's own
  * water (`UnderwaterLight`), and under the sea its underside drawn in the
- * sea's place (`OceanUnderside`). The walker's breath rises in bubbles
+ * sea's place (`OceanUnderside`), and seen by an eye that adapts to the
+ * light left at its depth (`UnderwaterAdaptation`). The walker's breath rises in bubbles
  * (`UnderwaterBubbles`) whenever its head is under, whichever side the camera
  * is on.
  */
@@ -51,6 +52,7 @@ export class UnderwaterView {
   readonly light: UnderwaterLight;
   readonly underside: OceanUnderside | null;
   readonly bubbles: UnderwaterBubbles | null;
+  readonly adaptation = new UnderwaterAdaptation();
   private readonly cameraSample = createCameraWaterSample();
   private readonly water = { kind: "none" as WaterKind, x: 0, z: 0, stillHeight: 0, waterDepth: 0 };
   private columnPass: WaterColumnPass | null = null;
@@ -135,8 +137,11 @@ export class UnderwaterView {
     breather.surfaceHeight = breather.y + headDepth;
   }
 
-  /** The render camera's world position this frame, at the simulation time the ocean is drawn at. */
-  update(cameraX: number, cameraY: number, cameraZ: number, timeSeconds: number): void {
+  /**
+   * The render camera's world position this frame, at the simulation time the
+   * ocean is drawn at; `deltaSeconds` is the frame's, which the eye adapts over.
+   */
+  update(cameraX: number, cameraY: number, cameraZ: number, timeSeconds: number, deltaSeconds: number): void {
     const sample = this.cameraWater.sample(cameraX, cameraY, cameraZ, timeSeconds, this.cameraSample);
     this.underside?.update(sample.submerged && sample.kind === "sea", timeSeconds);
     const camera = this.renderCamera;
@@ -148,7 +153,10 @@ export class UnderwaterView {
         cameraZ - camera.position.z,
       );
     }
-    if (!sample.submerged) return;
+    if (!sample.submerged) {
+      this.adaptation.reset();
+      return;
+    }
     const water = this.water;
     water.kind = sample.kind;
     water.x = cameraX;
@@ -156,9 +164,11 @@ export class UnderwaterView {
     water.stillHeight = sample.stillHeight;
     water.waterDepth = sample.waterDepth;
     this.light.setWater(water);
+    this.adaptation.update(underwaterAdaptationTarget(this.light.lightRemaining(sample.stillDepth)), deltaSeconds);
     const column = this.columnPass;
     if (column && this.columnCamera) {
       column.setCameraDepth(sample.stillDepth, sample.depth);
+      column.setAdaptation(this.adaptation.gain);
       const position = this.columnCamera.position;
       column.setWorld(timeSeconds, cameraX - position.x, cameraZ - position.z, sample.kind === "sea");
     }
