@@ -1,4 +1,4 @@
-import type { BenchUrlRequest } from "@/src/settings";
+import { defaultBenchFrameRate, type BenchUrlRequest } from "@/src/settings";
 import { benchRunPlan, benchTimings, introUrl, reportUrl, stepUrl, type BenchUrlOptions } from "./plan";
 import type { BenchStoreRead } from "./store";
 import type {
@@ -95,8 +95,8 @@ export function isFinalStep(status: BenchStepStatus): boolean {
   return FINAL.has(status);
 }
 
-export function urlOptions(plan: Pick<BenchRunPlan, "tiers" | "mode" | "hud" | "quick">): BenchUrlOptions {
-  return { tiers: plan.tiers, mode: plan.mode, hud: plan.hud, quick: plan.quick };
+export function urlOptions(plan: Pick<BenchRunPlan, "tiers" | "mode" | "hud" | "quick" | "frameRate">): BenchUrlOptions {
+  return { tiers: plan.tiers, mode: plan.mode, hud: plan.hud, quick: plan.quick, frameRate: plan.frameRate };
 }
 
 /** The step the run goes to next: the first that has not ended, or null when all have. */
@@ -138,6 +138,7 @@ function samePlan(plan: BenchRunPlan, request: BenchUrlRequest): boolean {
   return plan.mode === request.mode
     && plan.hud === request.hud
     && plan.quick === request.quick
+    && plan.frameRate === request.frameRate
     && plan.tiers.length === request.tiers.length
     && plan.tiers.every((tierIndex, index) => tierIndex === request.tiers[index]);
 }
@@ -435,8 +436,9 @@ export function recordReportExtras(
 }
 
 /**
- * "Run the GPU comparison pass": the same tiers in pinned mode. The run just
- * shown moves to `earlier`, so one report carries both (N6).
+ * "Run the GPU comparison pass": the same tiers in pinned mode, at pinned
+ * mode's own frame rate. The run just shown moves to `earlier`, so one
+ * report carries both (N6).
  */
 export function startPinnedPass(
   store: BenchStore,
@@ -449,7 +451,7 @@ export function startPinnedPass(
   if (!previous) throw new RangeError("The bench store has no run to compare against");
   const run = newRun({
     runId,
-    options: { ...urlOptions(previous.plan), mode: "pinned" },
+    options: { ...urlOptions(previous.plan), mode: "pinned", frameRate: defaultBenchFrameRate("pinned") },
     device: previous.device,
     introRefresh: previous.reportRefresh ?? previous.introRefresh,
     userLabel: previous.userLabel,

@@ -79,6 +79,8 @@ AGL telemetry is the clearance between the lowest landing-gear contact point and
 - **Pilot damping:** inputs remain direct surface commands with light body-rate damping and modest turn coordination.
 - **Scenic assist (opt-in):** pilot roll and pitch inputs command bounded attitudes. Releasing roll levels the wings, turn coordination is automatic, and high angle of attack adds progressive nose-down recovery.
 
+In Direct and Pilot the F-16's pitch command is geared down with speed (`pitchGearing` in `src/aircraft/catalogue.ts`, the law in `src/sim/pitchGearing.ts`): one for one up to 140 m/s equivalent airspeed, then scaled by 140 / EAS, which takes out half of the dynamic-pressure growth in elevator bite. The lightest keyboard tap at 238 m/s EAS adds 1.6 g instead of 2.7, while full stick still reaches the usable angle of attack. The other aeroplanes keep a one-for-one stick at every speed; `scripts/pitch-tap-probe.mts` measures any of them.
+
 The title screen deliberately uses Scenic as a disposable attract-flight controller so the aircraft is already moving through the world. **Take the controls** disables attract mode and selects the user's chosen mode in one Worker command without resetting position, velocity, attitude, simulation time, or camera state. Only the attract flight may auto-reset after a crash or low-terrain approach; ordinary pilot flight is never taken over or reset automatically.
 
 No airborne assistance runs while the gear is loaded. On the runway, rudder and the roll axis steer the nose wheel and elevator directly commands rotation.

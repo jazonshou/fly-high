@@ -1,6 +1,7 @@
 import { GovernorTrace, pixelsAtScale, type ScaleContext } from "@/src/bench/governorTrace";
 import { benchProfile, benchRunPlan, benchTier, benchTimings, expectedPathFingerprint } from "@/src/bench/plan";
 import {
+  benchCadence,
   createFrameLog,
   earlyStopCheck,
   estimateRefresh,
@@ -12,6 +13,7 @@ import {
   recordFrame,
   recordOverhead,
   overheadSummary,
+  pacedHz,
   summarizeHeap,
   summarizeLongAnimationFrames,
   summarizeLongTasks,
@@ -43,7 +45,10 @@ import {
   type GovernorSignals,
   type GovernorState,
 } from "@/src/render/webgpu/core/AdaptiveGovernor";
+import { divisorFor, effectiveFrameRate } from "@/src/game/framePacer";
+import type { PresentationCadence } from "@/src/render/webgpu/core/presentationCadence";
 import { hitchThresholdMilliseconds } from "@/src/render/webgpu/core/QualityProfile";
+import { DEFAULT_SETTINGS, defaultBenchFrameRate, type FrameRateSetting } from "@/src/settings";
 
 /**
  * Realistic bench records for the report tests: each step's result is built
@@ -80,6 +85,10 @@ export interface StepFixtureOptions {
   readonly firstRendererInTab?: boolean;
   readonly granularityMs?: number;
   readonly seed?: number;
+  /** The run's frame-rate setting; the players' default unless given. */
+  readonly frameRate?: FrameRateSetting;
+  /** The display rate the frame pacer measured, confirmed; `refreshHz` unless given, null for none. */
+  readonly pacerHz?: number | null;
 }
 
 export function benchRefresh(rafHz = 60): BenchRefresh {
@@ -132,6 +141,15 @@ export function benchStepResult(options: StepFixtureOptions): BenchStepResult {
   const granularityMs = options.granularityMs ?? 0.1;
   const flightS = status === "early-stop" ? timings.earlyStopAtS : timings.flightS;
   const flightStartMs = 8_000;
+  const frameRate = options.frameRate ?? DEFAULT_SETTINGS.frameRate;
+  const effective = effectiveFrameRate(frameRate);
+  const pacerHz = options.pacerHz === undefined ? refreshHz : options.pacerHz;
+  const cadence: PresentationCadence | null = pacerHz === null ? null : {
+    frameCapHz: effective === "60" ? 60 : effective === "30" ? 30 : null,
+    divisor: divisorFor(effective, pacerHz),
+    displayPeriodMs: 1_000 / pacerHz,
+    periodConfirmed: true,
+  };
   const scale: ScaleContext = {
     cssWidth,
     cssHeight,
@@ -216,8 +234,9 @@ export function benchStepResult(options: StepFixtureOptions): BenchStepResult {
   const context: FrameWindowContext = {
     flightStartMs,
     refreshMs,
+    divisor: cadence?.divisor ?? 1,
     granularityMs,
-    tierThresholdMs: hitchThresholdMilliseconds(profile),
+    tierThresholdMs: hitchThresholdMilliseconds(profile, cadence),
   };
   const air = status === "early-stop" ? null : summarizeWindow(log, timings.air, context);
   const ground = summarizeWindow(log, timings.ground, context);
@@ -243,6 +262,17 @@ export function benchStepResult(options: StepFixtureOptions): BenchStepResult {
     firstRendererInTab: options.firstRendererInTab ?? false,
     refresh,
     raf: rafReport(estimateRefresh(Array.from({ length: 60 }, () => refreshMs)), flightCadence(intervals)),
+    pacing: {
+      setting: frameRate,
+      effective,
+      cadenceAtFlightStart: benchCadence(cadence),
+      cadenceAtEnd: benchCadence(cadence),
+      cadenceChanges: 0,
+      rafTicks: Math.round(flightS * refreshHz),
+      renderedFrames: intervals.length,
+      pacedHz: pacedHz(cadence),
+      governorConfigAtFlightStart: config,
+    },
     timer: timerReport(granularityMs),
     startup: {
       navigationType: "navigate",
@@ -446,6 +476,8 @@ export interface RunFixtureOptions {
   readonly status?: BenchRunRecord["status"];
   readonly mode?: BenchMode;
   readonly quick?: boolean;
+  /** The plan's frame rate; the mode's default unless given. */
+  readonly frameRate?: FrameRateSetting;
   readonly runId?: string;
   readonly userLabel?: string | null;
   readonly device?: BenchDeviceReport | null;
@@ -454,10 +486,11 @@ export interface RunFixtureOptions {
 export function benchRunRecord(options: RunFixtureOptions): BenchRunRecord {
   const mode = options.mode ?? "shipped";
   const quick = options.quick ?? false;
+  const frameRate = options.frameRate ?? defaultBenchFrameRate(mode);
   return {
     v: 1,
     runId: options.runId ?? "k3x9q2m7wp",
-    plan: benchRunPlan({ tiers: options.steps.map((step) => step.tierIndex), mode, hud: true, quick }),
+    plan: benchRunPlan({ tiers: options.steps.map((step) => step.tierIndex), mode, hud: true, quick, frameRate }),
     status: options.status ?? "finished",
     startedAt: "2026-10-26T09:14:03.511Z",
     finishedAt: options.status === "running" ? null : "2026-10-26T09:21:12.042Z",
@@ -469,7 +502,7 @@ export function benchRunRecord(options: RunFixtureOptions): BenchRunRecord {
     ignoredParams: [],
     settingsKeyAtStart: "absent",
     settingsKeyAtEnd: "absent",
-    steps: options.steps.map((step, index) => benchStepRecord(index, { mode, quick, ...step })),
+    steps: options.steps.map((step, index) => benchStepRecord(index, { mode, quick, frameRate, ...step })),
   };
 }
 

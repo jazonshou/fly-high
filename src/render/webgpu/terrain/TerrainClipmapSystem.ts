@@ -109,7 +109,7 @@ import {
   TERRAIN_HORIZON_PYRAMID_SPAN_METERS,
   terrainAtlasGridEdge,
 } from "./TerrainSpineContract";
-import { TerrainSurfacePlugin, type TerrainFarSwardRead } from "./TerrainSurfacePlugin";
+import { TERRAIN_MATERIAL_LIGHTING, TerrainSurfacePlugin, type TerrainFarSwardRead } from "./TerrainSurfacePlugin";
 // 6-5: the shore sea state travels as 6-2's own published type — one
 // definition, forwarded, never restated on the terrain side.
 import type { WaterShoreSwell } from "@/src/render/webgpu/water/WaterShaders";
@@ -604,17 +604,10 @@ export function createTerrainMaterial(scene: Scene): PBRMaterial {
   // shipped answer, which is what the audit's uniform 0.93 was.
   material.roughness = 0.93;
   material.albedoColor = Color3.White();
-  // 1C-6: full-strength now that scene.environmentTexture exists — the
-  // old 0.64/0.22 were compensating for IBL that did not exist.
-  material.environmentIntensity = 1;
-  material.directIntensity = 1.03;
-  material.specularIntensity = 1;
-  // 1B-11: kill specular shimmer on ridge lines under motion. Its partner,
-  // anisotropicFilteringLevel = 16, is a per-texture setting and lands on
-  // the 3-1 arrays; the two are complementary — one fixes the normal map's
-  // lost variance (with the Toksvig reducer), the other the geometric
-  // normal's.
-  material.enableSpecularAntiAliasing = true;
+  material.environmentIntensity = TERRAIN_MATERIAL_LIGHTING.environmentIntensity;
+  material.directIntensity = TERRAIN_MATERIAL_LIGHTING.directIntensity;
+  material.specularIntensity = TERRAIN_MATERIAL_LIGHTING.specularIntensity;
+  material.enableSpecularAntiAliasing = TERRAIN_MATERIAL_LIGHTING.enableSpecularAntiAliasing;
   // 4-5: skirts are gone — the geomorph closes cracks analytically — so the
   // surface is a closed manifold and back faces are wasted fragments.
   material.backFaceCulling = true;
@@ -1352,9 +1345,14 @@ export class TerrainClipmapSystem {
     return this.computeBudget;
   }
 
-  /** The direction TOWARD the sun; only 4-7's horizon shadow reads it. */
+  /** The direction TOWARD the sun; 4-7's horizon shadow and the grain's crunch read it. */
   setSunDirection(x: number, y: number, z: number): void {
     this.surfacePlugin.setSunDirection(x, y, z);
+  }
+
+  /** The unit direction toward the sun the ground is shaded by, for the roads' ribbon. */
+  get sunDirection(): readonly [number, number, number] {
+    return this.surfacePlugin.sunDirection;
   }
 
   /**

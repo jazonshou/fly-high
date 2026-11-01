@@ -51,7 +51,10 @@ function addressKey(address: WorldPageAddress): string {
   return `${address.level}:${address.x}:${address.z}`;
 }
 
-export function buildDrawnFrame(selection: TerrainNodeSelectionInput = DRAWN_FRAME_SELECTION): DrawnFrame {
+export function buildDrawnFrame(
+  selection: TerrainNodeSelectionInput = DRAWN_FRAME_SELECTION,
+  ground: (x: number, z: number) => number = drawnFrameGround,
+): DrawnFrame {
   const nodes = selectTerrainNodes(selection);
   const pages = new Map<string, WorldPageAddress>();
   for (const node of nodes) {
@@ -79,7 +82,7 @@ export function buildDrawnFrame(selection: TerrainNodeSelectionInput = DRAWN_FRA
       const z = address.z * extent + (j - WORLD_PAGE_GUTTER) * texel;
       for (let i = 0; i < slotEdge; i += 1) {
         const x = address.x * extent + (i - WORLD_PAGE_GUTTER) * texel;
-        heights[(originV + j) * atlasEdge + originU + i] = drawnFrameGround(x, z);
+        heights[(originV + j) * atlasEdge + originU + i] = ground(x, z);
       }
     }
   });

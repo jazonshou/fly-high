@@ -86,7 +86,7 @@ function stored(storage: Storage): BenchStore {
 function startInput(overrides: Partial<StartRunInput> = {}): StartRunInput {
   return {
     runId: "k3x9q2m7wp",
-    options: { tiers: [1, 0, 2, 1], mode: "shipped", hud: true, quick: false },
+    options: { tiers: [1, 0, 2, 1], mode: "shipped", hud: true, quick: false, frameRate: "60" },
     device: benchDevice(),
     introRefresh: benchRefresh(60),
     userLabel: "  Jason's   laptop ",
@@ -125,6 +125,12 @@ describe("the run store", () => {
     expect(parseBenchStore(JSON.stringify({ ...store, v: 2 }))).toBeNull();
     expect(parseBenchStore(JSON.stringify({ ...store, notice: "nope" }))).toBeNull();
     const run = store.current!;
+    // A run saved before the bench recorded its frame rate is not resumed.
+    const olderPlan: Record<string, unknown> = { ...run.plan };
+    delete olderPlan.frameRate;
+    expect(parseBenchStore(JSON.stringify({ ...store, current: { ...run, plan: olderPlan } }))).toBeNull();
+    expect(parseBenchStore(JSON.stringify({ ...store, current: { ...run, plan: { ...run.plan, frameRate: "120" } } })))
+      .toBeNull();
     expect(parseBenchStore(JSON.stringify({ ...store, current: { ...run, steps: run.steps.slice(1) } }))).toBeNull();
     expect(parseBenchStore(JSON.stringify({
       ...store,
@@ -166,7 +172,7 @@ describe("the page flow", () => {
     expect(intro.save).toBeNull();
 
     const start = startRun(startInput(), INTRO);
-    expect(start.href).toBe(`${PAGE}?bench=1&run=k3x9q2m7wp&step=0&seed=00762m&tiers=1,0,2,1&mode=shipped`);
+    expect(start.href).toBe(`${PAGE}?bench=1&run=k3x9q2m7wp&step=0&seed=00762m&tiers=1,0,2,1&mode=shipped&fps=60`);
     expect(start.store.current!.userLabel).toBe("Jason's laptop");
     expect(start.store.current!.settingsKeyAtStart).toBe("absent");
     writeBenchStore(storage, start.store);
@@ -175,7 +181,7 @@ describe("the page flow", () => {
     for (let index = 0; index < 4; index += 1) {
       const decision = load(storage, href);
       expect(decision.page).toMatchObject({ kind: "step", stepIndex: index, attempt: 1, previous: null });
-      expect(decision.onSaveFailed).toBe(`${PAGE}?bench=1&run=k3x9q2m7wp&step=report&tiers=1,0,2,1&mode=shipped`);
+      expect(decision.onSaveFailed).toBe(`${PAGE}?bench=1&run=k3x9q2m7wp&step=report&tiers=1,0,2,1&mode=shipped&fps=60`);
       // The claim is saved before the renderer exists.
       expect(stored(storage).current!.steps[index]).toMatchObject({ status: "running", attempts: 1 });
       const tierIndex = stored(storage).current!.steps[index]!.tierIndex;
@@ -185,7 +191,7 @@ describe("the page flow", () => {
       writeBenchStore(storage, next.store);
       href = next.href;
     }
-    expect(href).toBe(`${PAGE}?bench=1&run=k3x9q2m7wp&step=report&tiers=1,0,2,1&mode=shipped`);
+    expect(href).toBe(`${PAGE}?bench=1&run=k3x9q2m7wp&step=report&tiers=1,0,2,1&mode=shipped&fps=60`);
 
     const report = load(storage, href);
     expect(report.page.kind).toBe("report");
@@ -216,7 +222,7 @@ describe("the page flow", () => {
     const skipped = load(storage, href, "reload");
     expect(skipped.page).toEqual({
       kind: "redirect",
-      href: `${PAGE}?bench=1&run=k3x9q2m7wp&step=1&seed=00762m&tiers=1,0,2,1&mode=shipped`,
+      href: `${PAGE}?bench=1&run=k3x9q2m7wp&step=1&seed=00762m&tiers=1,0,2,1&mode=shipped&fps=60`,
     });
     const store = stored(storage);
     expect(store.current!.steps[0]!.status).toBe("interrupted");
@@ -326,7 +332,7 @@ describe("the page flow", () => {
     const { storage } = memoryStorage();
     const { href } = started(storage);
     const other = load(storage, href.replace("run=k3x9q2m7wp", "run=zzzzzz9999"));
-    expect(other.page).toEqual({ kind: "redirect", href: `${PAGE}?bench=1&tiers=1,0,2,1&mode=shipped` });
+    expect(other.page).toEqual({ kind: "redirect", href: `${PAGE}?bench=1&tiers=1,0,2,1&mode=shipped&fps=60` });
     expect(stored(storage).notice).toBe("run-mismatch");
     const intro = load(storage, INTRO);
     expect(intro.page).toMatchObject({ kind: "intro", notice: "run-mismatch", resumable: { runId: "k3x9q2m7wp" } });
@@ -352,6 +358,18 @@ describe("the page flow", () => {
     expect(stored(storage)).toEqual(EMPTY_BENCH_STORE);
   });
 
+  it("reads another frame rate in the URL as another run, and a link without one as the mode's default", () => {
+    const { storage } = memoryStorage();
+    const { href } = started(storage);
+    expect(load(storage, href.replace("fps=60", "fps=30")).page.kind).toBe("redirect");
+    expect(stored(storage).notice).toBe("run-mismatch");
+
+    const fresh = memoryStorage();
+    const start = startRun(startInput(), INTRO);
+    writeBenchStore(fresh.storage, start.store);
+    expect(load(fresh.storage, start.href.replace("&fps=60", "")).page).toMatchObject({ kind: "step", stepIndex: 0 });
+  });
+
   it("shows the storage-unavailable intro when the storage throws", () => {
     const blocked = memoryStorage();
     blocked.control.failReads = true;
@@ -360,7 +378,7 @@ describe("the page flow", () => {
     full.control.failWrites = true;
     expect(load(full.storage, INTRO).page).toMatchObject({ kind: "intro", storage: "unavailable" });
     const step = load(full.storage, `${PAGE}?bench=1&run=k3x9q2m7wp&step=0&tiers=1,0,2,1&mode=shipped`);
-    expect(step).toEqual({ page: { kind: "redirect", href: `${PAGE}?bench=1&tiers=1,0,2,1&mode=shipped` }, save: null, onSaveFailed: null });
+    expect(step).toEqual({ page: { kind: "redirect", href: `${PAGE}?bench=1&tiers=1,0,2,1&mode=shipped&fps=60` }, save: null, onSaveFailed: null });
     // The intro's device-only report is built in memory.
     const run = deviceOnlyRun(startInput(), "storage-unavailable");
     expect(run.status).toBe("storage-unavailable");
@@ -370,7 +388,7 @@ describe("the page flow", () => {
   it("makes a device-only report when WebGPU is missing", () => {
     const { storage } = memoryStorage();
     const start = startDeviceOnlyRun(startInput(), INTRO);
-    expect(start.href).toBe(`${PAGE}?bench=1&run=k3x9q2m7wp&step=report&tiers=1,0,2,1&mode=shipped`);
+    expect(start.href).toBe(`${PAGE}?bench=1&run=k3x9q2m7wp&step=report&tiers=1,0,2,1&mode=shipped&fps=60`);
     writeBenchStore(storage, start.store);
     const report = load(storage, start.href);
     expect(report.page).toMatchObject({ kind: "report", run: { status: "no-webgpu" } });
@@ -391,9 +409,11 @@ describe("the page flow", () => {
     expect(recordReportExtras(extras, { reportRefresh: benchRefresh(30), settingsKeyAtEnd: null }).current!.reportRefresh!.rafHz)
       .toBe(59.9);
     const pinned = startPinnedPass(extras, "p1n2e3d4x5", "absent", NOW, INTRO);
-    expect(pinned.href).toBe(`${PAGE}?bench=1&run=p1n2e3d4x5&step=0&seed=00762m&tiers=1,0,2,1&mode=pinned`);
+    expect(pinned.href).toBe(`${PAGE}?bench=1&run=p1n2e3d4x5&step=0&seed=00762m&tiers=1,0,2,1&mode=pinned&fps=display`);
+    // The GPU comparison draws every refresh, whatever the shipped run flew.
     expect(pinned.store.current).toMatchObject({
-      runId: "p1n2e3d4x5", status: "running", userLabel: "Jason's laptop", firstLoad: null, plan: { mode: "pinned" },
+      runId: "p1n2e3d4x5", status: "running", userLabel: "Jason's laptop", firstLoad: null,
+      plan: { mode: "pinned", frameRate: "display" },
     });
     expect(pinned.store.current!.introRefresh!.rafHz).toBe(59.9);
     expect(pinned.store.earlier.map((run) => run.runId)).toEqual(["k3x9q2m7wp"]);

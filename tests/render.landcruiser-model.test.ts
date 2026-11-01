@@ -22,6 +22,7 @@ import { carLampTexels, createWebGpuCar, type CarVisual } from "../src/render/we
 import {
   ARCH,
   BODY,
+  DOOR_LINES,
   DRIVER_EYE,
   FRONT_DOOR_HINGE,
   GROUND_Y,
@@ -292,8 +293,9 @@ describe("the front doors", () => {
         expect(dx ** ARCH.exponent + dy ** ARCH.exponent).toBeGreaterThan(1);
       }
     }
-    // The door's outer face and the slab's tile the side: every point of the
-    // flank between the arches is under exactly one of their triangles.
+    // The door's outer face and the panels' round it tile the side: every
+    // point of the flank's flat between the arches, clear of the shut lines'
+    // rolled edges and of the shoulder, is under exactly one of their triangles.
     const triangles: [number, number, number, number, number, number][] = [];
     for (const surface of [...surfaces.symmetric, ...surfaces.door.body]) {
       const p = surface.positions;
@@ -313,11 +315,22 @@ describe("the front doors", () => {
       const d3 = (x - ax) * (cy - ay) - (cx - ax) * (y - ay);
       return (d1 > 0 && d2 > 0 && d3 > 0) || (d1 < 0 && d2 < 0 && d3 < 0);
     }).length;
+    const edgeX = (height: number): number => DOOR_LINES.frontDoorFoot
+      + ((DOOR_LINES.frontDoorBelt - DOOR_LINES.frontDoorFoot) * (height - DOOR_LINES.frontDoorBottom)) / (BODY.belt - DOOR_LINES.frontDoorBottom);
+    const clear = 0.02;
+    let sampled = 0;
     for (let x = -0.6137; x < 0.66; x += 0.0571) {
       for (let height = 0.5613; height < 1.28; height += 0.0433) {
+        const nearShut = Math.abs(x - edgeX(height)) < clear
+          || Math.abs(x - DOOR_LINES.frontDoorRear) < clear
+          || Math.abs(x - DOOR_LINES.rearDoorRear) < clear
+          || Math.abs(height - DOOR_LINES.frontDoorBottom) < clear;
+        if (nearShut || height > BODY.belt - 0.09) continue;
+        sampled += 1;
         expect(covering(x, GROUND_Y + height), `x ${x.toFixed(3)} height ${height.toFixed(3)}`).toBe(1);
       }
     }
+    expect(sampled).toBeGreaterThan(200);
   });
 });
 

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { parseBenchTiers } from "@/src/settings";
+import { defaultBenchFrameRate, parseBenchTiers, type FrameRateSetting } from "@/src/settings";
 import { USER_LABEL_MAX, noticeText } from "../flow";
 import { benchTimings, estimateBenchDuration, type BenchUrlOptions } from "../plan";
 import { describeBrowser, describeGpu, describeOs } from "../report";
@@ -22,7 +22,7 @@ export interface BenchIntroChoice {
 }
 
 export interface BenchIntroProps {
-  /** The tiers, mode, HUD and quick flags this page's URL asked for. */
+  /** The tiers, mode, HUD and quick flags and the frame rate this page's URL asked for. */
   readonly options: BenchUrlOptions;
   /** "unavailable": the tab cannot keep progress between reloads, so only a device report is possible. */
   readonly storage: "ok" | "unavailable";
@@ -85,6 +85,26 @@ const MODE_CHOICES: readonly { readonly value: BenchMode; readonly label: string
   },
 ];
 
+/** The Settings panel's names for the frame rates. */
+const FRAME_RATE_WORDS: Readonly<Record<FrameRateSetting, string>> = {
+  "60": "60 fps (smooth)",
+  display: "Match display",
+  "30": "30 fps",
+};
+
+/**
+ * The frame rate a run started here flies (`flown`): the one the URL asked
+ * for (`asked`), or, when the URL left it at its mode's default, the
+ * default of the mode chosen in Advanced, with `asked` null.
+ */
+export function introFrameRate(
+  options: BenchUrlOptions,
+  mode: BenchMode,
+): { readonly asked: FrameRateSetting | null; readonly flown: FrameRateSetting } {
+  const asked = options.frameRate === defaultBenchFrameRate(options.mode) ? null : options.frameRate;
+  return { asked, flown: asked ?? defaultBenchFrameRate(mode) };
+}
+
 /**
  * What the problem card can add to its own words: for a graphics card short
  * of a limit, which limits, as "maxStorageBuffersPerShaderStage: 8, needs
@@ -146,12 +166,13 @@ export function BenchIntro(props: BenchIntroProps) {
   const [userLabel, setUserLabel] = useState("");
   const [tiersText, setTiersText] = useState(() => options.tiers.join(","));
   const [mode, setMode] = useState<BenchMode>(options.mode);
+  const frameRate = introFrameRate(options, mode);
   const [advancedOpen, setAdvancedOpen] = useState(
-    () => options.mode !== "shipped" || options.quick || !options.hud,
+    () => options.mode !== "shipped" || options.quick || !options.hud || frameRate.asked !== null,
   );
 
   const tiers = parseBenchTiers(tiersText);
-  const chosen: BenchUrlOptions = { ...options, tiers: tiers ?? options.tiers, mode };
+  const chosen: BenchUrlOptions = { ...options, tiers: tiers ?? options.tiers, mode, frameRate: frameRate.flown };
   const choice: BenchIntroChoice = { options: chosen, userLabel };
   const timings = benchTimings(chosen.quick);
   const duration = estimateBenchDuration(chosen.tiers.length, timings);
@@ -287,6 +308,9 @@ export function BenchIntro(props: BenchIntroProps) {
             ))}
           </fieldset>
           {!options.hud ? <p className="bench-hint">The flight instruments are hidden for this run.</p> : null}
+          {frameRate.asked !== null ? (
+            <p className="bench-hint">Every flight uses the {FRAME_RATE_WORDS[frameRate.asked]} frame rate, from the address.</p>
+          ) : null}
         </details>
       ) : null}
 

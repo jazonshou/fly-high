@@ -165,9 +165,9 @@ export function pageRoundScale(w: number, h: number): number {
  * scale and its index clear the FMA row above (index base at 0.10 h, FMA text
  * to 0.073 h) and the heading box fits under it (ball bottom 0.76 h, box top
  * 0.775 h); its radius; and half the length of the horizon line, which is four
- * radii so that the line still crosses the whole disc at the pitch clamp under
- * any bank (the offset is at most 0.625 h, the disc reaches 0.3 h past that,
- * and 1.2 h covers both with room). Those fractions are the 440 x 300 page's; on
+ * radii: whenever the horizon crosses the disc, the line runs across all of it
+ * under any bank (it is then within 0.3 h of the centre, so 0.43 h would do).
+ * Those fractions are the 440 x 300 page's; on
  * a squarer one the radius is from `pageRoundScale`, so the ball is smaller and
  * the clearances larger (on 400 x 400: ball bottom 0.665 h, horizon 5.9 radii).
  */
@@ -179,10 +179,21 @@ export function pfdGeometry(w: number, h: number): {
   return { ballCentre: { x: 0.5 * w, y: 0.46 * h }, ballRadius: 0.3 * pageRoundScale(w, h), horizonHalfLength: 1.2 * h };
 }
 
-/** Pixels the horizon moves DOWN the screen for nose-up pitch: one degree is h/40, clamped at 25 degrees so the horizon never leaves the ball. */
+/**
+ * Pixels the horizon moves DOWN the screen for nose-up pitch: one degree is h/40,
+ * all the way to the vertical. Past about 12 degrees the horizon leaves the ball,
+ * which is then all sky or all ground with the rungs of the pitch flown across it,
+ * as on a real PFD. (Until 2026-10-28 it stopped at 25 degrees, with rungs only to
+ * 20, so a 40 degree climb read as 25: wrong on the F-16's MFD, the Global and the 747.)
+ */
 export function pfdHorizonOffsetPx(pitchDeg: number, h: number): number {
-  return (clamp(pitchDeg, -25, 25) * h) / 40;
+  return (clamp(pitchDeg, -90, 90) * h) / 40;
 }
+
+/** The PFD ladder's rungs, degrees: every 5 to 85 either way, numbered every 10. */
+export const PFD_LADDER_RUNGS: readonly number[] = Object.freeze(
+  Array.from({ length: 35 }, (_, index) => -85 + 5 * index).filter((deg) => deg !== 0),
+);
 
 /**
  * The rotation the sky, the ground and the horizon are drawn under, for a bank.
@@ -220,10 +231,13 @@ function drawAttitudeBall(ctx: DisplayContext2D, w: number, h: number, state: Di
   ctx.rotate(attitudeRotationRadians(state.bankDeg));
   const offset = pfdHorizonOffsetPx(state.pitchDeg, s);
   ctx.translate(0, offset);
+  // Deep enough that, with the horizon pitched off the ball, sky or ground still
+  // fills it with a radius to spare; L itself, as it always was, to 24 degrees.
+  const depth = Math.max(L, Math.abs(offset) + 2 * ballRadius);
   ctx.fillStyle = DISPLAY_COLOURS.sky;
-  ctx.fillRect(-L, -L, 2 * L, L);
+  ctx.fillRect(-L, -depth, 2 * L, depth);
   ctx.fillStyle = DISPLAY_COLOURS.ground;
-  ctx.fillRect(-L, 0, 2 * L, L);
+  ctx.fillRect(-L, 0, 2 * L, depth);
   ctx.strokeStyle = DISPLAY_COLOURS.white;
   ctx.lineWidth = s * 0.006;
   line(ctx, -L, 0, L, 0);
@@ -233,7 +247,7 @@ function drawAttitudeBall(ctx: DisplayContext2D, w: number, h: number, state: Di
   // every point's distance from the centre, so a rung further from the centre than
   // the radius is wholly outside the disc under any bank: it is not drawn, which
   // keeps its numbers' anchors on the page as well as its ink off the clip.
-  const rungs = [-20, -15, -10, -5, 5, 10, 15, 20].filter((deg) => Math.abs(offset - deg * pxPerDeg) <= ballRadius);
+  const rungs = PFD_LADDER_RUNGS.filter((deg) => Math.abs(offset - deg * pxPerDeg) <= ballRadius);
   ctx.lineWidth = s * 0.004;
   const numberedHalf = 0.12 * s;
   for (const deg of rungs) {

@@ -13,6 +13,8 @@ import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
 import type { AircraftVisual } from "../src/render/webgpu/aircraft/types";
 import type { AircraftKind } from "../src/sim";
 import { Hud } from "../src/ui/Hud";
+import { PITCH_LADDER_PITCHES, createPitchLadderFrame, pitchLadderToRef } from "../src/ui/pitchLadder";
+import { createHudCamera } from "../src/render/types";
 import {
   SCREEN_HEIGHT,
   SCREEN_WIDTH,
@@ -578,10 +580,22 @@ describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball",
     const markup = renderHud(state, ball.kind);
     const hudPitch = Number(/Pitch (-?\d+) degrees/.exec(markup)?.[1]);
     const hudBank = Number(/bank (-?\d+) degrees/.exec(markup)?.[1]);
-    // the HUD's horizon is a CSS transform: rotate(-bank deg), and CSS rotates CLOCKWISE for positive angles
-    const hudRotate = Number(/rotate\((-?[\d.]+)deg\)/.exec(markup)?.[1]);
-    const hudSlideDown = Number(/calc\(-50% \+ (-?[\d.]+)px\)/.exec(markup)?.[1]);
-    expect(Number.isFinite(hudPitch + hudBank + hudRotate + hudSlideDown), `parsed the HUD's attitude from ${markup.slice(markup.indexOf("attitude"), markup.indexOf("attitude") + 200)}`).toBe(true);
+    expect(Number.isFinite(hudPitch + hudBank), `parsed the HUD's attitude from ${markup.slice(markup.indexOf("attitude"), markup.indexOf("attitude") + 200)}`).toBe(true);
+    // The HUD's horizon is the pitch ladder's zero line, drawn conformal: projected through the camera the frame was
+    // drawn with (src/ui/pitchLadder.ts), here the same cockpit camera the ball is measured through.
+    const body = Matrix.FromQuaternionToRef(fixture.aircraft.root.rotationQuaternion!, new Matrix());
+    const forward = Vector3.TransformNormal(Vector3.Right(), body).normalize();
+    const up = Vector3.TransformNormal(Vector3.Up(), body).normalize();
+    const hudCamera = createHudCamera();
+    hudCamera.transform = Float32Array.from(fixture.camera.getViewMatrix(true).multiply(fixture.camera.getProjectionMatrix(true)).m);
+    hudCamera.width = SCREEN_WIDTH;
+    hudCamera.height = SCREEN_HEIGHT;
+    Object.assign(hudCamera.forward, { x: forward.x, y: forward.y, z: forward.z });
+    Object.assign(hudCamera.up, { x: up.x, y: up.y, z: up.z });
+    const ladder = pitchLadderToRef(hudCamera, createPitchLadderFrame());
+    const horizon = ladder.rungs[PITCH_LADDER_PITCHES.indexOf(0)]!;
+    expect(ladder.visible && horizon.visible, "the HUD draws its horizon").toBe(true);
+    expect(Math.round(ladder.pitch), "the ladder's nose against the HUD's pitch readout").toBe(hudPitch);
     // the ball, measured in the BODY frame along the dial's own axes: the diameter's direction (right end minus left end) and the bar's slide
     const bodyOf = (p: Vector3) => Vector3.TransformCoordinates(p, Matrix.Invert(fixture.aircraft.root.getWorldMatrix()));
     const sky = worldVertices(piece("sky"));
@@ -589,11 +603,15 @@ describe.each(BALLS.map((b) => [b.label, b] as const))("the %s's attitude ball",
     // clockwise as the pilot sees it: the right end goes DOWN, so atan2(-up, right)
     const ballClockwise = (Math.atan2(-Vector3.Dot(v, plane.up), Vector3.Dot(v, plane.right)) * 180) / Math.PI;
     expect(Math.round(-ballClockwise), "ball's bank against the HUD's").toBe(hudBank);
-    expect(ballClockwise, "the ball turns by the same clockwise angle as the HUD's horizon").toBeCloseTo(hudRotate, 3);
+    // the ladder's angle is radians clockwise on the screen (y down), the same sense as the ball's
+    expect(ballClockwise, "the ball turns by the same clockwise angle as the HUD's horizon").toBeCloseTo((horizon.angle * 180) / Math.PI, 3);
     const slideDownMetres = -piece("pitch-bar").position.y;
     expect(Math.round(slideDownMetres / ball.metresPerDegree), "ball's pitch against the HUD's").toBe(hudPitch);
-    // the HUD's ladder slides DOWN for nose-up (positive px); so does the ball's bar
-    expect(Math.sign(slideDownMetres)).toBe(Math.sign(hudSlideDown));
+    // nose up, the HUD's horizon lies BELOW the aircraft symbol, along the ladder's own down (90 degrees clockwise
+    // from the rung's run); so does the ball's bar slide down
+    const horizonBelowNose =
+      -(ladder.windowX + horizon.x - ladder.noseX) * Math.sin(horizon.angle) + (ladder.windowY + horizon.y - ladder.noseY) * Math.cos(horizon.angle);
+    expect(Math.sign(slideDownMetres)).toBe(Math.sign(horizonBelowNose));
   });
 
   it("clamps the pitch bar at 25 degrees each way", () => {

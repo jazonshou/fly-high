@@ -8,6 +8,7 @@ import {
   DEFAULT_SETTINGS,
   seedToString,
   type BenchUrlRequest,
+  type FrameRateSetting,
   type GameSettings,
   type RenderingMode,
 } from "@/src/settings";
@@ -26,9 +27,10 @@ import type {
  * render scale. Pure; the session reads the clock and the location.
  */
 
-export const BENCH_SCHEMA = "fly-high.bench/1";
+/** `/2` records the frame-rate setting and each step's pacing; a `/1` report had no frame cap. */
+export const BENCH_SCHEMA = "fly-high.bench/2";
 /** Bump when what a step measures, or how, changes. */
-export const BENCH_VERSION = 1;
+export const BENCH_VERSION = 2;
 /** FlightGame's placeholder seed (`00762m`), which has a home airport to roll from. */
 export const BENCH_SEED = 0x51a7e;
 /** Bump with any change to the route in path.ts, and pin the new fingerprint below. */
@@ -85,12 +87,13 @@ export function benchTierName(tierIndex: number): string {
 
 /**
  * A step's game settings: the defaults with only the tier's quality and
- * mode changed. Held in memory for the page load; never saved, so a player's
- * own settings never reach the measurement and the bench never reaches them.
+ * mode, and the run's frame rate, changed. Held in memory for the page load;
+ * never saved, so a player's own settings never reach the measurement and
+ * the bench never reaches them.
  */
-export function benchGameSettings(tierIndex: number): GameSettings {
+export function benchGameSettings(tierIndex: number, frameRate: FrameRateSetting): GameSettings {
   const tier = benchTier(tierIndex);
-  return { ...DEFAULT_SETTINGS, quality: tier.quality, renderingMode: tier.renderingMode };
+  return { ...DEFAULT_SETTINGS, quality: tier.quality, renderingMode: tier.renderingMode, frameRate };
 }
 
 export function benchProfile(tierIndex: number): WebGpuQualityProfile {
@@ -148,7 +151,7 @@ export function benchTimings(quick: boolean): BenchTimings {
 }
 
 /** The parts of a request or plan the URLs carry. */
-export type BenchUrlOptions = Pick<BenchUrlRequest, "tiers" | "mode" | "hud" | "quick">;
+export type BenchUrlOptions = Pick<BenchUrlRequest, "tiers" | "mode" | "hud" | "quick" | "frameRate">;
 
 export function benchRunPlan(options: BenchUrlOptions): BenchRunPlan {
   const timings = benchTimings(options.quick);
@@ -157,6 +160,7 @@ export function benchRunPlan(options: BenchUrlOptions): BenchRunPlan {
     mode: options.mode,
     hud: options.hud,
     quick: options.quick,
+    frameRate: options.frameRate,
     seed: seedToString(BENCH_SEED).toLowerCase(),
     pathId: BENCH_PATH_ID,
     pathFingerprint: expectedPathFingerprint(options.quick),
@@ -168,12 +172,14 @@ export function benchRunPlan(options: BenchUrlOptions): BenchRunPlan {
 
 // --- URLs --------------------------------------------------------------------
 
-const BENCH_PARAMS = new Set(["bench", "run", "step", "seed", "tiers", "mode", "hud", "quick"]);
+const BENCH_PARAMS = new Set(["bench", "run", "step", "seed", "tiers", "mode", "hud", "quick", "fps"]);
 
 function benchQuery(options: BenchUrlOptions, head: string): string {
   // Built by hand rather than through URLSearchParams so the tier list keeps
-  // its commas: the URL is something a person reads and edits.
-  return `?bench=1${head}&tiers=${options.tiers.join(",")}&mode=${options.mode}`
+  // its commas: the URL is something a person reads and edits. `fps` is
+  // always written, because its default is the shipped setting, which a
+  // later build may change.
+  return `?bench=1${head}&tiers=${options.tiers.join(",")}&mode=${options.mode}&fps=${options.frameRate}`
     + `${options.hud ? "" : "&hud=0"}${options.quick ? "&quick=1" : ""}`;
 }
 

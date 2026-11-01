@@ -39,7 +39,7 @@ function host(href: string, storage: Storage) {
 function startInput(): StartRunInput {
   return {
     runId: "k3x9q2m7wp",
-    options: { tiers: [1, 0], mode: "shipped", hud: true, quick: true },
+    options: { tiers: [1, 0], mode: "shipped", hud: true, quick: true, frameRate: "60" },
     device: null,
     introRefresh: null,
     userLabel: null,
@@ -80,7 +80,7 @@ describe("the bench session", () => {
 
     // No run in this tab: back to the intro, with the notice saved once.
     expect(page.go).toHaveBeenCalledTimes(1);
-    expect(page.go).toHaveBeenCalledWith(`${PAGE}?bench=1&tiers=1,0&mode=shipped&quick=1`);
+    expect(page.go).toHaveBeenCalledWith(`${PAGE}?bench=1&tiers=1,0&mode=shipped&fps=60&quick=1`);
     expect(setItem.mock.calls.filter(([key]) => key === BENCH_STORE_KEY)).toHaveLength(2);
     expect(session.boot).toBeNull();
   });

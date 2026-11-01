@@ -1,4 +1,4 @@
-import { AIRCRAFT_KINDS, type AircraftKind } from "@/src/sim";
+import { AIRCRAFT_KINDS, type AircraftKind, type PitchGearing } from "@/src/sim";
 
 /**
  * One record per airframe, for everything OUTSIDE the flight model.
@@ -197,6 +197,19 @@ export interface AircraftSpec {
    * airframe it was not sized against would be a guess, not a feature.
    */
   readonly dutchRollDamper: boolean;
+  /**
+   * How the pilot's pitch command is geared down with speed in Direct and
+   * Pilot modes (`pitchGearingFactor`), or `null` for one-for-one at every
+   * speed.
+   *
+   * Decided per aeroplane, like the damper above, from what the lightest
+   * keyboard tap does at the top of its speed range
+   * (scripts/pitch-tap-probe.mts). The F-16's grows to 2.7 g at 238 m/s EAS
+   * and 5.9 g at 327; the 150's tops out at 0.8 g at its maximum speed, the
+   * Global's at 0.4 g and the 747's at 0.2 g, so those three keep the stick
+   * they always had.
+   */
+  readonly pitchGearing: PitchGearing | null;
 }
 
 const TRAINER: AircraftSpec = Object.freeze({
@@ -260,6 +273,7 @@ const TRAINER: AircraftSpec = Object.freeze({
   retractableGear: false,
   speedBrake: false,
   dutchRollDamper: false,
+  pitchGearing: null,
 });
 
 const JET: AircraftSpec = Object.freeze({
@@ -356,6 +370,11 @@ const JET: AircraftSpec = Object.freeze({
   retractableGear: true,
   speedBrake: true,
   dutchRollDamper: true,
+  // 140 m/s EAS is 272 kt: everything slower -- take-off, the circuit, the
+  // approach and landing -- keeps exactly the stick it had. The spawn's 210
+  // m/s gears to about two thirds, 460 kt to about 0.6. The floor only binds
+  // past 400 m/s EAS, faster than the aeroplane flies at sea level.
+  pitchGearing: Object.freeze({ kneeAirspeed: 140, floor: 0.35 }),
 });
 
 const BIZJET: AircraftSpec = Object.freeze({
@@ -455,6 +474,7 @@ const BIZJET: AircraftSpec = Object.freeze({
   // A high aspect ratio and a very large yaw inertia are why. If the mass or
   // the fin ever change materially, redo this rather than flipping it.
   dutchRollDamper: false,
+  pitchGearing: null,
 });
 
 
@@ -544,6 +564,7 @@ const AIRLINER: AircraftSpec = Object.freeze({
   // is real and lightly damped, so this is worth revisiting with the same
   // two-degree-of-freedom calculation the Global got.
   dutchRollDamper: false,
+  pitchGearing: null,
 });
 
 export const AIRCRAFT_SPECS: Readonly<Record<AircraftKind, AircraftSpec>> = Object.freeze({

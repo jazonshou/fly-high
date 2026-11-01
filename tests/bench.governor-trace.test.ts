@@ -74,14 +74,21 @@ const GPU_HOT: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: 5, intervalP95Ms: 2
 describe("governor classification through resolveSignals", () => {
   const tier1 = governorConfigForProfile(resolveWebGpuQualityProfile("medium", "balanced"));
 
-  it("at 50 Hz, pacing-bound only while CPU p95 sits between 4.93 and 15.07 ms (N2)", () => {
+  it("off cadence, the proxy split decides (P9)", () => {
+    // 20 ms intervals at 60 Hz: off cadence. The interval-minus-CPU proxy is
+    // GPU-bound when it beats the CPU by 15%, and only a split that neither
+    // side explains is pacing-bound.
     expect(classifySignals({ gpuP95Ms: null, cpuP95Ms: 8, intervalP95Ms: 20 }, tier1))
-      .toEqual({ signalClass: "pacing-bound", proxyMs: 20 });
+      .toEqual({ signalClass: "gpu-bound", proxyMs: 12 });
     expect(classifySignals({ gpuP95Ms: null, cpuP95Ms: 5, intervalP95Ms: 20 }, tier1).signalClass)
-      .toBe("pacing-bound");
-    // Below 4.93 ms the proxy (20 - cpu) passes 15.07 ms and the window reads GPU-bound.
+      .toBe("gpu-bound");
     expect(classifySignals({ gpuP95Ms: null, cpuP95Ms: 3, intervalP95Ms: 20 }, tier1))
       .toEqual({ signalClass: "gpu-bound", proxyMs: 17 });
+    expect(classifySignals({ gpuP95Ms: null, cpuP95Ms: 10, intervalP95Ms: 20 }, tier1))
+      .toEqual({ signalClass: "pacing-bound", proxyMs: 20 });
+    // With no late frames the window is on cadence, whatever the p95 says.
+    expect(classifySignals({ gpuP95Ms: null, cpuP95Ms: 8, intervalP95Ms: 20, lateFraction: 0 }, tier1).signalClass)
+      .toBe("on-cadence");
   });
 
   it("a proxy under 2 ms is CPU-bound by definition, with no GPU estimate", () => {
@@ -89,8 +96,11 @@ describe("governor classification through resolveSignals", () => {
       .toEqual({ signalClass: "cpu-bound", proxyMs: null });
     expect(classifySignals({ gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null }, tier1))
       .toEqual({ signalClass: "unknown", proxyMs: null });
-    // A measured GPU time is not a proxy.
-    expect(classifySignals({ gpuP95Ms: 14, cpuP95Ms: 4, intervalP95Ms: 16.6 }, tier1))
+    // On cadence, a measured GPU time decides nothing.
+    expect(classifySignals({ gpuP95Ms: 14, cpuP95Ms: 4, intervalP95Ms: 16.6 }, tier1).signalClass)
+      .toBe("on-cadence");
+    // Off cadence it does, and it is not a proxy.
+    expect(classifySignals({ gpuP95Ms: 16, cpuP95Ms: 4, intervalP95Ms: 18 }, tier1))
       .toEqual({ signalClass: "gpu-bound", proxyMs: null });
   });
 });
@@ -128,7 +138,7 @@ describe("governor trace", () => {
     expect(summary.decisionsDuringSettle).toBe(1);
     expect(summary.decisions).toHaveLength(6);
     expect(summary.decisions[2]!.slice(0, 6)).toEqual([32, "gpu-resolution", "gpu-bound", 20, 0.95, 0.95]);
-    expect(summary.decisions[2]!.slice(7)).toEqual([1, 0, "terrain-page-requests", false, null, 5, 25]);
+    expect(summary.decisions[2]!.slice(7)).toEqual([1, 0, "terrain-page-requests", false, null, 5, 25, null]);
     expect(summary.decisions[1]!.slice(1, 4)).toEqual(["cpu-work", "cpu-bound", null]);
     expect(summary.flight.decisions).toBe(5);
     expect(summary.flight.events).toEqual({

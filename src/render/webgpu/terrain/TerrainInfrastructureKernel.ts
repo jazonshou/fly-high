@@ -60,7 +60,7 @@ import { TERRAIN_LANDFORM_CELL_METERS, terrainLandformCell } from "./TerrainKern
  *             x, z), (dir x, dir z, length, halfWidth + reach) f32,
  *             (length, halfWidth, reach f32,
  *              profile | mode << 16 | (surface material + 1) << 20
- *              | streamed << 28),
+ *              | paint << 28: 0 static, 1 a road, 2 a track),
  *             params 0-3, params 4-7 (f32)
  *   bin table: one vec4 a slot, (bin x, bin z (i32, from the anchor bin),
  *             first list entry, count + 1); 0 in the last lane is a slot
@@ -110,25 +110,30 @@ export const INFRASTRUCTURE_SURFACE_MATERIAL: Readonly<Record<InfrastructureSurf
     concrete: SurfaceMaterial.Concrete,
     asphalt: SurfaceMaterial.Asphalt,
     gravel: SurfaceMaterial.Gravel,
-    // Worn bare earth: the sand layer, browned by INFRASTRUCTURE_TRACK_EARTH_TINT
-    // wherever it is a track's paint (the terrain fragment and the ruts).
-    track: SurfaceMaterial.Sand,
+    // Worn stony earth: the gravel, browned by INFRASTRUCTURE_TRACK_EARTH_TINT
+    // wherever it is a track's paint (the terrain fragment and the ruts). Not
+    // the sand layer: that is a dune, wind ripples and all.
+    track: SurfaceMaterial.Gravel,
   });
 
 /**
- * Where a texel's material is infrastructure paint, the splat bake stores its
- * id this much above the material's (LandCoverClassifier). Every reader rounds
- * the id, so each still reads the material; the terrain fragment also reads
- * the quarter, and blends paint by its coverage rather than through the
- * height blend, which cut a road narrower than the texel into blotches.
+ * Where a texel's material is a road's paint, the splat bake stores its id
+ * this much above the material's (LandCoverClassifier); a track's paint,
+ * INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET above. Every reader rounds the id, so
+ * each still reads the material; the terrain fragment also reads the
+ * fraction, and blends paint by its coverage rather than through the height
+ * blend, which cut a road narrower than the texel into blotches. The two sit
+ * 0.125 apart and 0.125 from each rounding edge, over five times the 8-bit
+ * channel's half step (11 / 510 of an id).
  */
 export const INFRASTRUCTURE_PAINT_ID_OFFSET = 0.25;
+export const INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET = 0.375;
 
 /**
- * A track's earth: the sand layer's albedo times this, about (0.25, 0.19,
- * 0.12), the brown of dry worn soil rather than a dune's tan.
+ * A track's earth: the gravel's albedo times this, about (0.23, 0.18, 0.12),
+ * the brown of dry worn soil rather than a road's grey stone.
  */
-export const INFRASTRUCTURE_TRACK_EARTH_TINT: readonly [number, number, number] = Object.freeze([0.6, 0.53, 0.48]);
+export const INFRASTRUCTURE_TRACK_EARTH_TINT: readonly [number, number, number] = Object.freeze([1.15, 0.95, 0.68]);
 
 /** The placeholder: three header vec4s of zeros, so no segment is listed. */
 export const TERRAIN_INFRASTRUCTURE_PLACEHOLDER_BYTES = INFRASTRUCTURE_HEADER_VEC4S * 16;
@@ -315,11 +320,11 @@ export class TerrainInfrastructurePack {
     floats[word + 9] = segment.halfWidth;
     floats[word + 10] = segment.reach;
     const surface = segment.surface === undefined ? 0 : INFRASTRUCTURE_SURFACE_MATERIAL[segment.surface] + 1;
-    // A streamed segment (a road: only regions carry keys) paints by its
-    // coverage; a static source's paint (the marina's) keeps its edges.
-    const streamed = segment.key === undefined ? 0 : 1;
+    // A streamed segment (a road or a track: only regions carry keys) paints
+    // by its coverage; a static source's paint (the marina's) keeps its edges.
+    const paint = segment.key === undefined ? 0 : segment.surface === "track" ? 2 : 1;
     this.words[word + 11] = ((segment.profile & 0xffff) | (MODE_CODE[segment.mode] << 16) | (surface << 20)
-      | (streamed << 28)) >>> 0;
+      | (paint << 28)) >>> 0;
     for (let p = 0; p < 8; p += 1) floats[word + 12 + p] = segment.params[p] ?? 0;
     this.markDirty(first, first + INFRASTRUCTURE_SEGMENT_VEC4S);
   }
@@ -632,8 +637,9 @@ fn terrainInfrastructure(localX: f32, localZ: f32, height: f32) -> f32 {
  * sampleInfrastructureSurface at a point LOCAL to the bound kernel page, for
  * a ground \`texelMeters\` wide (0: the point; the splat bake's texel): (splat
  * material id, coverage), or (-1, 0) where nothing is painted. A streamed
- * segment's id comes INFRASTRUCTURE_PAINT_ID_OFFSET up, so the bake can mark
- * its paint for the fragment's coverage blend. The most
+ * segment's id comes INFRASTRUCTURE_PAINT_ID_OFFSET up (a track's,
+ * INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET), so the bake can mark its paint for
+ * the fragment's coverage blend. The most
  * coverage wins, the later segment on a tie. A segment narrower than the
  * texel paints the share of a box the texel's width (at most a bin) it
  * covers; the box's other bins add their narrow segments, winning only on
@@ -683,10 +689,12 @@ fn terrainInfraSurfaceBin(
       coverage = kSaturate(0.5 + (shape.y - distance) / K_INFRA_SURFACE_FEATHER);
     }
     let wins = select(coverage > result.y, coverage >= result.y, own);
-    // A streamed segment's material comes INFRASTRUCTURE_PAINT_ID_OFFSET up.
-    let streamed = select(0.0, ${INFRASTRUCTURE_PAINT_ID_OFFSET.toFixed(2)},
-      ((terrainInfrastructureData[first + 2u].w >> 28u) & 1u) == 1u);
-    if (coverage > 0.0 && wins) { result = vec2f(f32(surface - 1u) + streamed, coverage); }
+    // A streamed segment's material comes INFRASTRUCTURE_PAINT_ID_OFFSET up,
+    // a track's INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET.
+    let paint = (terrainInfrastructureData[first + 2u].w >> 28u) & 3u;
+    let offset = select(select(0.0, ${INFRASTRUCTURE_PAINT_ID_OFFSET.toFixed(3)}, paint == 1u),
+      ${INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET.toFixed(3)}, paint == 2u);
+    if (coverage > 0.0 && wins) { result = vec2f(f32(surface - 1u) + offset, coverage); }
   }
   return result;
 }

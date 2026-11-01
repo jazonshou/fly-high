@@ -11,6 +11,7 @@ import { PageSplatBake } from "../../src/render/webgpu/terrain/PageOcclusionBake
 import {
   INFRASTRUCTURE_PAINT_ID_OFFSET,
   INFRASTRUCTURE_SURFACE_MATERIAL,
+  INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET,
   TERRAIN_INFRASTRUCTURE_WGSL,
   packTerrainInfrastructure,
   terrainInfrastructureDataBindingWgsl,
@@ -256,6 +257,7 @@ describe("infrastructure surface paint on the GPU", () => {
             byMaterial.set(expected, (byMaterial.get(expected) ?? 0) + 1);
           }
           const material = Math.floor(id);
+          // Only the gravel road is keyed here: a streamed road's paint.
           const flag = sample.surface === "gravel" ? INFRASTRUCTURE_PAINT_ID_OFFSET : 0;
           const uncontested = !contested(probe.x, probe.z, texel, sample.coverage);
           if (material !== expected && uncontested) wrongMaterial += 1;
@@ -288,8 +290,9 @@ describe("infrastructure surface paint on the GPU", () => {
   it("bakes Concrete and Gravel into the page splat and leaves the rest untouched", async () => {
     const world = createWorld("infrastructure-splat", { worldEvolution: "analytic" });
     expect(infrastructureIndex(world).segments).toHaveLength(2);
-    // And a streamed road along the page's north edge, clear of the static
-    // two: its lanes carry the paint flag (a quarter id up), theirs do not.
+    // And a streamed track along the page's north edge, clear of the static
+    // two: its lanes carry the track's paint flag (its fraction of an id up),
+    // theirs do not.
     const roadZ = -70;
     changeInfrastructureRegions(world, [{
       key: "infrastructure-splat-road",
@@ -297,7 +300,7 @@ describe("infrastructure surface paint on the GPU", () => {
         profile: 0, mode: "set", priority: 1, key: 1,
         ax: 540, az: roadZ, bx: 1000, bz: roadZ,
         halfWidth: 4, reach: 6, params: [3.2, 2],
-        surface: "gravel", plantClearance: 2,
+        surface: "track", plantClearance: 2,
       }],
     }]);
     const index = infrastructureIndex(world);
@@ -366,7 +369,7 @@ describe("infrastructure surface paint on the GPU", () => {
       const idOf = (byte: number) => Math.round((byte / 255) * (SURFACE_MATERIAL_COUNT - 1));
       // The stored id less its material: the flag, to the byte's quantum (11 / 510).
       const flagged = (byte: number, streamed: boolean) => Math.abs(
-        (byte / 255) * (SURFACE_MATERIAL_COUNT - 1) - idOf(byte) - (streamed ? INFRASTRUCTURE_PAINT_ID_OFFSET : 0)) < 0.03;
+        (byte / 255) * (SURFACE_MATERIAL_COUNT - 1) - idOf(byte) - (streamed ? INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET : 0)) < 0.03;
       for (let row = WORLD_PAGE_GUTTER; row < edge - WORLD_PAGE_GUTTER; row += 1) {
         for (let col = WORLD_PAGE_GUTTER; col < edge - WORLD_PAGE_GUTTER; col += 1) {
           const at = (row * edge + col) * 4;

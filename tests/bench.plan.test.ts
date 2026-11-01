@@ -45,10 +45,10 @@ describe("bench tiers and settings", () => {
     expect(() => benchTier(1.5)).toThrow(RangeError);
   });
 
-  it("a step's settings are the defaults with only quality and mode changed", () => {
+  it("a step's settings are the defaults with only quality, mode and the run's frame rate changed", () => {
     const before = JSON.stringify(DEFAULT_SETTINGS);
     for (const tier of TIER_TABLE) {
-      const settings = benchGameSettings(tier.tierIndex);
+      const settings = benchGameSettings(tier.tierIndex, DEFAULT_SETTINGS.frameRate);
       expect(settings).toEqual({
         ...DEFAULT_SETTINGS,
         quality: tier.quality,
@@ -58,6 +58,8 @@ describe("bench tiers and settings", () => {
       // The diagnostics poll and its getDiagnostics() stay off (R5).
       expect(settings.showDiagnostics).toBe(false);
     }
+    expect(benchGameSettings(1, "30").frameRate).toBe("30");
+    expect(benchGameSettings(1, "display")).toEqual({ ...benchGameSettings(1, "60"), frameRate: "display" });
     expect(JSON.stringify(DEFAULT_SETTINGS)).toBe(before);
   });
 
@@ -93,12 +95,13 @@ describe("bench timings", () => {
   });
 
   it("a run plan pins the seed, the route and the expected fingerprint", () => {
-    const plan = benchRunPlan({ tiers: [1, 0, 2, 1], mode: "shipped", hud: true, quick: false });
+    const plan = benchRunPlan({ tiers: [1, 0, 2, 1], mode: "shipped", hud: true, quick: false, frameRate: "60" });
     expect(plan).toEqual({
       tiers: [1, 0, 2, 1],
       mode: "shipped",
       hud: true,
       quick: false,
+      frameRate: "60",
       seed: "00762m",
       pathId: BENCH_PATH_ID,
       pathFingerprint: expectedPathFingerprint(false),
@@ -106,7 +109,7 @@ describe("bench timings", () => {
       windows: { ground: benchTimings(false).ground, air: benchTimings(false).air },
       settleCapSeconds: 20,
     });
-    expect(benchRunPlan({ tiers: [0], mode: "pinned", hud: false, quick: true }).pathFingerprint)
+    expect(benchRunPlan({ tiers: [0], mode: "pinned", hud: false, quick: true, frameRate: "display" }).pathFingerprint)
       .toBe(expectedPathFingerprint(true));
   });
 
@@ -141,11 +144,11 @@ describe("bench timings", () => {
 });
 
 describe("bench URLs", () => {
-  const options = { tiers: [1, 0, 2, 1], mode: "pinned", hud: false, quick: true } as const;
+  const options = { tiers: [1, 0, 2, 1], mode: "pinned", hud: false, quick: true, frameRate: "30" } as const;
 
   it("round-trip through readBenchFromUrl and drop everything else", () => {
     const intro = introUrl(PAGE, options);
-    expect(intro).toBe("https://jazonshou.github.io/fly-high/?bench=1&tiers=1,0,2,1&mode=pinned&hud=0&quick=1");
+    expect(intro).toBe("https://jazonshou.github.io/fly-high/?bench=1&tiers=1,0,2,1&mode=pinned&fps=30&hud=0&quick=1");
     expect(readBenchFromUrl(intro)).toEqual({ ...options, tiers: [1, 0, 2, 1], run: null, step: null });
 
     const step = stepUrl(PAGE, "abc123def0", 2, options);
@@ -166,13 +169,25 @@ describe("bench URLs", () => {
   });
 
   it("shipped mode with the HUD on writes no hud or quick flags", () => {
-    const url = introUrl("http://local/", { tiers: [3], mode: "shipped", hud: true, quick: false });
-    expect(url).toBe("http://local/?bench=1&tiers=3&mode=shipped");
+    const url = introUrl("http://local/", { tiers: [3], mode: "shipped", hud: true, quick: false, frameRate: "60" });
+    expect(url).toBe("http://local/?bench=1&tiers=3&mode=shipped&fps=60");
+  });
+
+  it("always writes the frame rate, whose default a later build may change", () => {
+    for (const frameRate of ["60", "display", "30"] as const) {
+      for (const mode of ["shipped", "pinned"] as const) {
+        const shown = { tiers: [1], mode, hud: true, quick: false, frameRate };
+        for (const url of [introUrl(PAGE, shown), stepUrl(PAGE, "abc123def0", 0, shown), reportUrl(PAGE, "abc123def0", shown)]) {
+          expect(new URL(url).searchParams.get("fps")).toBe(frameRate);
+          expect(readBenchFromUrl(url)?.frameRate).toBe(frameRate);
+        }
+      }
+    }
   });
 
   it("lists parameters the bench ignores, but not its own or its seed", () => {
     expect(ignoredBenchParams(
-      "http://local/?bench=1&world=eroded&landforms=dunes&farSward=off&seed=00762m&tiers=1&quick=1",
+      "http://local/?bench=1&world=eroded&landforms=dunes&farSward=off&seed=00762m&tiers=1&quick=1&fps=30",
     )).toEqual(["farSward=off", "landforms=dunes", "world=eroded"]);
     expect(ignoredBenchParams("http://local/?bench=1&seed=abc")).toEqual(["seed=abc"]);
     expect(ignoredBenchParams("not a url")).toEqual([]);

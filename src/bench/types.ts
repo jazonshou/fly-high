@@ -2,15 +2,16 @@ import type { QualityLevel, RenderDiagnostics } from "@/src/game/types";
 import type { FlightRenderer } from "@/src/render/FlightRenderer";
 import type { FlightRenderingSystem } from "@/src/render/types";
 import type { DetailWorkerHealth } from "@/src/render/webgpu/detail/WorldDetailRuntime";
-import type { GovernorConfig, GovernorMode } from "@/src/render/webgpu/core/AdaptiveGovernor";
+import type { Classification, GovernorConfig, GovernorMode } from "@/src/render/webgpu/core/AdaptiveGovernor";
 import type { WebGpuLimitShortfall } from "@/src/render/webgpu/core/Capabilities";
-import type { GameSettings, RenderingMode } from "@/src/settings";
+import type { FrameRateCap } from "@/src/render/webgpu/core/presentationCadence";
+import type { FrameRateSetting, GameSettings, RenderingMode } from "@/src/settings";
 import type { WorldDefinition } from "@/src/world";
 
 /**
  * The `?bench=1` benchmark's shared contract: what FlightGame sees of a bench
  * session, what the tab-scoped run store holds between page loads, and the
- * `fly-high.bench/1` report.
+ * `fly-high.bench/2` report.
  *
  * Types only. FlightGame imports this file with `import type` and nothing
  * else of src/bench statically, so no bench code reaches a player's bundle.
@@ -27,7 +28,7 @@ export type BenchMode = "shipped" | "pinned";
 
 /** The page's game settings and world seed, held in memory only. */
 export interface BenchBoot {
-  /** `DEFAULT_SETTINGS` plus the step's quality and rendering mode; never saved. */
+  /** `DEFAULT_SETTINGS` plus the step's quality and rendering mode and the run's frame rate; never saved. */
   readonly settings: GameSettings;
   readonly seed: number;
 }
@@ -127,6 +128,8 @@ export interface BenchRunPlan {
   readonly mode: BenchMode;
   readonly hud: boolean;
   readonly quick: boolean;
+  /** The frame-rate setting every flight uses (`fps=`). */
+  readonly frameRate: FrameRateSetting;
   /** The world seed in the URL's base-36 form. */
   readonly seed: string;
   readonly pathId: string;
@@ -460,13 +463,21 @@ export interface BenchGpuSummary {
   readonly max: number;
 }
 
+/**
+ * Intervals in paced slots: one slot is `divisor` refresh periods, so a
+ * flight paced to every 2nd refresh lands in x1 when it keeps up.
+ */
 export interface BenchVsyncBuckets {
+  /** The pacer's divisor at the flight's first frame; 1 draws every refresh. */
+  readonly divisor: number;
   readonly x1: number;
   readonly x2: number;
   readonly x3: number;
   readonly x4plus: number;
+  /** A whole number of refreshes between two slots: a frame that missed its slot by a refresh or more. */
+  readonly offSlot: number;
   readonly irregular: number;
-  /** max(3% of the period, twice the timer granularity). */
+  /** max(3% of the refresh period, twice the timer granularity). */
   readonly toleranceMs: number;
 }
 
@@ -488,7 +499,11 @@ export interface BenchWindowMetrics {
   readonly lowSample: boolean;
   /** 1000 / mean interval. */
   readonly fps: number | null;
-  /** The median interval sits on the refresh period: the display, not the game, set the pace. */
+  /**
+   * The median interval sits on the paced slot (the pacer's divisor times
+   * the refresh period): the display and the frame-rate setting, not the
+   * game, set the pace.
+   */
   readonly displayCapped: boolean;
   readonly intervalMs: BenchIntervalSummary | null;
   readonly onePercentLowFps: number | null;
@@ -499,6 +514,7 @@ export interface BenchWindowMetrics {
     /** Against the tier's own hitch threshold: 27.4 ms, or 60 ms on Ultra. */
     readonly hitch: BenchCount & { readonly thresholdMs: number };
   };
+  /** Intervals longer than the paced slot plus half a refresh period. */
   readonly missedRefresh: { readonly count: number; readonly per240: number; readonly longestStreak: number } | null;
   readonly vsyncBuckets: BenchVsyncBuckets | null;
   readonly renderMs: BenchRenderSummary | null;
@@ -602,7 +618,8 @@ export interface BenchHeapSummary {
   readonly slopeMiBPerMin: number | null;
 }
 
-export type BenchSignalClass = "gpu-bound" | "cpu-bound" | "pacing-bound" | "balanced" | "unknown";
+/** The governor's own classes, so a change to them reaches the report without touching this file. */
+export type BenchSignalClass = Classification;
 
 /** The governor at one instant. Target, applied and rendered are reported apart (S2). */
 export interface BenchGovernorSnapshot {
@@ -619,9 +636,9 @@ export interface BenchGovernorSnapshot {
 /**
  * One decision: [t s, mode, class, proxy ms, target scale, applied scale,
  * rendered pixels, CPU level, GPU level, lever, insensitive, GPU p95, CPU p95,
- * interval p95]. t counts from the flight's first frame, so the settle's
- * decisions read below zero. A tuple, because a run holds up to 128 of them
- * per step.
+ * interval p95, late share]. t counts from the flight's first frame, so the
+ * settle's decisions read below zero. A tuple, because a run holds up to 128
+ * of them per step.
  */
 export type BenchGovernorDecision = readonly [
   t: number,
@@ -638,6 +655,7 @@ export type BenchGovernorDecision = readonly [
   gpuP95: number | null,
   cpuP95: number | null,
   intervalP95: number | null,
+  lateFraction: number | null,
 ];
 
 export interface BenchGovernorEvents {
@@ -751,6 +769,47 @@ export interface BenchFlightSummary {
   readonly earlyCheckFps: number | null;
 }
 
+/** A presentation cadence as the report keeps it: the rate in Hz, not the period. */
+export interface BenchCadence {
+  readonly frameCapHz: FrameRateCap;
+  /** Draws every Nth display refresh. */
+  readonly divisor: number;
+  /** The nominal display rate the pacer measured; null before it measured one. */
+  readonly displayHz: number | null;
+  /**
+   * Measured on evidence render cost cannot stretch: ticks that drew
+   * nothing, or drawn ticks faster than the rate held before.
+   */
+  readonly confirmed: boolean;
+}
+
+/** How the frame pacer ran during one flight. */
+export interface BenchPacing {
+  /** The frame-rate setting the flight used. */
+  readonly setting: FrameRateSetting;
+  /** What the pacer does with it on this build: "60" draws every refresh while 60 fps pacing is off. */
+  readonly effective: FrameRateSetting;
+  /** The cadence the renderer held at the flight's first frame and at its last; null before the pacer measured one. */
+  readonly cadenceAtFlightStart: BenchCadence | null;
+  readonly cadenceAtEnd: BenchCadence | null;
+  /** New cadences the renderer received after the flight's first frame. */
+  readonly cadenceChanges: number;
+  /**
+   * The bench's own rAF ticks and the frames the game rendered, both counted
+   * after the flight's first frame through the one that closed it. A flight
+   * paced to every 2nd refresh renders about half its ticks.
+   */
+  readonly rafTicks: number;
+  readonly renderedFrames: number;
+  /** The rate the cadence at the end paces to: its display rate over its divisor; null without a rate. */
+  readonly pacedHz: number | null;
+  /**
+   * The renderer's governor config at the flight's first frame, which shows
+   * the targets the cadence set; null when the flight never began.
+   */
+  readonly governorConfigAtFlightStart: GovernorConfig | null;
+}
+
 export interface BenchStepResult {
   readonly tierIndex: number;
   readonly quality: QualityLevel;
@@ -760,6 +819,7 @@ export interface BenchStepResult {
   readonly firstRendererInTab: boolean;
   readonly refresh: BenchRefresh | null;
   readonly raf: BenchRafReport;
+  readonly pacing: BenchPacing;
   readonly timer: BenchTimerReport;
   readonly startup: BenchStartup;
   readonly settle: BenchSettle;
@@ -850,7 +910,7 @@ export interface BenchDeviceReport {
   };
 }
 
-// --- the report (`fly-high.bench/1`) ----------------------------------------------
+// --- the report (`fly-high.bench/2`) ----------------------------------------------
 
 export type BenchVerdict = "valid" | "void" | "incomplete" | "unchecked";
 
@@ -869,6 +929,7 @@ export type BenchWarningCode =
   | "ignored-renderer-calls"
   | "raf-disagrees"
   | "raf-limited"
+  | "pacer-period-disagrees"
   | "timer-coarse"
   | "frame-log-overflow"
   | "focus-lost";
@@ -909,7 +970,13 @@ export interface BenchWorkload {
   readonly audio: "none";
   readonly spawnedAirports: false;
   readonly pilotInput: false;
-  readonly frameCap: null;
+  /** The frame-rate setting the run flew. */
+  readonly frameCap: FrameRateSetting;
+  /** What the pacer did with it on this build. */
+  readonly frameCapEffective: FrameRateSetting;
+  /** The players' default when the build was made, and what the pacer does with it. */
+  readonly shippedFrameRate: FrameRateSetting;
+  readonly shippedFrameRateEffective: FrameRateSetting;
 }
 
 export interface BenchReportRun {
@@ -927,6 +994,7 @@ export interface BenchReportRun {
   readonly workload: BenchWorkload;
   /** Null when either hash is missing. */
   readonly settingsKeyUnchanged: boolean | null;
+  /** A quick run, or one whose frame rate behaves unlike its mode's default (`fps=`). */
   readonly nonStandard: boolean;
   readonly firstLoad: BenchFirstLoad | null;
   /** Each tier's label: the worse of its steps that were not browser-limited. */
@@ -973,7 +1041,7 @@ export interface BenchEarlierRun {
 }
 
 export interface BenchReport {
-  readonly schema: "fly-high.bench/1";
+  readonly schema: "fly-high.bench/2";
   readonly benchVersion: number;
   readonly createdAt: string;
   readonly build: BenchBuildInfo;

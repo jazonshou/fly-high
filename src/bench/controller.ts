@@ -1,6 +1,10 @@
+import { effectiveFrameRate } from "@/src/game/framePacer";
 import type { FlightVisualState, RenderDiagnostics } from "@/src/game/types";
 import type { RendererBenchProbe } from "@/src/render/FlightRenderer";
-import { hitchThresholdMilliseconds } from "@/src/render/webgpu/core/QualityProfile";
+import type { GovernorConfig } from "@/src/render/webgpu/core/AdaptiveGovernor";
+import type { PresentationCadence } from "@/src/render/webgpu/core/presentationCadence";
+import { hitchThresholdMilliseconds, type WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
+import type { FrameRateSetting } from "@/src/settings";
 import { GovernorTrace, type ScaleContext } from "./governorTrace";
 import {
   compileCounts,
@@ -22,12 +26,14 @@ import { benchProfile, benchTier, recordSettleCheck, SETTLE_START, settleCheckDu
 import type { BenchFramePort } from "./recorder";
 import { endContextFromDiagnostics, toBenchJson } from "./report";
 import {
+  benchCadence,
   compileDelta,
   createFrameLog,
   earlyStopCheck,
   flightCadence,
   flightSegments,
   overheadSummary,
+  pacedHz,
   perSecondRows,
   perSecondTable,
   rafReport,
@@ -75,6 +81,10 @@ import type {
  * for its first frame, so the loop's callback runs first in every frame and
  * the render sees its own frame's timestamp.
  *
+ * FlightGame's frame pacer may skip ticks, so the loop also counts the ticks
+ * the game drew nothing on. What counts as a hitch or a missed refresh is
+ * fixed by the cadence the renderer holds at the flight's first frame.
+ *
  * Per frame it writes fixed typed arrays (stats.ts's frame log) and reads the
  * renderer's probe; it allocates only once a second (a per-second sample) and
  * on a governor decision. `getDiagnostics()` walks the GPU memory inventory
@@ -103,6 +113,8 @@ export interface StepInstruments {
 export interface StepSetup {
   readonly tierIndex: number;
   readonly mode: BenchMode;
+  /** The run's frame-rate setting, which FlightGame's frame pacer reads. */
+  readonly frameRate: FrameRateSetting;
   readonly timings: BenchTimings;
   /** The run plan's `pathFingerprint`. */
   readonly expectedFingerprint: string;
@@ -195,11 +207,24 @@ export class StepController implements BenchFramePort {
   private readonly now: () => number;
   private readonly raf: RafRecorder;
   private readonly timings: BenchTimings;
-  private readonly tierThresholdMs: number;
+  private readonly profile: WebGpuQualityProfile;
+  /** The tier's hitch threshold; from the flight's first frame, for its cadence. */
+  private tierThresholdMs: number;
+  /** The pacer's divisor at the flight's first frame. */
+  private divisor = 1;
   private readonly scale: ScaleContext;
   private currentPhase: StepPhase = "waiting";
-  /** The latest rAF timestamp of the controller's own loop. */
+  /** The latest rAF timestamp of the controller's own loop, and its ticks so far. */
   private rafMs: number | null = null;
+  private rafTicks = 0;
+  private rafTicksAtFlightStart = 0;
+  /** Frames rendered in the flight, the first included. */
+  private flightFrames = 0;
+  private cadenceAtFlightStart: PresentationCadence | null = null;
+  /** The cadence the latest flight frame's probe held; the pacer replaces it only when it changes. */
+  private cadence: PresentationCadence | null = null;
+  private cadenceChanges = 0;
+  private governorConfigAtFlightStart: GovernorConfig | null = null;
   private lastFrameMs: number | null = null;
   private firstFrameMs: number | null = null;
   /**
@@ -239,6 +264,7 @@ export class StepController implements BenchFramePort {
     this.now = options.now ?? (() => performance.now());
     this.log = createFrameLog(options.capacity);
     const profile = benchProfile(setup.tierIndex);
+    this.profile = profile;
     this.tierThresholdMs = hitchThresholdMilliseconds(profile);
     this.scale = {
       cssWidth: setup.cssWidth,
@@ -256,6 +282,7 @@ export class StepController implements BenchFramePort {
     writeSettleState(path, this.state);
     this.raf = startRafRecorder((timestamp) => {
       this.rafMs = timestamp;
+      this.rafTicks += 1;
     }, options.frameClock);
   }
 
@@ -323,7 +350,12 @@ export class StepController implements BenchFramePort {
       this.compilesAtFlightStart = compilesBefore;
       // The settle's clock read `settleCapS` short of its elapsed time; now the flight's start is known.
       this.trace.rebaseSettle(this.timings.settleCapS - (frameMs - this.firstFrameMs!) / 1_000);
+      this.startPacing(probe);
+    } else if (probe.presentationCadence !== this.cadence) {
+      this.cadence = probe.presentationCadence;
+      this.cadenceChanges += 1;
     }
+    this.flightFrames += 1;
     const t = (frameMs - this.flightStartMs) / 1_000;
     this.flightSeconds = t;
     recordFrame(this.log, frameMs, renderStart, renderEnd - renderStart, compiles, scaleStep, probe.gpuFrameMs);
@@ -460,6 +492,20 @@ export class StepController implements BenchFramePort {
     this.setPhase("flying");
   }
 
+  /**
+   * The flight's first frame: the cadence the renderer holds now decides
+   * what counts as a hitch and as a missed refresh for the whole flight.
+   */
+  private startPacing(probe: Readonly<RendererBenchProbe>): void {
+    const cadence = probe.presentationCadence;
+    this.cadenceAtFlightStart = cadence;
+    this.cadence = cadence;
+    this.tierThresholdMs = hitchThresholdMilliseconds(this.profile, cadence);
+    this.divisor = cadence?.divisor ?? 1;
+    this.governorConfigAtFlightStart = probe.governorConfig;
+    this.rafTicksAtFlightStart = this.rafTicks;
+  }
+
   private secondSample(t: number, frameMs: number, probe: Readonly<RendererBenchProbe>): void {
     const second = Math.floor(t);
     if (second < 0 || second >= this.secondSamples.length || this.secondSamples[second] !== null) return;
@@ -493,6 +539,7 @@ export class StepController implements BenchFramePort {
     const context: FrameWindowContext = {
       flightStartMs,
       refreshMs: setup.refresh?.periodMs ?? null,
+      divisor: this.divisor,
       granularityMs: setup.timer.granularityMs,
       tierThresholdMs: this.tierThresholdMs,
     };
@@ -531,6 +578,18 @@ export class StepController implements BenchFramePort {
       firstRendererInTab: setup.firstRendererInTab,
       refresh: setup.refresh,
       raf: rafReport(setup.refresh, flightCadence(intervals)),
+      pacing: {
+        setting: setup.frameRate,
+        effective: effectiveFrameRate(setup.frameRate),
+        cadenceAtFlightStart: benchCadence(this.cadenceAtFlightStart),
+        cadenceAtEnd: benchCadence(this.cadence),
+        cadenceChanges: this.cadenceChanges,
+        // Both after the flight's first frame: a flight drawing every 2nd refresh renders half its ticks.
+        rafTicks: this.flightStartMs === null ? 0 : this.rafTicks - this.rafTicksAtFlightStart,
+        renderedFrames: Math.max(0, this.flightFrames - 1),
+        pacedHz: pacedHz(this.cadence),
+        governorConfigAtFlightStart: this.governorConfigAtFlightStart,
+      },
       timer: setup.timer,
       startup: {
         navigationType: load.navigationType,

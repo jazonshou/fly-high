@@ -80,15 +80,20 @@ export const BUMPERS = Object.freeze({
   rearTop: 0.68,
 });
 
-/** The glasshouse: a frustum on the belt, raked at the windscreen, with a little tumblehome. */
+/**
+ * The glasshouse: a frustum on the belt, raked at the windscreen, with a
+ * little tumblehome. Its foot stands 45 mm in from the flanks, on the doors'
+ * rolled tops, as the 76's side glass does.
+ */
 export const GLASSHOUSE = Object.freeze({
   /** The windscreen's foot and head stations. */
   screenFootX: BODY.cowlX - 0.02,
   screenHeadX: BODY.cowlX - 0.29,
-  rearFootX: BODY.rear + 0.01,
+  /** The rear doors' stations: flush with the tail at the belt, one skin as the barn doors are, leaning in above it. */
+  rearFootX: BODY.rear,
   rearHeadX: BODY.rear + 0.045,
-  footHalfWidth: 0.872,
-  headHalfWidth: 0.79,
+  footHalfWidth: 0.84,
+  headHalfWidth: 0.778,
   /** The gutter's top, just under the roof's crown. */
   head: 1.905,
 });
@@ -128,11 +133,17 @@ export const DOOR_LINES = Object.freeze({
   frontDoorFoot: LC76_FRONT_AXLE_X - 0.655,
   frontDoorBelt: GLASSHOUSE.screenFootX - A_PILLAR_WIDTH,
   frontDoorRear: -0.375,
-  frontDoorBottom: BODY.sill + 0.03,
+  /** The doors' bottoms: below them the sill panel runs between the arches. */
+  frontDoorBottom: BODY.sill + 0.06,
   /** The doors' window frames' tops, under the gutter. */
   doorTop: GLASSHOUSE.head - 0.035,
   rearDoorRear: -1.315,
 });
+
+/** Where the side slabs meet the centre body, z: the bonnet's shut lines along the guards, and the barn doors' outer edges. */
+export const SHELL_SPLIT_Z = BODY.halfWidth - 0.1;
+/** The 60/40 split between the barn doors, z: from the doors' foot up through the windows' mullion to the gutter. */
+export const REAR_DOOR_SPLIT_Z = -0.17;
 
 /**
  * The front doors' hinges: a vertical axis at the leading edge's top on the
@@ -151,13 +162,20 @@ export const HEADLAMP = Object.freeze({
   radius: 0.088,
 });
 
-/** The tail lamp clusters at the rear corners, above the bumper. */
+/** The grille insert between the headlamps: its mesh and the TOYOTA letters' height. */
+export const GRILLE_INSERT = Object.freeze({ halfWidth: 0.47, bottom: 0.91, top: 1.096, letters: 0.06 });
+
+/** The tail lamp clusters at the rear corners, above the bumper, in black housings; the lenses stand `proud` of the body. */
 export const TAIL_LAMP = Object.freeze({
-  outer: BODY.halfWidth - 0.012,
+  outer: BODY.halfWidth - 0.016,
   inner: BODY.halfWidth - 0.13,
   bottom: 0.7,
   top: 1.05,
+  proud: 0.012,
 });
+
+/** The round fog lamps in the front bumper's face. */
+export const FOG_LAMP = Object.freeze({ halfSpacing: 0.6, height: 0.667, radius: 0.034 });
 
 /** The snorkel's air intake, on the right (driver's) A-pillar. */
 export const SNORKEL = Object.freeze({

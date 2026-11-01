@@ -14,8 +14,9 @@ import {
   cockpitDeckKStyleValue,
   cockpitDeckLineY,
 } from "../src/ui/cockpitHudLayout";
+import { PITCH_LADDER_WINDOW } from "../src/ui/pitchLadder";
 import { DECKS, DECK_CATEGORIES, cockpitView, type CockpitView, type Deck } from "./support/cockpitFootprints";
-import { cockpitHudLayout, flightCssRules, readTopLevelRules } from "./support/cockpitHudModel";
+import { HUD_SIZES, cockpitHudLayout, flightCssRules, readTopLevelRules } from "./support/cockpitHudModel";
 import { EXTERIOR_CAMERAS, hudMarkupCases, renderHudCase } from "./support/hudMarkupCases";
 
 /**
@@ -30,7 +31,8 @@ import { EXTERIOR_CAMERAS, hudMarkupCases, renderHudCase } from "./support/hudMa
  * What is held here:
  *  - every other camera's HUD is byte for byte the markup captured before the
  *    cockpit layout existed (de91cef) plus the FLAPS readout and flap hint added on
- *    2026-09-30, and the cockpit's differs from it by the class and `--deck-k` alone;
+ *    2026-09-30 and the pitch ladder redrawn through the camera on 2026-10-28, and
+ *    the cockpit's differs from it by the class and `--deck-k` alone;
  *  - the stylesheet's cockpit rules are scoped to the cockpit class and carry the
  *    layout module's numbers;
  *  - on SEVEN window shapes (16:9 at three sizes, 4:3 and 21:9 at three), every
@@ -53,8 +55,9 @@ describe("the HUD's markup", () => {
     const golden = JSON.parse(readFileSync(join(ROOT, "tests/fixtures/hud-exterior-markup.json"), "utf8")) as {
       capturedOn: string; cases: Record<string, string>;
     };
-    // "de91cef+flaps": that capture, plus the two insertions the flap block made (checked when it was re-captured).
-    expect(golden.capturedOn).toBe("de91cef+flaps");
+    // "de91cef+flaps+ladder": that capture, plus the two insertions the flap block made, and the pitch
+    // ladder redrawn through the camera (each checked when it was re-captured; the fixture's note says how).
+    expect(golden.capturedOn).toBe("de91cef+flaps+ladder");
     const cases = hudMarkupCases(EXTERIOR_CAMERAS);
     expect(cases.length).toBe(Object.keys(golden.cases).length);
     for (const c of cases) expect(renderHudCase(c), c.name).toBe(golden.cases[c.name]);
@@ -124,6 +127,17 @@ describe("the stylesheet's cockpit rules", () => {
     // The attitude clip is the attitude box's half-height plus the margin, less the deck's drop.
     expect(at(" .attitude")["clip-path"]).toBe(`inset(0 0 max(0px, calc(115px + ${COCKPIT_HUD_DECK_MARGIN_PX}px - ${halfWidth} * var(--deck-k))) 0)`);
     expect(rules.get(".attitude")?.height).toBe("230px");
+    // The pitch ladder's box is centred on the attitude box, its window's size, and cut the same way by
+    // its own half-height. In the cockpit, where the nose is the screen's centre, the window stays centred
+    // in it (tests/hud.pitch-ladder.test.ts), so the model's box for it is the window.
+    expect(at(" .pitch-ladder")["clip-path"]).toBe(
+      `inset(0 0 max(0px, calc(${PITCH_LADDER_WINDOW.height / 2}px + ${COCKPIT_HUD_DECK_MARGIN_PX}px - ${halfWidth} * var(--deck-k))) 0)`,
+    );
+    expect(rules.get(".pitch-ladder")).toMatchObject({
+      width: `${PITCH_LADDER_WINDOW.width}px`, height: `${PITCH_LADDER_WINDOW.height}px`, top: "50%", left: "50%",
+      transform: "translate(-50%, -50%)",
+    });
+    expect(HUD_SIZES.pitchLadder).toEqual(PITCH_LADDER_WINDOW);
     expect(rules.get(".metric-tape")?.height).toBe("170px");
   });
 });

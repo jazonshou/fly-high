@@ -104,7 +104,7 @@ fn probeSparseGather(@builtin(global_invocation_id) id: vec3<u32>) {
     // All ids, one id crossing lanes/corners, then an exact top-two tie.
     vec2f(3.23, 0.67), vec2f(6.23, 0.67), vec2f(9.5, 0.5));
   let blends = array<f32, 6>(0.0, 0.0, 0.0, 0.0, 0.37, 1.0);
-  var paint = 0.0;
+  var paint = vec3f(0.0);
   probeResults[id.x] = vec4f(
     terrainSurfaceSparseSplat(positions[id.x], blends[id.x], &paint), 1.0);
 }

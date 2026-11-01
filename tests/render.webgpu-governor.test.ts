@@ -8,6 +8,7 @@ import {
   governorConfigForProfile,
   nextGovernorDecision,
   observeRenderScaleApplication,
+  resolveSignals,
   workLeverSettingsFor,
   type GovernorSignals,
   type GovernorState,
@@ -20,7 +21,8 @@ import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityPr
  * not improve must stop after two ineffective steps and restore the scale.
  * R-11 extends the contract: no work step is ever recovered while the frame
  * is GPU-bound, and a GPU-bound frame whose resolution lever is dead (latched
- * or floored) sheds GPU-cost work levers instead.
+ * or floored) sheds GPU-cost work levers instead. PR B (G1) narrows recovery
+ * to on-cadence windows, one rung at a time and on trial.
  */
 
 const config = governorConfigForProfile(resolveWebGpuQualityProfile("high", "balanced"));
@@ -76,6 +78,8 @@ describe("adaptive governor (1A-6b)", () => {
   it("classifies a tiny synthesised GPU share as CPU-bound and does not touch resolution", () => {
     // No timestamp queries at all: interval ≈ cpu means the CPU is the story.
     const noGpuTiming: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: 21, intervalP95Ms: 22 };
+    expect(resolveSignals(noGpuTiming, config.gpuTargetMs, config.presentationTargetMs))
+      .toMatchObject({ classification: "cpu-bound", metric: null });
     let state = createGovernorState(config);
     const initialScale = state.renderScale;
     state = runWindows(state, noGpuTiming, 10);
@@ -89,8 +93,15 @@ describe("adaptive governor (1A-6b)", () => {
       cpuP95Ms: 6.6,
       intervalP95Ms: 37.5,
     };
+    expect(resolveSignals(pacingBound, config.gpuTargetMs, config.presentationTargetMs))
+      .toMatchObject({ classification: "pacing-bound", metric: "interval-pacing" });
     const initial = createGovernorState(config);
-    const state = nextGovernorDecision(initial, pacingBound, config);
+    // PR B: on presented intervals one window's late count is noise, so a
+    // resolution step needs two off-cadence windows in a row.
+    const first = nextGovernorDecision(initial, pacingBound, config);
+    expect(first.renderScale).toBe(initial.renderScale);
+    expect(first.mode).toBe("holding");
+    const state = nextGovernorDecision(first, pacingBound, config);
 
     expect(state.mode).toBe("frame-pacing");
     expect(state.renderScale).toBeLessThan(initial.renderScale);
@@ -107,6 +118,7 @@ describe("adaptive governor (1A-6b)", () => {
     const initial = createGovernorState(config);
     const state = nextGovernorDecision(initial, healthy, config);
 
+    expect(state.mode).toBe("on-cadence");
     expect(state.renderScale).toBe(initial.renderScale);
     expect(state.pendingProbe).toBeNull();
     expect(state.gpuWorkLevel).toBe(0);
@@ -114,11 +126,9 @@ describe("adaptive governor (1A-6b)", () => {
 
   it("undoes a scale probe when its timing source changes", () => {
     const initial = createGovernorState(config);
-    const pacingStep = nextGovernorDecision(initial, {
-      gpuP95Ms: 10,
-      cpuP95Ms: 6.6,
-      intervalP95Ms: 37.5,
-    }, config);
+    const pacing: GovernorSignals = { gpuP95Ms: 10, cpuP95Ms: 6.6, intervalP95Ms: 37.5 };
+    const pacingStep = runWindows(initial, pacing, 2);
+    expect(pacingStep.renderScale).toBeLessThan(initial.renderScale);
     expect(pacingStep.pendingProbe?.metric).toBe("interval");
 
     const timestampWindow = nextGovernorDecision(pacingStep, {
@@ -185,7 +195,8 @@ describe("adaptive governor (1A-6b)", () => {
     gpu *= 0.9;
     state = nextGovernorDecision(state, { gpuP95Ms: gpu, cpuP95Ms: 6, intervalP95Ms: 19 }, config);
     gpu *= 0.9;
-    state = nextGovernorDecision(state, { gpuP95Ms: gpu, cpuP95Ms: 6, intervalP95Ms: 17 }, config);
+    // 18 ms, not 17: 17 is within 2% of 16.67, on cadence, and would not step.
+    state = nextGovernorDecision(state, { gpuP95Ms: gpu, cpuP95Ms: 6, intervalP95Ms: 18 }, config);
     expect(state.renderScale).toBeCloseTo(initialScale - 0.15, 5);
     expect(state.resolutionInsensitive).toBe(false);
     expect(state.ineffectiveDownSteps).toBe(0);
@@ -214,17 +225,18 @@ describe("adaptive governor (1A-6b)", () => {
     expect(state.resolutionInsensitive).toBe(false);
   });
 
-  it("recovers one work step after four calm windows", () => {
+  it("recovers one work step after four calm windows, on trial", () => {
     const cpuBound: GovernorSignals = { gpuP95Ms: 6, cpuP95Ms: 22, intervalP95Ms: 22 };
     let state = createGovernorState(config);
     state = runWindows(state, cpuBound, 4);
     const loadedLevel = state.cpuWorkLevel;
     expect(loadedLevel).toBeGreaterThan(0);
-    // Genuinely calm and balanced: neither stream dominates, both far below
-    // target — the ladder recovers one step after four such windows.
+    // On cadence and calm: the ladder recovers one step after four such
+    // windows, kept only while the windows after it stay on cadence.
     const calm: GovernorSignals = { gpuP95Ms: 4, cpuP95Ms: 4, intervalP95Ms: 5 };
     state = runWindows(state, calm, 4);
     expect(state.cpuWorkLevel).toBe(loadedLevel - 1);
+    expect(state.trial?.ladder).toBe("cpu");
   });
 
   it("respects the raised 0.75 scale floor", () => {
@@ -243,28 +255,33 @@ describe("adaptive governor (1A-6b)", () => {
   });
 
   it("splits the ladders by cost and keeps each ordered cheapest-looking first (R-11)", () => {
-    expect(workLeverSettingsFor(0, 0)).toMatchObject({
+    // PR B (G3): every lever but the page-request budget is relative to the
+    // profile, so level 0 is each field's identity.
+    expect(workLeverSettingsFor(0, 0)).toEqual({
       terrainPageRequestsPerUpdate: Number.POSITIVE_INFINITY,
-      detailCellBudgetMs: 2,
-      detailCellCap: 24,
-      cloudShadowIntervalFrames: null,
+      detailBudgetScale: 1,
+      cloudShadowExtraFrames: 0,
+      animalBudgetScale: 1,
+      shadowCasterDistanceScale: 1,
       vegetationDistanceScale: 1,
+      groundCoverGateScale: 1,
+      computeBudgetScale: 1,
     });
     // The CPU ladder touches only CPU-side fields.
     expect(workLeverSettingsFor(1, 0).terrainPageRequestsPerUpdate).toBe(8);
     expect(workLeverSettingsFor(3, 0).terrainPageRequestsPerUpdate).toBe(2);
-    expect(workLeverSettingsFor(4, 0)).toMatchObject({
-      detailCellBudgetMs: 1.25,
-      detailCellCap: 16,
-    });
+    expect(workLeverSettingsFor(3, 0).detailBudgetScale).toBe(1);
+    expect(workLeverSettingsFor(4, 0).detailBudgetScale).toBe(0.66);
+    expect(workLeverSettingsFor(5, 0).detailBudgetScale).toBe(0.33);
+    expect(workLeverSettingsFor(5, 0).animalBudgetScale).toBe(1);
+    expect(workLeverSettingsFor(6, 0).animalBudgetScale).toBe(0.5);
     expect(workLeverSettingsFor(CPU_WORK_MAX_LEVEL, 0)).toMatchObject({
       terrainPageRequestsPerUpdate: 2,
-      detailCellBudgetMs: 0.75,
-      detailCellCap: 8,
-      activeAnimalBudgetCap: 16,
+      detailBudgetScale: 0.33,
+      animalBudgetScale: 0.25,
       // GPU-cost levers stay untouched at any CPU level.
-      cloudShadowIntervalFrames: null,
-      shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
+      cloudShadowExtraFrames: 0,
+      shadowCasterDistanceScale: 1,
       vegetationDistanceScale: 1,
       groundCoverGateScale: 1,
       computeBudgetScale: 1,
@@ -275,26 +292,30 @@ describe("adaptive governor (1A-6b)", () => {
     // the pilot can see. Assertion 71's companion property.
     expect(workLeverSettingsFor(0, 1)).toMatchObject({
       computeBudgetScale: 0.6,
-      cloudShadowIntervalFrames: null,
-      shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
+      cloudShadowExtraFrames: 0,
+      shadowCasterDistanceScale: 1,
       vegetationDistanceScale: 1,
     });
     expect(workLeverSettingsFor(0, 2).computeBudgetScale).toBe(0.35);
-    expect(workLeverSettingsFor(0, 2).cloudShadowIntervalFrames).toBeNull();
-    expect(workLeverSettingsFor(0, 3).cloudShadowIntervalFrames).toBe(3);
+    expect(workLeverSettingsFor(0, 2).cloudShadowExtraFrames).toBe(0);
+    expect(workLeverSettingsFor(0, 3).cloudShadowExtraFrames).toBe(1);
+    expect(workLeverSettingsFor(0, 4).cloudShadowExtraFrames).toBe(2);
+    expect(workLeverSettingsFor(0, 4).shadowCasterDistanceScale).toBe(1);
+    expect(workLeverSettingsFor(0, 5).shadowCasterDistanceScale).toBe(0.7);
+    expect(workLeverSettingsFor(0, 6).shadowCasterDistanceScale).toBe(0.5);
     // `6-9`/`P-5`: the ground-cover gate is the LAST rung, after vegetation
     // distance, exactly where the wave-P plan put it — and it is untouched
     // until every cheaper GPU lever has been spent.
     expect(workLeverSettingsFor(0, 7).groundCoverGateScale).toBe(1);
     expect(workLeverSettingsFor(0, GPU_WORK_MAX_LEVEL)).toMatchObject({
       computeBudgetScale: 0.35,
-      cloudShadowIntervalFrames: 4,
-      shadowCasterDistanceMeters: 1_200,
+      cloudShadowExtraFrames: 2,
+      shadowCasterDistanceScale: 0.5,
       vegetationDistanceScale: 0.75,
       groundCoverGateScale: 0.3,
       terrainPageRequestsPerUpdate: Number.POSITIVE_INFINITY,
-      detailCellBudgetMs: 2,
-      activeAnimalBudgetCap: Number.POSITIVE_INFINITY,
+      detailBudgetScale: 1,
+      animalBudgetScale: 1,
     });
     expect(cpuWorkLeverName(0)).toBeNull();
     expect(cpuWorkLeverName(1)).toBe("terrain-page-requests");
@@ -334,35 +355,43 @@ describe("adaptive governor (1A-6b)", () => {
     expect(state.lastLever).toBe(gpuWorkLeverName(state.gpuWorkLevel));
   });
 
-  it("R-11 trace: GPU levers recover only from a calm, non-GPU-bound state", () => {
+  it("GPU levers recover only on cadence, one rung per 4 calm windows, on trial", () => {
     const gpuBound: GovernorSignals = { gpuP95Ms: 20, cpuP95Ms: 4, intervalP95Ms: 21 };
     let state = createGovernorState(config);
     state = nextGovernorDecision(state, gpuBound, config);
     state = observeRenderScaleApplication(state, false, config);
+    // GPU-bound and off cadence: shed, never recover.
     for (let window = 0; window < 6; window += 1) {
+      const before = state.gpuWorkLevel;
       state = nextGovernorDecision(state, gpuBound, config);
+      expect(state.gpuWorkLevel).toBeGreaterThanOrEqual(before);
     }
     const shedLevel = state.gpuWorkLevel;
     expect(shedLevel).toBeGreaterThan(0);
 
-    // Still GPU-bound but now under target: hold, never recover.
-    const gpuBoundCalm: GovernorSignals = { gpuP95Ms: 9, cpuP95Ms: 4, intervalP95Ms: 10 };
-    for (let window = 0; window < 8; window += 1) {
-      state = nextGovernorDecision(state, gpuBoundCalm, config);
+    // On cadence with GPU headroom: one rung back after four windows, on trial.
+    const onCadence: GovernorSignals = { gpuP95Ms: 9, cpuP95Ms: 4, intervalP95Ms: 10 };
+    for (let window = 0; window < 3; window += 1) {
+      state = nextGovernorDecision(state, onCadence, config);
       expect(state.gpuWorkLevel).toBe(shedLevel);
     }
-
-    // Balanced and genuinely calm: one GPU lever recovers per calm streak.
-    const calm: GovernorSignals = { gpuP95Ms: 5, cpuP95Ms: 5, intervalP95Ms: 6 };
-    for (let window = 0; window < 4; window += 1) {
-      state = nextGovernorDecision(state, calm, config);
-    }
+    state = nextGovernorDecision(state, onCadence, config);
     expect(state.gpuWorkLevel).toBe(shedLevel - 1);
+    expect(state.trial).toMatchObject({ ladder: "gpu", restoreLevel: shedLevel });
+
+    // Off cadence during the trial: the rung is restored and the ladder waits.
+    state = nextGovernorDecision(state, gpuBound, config);
+    expect(state.gpuWorkLevel).toBe(shedLevel);
+    expect(state.trial).toBeNull();
+    expect(state.recovery.gpu).toMatchObject({ strikes: 1, backoffWindows: 15 });
   });
 
   it("uses the 30 ms target on the Ultra tier", () => {
     const ultra = governorConfigForProfile(resolveWebGpuQualityProfile("high", "ultra"));
     expect(ultra.gpuTargetMs).toBe(30);
+    expect(ultra.presentationTargetMs).toBeCloseTo(1_000 / 30, 9);
+    // 15% over the 33.3 ms cadence, with no display period to trust.
+    expect(ultra.lateIntervalMs).toBeCloseTo(38.333, 3);
     // 18 ms GPU-bound is comfortably inside Ultra's target: no step.
     let state = createGovernorState(ultra);
     const initial = state.renderScale;

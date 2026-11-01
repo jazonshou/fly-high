@@ -34,9 +34,14 @@ import {
  *            G moisture  a broader fBm: lush/cool vs dry/straw hue swing
  *            B clumps    scattered soft discs, mean-removed: tufts, bushes
  *                        and stones depending on the scale it is read at
- *            A height    fBm plus the clumps, for the normal below
- *   array B  RG normal   from A's height, by the same central difference the
- *                        material layers use; Toksvig-reduced in the mips
+ *            A crunch    the gaps in a sward: where an fBm with EQUAL
+ *                        octaves dips low, a smooth step down into dark
+ *                        holes. The plugin dims the sun and sky with it
+ *                        (`GROUND_GRAIN_CRUNCH`), so ground reads as small
+ *                        lit tops over shadow at every footprint
+ *   array B  RG normal   from a height field (fBm plus the clumps), by the
+ *                        same central difference the material layers use;
+ *                        Toksvig-reduced in the mips
  *            B 0.5       neutral roughness (unread; Toksvig writes into it)
  *            A 1.0       no cavity (unread)
  *
@@ -80,7 +85,7 @@ export const GROUND_GRAIN_CHANNEL_STD = Object.freeze({
   tone: 0.17,
   moisture: 0.15,
   clumps: 0.12,
-  height: 0.16,
+  crunch: 0.2,
 });
 
 /** RMS slope the normal is scaled to, in height units per texel-scale step. */
@@ -286,6 +291,42 @@ function storeCentred(field: Float32Array, std: number, out: Uint8Array, channel
   }
 }
 
+/**
+ * The crunch channel's shape: an fBm whose octaves all carry the same
+ * amplitude (gain 1), so after the box mips each level still holds about as
+ * much contrast at its own texel as the one below it did.
+ *
+ * WHY. Ground seen from the air is close to scale-invariant: blades and
+ * the gaps between them, tussocks, bushes, copses, each scale has its own
+ * shadowed holes, so a pixel at 50 ft and a pixel at 5,000 ft both land on
+ * lit tops and dark gaps. The tone is red: at the shipped 512 edge its finest
+ * mip band carries an eighth of its broadest one's contrast (a third at the
+ * ground-grain test's 128), and the frames showed it, a meadow at 1,600 ft
+ * with a third of the contrast at the pixel that it had at 16 pixels, which
+ * reads as a smooth plastic sheet. Only the low side is kept, through a
+ * smooth step, because shadow is holes in lit ground and not a symmetric
+ * grey wash.
+ */
+export const GROUND_GRAIN_CRUNCH_SHAPE = Object.freeze({
+  gain: 1.0,
+  /** Where the step starts, in standard deviations below the mean. */
+  threshold: 0.2,
+  /** How far below that it reaches full depth, in standard deviations. */
+  width: 1.2,
+});
+
+function crunchField(edge: number, seed: number): Float32Array {
+  const field = gradientFbm(edge, 8, 8, GROUND_GRAIN_CRUNCH_SHAPE.gain, seed);
+  standardize(field);
+  for (let index = 0; index < field.length; index += 1) {
+    const t = Math.min(1, Math.max(0,
+      (-field[index]! - GROUND_GRAIN_CRUNCH_SHAPE.threshold) / GROUND_GRAIN_CRUNCH_SHAPE.width));
+    field[index] = -t * t * (3 - 2 * t);
+  }
+  standardize(field);
+  return field;
+}
+
 /** The grain layer for both arrays: a pure function of (seed, edge). */
 export function synthesizeGroundGrainLayer(
   seed: WorldSeed,
@@ -330,7 +371,8 @@ export function synthesizeGroundGrainLayer(
   standardize(clumpField);
 
   // Height: its own fBm, raised under the clumps and a little under the
-  // patches, so the normal agrees with what the albedo draws.
+  // patches, so the normal agrees with what the albedo draws. Not stored: A's
+  // last channel carries the crunch, and only the normal reads the height.
   const height = gradientFbm(edge, 8, 7, 0.5, base ^ 0x5be0_cd19);
   standardize(height);
   for (let index = 0; index < texels; index += 1) {
@@ -342,7 +384,8 @@ export function synthesizeGroundGrainLayer(
   storeCentred(tone, GROUND_GRAIN_CHANNEL_STD.tone, albedoHeight, 0);
   storeCentred(moisture, GROUND_GRAIN_CHANNEL_STD.moisture, albedoHeight, 1);
   storeCentred(clumpField, GROUND_GRAIN_CHANNEL_STD.clumps, albedoHeight, 2);
-  storeCentred(height, GROUND_GRAIN_CHANNEL_STD.height, albedoHeight, 3);
+  const crunch = crunchField(edge, base ^ 0x2f1c_9a3b);
+  storeCentred(crunch, GROUND_GRAIN_CHANNEL_STD.crunch, albedoHeight, 3);
 
   // Normal from the height, by the material layers' one-texel central
   // difference, scaled to a fixed RMS slope so the shader's gains are in

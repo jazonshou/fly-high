@@ -5,7 +5,7 @@ import type { BenchHost } from "../src/bench/session";
 import { BENCH_STORE_KEY, openBenchStore, parseBenchStore, serializeBenchStore } from "../src/bench/store";
 import type { BenchStepRecord } from "../src/bench/types";
 import type { BenchView } from "../src/bench/ui/BenchApp";
-import { readBenchFromUrl } from "../src/settings";
+import { readBenchFromUrl, type FrameRateSetting } from "../src/settings";
 import { benchStepResult } from "./support/benchReportFixture";
 
 /**
@@ -42,10 +42,10 @@ function memoryStorage() {
   return { storage, items };
 }
 
-function startInput(): StartRunInput {
+function startInput(frameRate: FrameRateSetting = "60"): StartRunInput {
   return {
     runId: "k3x9q2m7wp",
-    options: { tiers: [1, 0], mode: "shipped", hud: false, quick: true },
+    options: { tiers: [1, 0], mode: "shipped", hud: false, quick: true, frameRate },
     device: null,
     introRefresh: null,
     userLabel: null,
@@ -87,10 +87,10 @@ function fakeBrowser(visibilityState: "visible" | "hidden") {
  * Step 0 of a fresh two-step run, or step 1 once step 0 has flown, opened in
  * a fresh module: one page load.
  */
-async function openStep(visibility: "visible" | "hidden", stepIndex: 0 | 1 = 0) {
+async function openStep(visibility: "visible" | "hidden", stepIndex: 0 | 1 = 0, frameRate: FrameRateSetting = "60") {
   const browser = fakeBrowser(visibility);
   const { storage, items } = memoryStorage();
-  const fresh = startRun(startInput(), `${PAGE}?bench=1&quick=1&tiers=1,0`);
+  const fresh = startRun(startInput(frameRate), `${PAGE}?bench=1&quick=1&tiers=1,0`);
   const start = stepIndex === 0
     ? fresh
     : recordStepResult(fresh.store, 0, "ok", benchStepResult({ tierIndex: 1, quick: true }), "absent", fresh.href);
@@ -161,6 +161,12 @@ describe("a step page whose tab is hidden", () => {
     expect(next.page.previous).toEqual({ attempt: 1, outcome: "interrupted", navigationType: "reload", at: NOW });
   });
 
+  it("boots the flight with the run's frame rate", async () => {
+    const page = await openStep("visible", 0, "30");
+    expect(page.start.href).toContain("&fps=30");
+    expect(page.session.boot?.settings).toMatchObject({ quality: "medium", frameRate: "30" });
+  });
+
   it("says the report comes next on the plan's last flight", async () => {
     const page = await openStep("visible", 1);
     expect(page.step()).toMatchObject({ status: "running", tierIndex: 0 });
@@ -202,7 +208,7 @@ describe("a bench page that cannot set itself up", () => {
     const start = startRun(startInput(), `${PAGE}?bench=1&quick=1&tiers=1,0`);
     const flown = recordStepResult(start.store, 0, "ok", result as never, "absent", start.href);
     items.set(BENCH_STORE_KEY, serializeBenchStore(flown.store));
-    const href = reportUrl(start.href, start.store.current!.runId, { tiers: [1, 0], mode: "shipped", hud: false, quick: true });
+    const href = reportUrl(start.href, start.store.current!.runId, { tiers: [1, 0], mode: "shipped", hud: false, quick: true, frameRate: "60" });
     const go = vi.fn<(href: string) => void>();
     const host: BenchHost = { href, storage, navigationType: "navigate", isoNow: () => NOW, go };
     vi.resetModules();
@@ -227,7 +233,7 @@ describe("a bench page that cannot set itself up", () => {
     expect(page.go).not.toHaveBeenCalled();
 
     shown.failure.onStartOver();
-    expect(page.go).toHaveBeenLastCalledWith(introUrl(page.href, { tiers: [1, 0], mode: "shipped", hud: false, quick: true }));
+    expect(page.go).toHaveBeenLastCalledWith(introUrl(page.href, { tiers: [1, 0], mode: "shipped", hud: false, quick: true, frameRate: "60" }));
     expect(page.items.has(BENCH_STORE_KEY)).toBe(false);
     shown.failure.onExit();
     expect(page.go).toHaveBeenLastCalledWith(exitUrl(page.href));

@@ -109,6 +109,8 @@ describe("every governor lever has a reader outside the governor", () => {
     expect(LEVER_FIELDS.length).toBeGreaterThan(5);
     expect(LEVER_FIELDS).toContain("groundCoverGateScale");
     expect(LEVER_FIELDS).toContain("computeBudgetScale");
+    // PR B (G3): the relative levers are read through governedWork.ts.
+    expect(LEVER_FIELDS).toContain("shadowCasterDistanceScale");
   });
 
   it("THE GUARD — no governor lever is attached to nothing", () => {

@@ -2255,10 +2255,10 @@ fn bakeSplat(
   // Over the texel, so a road narrower than it paints (and thins the canopy
   // closure by) the share of the texel it covers.
   let surface = terrainInfrastructureSurfaceOver(localX, localZ, job.shape.x);
-  // A streamed segment's (a road's) material arrives a quarter id up
-  // (INFRASTRUCTURE_PAINT_ID_OFFSET). Its lane is stored that way too: rounded,
-  // every reader still gets the material, and the terrain fragment blends that
-  // paint by its coverage instead of by height.
+  // A streamed segment's (a road's) material arrives a fraction of an id up
+  // (INFRASTRUCTURE_PAINT_ID_OFFSET; a track's, a little more). Its lane is
+  // stored that way too: rounded, every reader still gets the material, and
+  // the terrain fragment blends that paint by its coverage instead of by height.
   let built = vec2f(floor(surface.x), surface.y);
   let aligned = splatApplyInfrastructureSurface(splatAlignSeasonalWeights(lo, hi), built);
   let painted = select(vec4f(0.0), vec4f(surface.x - built.x),

@@ -12,8 +12,11 @@ import { BENCH_SEED, benchProfile, benchTimings, expectedPathFingerprint } from 
 import { BenchRenderer, type BenchProbedRenderer } from "../src/bench/recorder";
 import { timerReport } from "../src/bench/stats";
 import type { BenchFirstLoad, BenchStepResult, BenchTimings } from "../src/bench/types";
+import { effectiveFrameRate } from "../src/game/framePacer";
 import { INITIAL_VISUAL_STATE, type FlightVisualState, type RenderDiagnostics } from "../src/game/types";
 import type { RendererBenchProbe } from "../src/render/FlightRenderer";
+import type { PresentationCadence } from "../src/render/webgpu/core/presentationCadence";
+import type { FrameRateSetting } from "../src/settings";
 import {
   createGovernorState,
   governorConfigForProfile,
@@ -95,6 +98,7 @@ interface HarnessOptions {
   /** Runs inside each `render()`, as the renderer's own work does; `timestamp` is the frame's. */
   readonly duringRender?: (phase: StepPhase, timestamp: number) => void;
   readonly load?: () => BenchFirstLoad;
+  readonly frameRate?: FrameRateSetting;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -122,6 +126,7 @@ function harness(options: HarnessOptions = {}) {
     renderHeight: 619,
     pinned: false,
     gpuFrameMs: null,
+    presentationCadence: null,
   };
   const drawn: FlightVisualState[] = [];
   const counts: CreationCounts = {
@@ -175,6 +180,7 @@ function harness(options: HarnessOptions = {}) {
   const setup: StepSetup = {
     tierIndex,
     mode: "shipped",
+    frameRate: options.frameRate ?? "60",
     timings,
     expectedFingerprint: expectedPathFingerprint(timings.quick),
     firstRendererInTab: true,
@@ -230,6 +236,12 @@ function harness(options: HarnessOptions = {}) {
     nowMs = timestamp + 0.5;
     bench.render(INITIAL_VISUAL_STATE, 1 / 60);
   };
+  /** A browser frame the game's frame pacer skipped: only the rAF callbacks run. */
+  const skippedFrame = (timestamp: number) => {
+    frameTimestamp = timestamp;
+    nowMs = timestamp;
+    frames.frame(timestamp);
+  };
   /** Frames every `intervalMs` from `fromMs` until `until` says stop or `maxMs` passes. */
   const run = (fromMs: number, intervalMs: number, until: () => boolean, maxMs = 200_000): number => {
     let at = fromMs;
@@ -241,7 +253,7 @@ function harness(options: HarnessOptions = {}) {
   };
   return {
     controller, bench, frames, probe, drawn, diagnosticsReads, phases, finished, path, timings, compile,
-    frame, run,
+    frame, skippedFrame, run,
     now: () => nowMs,
     settleStartMs: () => settleStartMs,
   };
@@ -552,6 +564,85 @@ describe("the step controller's flight", () => {
     expect(h.controller.log.length).toBe(100);
     expect(result.environment.overflowed).toBe(true);
     expect(result.flight.seconds).toBeGreaterThanOrEqual(quick.flightS);
+  });
+});
+
+describe("the step controller's pacing (PR B)", () => {
+  const sixty: PresentationCadence = { frameCapHz: null, divisor: 1, displayPeriodMs: 1_000 / 60, periodConfirmed: true };
+  const thirty: PresentationCadence = { frameCapHz: 30, divisor: 2, displayPeriodMs: 1_000 / 60, periodConfirmed: true };
+
+  it("judges a flight drawing every 2nd refresh by its slot: 30 fps on time, nothing missed, hitches over 60 ms", () => {
+    const h = harness({ frameRate: "30" });
+    h.probe.presentationCadence = thirty;
+    const period = 1_000 / 60;
+    let at = 1_000;
+    for (let tick = 0; h.finished.length === 0 && tick < 20_000; tick += 1) {
+      if (tick % 2 === 0) h.frame(at);
+      else h.skippedFrame(at);
+      at += period;
+    }
+    const { result } = h.finished[0]!;
+    expect(result.pacing).toEqual({
+      setting: "30",
+      effective: "30",
+      cadenceAtFlightStart: { frameCapHz: 30, divisor: 2, displayHz: 60, confirmed: true },
+      cadenceAtEnd: { frameCapHz: 30, divisor: 2, displayHz: 60, confirmed: true },
+      cadenceChanges: 0,
+      rafTicks: 2 * result.pacing.renderedFrames,
+      renderedFrames: expect.any(Number),
+      pacedHz: 30,
+      governorConfigAtFlightStart: h.probe.governorConfig,
+    });
+    // The quick flight's 20 s at 30 fps.
+    expect(result.pacing.renderedFrames).toBeGreaterThanOrEqual(599);
+    expect(result.pacing.renderedFrames).toBeLessThanOrEqual(601);
+    const air = result.windows.air!;
+    expect(air.fps).toBeCloseTo(30, 1);
+    expect(air.over.hitch.thresholdMs).toBeCloseTo(60, 9);
+    expect(air.displayCapped).toBe(true);
+    expect(air.vsyncBuckets).toMatchObject({ divisor: 2, x1: air.frames, offSlot: 0, irregular: 0 });
+    expect(air.missedRefresh).toEqual({ count: 0, per240: 0, longestStreak: 0 });
+    // The rendered frames are what the flight reports, not the skipped ticks.
+    expect(result.raf.flight!.hz).toBeCloseTo(30, 1);
+    expect(result.raf.disagrees).toBe(false);
+  });
+
+  it("keeps the threshold and slot it started with when the cadence changes mid-flight, and counts the change", () => {
+    const h = harness();
+    h.probe.presentationCadence = sixty;
+    h.run(1_000, 1_000 / 60, () => h.controller.phase === "flying");
+    h.run(h.now() + 10, 1_000 / 60, () => h.controller.flightElapsedS >= 5);
+    h.probe.presentationCadence = thirty;
+    h.run(h.now() + 10, 1_000 / 60, () => h.controller.flightElapsedS >= 7);
+    // The same identity again, in a new object, is a new cadence too: the pacer replaces it only on a change.
+    h.probe.presentationCadence = { ...thirty };
+    h.run(h.now() + 10, 1_000 / 60, () => h.finished.length > 0);
+    const { result } = h.finished[0]!;
+    expect(result.pacing).toMatchObject({
+      cadenceAtFlightStart: { frameCapHz: null, divisor: 1, displayHz: 60, confirmed: true },
+      cadenceAtEnd: { frameCapHz: 30, divisor: 2 },
+      cadenceChanges: 2,
+      pacedHz: 30,
+    });
+    expect(result.windows.air!.over.hitch.thresholdMs).toBeCloseTo(27.4, 9);
+    expect(result.windows.air!.vsyncBuckets!.divisor).toBe(1);
+  });
+
+  it("without a cadence, judges the flight as the bench always did", () => {
+    const h = harness();
+    h.run(1_000, 1_000 / 60, () => h.finished.length > 0);
+    const { result } = h.finished[0]!;
+    expect(result.pacing).toMatchObject({
+      setting: "60",
+      effective: effectiveFrameRate("60"),
+      cadenceAtFlightStart: null,
+      cadenceAtEnd: null,
+      cadenceChanges: 0,
+      pacedHz: null,
+    });
+    expect(result.pacing.rafTicks).toBe(result.pacing.renderedFrames);
+    expect(result.windows.air!.over.hitch.thresholdMs).toBeCloseTo(27.4, 9);
+    expect(result.windows.air!.vsyncBuckets!.divisor).toBe(1);
   });
 });
 

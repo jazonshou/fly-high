@@ -1,4 +1,6 @@
+import { cadenceDisplayHz, type PresentationCadence } from "@/src/render/webgpu/core/presentationCadence";
 import type {
+  BenchCadence,
   BenchCompileCounts,
   BenchCount,
   BenchFlightCadence,
@@ -187,10 +189,12 @@ export const MIN_REFRESH_SAMPLES = 5;
  * misses frames, where it lands between one and two refresh periods. So the
  * period is the mean of the intervals within [0.8, 1.25] of the 10th
  * percentile: the fastest cadence the loop sustains, with dropped frames and
- * stalls left out. The mean, not the median, because a 1 ms timer (Firefox,
- * Safari) splits a 16.67 ms period into 16s and 17s. Below 1.5 ms is no
- * display's period (a catch-up callback), and 1 s or more is a stall. Null
- * with fewer than five usable intervals.
+ * stalls left out. The mean, not the median, because rAF stamps on a 1 ms
+ * clock would split a 16.67 ms period into 16s and 17s. Firefox 158 stamps
+ * them on a 0.02 ms grid (its 1 ms clock is `performance.now()`), and
+ * Safari's are untested. Below 1.5 ms is no display's period (a catch-up
+ * callback), and 1 s or more is a stall. Null with fewer than five usable
+ * intervals.
  */
 export function estimateRefresh(deltas: ArrayLike<number>, count: number = deltas.length): BenchRefresh | null {
   const usable: number[] = [];
@@ -252,6 +256,32 @@ export function rafReport(idle: BenchRefresh | null, flight: BenchFlightCadence 
   return { idleHz, flight, disagrees, limited: idleHz !== null && idleHz < LIMITED_RAF_HZ };
 }
 
+/**
+ * A cadence's display rate, rounded to a microhertz: the period is 1000 /
+ * the pacer's nominal rate, so a common rate reads back as its whole number.
+ */
+function displayHzOf(cadence: PresentationCadence | null): number | null {
+  const hz = cadenceDisplayHz(cadence);
+  return hz === null ? null : Math.round(hz * 1e6) / 1e6;
+}
+
+/** A presentation cadence in the report's terms: its display rate in Hz rather than its period. */
+export function benchCadence(cadence: PresentationCadence | null): BenchCadence | null {
+  if (cadence === null) return null;
+  return {
+    frameCapHz: cadence.frameCapHz,
+    divisor: cadence.divisor,
+    displayHz: displayHzOf(cadence),
+    confirmed: cadence.periodConfirmed,
+  };
+}
+
+/** The rate a cadence draws at: its display rate over its divisor; null before it has a rate. */
+export function pacedHz(cadence: PresentationCadence | null): number | null {
+  const displayHz = displayHzOf(cadence);
+  return displayHz === null || cadence === null ? null : displayHz / cadence.divisor;
+}
+
 export function timerReport(granularityMs: number | null): BenchTimerReport {
   return { granularityMs, coarse: granularityMs !== null && granularityMs >= COARSE_TIMER_MS };
 }
@@ -262,46 +292,63 @@ export function vsyncToleranceMs(periodMs: number, granularityMs: number | null)
 }
 
 /**
- * Each interval as a whole number of refresh periods, within the tolerance,
- * or irregular. Four or more is one bucket. A VRR panel reads mostly
+ * Each interval as a whole number of paced slots, within the tolerance, or
+ * irregular. A slot is `divisor` refresh periods: one period when the game
+ * draws every refresh. Four or more slots is one bucket. With a divisor of 2
+ * or more, a whole number of refreshes between two slots is a frame that
+ * missed its slot by a refresh or more (`offSlot`). A VRR panel reads mostly
  * irregular, which is itself the finding.
  */
 export function vsyncBuckets(
   intervals: ArrayLike<number>,
   periodMs: number,
   granularityMs: number | null,
+  divisor = 1,
 ): BenchVsyncBuckets {
   const toleranceMs = vsyncToleranceMs(periodMs, granularityMs);
+  const slotMs = divisor * periodMs;
   let x1 = 0;
   let x2 = 0;
   let x3 = 0;
   let x4plus = 0;
+  let offSlot = 0;
   let irregular = 0;
   for (let index = 0; index < intervals.length; index += 1) {
     const value = intervals[index]!;
-    if (value >= 3.5 * periodMs) {
+    if (value >= 3.5 * slotMs) {
       x4plus += 1;
       continue;
     }
-    const multiple = Math.round(value / periodMs);
-    if (multiple < 1 || Math.abs(value - multiple * periodMs) > toleranceMs) irregular += 1;
-    else if (multiple === 1) x1 += 1;
-    else if (multiple === 2) x2 += 1;
-    else x3 += 1;
+    const slots = Math.round(value / slotMs);
+    if (slots >= 1 && Math.abs(value - slots * slotMs) <= toleranceMs) {
+      if (slots === 1) x1 += 1;
+      else if (slots === 2) x2 += 1;
+      else x3 += 1;
+      continue;
+    }
+    const refreshes = Math.round(value / periodMs);
+    if (refreshes > divisor && Math.abs(value - refreshes * periodMs) <= toleranceMs) offSlot += 1;
+    else irregular += 1;
   }
-  return { x1, x2, x3, x4plus, irregular, toleranceMs };
+  return { divisor, x1, x2, x3, x4plus, offSlot, irregular, toleranceMs };
 }
 
-/** Intervals over 1.5 refresh periods: at least one refresh showed the same frame twice. */
+/**
+ * Intervals longer than the paced slot plus half a refresh period: at least
+ * one refresh showed the same frame again. With a divisor of 1 that is 1.5
+ * refresh periods.
+ */
 export function missedRefresh(
   intervals: ArrayLike<number>,
   periodMs: number,
+  divisor = 1,
 ): { readonly count: number; readonly per240: number; readonly longestStreak: number } {
+  const limitMs = (divisor + 0.5) * periodMs;
   let count = 0;
   let streak = 0;
   let longestStreak = 0;
   for (let index = 0; index < intervals.length; index += 1) {
-    if (intervals[index]! > 1.5 * periodMs) {
+    if (intervals[index]! > limitMs) {
       count += 1;
       streak += 1;
       longestStreak = Math.max(longestStreak, streak);
@@ -320,8 +367,14 @@ export interface FrameWindowContext {
   readonly flightStartMs: number;
   /** The step's refresh period from its idle probe; null when it did not run. */
   readonly refreshMs: number | null;
+  /** The frame pacer's divisor at the flight's first frame: the game drew every Nth refresh. */
+  readonly divisor: number;
   readonly granularityMs: number | null;
-  /** `hitchThresholdMilliseconds` of the step's tier: 27.4 ms, or 60 ms on Ultra. */
+  /**
+   * `hitchThresholdMilliseconds` of the step's tier and its cadence at the
+   * flight's first frame: 27.4 ms, or 60 ms on Ultra and at 30 fps where 30
+   * divides the refresh rate (more where it does not: 62.8 ms at 144 Hz).
+   */
   readonly tierThresholdMs: number;
 }
 
@@ -393,6 +446,7 @@ export function summarizeWindow(
   });
   const period = context.refreshMs;
   const tolerance = period === null ? null : vsyncToleranceMs(period, context.granularityMs);
+  const divisor = context.divisor;
 
   return {
     name: spec.name,
@@ -403,7 +457,7 @@ export function summarizeWindow(
     lowSample: frames.length < LOW_SAMPLE_FPS * windowSeconds,
     fps: summary === null ? null : 1_000 / summary.mean,
     displayCapped: summary !== null && period !== null && tolerance !== null
-      && Math.abs(summary.p50 - period) <= tolerance,
+      && Math.abs(summary.p50 - divisor * period) <= tolerance,
     intervalMs: summary,
     onePercentLowFps: onePercentLowFps(sorted),
     over: {
@@ -412,8 +466,8 @@ export function summarizeWindow(
       "100": countOver(intervals, 100),
       hitch: { ...countOver(intervals, context.tierThresholdMs), thresholdMs: context.tierThresholdMs },
     },
-    missedRefresh: period === null ? null : missedRefresh(intervals, period),
-    vsyncBuckets: period === null ? null : vsyncBuckets(intervals, period, context.granularityMs),
+    missedRefresh: period === null ? null : missedRefresh(intervals, period, divisor),
+    vsyncBuckets: period === null ? null : vsyncBuckets(intervals, period, context.granularityMs, divisor),
     renderMs: renders.length === 0 ? null : {
       mean: mean(renders)!,
       p50: nearestRank(renders, 0.5)!,

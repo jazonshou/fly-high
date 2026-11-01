@@ -1,3 +1,4 @@
+import { FRAME_RATE_SETTINGS, type FrameRateSetting } from "@/src/settings";
 import type {
   BenchNoticeCode,
   BenchRunRecord,
@@ -88,6 +89,8 @@ function isRunRecord(value: unknown): value is BenchRunRecord {
   if (!Array.isArray(tiers) || !tiers.every(isCount)) return false;
   if (plan.mode !== "shipped" && plan.mode !== "pinned") return false;
   if (typeof plan.hud !== "boolean" || typeof plan.quick !== "boolean") return false;
+  // A run saved before the bench recorded its frame rate is not resumed.
+  if (!FRAME_RATE_SETTINGS.includes(plan.frameRate as FrameRateSetting)) return false;
   if (!RUN_STATUSES.has(value.status as BenchRunStatus)) return false;
   if (typeof value.startedAt !== "string" || !isStringOrNull(value.finishedAt)) return false;
   if (!isStringOrNull(value.userLabel) || !Array.isArray(value.ignoredParams)) return false;

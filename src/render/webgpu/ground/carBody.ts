@@ -1,26 +1,33 @@
 import { polygonSurface, Surface, type Vec3Tuple } from "../boat/boatMeshData";
-import { finishUv, grilleUv, sideUv, type CarFinish } from "./carAtlas";
+import { finishUv, grilleUv, rearUv, sideUv, type CarFinish } from "./carAtlas";
 import {
   arc,
   bar,
   box,
+  clipOutline,
+  clipToHalfPlane,
   cross3,
-  disc,
   insetOutline,
+  disc,
   normalize3,
-  outlineArea,
-  partitionSurface,
   prismX,
   prismY,
   prismZ,
   quad,
+  resampleOutline,
   revealBand,
+  latheX,
   ring,
+  roundedBox,
+  roundedPrismX,
+  roundedPrismY,
+  roundedPrismZ,
+  roundedRect,
   splitByRegion,
+  sweep,
   tube,
   type HalfPlane,
   type Point2,
-  type PrismOptions,
   type UvFor,
 } from "./carShapes";
 import {
@@ -29,18 +36,25 @@ import {
   BODY,
   BUMPERS,
   DOOR_LINES,
+  FOG_LAMP,
   GLASSHOUSE,
+  GRILLE_INSERT,
   GROUND_Y,
   h,
   HEADLAMP,
   LC76_FRONT_AXLE_X,
   LC76_REAR_AXLE_X,
+  LC76_FRONT_TRACK,
+  LC76_REAR_TRACK,
   LC76_TYRE_LOADED_RADIUS,
   MIRROR,
+  REAR_DOOR_SPLIT_Z,
+  SHELL_SPLIT_Z,
   SIDE_WINDOW_BOTTOM,
   SIDE_WINDOW_TOP,
   SIDE_WINDOWS,
   SNORKEL,
+  TAIL_LAMP,
 } from "./lc76Lines";
 
 /**
@@ -70,14 +84,13 @@ const swatch = (finish: CarFinish): UvFor => {
   return () => uv;
 };
 const sideMap: UvFor = (point) => sideUv(point[0], point[1] - GROUND_Y);
+const rearMap: UvFor = (point) => rearUv(point[2], point[1] - GROUND_Y);
 
 const FA = LC76_FRONT_AXLE_X;
 const RA = LC76_REAR_AXLE_X;
 /** The wheel centres' height above the ground at rest: the arches' centres. */
 const WHEEL_HEIGHT = LC76_TYRE_LOADED_RADIUS;
 
-/** Where the side slabs meet the centre body: the bonnet's and the barn doors' shut lines. */
-export const SHELL_SPLIT_Z = BODY.halfWidth - 0.1;
 /** The cabin and cargo floors' undersides, above the ground. */
 export const FLOOR_PAN = Object.freeze({ cabin: 0.62, cargo: 0.72 });
 /** The glasshouse's skin: its inner trim stands this far in from the outer panels. */
@@ -128,6 +141,8 @@ function shellOutline(sill: number, rearBottom: number): Point2[] {
     ...archOutline(RA, ARCH.halfWidth, ARCH.height, rearBottom, sill),
     ...archOutline(FA, ARCH.halfWidth, ARCH.height, sill, BODY.frontBottom),
     [BODY.front, BODY.frontBottom],
+    // Where the bonnet's lip comes down over the front.
+    [BODY.front, BODY.bonnetFront - BONNET.lip],
     ...arc([BODY.front - corner, BODY.bonnetFront - corner], corner, 0, Math.PI / 2, 4),
     [BODY.cowlX, BODY.bonnetCowl],
     [GLASSHOUSE.screenFootX, BODY.belt],
@@ -140,23 +155,77 @@ function elevation(points: readonly Point2[]): Point2[] {
   return points.map(([x, height]) => [x, h(height)]);
 }
 
-/** The shell's rim: dark in the wheel tubs and underneath, paint everywhere else. */
-const shellRimUv: UvFor = (point) => {
-  const height = point[1] - GROUND_Y;
-  if (height < 0.66 || inArch(point[0], height, 1.04)) return finishUv("underbody");
-  return finishUv("paint");
+/**
+ * The shell's rim: underbody below the sills and in the arches, the rear map
+ * on the tail's face (the barn doors' dust and shut lines), else the side
+ * map, so the nose's faces wear the flanks' dust.
+ */
+const shellRimUv = (midpoint: Vec3Tuple, point: Vec3Tuple): readonly [number, number] => {
+  const height = midpoint[1] - GROUND_Y;
+  if (height < 0.66 || inArch(midpoint[0], height, 1.04)) return finishUv("underbody");
+  return midpoint[0] < BODY.rear + 0.01 ? rearMap(point) : sideMap(point);
 };
 
 /**
- * The front door's leading edge at a height: raked from behind the flare to
- * the A pillar's foot below the belt, the pillar's rear edge above it.
+ * The round where the side slabs meet the centre body: a 4 mm groove, but
+ * none on the tail's face, where the barn doors' edges are drawn in the rear
+ * map. A groove that narrow is under a pixel from the chase camera and broke
+ * into dots whenever the car turned.
  */
-export function frontDoorEdgeX(height: number): number {
-  if (height <= BODY.belt) {
-    const t = (height - DOOR_LINES.frontDoorBottom) / (BODY.belt - DOOR_LINES.frontDoorBottom);
-    return DOOR_LINES.frontDoorFoot + (DOOR_LINES.frontDoorBelt - DOOR_LINES.frontDoorFoot) * t;
-  }
-  return screenX(height) - A_PILLAR_WIDTH;
+const shutRadius = (point: Vec3Tuple): number => (point[0] < BODY.rear + 0.01 ? 0 : 0.004);
+
+/** 0 below `from`, 1 past `to` (either way round), smooth between. */
+function smoothstep(from: number, to: number, value: number): number {
+  const t = Math.min(1, Math.max(0, (value - from) / (to - from)));
+  return t * t * (3 - 2 * t);
+}
+
+/** The bonnet's line along the centre at x, before its crown and bulge: rising from the front to the cowl. */
+function bonnetLine(x: number): number {
+  const front = BODY.front - BONNET.nose;
+  return BODY.bonnetFront + ((BODY.bonnetCowl - BODY.bonnetFront) * (front - x)) / (front - BODY.cowlX);
+}
+
+/** The side slab's top at x: the guards' tops ahead of the cowl, the belt behind the windscreen. */
+function slabTop(x: number): number {
+  if (x >= BODY.cowlX) return x > BODY.front - BONNET.nose ? BODY.bonnetFront : bonnetLine(x);
+  if (x <= GLASSHOUSE.screenFootX) return BODY.belt;
+  return BODY.bonnetCowl + ((BODY.belt - BODY.bonnetCowl) * (BODY.cowlX - x)) / (BODY.cowlX - GLASSHOUSE.screenFootX);
+}
+
+/**
+ * The flanks' rounds: the shoulders along the guards' tops and the door
+ * tops roll over 35 mm, the guards' noses and the rear corners nearly as
+ * much, and the shut lines, sills and arch lips are broken 5 mm.
+ */
+function flankRadius(point: Vec3Tuple): number {
+  const x = point[0];
+  const height = point[1] - GROUND_Y;
+  const shoulder = smoothstep(slabTop(x) - 0.08, slabTop(x) - 0.015, height);
+  const nose = smoothstep(BODY.front - 0.08, BODY.front - 0.01, x);
+  const tail = smoothstep(BODY.rear + 0.08, BODY.rear + 0.01, x);
+  return 0.005 + 0.03 * Math.max(shoulder, 0.85 * nose, 0.75 * tail);
+}
+
+/** The doors' bottoms: below them the sill panel runs between the arches. */
+const DOOR_BOTTOM = DOOR_LINES.frontDoorBottom;
+/** Half a shut line's width. */
+const SHUT = 0.0025;
+
+/**
+ * The front door's raked leading edge in the body frame's (x, y), as the
+ * half-plane ahead of it (`ahead`) or behind it, `by` metres clear: from
+ * behind the front flare at the door's bottom to the A pillar's foot on the
+ * belt, extended both ways.
+ */
+function frontDoorEdge(ahead: boolean, by: number): HalfPlane {
+  const [x0, y0] = [DOOR_LINES.frontDoorFoot, h(DOOR_BOTTOM)];
+  const [dx, dy] = [DOOR_LINES.frontDoorBelt - x0, h(BODY.belt) - y0];
+  const length = Math.hypot(dx, dy);
+  const sign = ahead ? 1 : -1;
+  const a = (sign * dy) / length;
+  const b = (-sign * dx) / length;
+  return { a, b, c: -(a * x0 + b * y0) - by };
 }
 
 /**
@@ -174,117 +243,156 @@ function frontDoorGlasshouseRegion(): HalfPlane[] {
   ];
 }
 
-const SHELL_CHAMFER = 0.014;
-
 /**
- * The right side slab, its front door cut out. The door's corners on the
- * belt join the outline (on its straight top, so nothing there moves), the
- * flat faces are the door and the slab round it, sharing their corners, and
- * the rim over the door goes with it. Jambs close the cut on both sides,
- * inside the slab while the door is shut.
+ * The steel shell. Each flank is cut into its panels (the front guard, the
+ * two doors over the sill panel, the rear quarter) along the shut lines, and
+ * every panel is a rounded slab, so the gaps between them are real grooves
+ * with rolled edges. The front door's leading edge is raked, clear of the
+ * flare, and its slab comes back apart (`door`) to swing on its hinge. The
+ * centre body between the flanks carries the grille's face, the cowl, the
+ * barn doors and the floor; the bonnet is its own panel.
  */
-function sideSlabSurfaces(options: PrismOptions): { readonly body: Surface[]; readonly door: Surface[] } {
-  const bottom = DOOR_LINES.frontDoorBottom;
-  const rearX = DOOR_LINES.frontDoorRear;
-  // The door's front corner on the belt: where its edge meets the faces' inset top.
-  const insetTop = BODY.belt - SHELL_CHAMFER;
-  const frontX = frontDoorEdgeX(insetTop);
-  const outline: Point2[] = [];
-  for (const point of shellOutline(BODY.sill, BODY.rearBottom)) {
-    const previous = outline[outline.length - 1];
-    if (previous && previous[1] === BODY.belt && point[1] === BODY.belt) {
-      // The top edge, front to rear: the door's corners sit on it.
-      const along = [frontX, rearX].filter((x) => (x - previous[0]) * (x - point[0]) < 0);
-      if (point[0] > previous[0]) along.reverse();
-      for (const x of along) outline.push([x, BODY.belt]);
-    }
-    outline.push(point);
-  }
-  const elevated = elevation(outline);
-  const ccw = outlineArea(elevated) > 0 ? elevated : [...elevated].reverse();
-  const inset = insetOutline(ccw, SHELL_CHAMFER);
-  const corner = (x: number): number => ccw.findIndex((point) => point[0] === x && point[1] === h(BODY.belt));
-  const frontCorner = corner(frontX);
-  const rearCorner = corner(rearX);
-  const doorBottomFront: Point2 = [DOOR_LINES.frontDoorFoot, h(bottom)];
-  const doorBottomRear: Point2 = [rearX, h(bottom)];
-  const door: Point2[] = [doorBottomRear, doorBottomFront, inset[frontCorner]!, inset[rearCorner]!];
-  // The slab's faces: the inset outline with the door notched into its top.
-  const notched: Point2[] = [];
-  for (const [index, point] of inset.entries()) {
-    notched.push(point);
-    if (index === frontCorner && (index + 1) % inset.length === rearCorner) notched.push(doorBottomFront, doorBottomRear);
-    if (index === rearCorner && (index + 1) % inset.length === frontCorner) notched.push(doorBottomRear, doorBottomFront);
-  }
-  const far = (a: number, b: number): Vec3Tuple => [a, b, BODY.halfWidth];
-  const near = (a: number, b: number): Vec3Tuple => [a, b, SHELL_SPLIT_Z];
-  const nearUv = options.nearFaceUv ?? options.faceUv;
-  const body: Surface[] = [polygonSurface(notched, far, options.faceUv), polygonSurface(notched, near, nearUv).flipped()];
-  const doorSurfaces: Surface[] = [polygonSurface(door, far, options.faceUv), polygonSurface(door, near, nearUv).flipped()];
-  for (const rim of prismZ(ccw, SHELL_SPLIT_Z, BODY.halfWidth, { ...options, skipFarFace: true, skipNearFace: true })) {
-    const [overDoor, rest] = partitionSurface(rim, ([x, y]) => x > rearX && x < frontX && y > h(BODY.belt - 0.05));
-    if (overDoor.indices.length > 0) doorSurfaces.push(overDoor);
-    if (rest.indices.length > 0) body.push(rest);
-  }
-  // The jambs: the cut's three faces through the slab, with its chamfered
-  // profile at the belt. The body's show into the opening, the door's out of it.
-  const rimUv = options.rimUv ?? options.faceUv;
-  const yBottom = h(bottom);
-  const yInset = h(insetTop);
-  const profile: Point2[] = [
-    [SHELL_SPLIT_Z, yBottom],
-    [BODY.halfWidth, yBottom],
-    [BODY.halfWidth, yInset],
-    [BODY.halfWidth - SHELL_CHAMFER, h(BODY.belt)],
-    [SHELL_SPLIT_Z + SHELL_CHAMFER, h(BODY.belt)],
-    [SHELL_SPLIT_Z, yInset],
-  ];
-  // In (z, y), counter-clockwise shows -X: the door's trailing jamb, the body's leading one.
-  const trailing = polygonSurface(profile, (z, y) => [rearX, y, z], rimUv);
-  const leadingX = (y: number): number => DOOR_LINES.frontDoorFoot + ((frontX - DOOR_LINES.frontDoorFoot) * (y - yBottom)) / (yInset - yBottom);
-  const leading = polygonSurface(profile, (z, y) => [leadingX(y), y, z], rimUv);
-  // In (x, z), counter-clockwise shows -Y: the door's bottom.
-  const sill = polygonSurface(
-    [[rearX, SHELL_SPLIT_Z], [DOOR_LINES.frontDoorFoot, SHELL_SPLIT_Z], [DOOR_LINES.frontDoorFoot, BODY.halfWidth], [rearX, BODY.halfWidth]],
-    (x, z) => [x, yBottom, z],
-    rimUv,
-  );
-  body.push(trailing.flipped(), leading, sill.flipped());
-  doorSurfaces.push(trailing, leading.flipped(), sill);
-  return { body, door: doorSurfaces };
-}
-
-/** The steel shell: right side slab (mirrored for the left) and the centre body. */
 function shellSurfaces(): { readonly side: Surface[]; readonly door: Surface[]; readonly centre: Surface[] } {
-  const slab = sideSlabSurfaces({
-    chamfer: SHELL_CHAMFER,
-    creaseRadians: 0.5,
-    faceUv: sideMap,
-    // Its inner face shows only under the floor pan and in the arches.
-    nearFaceUv: swatch("underbody"),
-    rimUv: shellRimUv,
-  });
-  const centre = prismZ(elevation(shellOutline(FLOOR_PAN.cabin, FLOOR_PAN.cargo)), -SHELL_SPLIT_Z, SHELL_SPLIT_Z, {
-    chamfer: 0.014,
+  const outline = elevation(shellOutline(BODY.sill, BODY.rearBottom));
+  const far = Number.POSITIVE_INFINITY;
+  const clip = (x0: number, x1: number, b0: number, b1: number): Point2[] => clipOutline(outline, x0, x1, h(b0), h(b1));
+  const behindDoorEdge = frontDoorEdge(false, SHUT);
+  const pieces: readonly (readonly [Point2[], boolean])[] = [
+    // The front guard, the front door, the rear door, the sill panel, the rear quarter; whether it is the door.
+    [clipToHalfPlane(outline, frontDoorEdge(true, SHUT)), false],
+    [clipToHalfPlane(clip(DOOR_LINES.frontDoorRear + SHUT, far, DOOR_BOTTOM + SHUT, far), behindDoorEdge), true],
+    [clip(DOOR_LINES.rearDoorRear + SHUT, DOOR_LINES.frontDoorRear - SHUT, DOOR_BOTTOM + SHUT, far), false],
+    [clipToHalfPlane(clip(DOOR_LINES.rearDoorRear + SHUT, far, -far, DOOR_BOTTOM - SHUT), behindDoorEdge), false],
+    [clip(-far, DOOR_LINES.rearDoorRear - SHUT, -far, far), false],
+  ];
+  const side: Surface[] = [];
+  const door: Surface[] = [];
+  for (const [piece, isDoor] of pieces) {
+    if (piece.length < 3) continue;
+    (isDoor ? door : side).push(...roundedPrismZ(resampleOutline(piece, 0.06), SHELL_SPLIT_Z, BODY.halfWidth, {
+      farRadius: flankRadius,
+      nearRadius: shutRadius,
+      segments: 3,
+      creaseRadians: 0.5,
+      faceUv: sideMap,
+      // Its inner face shows only through the shut lines and in the arches.
+      nearFaceUv: swatch("seal"),
+      rimUv: shellRimUv,
+    }));
+  }
+  // Dark behind the shut lines, so a gap never shows the cabin's back faces;
+  // the part behind the front door goes with it, so the open door's opening is clear.
+  const seal = splitByRegion(
+    [
+      [BODY.rear, h(BODY.sill)],
+      [GLASSHOUSE.screenFootX + 0.1, h(BODY.sill)],
+      [GLASSHOUSE.screenFootX + 0.1, h(BODY.belt)],
+      [BODY.rear, h(BODY.belt)],
+    ],
+    [{ a: 1, b: 0, c: -DOOR_LINES.frontDoorRear }, { a: 0, b: 1, c: -h(DOOR_BOTTOM) }, frontDoorEdge(false, 0)],
+  );
+  const sealSurface = (piece: readonly Point2[]): Surface => polygonSurface(piece, (x, y) => [x, y, SHELL_SPLIT_Z - 0.001], swatch("seal"));
+  side.push(...seal.outside.map(sealSurface));
+  if (seal.inside) door.push(sealSurface(seal.inside));
+  const centre = roundedPrismZ(resampleOutline(elevation(shellOutline(FLOOR_PAN.cabin, FLOOR_PAN.cargo)), 0.2), -SHELL_SPLIT_Z, SHELL_SPLIT_Z, {
+    farRadius: shutRadius,
+    nearRadius: shutRadius,
+    segments: 2,
     creaseRadians: 0.5,
     faceUv: swatch("paint"),
     rimUv: shellRimUv,
     skipNearFace: true,
     skipFarFace: true,
-    // No lid at the belt: the cabin and the cargo bay are open to the glasshouse.
-    openRim: (point) => Math.abs(point[1] - h(BODY.belt)) < 0.02 && point[0] < GLASSHOUSE.screenFootX - 0.005 && point[0] > BODY.rear + 0.005,
+    // No lid at the belt: the cabin and the cargo bay are open to the glasshouse;
+    // and the bonnet is its own panel down to its lip.
+    openRim: (point) =>
+      (Math.abs(point[1] - h(BODY.belt)) < 0.02 && point[0] < GLASSHOUSE.screenFootX - 0.005 && point[0] > BODY.rear + 0.005)
+      || (point[0] > BODY.cowlX + 0.001 && point[1] > h(BODY.bonnetFront - BONNET.lip)),
   });
-  return { side: slab.body, door: slab.door, centre };
+  return { side, door, centre };
+}
+
+/**
+ * The bonnet: a panel between the guards, crowned across, its broad centre
+ * bulge rising from just behind the nose and running back to the cowl, its
+ * nose rolled down over the grille to a lip. Its edges turn down into the
+ * shut lines along the guards.
+ */
+export const BONNET = Object.freeze({
+  /** The nose's roll-over radius, and how far the lip hangs below the bonnet's front line. */
+  nose: 0.045,
+  lip: 0.068,
+  halfWidth: SHELL_SPLIT_Z - 0.004,
+  crown: 0.01,
+  /** The bulge: its height, its flat top's and its foot's half widths. */
+  bulge: 0.045,
+  bulgeTop: 0.42,
+  bulgeFoot: 0.56,
+});
+
+/** The bonnet's lift over its line: the crown across and the bulge. */
+function bonnetLift(x: number, z: number): number {
+  const across = Math.abs(z);
+  const crown = BONNET.crown * (1 - (across / BONNET.halfWidth) ** 2);
+  const along = smoothstep(BODY.front - 0.08, BODY.front - 0.3, x) * (1 - 0.3 * smoothstep(BODY.cowlX + 0.3, BODY.cowlX, x));
+  return crown + BONNET.bulge * (1 - smoothstep(BONNET.bulgeTop, BONNET.bulgeFoot, across)) * along;
+}
+
+/** The bonnet's top surface at (x, z) above the ground: where the scoop sits. */
+export function bonnetTop(x: number, z: number): number {
+  return bonnetLine(x) + bonnetLift(x, z);
+}
+
+function bonnetSurfaces(): Surface[] {
+  const r = BONNET.nose;
+  const front = BODY.front;
+  // The centre line's section: (x, height, how much of the lift it carries).
+  const section: (readonly [number, number, number])[] = [];
+  const rearX = BODY.cowlX + 0.004;
+  const topStations = [0, 0.05, 0.12, 0.2, 0.3, 0.42, 0.55, 0.62, 0.7, 0.76, 0.82, 0.88, 0.94, 1];
+  for (const t of topStations) {
+    const x = rearX + (front - r - rearX) * t;
+    section.push([x, bonnetLine(x), 1]);
+  }
+  for (let k = 1; k <= 5; k += 1) {
+    const angle = (Math.PI / 2) * (1 - k / 5);
+    section.push([front - r + Math.cos(angle) * r, BODY.bonnetFront - r + Math.sin(angle) * r, Math.sin(angle)]);
+  }
+  section.push([front, BODY.bonnetFront - BONNET.lip, 0], [front - 0.015, BODY.bonnetFront - BONNET.lip, 0]);
+  // Across, from +z to -z so the grid shows up: the edges turn down into the shut lines.
+  const w = BONNET.halfWidth;
+  const half = [w, w - 0.003, w - 0.008, w - 0.016, 0.7, 0.62, 0.58, 0.555, 0.53, 0.505, 0.48, 0.455, 0.43, 0.38, 0.28, 0.16, 0.05];
+  const drop = (z: number): number => {
+    const from = w - Math.abs(z);
+    return from >= 0.016 ? 0 : from >= 0.008 ? 0.0015 * (0.016 - from) / 0.008 : from >= 0.003 ? 0.0015 + (0.0045 * (0.008 - from)) / 0.005 : 0.006 + (0.008 * (0.003 - from)) / 0.003;
+  };
+  const across = [...half, ...half.slice().reverse().map((z) => -z)];
+  const rows = section.map(([x, height, carry]) => across.map((z): Vec3Tuple => [x, h(height + carry * bonnetLift(x, z) - drop(z)), z]));
+  const bonnet = new Surface();
+  const paint = finishUv("paint");
+  bonnet.grid(rows, () => paint);
+  // The engine bay under the bonnet, dark through its shut lines.
+  const bay = quad(
+    [BODY.cowlX, h(1.0), SHELL_SPLIT_Z],
+    [front - 0.02, h(1.0), SHELL_SPLIT_Z],
+    [front - 0.02, h(1.0), -SHELL_SPLIT_Z],
+    [BODY.cowlX, h(1.0), -SHELL_SPLIT_Z],
+    swatch("seal"),
+  );
+  return [bonnet, bay];
 }
 
 /** A flare: a black moulding round an arch, from foot to foot, standing proud of the flank. */
 function flareSurfaces(centreX: number, rearFoot: number, frontFoot: number): Surface[] {
   const outer = archOutline(centreX, ARCH.halfWidth + ARCH.flareWidth, ARCH.height + ARCH.flareWidth, rearFoot, frontFoot);
   const inner = archOutline(centreX, ARCH.halfWidth - 0.01, ARCH.height - 0.01, rearFoot, frontFoot);
-  return prismZ(elevation([...outer, ...inner.reverse()]), BODY.halfWidth - 0.03, BODY.flareHalfWidth, {
-    chamfer: 0.016,
+  // Moulded: its face rolls round both edges, the lip over the tyre and the edge on the flank.
+  return roundedPrismZ(elevation([...outer, ...inner.reverse()]), BODY.halfWidth - 0.03, BODY.flareHalfWidth, {
+    farRadius: 0.03,
+    nearRadius: 0,
+    segments: 3,
     creaseRadians: 0.7,
-    faceUv: swatch("blackPlastic"),
+    faceUv: swatch("flare"),
     skipNearFace: true,
   });
 }
@@ -321,35 +429,54 @@ function stepSurfaces(): Surface[] {
     [rear + 0.03, 0.928],
     [rear, 0.905],
   ];
-  return prismY(outline, h(0.47), h(0.5), { chamfer: 0.008, faceUv: swatch("blackPlastic") });
+  const surfaces = roundedPrismY(outline, h(0.47), h(0.5), { farRadius: 0.008, nearRadius: 0.008, segments: 2, faceUv: swatch("blackPlastic") });
+  // Rubber treads along the top.
+  for (const z of [0.83, 0.865, 0.9]) {
+    surfaces.push(...roundedBox([rear + 0.06, h(0.5) - 0.002, z - 0.009], [front - 0.06, h(0.5) + 0.005, z + 0.009], 0.003, swatch("rubber"), 1));
+  }
+  return surfaces;
 }
 
-/** The front bumper: a steel bar wrapped round the corners, a black valance under it, the plate. */
+/**
+ * The front bumper: pressed steel wrapped round the corners, its section a
+ * flat face under a rolled top flange, creased into a lower face that tucks
+ * back under; the plate in the middle of the face and the fog lamps' black
+ * bezels toward its ends.
+ */
 function frontBumperSurfaces(): Surface[] {
   const face = BODY.bumperFront;
-  const back = BODY.front - 0.1;
-  const plan: Point2[] = [
-    [back, -0.93],
-    [face - 0.13, -0.93],
-    [face - 0.025, -0.86],
-    [face, -0.79],
-    [face, 0.79],
-    [face - 0.025, 0.86],
-    [face - 0.13, 0.93],
-    [back, 0.93],
+  const path: Point2[] = [];
+  const wing = (t: number): Point2 => {
+    // The wing's plan: from the face's end round to the guard's corner.
+    const angle = t * (Math.PI / 2) * 0.8;
+    return [face - 0.16 + Math.cos(angle) * 0.16, 0.8 + Math.sin(angle) * 0.13];
+  };
+  for (let k = 6; k >= 0; k -= 1) {
+    const [x, z] = wing(k / 6);
+    path.push([x, -z]);
+  }
+  for (let k = 1; k <= 7; k += 1) path.push([face, -0.8 + (1.6 * k) / 8]);
+  for (let k = 0; k <= 6; k += 1) path.push(wing(k / 6));
+  // Section: (out from the path, height) from the top flange's back, over the face, under to the bottom's back.
+  const section: Point2[] = [
+    [-0.1, h(BUMPERS.frontTop)],
+    [-0.016, h(BUMPERS.frontTop + 0.002)],
+    [-0.005, h(BUMPERS.frontTop - 0.002)],
+    [0, h(BUMPERS.frontTop - 0.012)],
+    [0, h(0.6)],
+    [-0.003, h(0.588)],
+    [-0.011, h(0.579)],
+    [-0.05, h(0.53)],
+    [-0.062, h(0.506)],
+    [-0.075, h(BUMPERS.frontBottom + 0.004)],
+    [-0.1, h(BUMPERS.frontBottom)],
   ];
-  const valanceTop = BUMPERS.frontBottom + 0.06;
-  const surfaces = [
-    ...prismY(plan, h(valanceTop), h(BUMPERS.frontTop), { chamfer: 0.018, creaseRadians: 0.45, faceUv: swatch("bumper") }),
-    ...prismY(
-      plan.map(([x, z]) => [Math.min(x, face - 0.04), z * 0.97] as Point2),
-      h(BUMPERS.frontBottom),
-      h(valanceTop + 0.01),
-      { chamfer: 0.01, creaseRadians: 0.45, faceUv: swatch("blackPlastic") },
-    ),
-  ];
-  // The plate, 372 x 134 mm, on the bar's face.
-  surfaces.push(...plateSurfaces(face, 1, valanceTop + 0.035, 0));
+  const surfaces = sweep(path, section, swatch("bumper"));
+  // The plate, 372 x 134 mm, on the face.
+  surfaces.push(...plateSurfaces(face, 1, 0.6 + 0.004, 0));
+  for (const side of [-1, 1]) {
+    surfaces.push(ring([face + 0.0035, h(FOG_LAMP.height), side * FOG_LAMP.halfSpacing], [1, 0, 0], FOG_LAMP.radius - 0.002, FOG_LAMP.radius + 0.012, 24, swatch("blackPlastic")));
+  }
   return surfaces;
 }
 
@@ -369,94 +496,244 @@ function plateSurfaces(x: number, facing: 1 | -1, bottom: number, z: number): Su
   return [plate(x + facing * 0.002, 0.012, "seal"), plate(x + facing * 0.004, 0, "plate")];
 }
 
-/** The rear bumper, its step pad and the tow hitch's receiver. */
+/** The rear bumper, wrapped round the corners, its rubber step pad and the tow hitch's receiver. */
 function rearBumperSurfaces(): Surface[] {
   const face = BODY.bumperRear;
-  const back = BODY.rear + 0.1;
-  const plan: Point2[] = [
-    [back, -0.9],
-    [back, 0.9],
-    [face + 0.06, 0.9],
-    [face, 0.84],
-    [face, -0.84],
-    [face + 0.06, -0.9],
+  const path: Point2[] = [];
+  const wing = (t: number): Point2 => {
+    const angle = t * (Math.PI / 2) * 0.8;
+    return [face + 0.14 - Math.cos(angle) * 0.14, 0.8 + Math.sin(angle) * 0.1];
+  };
+  for (let k = 6; k >= 0; k -= 1) path.push(wing(k / 6));
+  for (let k = 1; k <= 7; k += 1) path.push([face, 0.8 - (1.6 * k) / 8]);
+  for (let k = 0; k <= 6; k += 1) {
+    const [x, z] = wing(k / 6);
+    path.push([x, -z]);
+  }
+  const section: Point2[] = [
+    [-0.12, h(BUMPERS.rearTop)],
+    [-0.014, h(BUMPERS.rearTop + 0.002)],
+    [-0.004, h(BUMPERS.rearTop - 0.003)],
+    [0, h(BUMPERS.rearTop - 0.014)],
+    [0, h(0.585)],
+    [-0.004, h(0.572)],
+    [-0.014, h(0.562)],
+    [-0.05, h(BUMPERS.rearBottom + 0.004)],
+    [-0.12, h(BUMPERS.rearBottom)],
   ];
   return [
-    ...prismY(plan, h(BUMPERS.rearBottom), h(BUMPERS.rearTop), { chamfer: 0.016, creaseRadians: 0.45, faceUv: swatch("bumper") }),
-    ...box([face - 0.004, h(BUMPERS.rearTop) - 0.004, -0.25], [face + 0.12, h(BUMPERS.rearTop) + 0.008, 0.25], swatch("rubber"), 0.004),
+    ...sweep(path, section, swatch("bumper")),
+    ...roundedBox([face - 0.004, h(BUMPERS.rearTop) - 0.002, -0.3], [face + 0.12, h(BUMPERS.rearTop) + 0.009, 0.3], 0.004, swatch("rubber")),
     ...box([BODY.towHitch, h(0.47), -0.035], [BODY.rear + 0.2, h(0.54), 0.035], swatch("chassis"), 0.006),
     ...box([BODY.towHitch + 0.004, h(0.49), -0.012], [BODY.towHitch + 0.06, h(0.52), 0.012], swatch("lugNut")),
   ];
 }
 
-/** The headlamps' chrome bezels stand proud of their pods (whose face is 12 mm out); the lenses sit just behind the bezels. */
-const HEADLAMP_BEZEL_X = BODY.front + 0.017;
-const HEADLAMP_LENS_X = BODY.front + 0.014;
+/**
+ * The 2024 face: one black fascia across the front between the guards,
+ * holding the round LED headlamps at its ends in chrome bezels and, between
+ * them, the black mesh grille in its frame with the TOYOTA letters standing
+ * proud of it. Under the fascia the body-coloured panel carries the three
+ * cooling slots, over the bumper.
+ */
+export const FASCIA = Object.freeze({
+  halfWidth: SHELL_SPLIT_Z - 0.01,
+  bottom: 0.884,
+  top: BODY.bonnetFront - 0.07,
+  /** Its face, proud of the body's front. */
+  face: BODY.front + 0.012,
+});
+const GRILLE = GRILLE_INSERT;
+/** The headlamps' bezels stand out of the fascia; the bowl's rim and its lens sit inside them. */
+export const HEADLAMP_RIM_X = FASCIA.face + 0.026;
+const HEADLAMP_BOWL_DEPTH = 0.02;
 
-/** The grille, the headlamps' black pods and chrome bezels, the bonnet scoop. */
+/** The bowl's x at a radius: a shallow dish from the rim back to the projector. */
+export function headlampBowlX(radius: number): number {
+  return HEADLAMP_RIM_X - HEADLAMP_BOWL_DEPTH * (1 - (radius / HEADLAMP.radius) ** 2);
+}
+
+/** Seen from ahead (+X looking back), u to the viewer's right is -z. */
+const fromAhead = (u: number, height: number): Point2 => [-u, h(height)];
+
+/** The TOYOTA letters' outlines in (u, height) from ahead, each a list of solid parts (an O is its outer and inner loops). */
+function letterParts(): { readonly solids: Point2[][]; readonly rings: (readonly [Point2[], Point2[]])[] } {
+  const H = GRILLE.letters;
+  const s = H * 0.21;
+  const widths = { T: H * 0.95, O: H * 1.04, Y: H * 0.98, A: H * 1.02 } as const;
+  const gap = H * 0.36;
+  const word = "TOYOTA";
+  const total = [...word].reduce((sum, letter) => sum + widths[letter as keyof typeof widths], 0) + gap * (word.length - 1);
+  const base = (GRILLE.bottom + GRILLE.top) / 2 - H / 2;
+  const solids: Point2[][] = [];
+  const rings: (readonly [Point2[], Point2[]])[] = [];
+  let left = -total / 2;
+  for (const letter of word) {
+    const W = widths[letter as keyof typeof widths];
+    const c = left + W / 2;
+    const at = (u: number, v: number): Point2 => fromAhead(left + u, base + v);
+    if (letter === "T") {
+      solids.push([at(0, H), at(0, H - s), at(W / 2 - s / 2, H - s), at(W / 2 - s / 2, 0), at(W / 2 + s / 2, 0), at(W / 2 + s / 2, H - s), at(W, H - s), at(W, H)]);
+    } else if (letter === "O") {
+      const loop = (inset: number): Point2[] => {
+        const r = H / 2 - inset;
+        const straight = W / 2 - H / 2;
+        const points: Point2[] = [];
+        for (let k = 0; k <= 10; k += 1) {
+          const angle = -Math.PI / 2 + (Math.PI * k) / 10;
+          points.push(fromAhead(c + straight + Math.cos(angle) * r, base + H / 2 + Math.sin(angle) * r));
+        }
+        for (let k = 0; k <= 10; k += 1) {
+          const angle = Math.PI / 2 + (Math.PI * k) / 10;
+          points.push(fromAhead(c - straight + Math.cos(angle) * r, base + H / 2 + Math.sin(angle) * r));
+        }
+        return points;
+      };
+      rings.push([loop(0), loop(s)]);
+    } else if (letter === "Y") {
+      const j = H * 0.44;
+      const arm = s * 1.2;
+      solids.push([at(W / 2 - s / 2, 0), at(W / 2 + s / 2, 0), at(W / 2 + s / 2, j), at(W, H), at(W - arm, H), at(W / 2, j + s * 0.95), at(arm, H), at(0, H), at(W / 2 - s / 2, j)]);
+    } else {
+      const leg = s * 1.22;
+      const apex = s * 1.25;
+      const inner = H - s * 1.35;
+      solids.push([at(0, 0), at(leg, 0), at(W / 2, inner), at(W - leg, 0), at(W, 0), at(W / 2 + apex / 2, H), at(W / 2 - apex / 2, H)]);
+      // The crossbar between the legs' inner edges.
+      const edge = (v: number, sign: number): number => W / 2 + sign * (W / 2 - leg) * (1 - v / inner);
+      const v0 = H * 0.2;
+      const v1 = v0 + s * 0.85;
+      solids.push([at(edge(v0, -1), v0), at(edge(v0, 1), v0), at(edge(v1, 1), v1), at(edge(v1, -1), v1)]);
+    }
+    void c;
+    left += W + gap;
+  }
+  return { solids, rings };
+}
+
+/** A flat ring of a letter (outer and inner loops of one count) pushed through x0..x1: its face and both walls. */
+function ringThroughX(outer: readonly Point2[], inner: readonly Point2[], x0: number, x1: number, uv: UvFor): Surface[] {
+  const at = ([z, y]: Point2, x: number): Vec3Tuple => [x, y, z];
+  const face = new Surface();
+  const outerWall = new Surface();
+  const innerWall = new Surface();
+  const count = outer.length;
+  for (let k = 0; k < count; k += 1) {
+    const next = (k + 1) % count;
+    const ids = [at(outer[k]!, x1), at(outer[next]!, x1), at(inner[next]!, x1), at(inner[k]!, x1)].map((point) => face.vertexAt(point, uv(point)));
+    face.triFacing(ids[0]!, ids[1]!, ids[2]!, [1, 0, 0]);
+    face.triFacing(ids[0]!, ids[2]!, ids[3]!, [1, 0, 0]);
+    for (const [wall, loop, sign] of [[outerWall, outer, 1], [innerWall, inner, -1]] as const) {
+      const p = loop[k]!;
+      const q = loop[next]!;
+      // Away from the ring's middle for the outer wall, toward it for the inner.
+      const mid: Point2 = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+      const centre = loop.reduce<Point2>((sum, point) => [sum[0] + point[0] / count, sum[1] + point[1] / count], [0, 0]);
+      const facing: Vec3Tuple = [0, (mid[1] - centre[1]) * sign, (mid[0] - centre[0]) * sign];
+      const w = [at(p, x1), at(q, x1), at(q, x0), at(p, x0)].map((point) => wall.vertexAt(point, uv(point)));
+      wall.triFacing(w[0]!, w[1]!, w[2]!, facing);
+      wall.triFacing(w[0]!, w[2]!, w[3]!, facing);
+    }
+  }
+  return [face, outerWall, innerWall];
+}
+
+/** The fascia, the headlamps' bezels and bowls' surrounds, the grille's frame, mesh and letters, the slots and the indicators' surrounds. */
 function frontSurfaces(): Surface[] {
   const surfaces: Surface[] = [];
-  const grille = { halfWidth: 0.525, bottom: 0.865, top: 1.135 };
-  surfaces.push(...prismX(
-    [
-      [-grille.halfWidth, h(grille.bottom)],
-      [grille.halfWidth, h(grille.bottom)],
-      [grille.halfWidth, h(grille.top)],
-      [-grille.halfWidth, h(grille.top)],
-    ],
+  // The fascia: a black panel with rolled edges, standing proud of the front.
+  surfaces.push(...roundedPrismX(
+    roundedRect(-FASCIA.halfWidth, h(FASCIA.bottom), FASCIA.halfWidth, h(FASCIA.top), 0.05, 4),
     BODY.front - 0.01,
-    BODY.front + 0.015,
-    {
-      chamfer: 0.008,
-      // Seen from ahead, +Z is on the left: the grille's s runs from +z to -z.
-      faceUv: (point) => grilleUv((grille.halfWidth - point[2]) / (2 * grille.halfWidth), (point[1] - GROUND_Y - grille.bottom) / (grille.top - grille.bottom)),
-      rimUv: swatch("blackPlastic"),
-      skipNearFace: true,
-    },
+    FASCIA.face,
+    { farRadius: 0.008, nearRadius: 0, segments: 2, faceUv: swatch("grilleBlack"), skipNearFace: true },
   ));
+  // The grille insert: the mesh just proud of the fascia, framed by a rounded bar.
+  const meshX = FASCIA.face + 0.001;
+  surfaces.push(quad(
+    [meshX, h(GRILLE.bottom), GRILLE.halfWidth],
+    [meshX, h(GRILLE.bottom), -GRILLE.halfWidth],
+    [meshX, h(GRILLE.top), -GRILLE.halfWidth],
+    [meshX, h(GRILLE.top), GRILLE.halfWidth],
+    (point) => grilleUv((GRILLE.halfWidth - point[2]) / (2 * GRILLE.halfWidth), (point[1] - GROUND_Y - GRILLE.bottom) / (GRILLE.top - GRILLE.bottom)),
+  ));
+  const bar = 0.014;
+  const frameFront = FASCIA.face + 0.012;
+  const frame = swatch("blackPlastic");
+  surfaces.push(...roundedBox([FASCIA.face - 0.002, h(GRILLE.top), -GRILLE.halfWidth - bar], [frameFront, h(GRILLE.top + bar), GRILLE.halfWidth + bar], 0.005, frame));
+  surfaces.push(...roundedBox([FASCIA.face - 0.002, h(GRILLE.bottom - bar), -GRILLE.halfWidth - bar], [frameFront, h(GRILLE.bottom), GRILLE.halfWidth + bar], 0.005, frame));
   for (const side of [-1, 1]) {
-    const z = side * HEADLAMP.halfSpacing;
-    const pod = 0.115;
-    const pts: Point2[] = [];
-    // A rounded square round the lamp: four quarter arcs.
-    const round = 0.04;
-    for (const [cz, cy, from] of [
-      [z + pod - round, HEADLAMP.height - pod + round, -Math.PI / 2],
-      [z + pod - round, HEADLAMP.height + pod - round, 0],
-      [z - pod + round, HEADLAMP.height + pod - round, Math.PI / 2],
-      [z - pod + round, HEADLAMP.height - pod + round, Math.PI],
-    ] as const) {
-      pts.push(...arc([cz, h(cy)], round, from, from + Math.PI / 2, 3));
-    }
-    surfaces.push(...prismX(pts, BODY.front - 0.01, BODY.front + 0.012, {
-      chamfer: 0.006,
-      faceUv: swatch("grilleBlack"),
-      skipNearFace: true,
-    }));
-    surfaces.push(ring([HEADLAMP_BEZEL_X, h(HEADLAMP.height), z], [1, 0, 0], HEADLAMP.radius, HEADLAMP.radius + 0.013, 28, swatch("chrome")));
-    // The bezel's lip: a short barrel from the pod's face round the lens.
-    surfaces.push(...tube(
-      [[BODY.front + 0.01, h(HEADLAMP.height), z], [HEADLAMP_BEZEL_X, h(HEADLAMP.height), z]],
-      HEADLAMP.radius + 0.013,
-      28,
-      swatch("chrome"),
-      false,
+    const z0 = side > 0 ? GRILLE.halfWidth : -GRILLE.halfWidth - bar;
+    surfaces.push(...roundedPrismZ(
+      roundedRect(FASCIA.face - 0.002, h(GRILLE.bottom), frameFront, h(GRILLE.top), 0.005, 2),
+      z0,
+      z0 + bar,
+      { farRadius: 0.004, nearRadius: 0.004, segments: 2, faceUv: frame },
     ));
   }
-  // The bonnet scoop: a raised intake on the bonnet's centre line, its mouth forward.
-  const bonnetAt = (x: number): number =>
-    BODY.bonnetFront + ((BODY.bonnetCowl - BODY.bonnetFront) * (BODY.front - 0.045 - x)) / (BODY.front - 0.045 - BODY.cowlX);
-  const scoopRear = FA - 0.15;
-  const scoopFront = FA + 0.38;
+  // The letters, silver, 7 mm proud of the mesh.
+  const letters = letterParts();
+  const silver = swatch("lettering");
+  for (const solid of letters.solids) {
+    surfaces.push(...roundedPrismX(solid, meshX, meshX + 0.007, { farRadius: 0.0018, nearRadius: 0, segments: 2, faceUv: silver, skipNearFace: true }));
+  }
+  for (const [outer, inner] of letters.rings) surfaces.push(...ringThroughX(outer, inner, meshX, meshX + 0.007, silver));
+  for (const side of [-1, 1]) {
+    const z = side * HEADLAMP.halfSpacing;
+    const centre: readonly [number, number] = [h(HEADLAMP.height), z];
+    // The lamp's barrel out of the fascia, and its chrome bezel rolled over the rim.
+    surfaces.push(latheX(
+      [[HEADLAMP.radius + 0.018, FASCIA.face - 0.002], [HEADLAMP.radius + 0.018, HEADLAMP_RIM_X - 0.006]],
+      40, centre, swatch("grilleBlack"), (_point, outward) => outward,
+    ));
+    surfaces.push(latheX(
+      [
+        [HEADLAMP.radius + 0.018, HEADLAMP_RIM_X - 0.006],
+        [HEADLAMP.radius + 0.0175, HEADLAMP_RIM_X - 0.001],
+        [HEADLAMP.radius + 0.014, HEADLAMP_RIM_X + 0.004],
+        [HEADLAMP.radius + 0.008, HEADLAMP_RIM_X + 0.006],
+        [HEADLAMP.radius + 0.002, HEADLAMP_RIM_X + 0.004],
+        [HEADLAMP.radius, HEADLAMP_RIM_X],
+      ],
+      40, centre, swatch("chrome"), (_point, outward) => outward,
+    ));
+    // The projector's chrome collar, in the middle of the bowl.
+    surfaces.push(latheX(
+      [[0.04, headlampBowlX(0.04) + 0.0005], [0.04, headlampBowlX(0.04) + 0.008], [0.032, headlampBowlX(0.04) + 0.01]],
+      24, centre, swatch("chrome"), (_point, outward) => outward,
+    ));
+  }
+  // The three cooling slots in the panel under the fascia.
+  for (const middle of [-0.25, 0, 0.25]) {
+    surfaces.push(polygonSurface(
+      roundedRect(middle - 0.105, h(0.808), middle + 0.105, h(0.848), 0.014, 3).map(([z, y]) => [-z, y] as Point2),
+      (a, y) => [BODY.front + 0.0015, y, -a],
+      swatch("seal"),
+    ));
+  }
+  // The indicators' black surrounds on the guards' noses.
+  for (const side of [-1, 1]) {
+    const zIn = SHELL_SPLIT_Z + 0.01;
+    const zOut = BODY.halfWidth - 0.03;
+    const [z0, z1] = side > 0 ? [zIn, zOut] : [-zOut, -zIn];
+    surfaces.push(...roundedBox([BODY.front - 0.004, h(0.786), z0], [BODY.front + 0.008, h(0.859), z1], 0.004, swatch("blackPlastic")));
+  }
+  // The bonnet scoop: a raised intake on the bulge's centre line, its mouth forward, its sides rolled.
+  const scoopRear = FA - 0.17;
+  const scoopFront = FA + 0.36;
+  const seat = (x: number): number => bonnetTop(x, 0);
   const scoop: Point2[] = [
-    [scoopRear, bonnetAt(scoopRear) - 0.02],
-    [scoopFront, bonnetAt(scoopFront) - 0.02],
-    [scoopFront, bonnetAt(scoopFront) + 0.058],
-    [scoopFront - 0.07, bonnetAt(scoopFront - 0.07) + 0.066],
-    [scoopRear + 0.05, bonnetAt(scoopRear + 0.05) + 0.012],
+    [scoopRear, seat(scoopRear) - 0.02],
+    [scoopFront, seat(scoopFront) - 0.02],
+    [scoopFront, seat(scoopFront) + 0.052],
+    [scoopFront - 0.06, seat(scoopFront - 0.06) + 0.056],
+    [scoopRear + 0.12, seat(scoopRear + 0.12) + 0.014],
+    [scoopRear + 0.04, seat(scoopRear + 0.04) + 0.002],
   ];
-  surfaces.push(...prismZ(scoop.map(([x, height]) => [x, h(height)] as Point2), -0.27, 0.27, {
-    chamfer: 0.014,
+  surfaces.push(...roundedPrismZ(scoop.map(([x, height]) => [x, h(height)] as Point2), -0.27, 0.27, {
+    farRadius: 0.018,
+    nearRadius: 0.018,
+    segments: 3,
     creaseRadians: 0.5,
     faceUv: swatch("paint"),
     rimUv: (point) => (point[0] > scoopFront - 0.004 ? finishUv("grilleBlack") : finishUv("paint")),
@@ -522,6 +799,12 @@ interface Panel {
   readonly openings: readonly (readonly Point2[])[];
   readonly place: (a: number, b: number) => Vec3Tuple;
   readonly outerUv: UvFor;
+  /**
+   * How far along a the inner trim reaches at height b: a skin's depth short
+   * of the glasshouse's corners, so its edge never lies in the next panel's
+   * face, where it fought that face's depth in a dashed line down each pillar.
+   */
+  readonly trimSpan: (b: number) => readonly [number, number];
 }
 
 interface GlasshouseParts {
@@ -550,7 +833,11 @@ function buildPanel(
   const glass = offset(GLASS_DEPTH);
   const skin = (piece: readonly Point2[], into: GlasshouseParts): void => {
     into.outer.push(polygonSurface(piece, panel.place, panel.outerUv));
-    into.inner.push(polygonSurface(piece, inner, swatch(innerFinish)).flipped());
+    const trim = piece.map(([a, b]): Point2 => {
+      const [from, to] = panel.trimSpan(b);
+      return [Math.min(to, Math.max(from, a)), b];
+    });
+    into.inner.push(polygonSurface(trim, inner, swatch(innerFinish)).flipped());
   };
   for (const piece of panel.pieces) {
     if (!door) {
@@ -568,8 +855,95 @@ function buildPanel(
       ? door.parts
       : parts;
     into.outer.push(...revealBand(ccw.map(([a, b]) => panel.place(a, b)), [-n[0] * SKIN, -n[1] * SKIN, -n[2] * SKIN], swatch("seal")));
+    into.outer.push(gasket(ccw, offset(-GASKET.proud), n));
     into.glass.push(polygonSurface(ccw, glass, swatch("seal")));
   }
+}
+
+/**
+ * How far short of the rear corners the side and rear trims stop. Trim up to
+ * a skin's depth from the corner still lay in the shadow map's back faces a
+ * few centimetres behind the lit panels, as a dashed line down each D pillar
+ * seen from the chase camera; a chamfer joins the two trims instead.
+ */
+const D_PILLAR_TRIM = 0.12;
+
+/** The D pillars' inner trim: a chamfer across the right rear corner from the side trim's end to the rear trim's. */
+function dPillarTrim(): Surface {
+  const sideNormal = planeNormal((x, height) => [x, h(height), tumble(height)]);
+  const rearNormal = planeNormal((z, height) => [rearX(height), h(height), z]);
+  const inset = (point: Vec3Tuple, n: Vec3Tuple): Vec3Tuple => [point[0] - n[0] * SKIN, point[1] - n[1] * SKIN, point[2] - n[2] * SKIN];
+  const side = (height: number): Vec3Tuple => inset([rearX(height) + D_PILLAR_TRIM, h(height), tumble(height)], sideNormal);
+  const rear = (height: number): Vec3Tuple => inset([rearX(height), h(height), tumble(height) - D_PILLAR_TRIM], rearNormal);
+  const surface = new Surface();
+  const uv = finishUv("trim");
+  const [a, b, c, d] = [side(BODY.belt), side(GLASSHOUSE.head), rear(GLASSHOUSE.head), rear(BODY.belt)].map((point) => surface.vertexAt(point, uv));
+  const facing: Vec3Tuple = [1, 0, -1];
+  surface.triFacing(a!, b!, c!, facing);
+  surface.triFacing(a!, c!, d!, facing);
+  return surface;
+}
+
+/** The windows' black rubber: a band over the panel round each opening, its inner edge rounded into the glass. */
+const GASKET = Object.freeze({ over: 0.012, into: 0.008, radius: 0.045, proud: 0.0015 });
+
+/**
+ * A gasket round an opening (counter-clockwise in the panel's (a, b)): from
+ * `GASKET.over` out on the panel to `GASKET.into` in over the glass, where its
+ * corners round off, so every window reads as a rounded pane in rubber.
+ */
+function gasket(opening: readonly Point2[], place: (a: number, b: number) => Vec3Tuple, normal: Vec3Tuple): Surface {
+  const outer = insetOutline(opening, -GASKET.over);
+  const inner = insetOutline(opening, GASKET.into);
+  const surface = new Surface();
+  const uv = finishUv("seal");
+  const vertex = (point: Point2): number => surface.vertexAt(place(point[0], point[1]), uv);
+  const count = inner.length;
+  // Each corner of the inner outline, rounded: its arc's points, from the edge before to the edge after.
+  const arcs: Point2[][] = [];
+  for (let index = 0; index < count; index += 1) {
+    const c = inner[index]!;
+    const p = inner[(index + count - 1) % count]!;
+    const q = inner[(index + 1) % count]!;
+    const e1 = normalize2d([p[0] - c[0], p[1] - c[1]]);
+    const e2 = normalize2d([q[0] - c[0], q[1] - c[1]]);
+    const half = Math.acos(Math.min(1, Math.max(-1, e1[0] * e2[0] + e1[1] * e2[1]))) / 2;
+    const room = Math.min(Math.hypot(p[0] - c[0], p[1] - c[1]), Math.hypot(q[0] - c[0], q[1] - c[1])) * 0.45;
+    const r = Math.min(GASKET.radius, room * Math.tan(half));
+    const t = r / Math.tan(half);
+    const bisector = normalize2d([e1[0] + e2[0], e1[1] + e2[1]]);
+    const centre: Point2 = [c[0] + (bisector[0] * r) / Math.sin(half), c[1] + (bisector[1] * r) / Math.sin(half)];
+    const t1: Point2 = [c[0] + e1[0] * t, c[1] + e1[1] * t];
+    const t2: Point2 = [c[0] + e2[0] * t, c[1] + e2[1] * t];
+    const a1 = Math.atan2(t1[1] - centre[1], t1[0] - centre[0]);
+    let a2 = Math.atan2(t2[1] - centre[1], t2[0] - centre[0]);
+    // The short way round.
+    while (a2 - a1 > Math.PI) a2 -= Math.PI * 2;
+    while (a2 - a1 < -Math.PI) a2 += Math.PI * 2;
+    const points: Point2[] = [];
+    for (let k = 0; k <= 4; k += 1) {
+      const angle = a1 + ((a2 - a1) * k) / 4;
+      points.push([centre[0] + Math.cos(angle) * r, centre[1] + Math.sin(angle) * r]);
+    }
+    arcs.push(points);
+  }
+  for (let index = 0; index < count; index += 1) {
+    const corner = vertex(outer[index]!);
+    const arcIds = arcs[index]!.map(vertex);
+    for (let k = 0; k < arcIds.length - 1; k += 1) surface.triFacing(corner, arcIds[k]!, arcIds[k + 1]!, normal);
+    const next = (index + 1) % count;
+    const nextCorner = vertex(outer[next]!);
+    const from = arcIds[arcIds.length - 1]!;
+    const to = vertex(arcs[next]![0]!);
+    surface.triFacing(corner, from, to, normal);
+    surface.triFacing(corner, to, nextCorner, normal);
+  }
+  return surface;
+}
+
+function normalize2d(vector: Point2): Point2 {
+  const length = Math.hypot(vector[0], vector[1]);
+  return length > 1e-12 ? [vector[0] / length, vector[1] / length] : [0, 0];
 }
 
 function signedArea(outline: readonly Point2[]): number {
@@ -620,6 +994,7 @@ function sidePanel(): Panel {
     ],
     place: (x, height) => [x, h(height), tumble(height)],
     outerUv: sideMap,
+    trimSpan: (height) => [rearX(height) + D_PILLAR_TRIM, screenX(height) - SKIN],
   };
 }
 
@@ -648,13 +1023,14 @@ function screenPanel(): Panel {
     openings: [[[-innerEdge(b1), b1], [innerEdge(b1), b1], [innerEdge(b2), b2], [-innerEdge(b2), b2]]],
     place: (a, height) => screenPoint(-a, height),
     outerUv: swatch("paint"),
+    trimSpan: (height) => [-outer(height) + SKIN, outer(height) - SKIN],
   };
 }
 
 /** The rear barn doors' upper half: 60/40 split, a window in each. (a, b) = (z, height). */
-export const REAR_DOOR_SPLIT_Z = -0.17;
 function rearPanel(): Panel {
-  const b0 = BODY.belt;
+  // Its foot laps 15 mm down over the doors' face, so no seam can open along the belt onto the cargo bay.
+  const b0 = BODY.belt - 0.015;
   const b1 = BODY.belt + 0.07;
   const b2 = GLASSHOUSE.head - 0.09;
   const b3 = GLASSHOUSE.head;
@@ -688,69 +1064,94 @@ function rearPanel(): Panel {
       strip(at(split + mullion), (height) => outer(height) - frame),
     ],
     place: (z, height) => [rearX(height), h(height), z],
-    outerUv: swatch("paint"),
+    outerUv: rearMap,
+    trimSpan: (height) => [-outer(height) + D_PILLAR_TRIM, outer(height) - D_PILLAR_TRIM],
   };
 }
 
-/** The roof: a gently crowned panel on the glasshouse, its gutters along the sides. */
+/**
+ * The roof: a crowned panel on the glasshouse whose crown is flat across the
+ * middle and rolls down at its sides, front and rear, pressed with four
+ * shallow channels along it, as the 76's steel roof is. A drip rail runs
+ * along each side over the doors, and the A pillars' outer edges are rolled.
+ */
+const ROOF_CHANNELS = Object.freeze({ at: [0.2, 0.5] as const, halfWidth: 0.028, depth: 0.004 });
+
 function roofSurfaces(): { readonly symmetric: Surface[]; readonly single: Surface[] } {
   const front = GLASSHOUSE.screenHeadX;
   const rear = GLASSHOUSE.rearHeadX;
   const width = GLASSHOUSE.headHalfWidth;
   const crown = BODY.roof - GLASSHOUSE.head;
-  const ease = (x: number): number => {
-    const d = Math.min(x - rear, front - x) / 0.14;
-    const t = Math.min(1, Math.max(0, d));
-    return t * t * (3 - 2 * t);
+  // A superellipse: flat over the middle, rolling down over the last few centimetres.
+  const roll = (distanceIn: number, reach: number): number => {
+    const t = Math.min(1, Math.max(0, 1 - distanceIn / reach));
+    return Math.sqrt(Math.max(0, 1 - t ** 6));
   };
-  const rows: Vec3Tuple[][] = [];
-  const stations = 16;
-  const girth = 12;
-  for (let i = 0; i <= stations; i += 1) {
-    const x = front + ((rear - front) * i) / stations;
-    const row: Vec3Tuple[] = [];
-    for (let j = 0; j <= girth; j += 1) {
-      const z = -width + (2 * width * j) / girth;
-      const lift = crown * (1 - (z / width) ** 2) * ease(x);
-      row.push([x, h(GLASSHOUSE.head + lift), z]);
+  const channel = (z: number): number => {
+    let depth = 0;
+    for (const at of ROOF_CHANNELS.at) {
+      const d = Math.abs(Math.abs(z) - at) / ROOF_CHANNELS.halfWidth;
+      if (d < 1) depth = Math.max(depth, ROOF_CHANNELS.depth * 0.5 * (1 + Math.cos(Math.PI * d)));
     }
-    rows.push(row);
-  }
+    return depth;
+  };
+  const xs: number[] = [];
+  for (const d of [0, 0.006, 0.015, 0.03, 0.05, 0.08, 0.12, 0.2]) xs.push(front - d);
+  for (let k = 1; k < 8; k += 1) xs.push(front - 0.2 - ((front - rear - 0.4) * k) / 8);
+  for (const d of [0.2, 0.12, 0.08, 0.05, 0.03, 0.015, 0.006, 0]) xs.push(rear + d);
+  const halfZs = new Set<number>([0]);
+  for (let z = 0.06; z < width - 0.12; z += 0.06) halfZs.add(Number(z.toFixed(3)));
+  for (const at of ROOF_CHANNELS.at) for (const d of [-1, -0.6, -0.3, 0, 0.3, 0.6, 1]) halfZs.add(Number((at + d * ROOF_CHANNELS.halfWidth).toFixed(4)));
+  for (const d of [0.12, 0.08, 0.05, 0.03, 0.015, 0.006, 0]) halfZs.add(Number((width - d).toFixed(4)));
+  const positive = [...halfZs].sort((p, q) => p - q);
+  const zs = [...positive.slice(1).reverse().map((z) => -z), ...positive];
+  const rows: Vec3Tuple[][] = xs.map((x) => zs.map((z): Vec3Tuple => {
+    const lift = crown * roll(width - Math.abs(z), 0.12) * roll(Math.min(front - x, x - rear), 0.14) - channel(z);
+    return [x, h(GLASSHOUSE.head + lift), z];
+  }));
   const roof = new Surface();
   const paint = finishUv("paint");
   roof.grid(rows, () => paint);
-  const gutter = box([rear - 0.005, h(GLASSHOUSE.head - 0.026), width - 0.006], [front + 0.005, h(GLASSHOUSE.head + 0.005), width + 0.013], swatch("paint"), 0.005);
-  return { symmetric: gutter, single: [roof] };
+  // The drip rail over the side glass, and the rolled edge of the A pillars.
+  const rail: Vec3Tuple[] = [
+    [rear + 0.01, h(GLASSHOUSE.head - 0.006), width + 0.008],
+    [front - 0.01, h(GLASSHOUSE.head - 0.006), width + 0.008],
+  ];
+  const aPillar: Vec3Tuple[] = [];
+  for (let k = 0; k <= 6; k += 1) {
+    const height = BODY.belt + ((GLASSHOUSE.head - BODY.belt) * k) / 6;
+    aPillar.push([screenX(height) - 0.004, h(height), tumble(height) - 0.004]);
+  }
+  return {
+    symmetric: [
+      ...tube(rail, 0.013, 8, swatch("paint")),
+      ...tube(aPillar, 0.011, 8, swatch("paint")),
+    ],
+    single: [roof],
+  };
 }
 
 /** The door mirror on the right: its sail, arm and black head, the glass on its back. */
 function mirrorSurfaces(): Surface[] {
   const m = MIRROR;
+  const black = swatch("blackPlastic");
   const surfaces: Surface[] = [
-    ...box([m.armX - 0.06, h(BODY.belt - 0.01), BODY.halfWidth - 0.04], [m.armX + 0.025, h(BODY.belt + 0.1), BODY.halfWidth + 0.03], swatch("blackPlastic"), 0.01),
-    ...box([m.headX - 0.016, h(BODY.belt + 0.05), BODY.halfWidth + 0.02], [m.headX + 0.016, h(BODY.belt + 0.09), m.headInner + 0.01], swatch("blackPlastic"), 0.006),
+    // The sail on the door's corner, and the arm out to the head.
+    ...roundedBox([m.armX - 0.07, h(BODY.belt - 0.012), BODY.halfWidth - 0.05], [m.armX + 0.02, h(BODY.belt + 0.095), BODY.halfWidth + 0.022], 0.014, black),
+    ...tube([[m.headX, h(BODY.belt + 0.06), BODY.halfWidth + 0.01], [m.headX, h(BODY.belt + 0.075), m.headInner + 0.02]], 0.013, 8, black),
   ];
-  const round = 0.025;
-  const head: Point2[] = [];
-  for (const [cz, cy, from] of [
-    [m.headInner + round, m.headHeight - m.headHalfHeight + round, Math.PI],
-    [m.headOuter - round, m.headHeight - m.headHalfHeight + round, -Math.PI / 2],
-    [m.headOuter - round, m.headHeight + m.headHalfHeight - round, 0],
-    [m.headInner + round, m.headHeight + m.headHalfHeight - round, Math.PI / 2],
-  ] as const) {
-    head.push(...arc([cz, cy], round, from, from + Math.PI / 2, 2));
-  }
-  surfaces.push(...prismX(head.map(([z, height]) => [z, h(height)] as Point2), m.headX - m.depth / 2, m.headX + m.depth / 2, {
-    chamfer: 0.012,
-    faceUv: swatch("blackPlastic"),
-  }));
+  // The head: a deep rounded box, its glass on the back.
+  surfaces.push(...roundedPrismX(
+    roundedRect(m.headInner, h(m.headHeight - m.headHalfHeight), m.headOuter, h(m.headHeight + m.headHalfHeight), 0.03, 3),
+    m.headX - m.depth / 2,
+    m.headX + m.depth / 2,
+    { farRadius: 0.022, nearRadius: 0.006, segments: 3, faceUv: black },
+  ));
   const x = m.headX - m.depth / 2 - 0.002;
-  const inset = 0.014;
-  surfaces.push(quad(
-    [x, h(m.headHeight - m.headHalfHeight + inset), m.headInner + inset],
-    [x, h(m.headHeight - m.headHalfHeight + inset), m.headOuter - inset],
-    [x, h(m.headHeight + m.headHalfHeight - inset), m.headOuter - inset],
-    [x, h(m.headHeight + m.headHalfHeight - inset), m.headInner + inset],
+  const inset = 0.012;
+  surfaces.push(polygonSurface(
+    roundedRect(m.headInner + inset, h(m.headHeight - m.headHalfHeight + inset), m.headOuter - inset, h(m.headHeight + m.headHalfHeight - inset), 0.022, 3),
+    (z, y) => [x, y, z],
     swatch("mirrorGlass"),
   ));
   return surfaces;
@@ -762,22 +1163,71 @@ function snorkelSurfaces(): Surface[] {
   const top = path[path.length - 1]!;
   return [
     ...tube(path, SNORKEL.radius, 12, swatch("blackPlastic")),
-    ...box([top[0] - 0.05, top[1] - 0.07, top[2] - 0.065], [top[0] + 0.085, top[1] + 0.055, top[2] + 0.065], swatch("blackPlastic"), 0.022),
+    // The ram head: a rolled bucket over the tube's mouth, its slotted face forward.
+    ...roundedBox([top[0] - 0.05, top[1] - 0.07, top[2] - 0.065], [top[0] + 0.085, top[1] + 0.055, top[2] + 0.065], 0.034, swatch("blackPlastic"), 3),
+    ...[-0.03, 0, 0.03].flatMap((dy) =>
+      roundedBox([top[0] + 0.081, top[1] - 0.012 + dy, top[2] - 0.04], [top[0] + 0.088, top[1] + 0.002 + dy, top[2] + 0.04], 0.005, swatch("seal"))),
     // Standoff brackets to the pillar.
     ...bar([path[2]![0], path[2]![1], path[2]![2] - 0.03], [path[2]![0] - 0.02, path[2]![1], tumble(1.36) - 0.01], 0.01, 5, swatch("blackPlastic")),
     ...bar([path[3]![0], path[3]![1], path[3]![2] - 0.03], [path[3]![0] - 0.02, path[3]![1], tumble(1.8) - 0.01], 0.01, 5, swatch("blackPlastic")),
   ];
 }
 
-/** The rear doors' split line, handle and plate, and the quarters' seams. */
+/**
+ * A band pressed 4 mm proud of the rear panel at `x`, `outline` in (z, y):
+ * its edges ramp up over 2.5 cm rather than roll, so from the chase camera
+ * they shade as a soft crease a few pixels wide, not a sub-pixel highlight
+ * that breaks into dashes.
+ */
+function pressedBand(outline: readonly Point2[], x: number): Surface[] {
+  const rise = 0.004;
+  const ramp = 0.025;
+  const ccw = signedArea(outline) > 0 ? outline : [...outline].reverse();
+  const top = insetOutline(ccw, ramp);
+  // The rear map, so the band wears the doors' dust.
+  const uv = rearMap;
+  const facing: Vec3Tuple = [-1, 0, 0];
+  const edge = new Surface();
+  // From 1 mm inside the panel, so the ramp leaves it without a crack.
+  const foot = ccw.map(([a, b]) => edge.vertexAt([x + 0.001, b, a], uv([x, b, a])));
+  const head = top.map(([a, b]) => edge.vertexAt([x - rise, b, a], uv([x, b, a])));
+  for (let index = 0; index < ccw.length; index += 1) {
+    const next = (index + 1) % ccw.length;
+    edge.triFacing(foot[index]!, foot[next]!, head[next]!, facing);
+    edge.triFacing(foot[index]!, head[next]!, head[index]!, facing);
+  }
+  return [edge, polygonSurface(top, (a, b) => [x - rise, b, a], uv)];
+}
+
+/**
+ * The rear doors' handle, plate, pressed band and hinges, the mud flaps and
+ * the tail lamps' housings. The doors' shut lines are drawn in the rear map.
+ */
 function rearDetailSurfaces(): Surface[] {
   const surfaces: Surface[] = [];
   const x = BODY.rear - 0.0015;
   const z = REAR_DOOR_SPLIT_Z;
-  surfaces.push(quad([x, h(BODY.rearBottom + 0.02), z - 0.003], [x, h(BODY.rearBottom + 0.02), z + 0.003], [x, h(BODY.belt), z + 0.003], [x, h(BODY.belt), z - 0.003], swatch("seal")));
   // The right door's handle, by the split, and the plate under it.
-  surfaces.push(...box([x - 0.03, h(1.17), z + 0.06], [x + 0.005, h(1.205), z + 0.2], swatch("blackPlastic"), 0.006));
+  surfaces.push(...roundedBox([x - 0.028, h(1.168), z + 0.06], [x + 0.005, h(1.205), z + 0.2], 0.008, swatch("blackPlastic")));
   surfaces.push(...plateSurfaces(x, -1, 0.74, 0.3));
+  // A pressed band across both doors at the lamps' height.
+  for (const [from, to] of [[-SHELL_SPLIT_Z + 0.06, z - 0.03], [z + 0.03, SHELL_SPLIT_Z - 0.06]] as const) {
+    surfaces.push(...pressedBand(roundedRect(from, h(0.9), to, h(0.98), 0.02, 3), BODY.rear));
+  }
+  // The doors' exposed hinges on their outer edges, two each, and the tail lamps' black housings.
+  for (const side of [-1, 1]) {
+    for (const height of [0.8, 1.2]) {
+      const z0 = side * (SHELL_SPLIT_Z - 0.1);
+      surfaces.push(...roundedBox([x - 0.02, h(height - 0.035), Math.min(z0, z0 + side * 0.05)], [x + 0.004, h(height + 0.035), Math.max(z0, z0 + side * 0.05)], 0.007, swatch("blackPlastic")));
+    }
+    // The mud flaps behind each wheel, the front ones clear of the tyre at full lock.
+    surfaces.push(...roundedBox([RA - 0.5, h(0.24), side * (LC76_REAR_TRACK / 2) - 0.15], [RA - 0.488, h(0.6), side * (LC76_REAR_TRACK / 2) + 0.15], 0.005, swatch("rubber")));
+    surfaces.push(...roundedBox([FA - 0.5, h(0.27), side * (LC76_FRONT_TRACK / 2) - 0.14], [FA - 0.488, h(0.6), side * (LC76_FRONT_TRACK / 2) + 0.14], 0.005, swatch("rubber")));
+    const zIn = TAIL_LAMP.inner;
+    const zOut = TAIL_LAMP.outer;
+    const [z0, z1] = side > 0 ? [zIn, zOut] : [-zOut, -zIn];
+    surfaces.push(...roundedBox([BODY.rear - 0.008, h(TAIL_LAMP.bottom), z0], [BODY.rear + 0.004, h(TAIL_LAMP.top), z1], 0.008, swatch("blackPlastic")));
+  }
   return surfaces;
 }
 
@@ -894,12 +1344,14 @@ export function carBodySurfaces(): CarBodySurfaces {
       ...mirrorSurfaces(),
       ...side.outer,
       ...side.inner,
+      dPillarTrim(),
       ...roof.symmetric,
       ...under.symmetric,
       ...cabin.symmetric,
     ],
     single: [
       ...shell.centre,
+      ...bonnetSurfaces(),
       ...frontBumperSurfaces(),
       ...rearBumperSurfaces(),
       ...frontSurfaces(),
@@ -929,6 +1381,9 @@ export const CAR_LAMP_TEXELS = Object.freeze({
   reverse: 3,
   indicator: 4,
   highStop: 5,
+  /** The headlamps' reflector dishes, which brighten with the beams. */
+  reflector: 6,
+  fog: 7,
 });
 export const CAR_LAMP_TEXEL_COUNT = 8;
 
@@ -945,24 +1400,39 @@ function lampUv(texel: number): UvFor {
  */
 export function carLampSurfaces(): Surface[] {
   const surfaces: Surface[] = [];
-  const x = HEADLAMP_LENS_X;
   for (const side of [-1, 1]) {
-    const centre: Vec3Tuple = [x, h(HEADLAMP.height), side * HEADLAMP.halfSpacing];
-    surfaces.push(disc(centre, [1, 0, 0], HEADLAMP.radius - 0.016, 28, lampUv(CAR_LAMP_TEXELS.headlamp)));
-    surfaces.push(ring([x + 0.0005, centre[1], centre[2]], [1, 0, 0], HEADLAMP.radius - 0.016, HEADLAMP.radius, 28, lampUv(CAR_LAMP_TEXELS.dayRunning)));
-    const zIn = side > 0 ? SHELL_SPLIT_Z + 0.012 : -(BODY.halfWidth - 0.016);
-    const zOut = side > 0 ? BODY.halfWidth - 0.016 : -(SHELL_SPLIT_Z + 0.012);
-    surfaces.push(...box([BODY.front - 0.005, h(0.795), zIn], [BODY.front + 0.012, h(0.85), zOut], lampUv(CAR_LAMP_TEXELS.indicator), 0.004));
+    const centre: readonly [number, number] = [h(HEADLAMP.height), side * HEADLAMP.halfSpacing];
+    // The reflector's dish, the projector's lens in its middle, the day-running ring round its rim.
+    const dish: Point2[] = [];
+    for (let k = 0; k <= 5; k += 1) {
+      const radius = HEADLAMP.radius - ((HEADLAMP.radius - 0.04) * k) / 5;
+      dish.push([radius, headlampBowlX(radius)]);
+    }
+    surfaces.push(latheX(dish, 36, centre, lampUv(CAR_LAMP_TEXELS.reflector), () => [1, 0, 0]));
+    const lensBase = headlampBowlX(0.04) + 0.01;
+    surfaces.push(latheX(
+      [[0.032, lensBase], [0.028, lensBase + 0.006], [0.019, lensBase + 0.011], [0.008, lensBase + 0.0135], [0, lensBase + 0.014]],
+      24, centre, lampUv(CAR_LAMP_TEXELS.headlamp), () => [1, 0, 0],
+    ));
+    surfaces.push(ring([HEADLAMP_RIM_X - 0.0015, centre[0], centre[1]], [1, 0, 0], HEADLAMP.radius - 0.014, HEADLAMP.radius - 0.004, 36, lampUv(CAR_LAMP_TEXELS.dayRunning)));
+    // The indicators in their surrounds on the guards' noses.
+    const zIn = SHELL_SPLIT_Z + 0.015;
+    const zOut = BODY.halfWidth - 0.035;
+    const [z0, z1] = side > 0 ? [zIn, zOut] : [-zOut, -zIn];
+    surfaces.push(...roundedBox([BODY.front, h(0.791), z0], [BODY.front + 0.011, h(0.854), z1], 0.004, lampUv(CAR_LAMP_TEXELS.indicator)));
+    // The fog lamps in the bumper's face.
+    surfaces.push(disc([BODY.bumperFront + 0.004, h(FOG_LAMP.height), side * FOG_LAMP.halfSpacing], [1, 0, 0], FOG_LAMP.radius, 24, lampUv(CAR_LAMP_TEXELS.fog)));
   }
   const rear = BODY.rear;
   for (const side of [-1, 1]) {
-    const zIn = side > 0 ? BODY.halfWidth - 0.125 : -(BODY.halfWidth - 0.012);
-    const zOut = side > 0 ? BODY.halfWidth - 0.012 : -(BODY.halfWidth - 0.125);
+    const zIn = TAIL_LAMP.inner + 0.006;
+    const zOut = TAIL_LAMP.outer - 0.006;
+    const [z0, z1] = side > 0 ? [zIn, zOut] : [-zOut, -zIn];
     const cluster = (from: number, to: number, texel: number): Surface[] =>
-      box([rear - 0.014, h(from), zIn], [rear + 0.004, h(to), zOut], lampUv(texel), 0.004);
-    surfaces.push(...cluster(0.94, 1.05, CAR_LAMP_TEXELS.indicator));
-    surfaces.push(...cluster(0.8, 0.935, CAR_LAMP_TEXELS.tail));
-    surfaces.push(...cluster(0.7, 0.795, CAR_LAMP_TEXELS.reverse));
+      roundedBox([rear - TAIL_LAMP.proud - 0.004, h(from), z0], [rear - 0.004, h(to), z1], 0.005, lampUv(texel));
+    surfaces.push(...cluster(0.948, TAIL_LAMP.top - 0.006, CAR_LAMP_TEXELS.indicator));
+    surfaces.push(...cluster(0.8, 0.942, CAR_LAMP_TEXELS.tail));
+    surfaces.push(...cluster(TAIL_LAMP.bottom + 0.006, 0.794, CAR_LAMP_TEXELS.reverse));
   }
   const top = GLASSHOUSE.head - 0.012;
   surfaces.push(...box(
