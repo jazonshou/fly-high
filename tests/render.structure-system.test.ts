@@ -1,0 +1,245 @@
+import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import type { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { Scene } from "@babylonjs/core/scene";
+import { describe, expect, it } from "vitest";
+import { InlineStructureMeshBuilder, KIT_STRUCTURE_ARRAYS } from "@/src/render/structures/InlineStructureMeshBuilder";
+import { resolveWebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
+import { StructureMaterialPlugin, STRUCTURE_MATERIAL_WGSL } from "@/src/render/webgpu/structures/StructureMaterialPlugin";
+import {
+  StructureSystem,
+  type StructureMeshBuild,
+  type StructureMeshBuilder,
+  type StructureSetName,
+} from "@/src/render/webgpu/structures/StructureSystem";
+import { SETTLEMENT_STREAM_WINDOW } from "@/src/world/settlements/settlementStreaming";
+import type { StructureRecord } from "@/src/world/structures/structureRecord";
+import { TERRAIN_SURFACE_INJECTION_ANCHORS } from "@/src/render/webgpu/terrain/TerrainSurfacePlugin";
+
+/**
+ * The structure renderer's bookkeeping on a null engine: a set's build lands
+ * as a new mesh that replaces the old, one build per set is in flight at a
+ * time (the latest decision waits for it), the near shells are the one
+ * shadow caster where the profile casts, meshes follow the floating origin,
+ * and the tier rows are data. And the kit's arrays are what the renderer
+ * uploads: each set's level, one centre per building, wound for this scene.
+ */
+
+function record(id: number, x: number, z: number, overrides: Partial<StructureRecord> = {}): StructureRecord {
+  return {
+    id,
+    archetype: "house",
+    style: "temperate",
+    x,
+    z,
+    heading: 0.6,
+    width: 10,
+    depth: 8,
+    storeys: 2,
+    floorY: 30,
+    baseY: 29.4,
+    entryY: 29.6,
+    foundation: "plinth",
+    seed: id,
+    settlement: 1,
+    settlementKind: "hamlet",
+    basalt: false,
+    ...overrides,
+  };
+}
+
+/** A builder whose builds land only when the test says. */
+class HeldBuilder implements StructureMeshBuilder {
+  readonly asked: { set: StructureSetName; ids: number[]; originX: number; originZ: number; resolve: (build: StructureMeshBuild) => void }[] = [];
+
+  build(set: StructureSetName, records: readonly StructureRecord[], originX: number, originZ: number): Promise<StructureMeshBuild> {
+    return new Promise((resolve) => {
+      this.asked.push({ set, ids: records.map((r) => r.id), originX, originZ, resolve: (build) => resolve(build) });
+    });
+  }
+
+  land(index: number): void {
+    const ask = this.asked[index]!;
+    ask.resolve(KIT_STRUCTURE_ARRAYS(ask.set, [], ask.originX, ask.originZ));
+  }
+
+  dispose(): void {}
+}
+
+function rig(builder: StructureMeshBuilder, casts = true) {
+  const engine = new NullEngine();
+  const scene = new Scene(engine);
+  const system = new StructureSystem(scene, {
+    structureNearRadiusMeters: 400,
+    structureFarRadiusMeters: 4_000,
+    structureOpenBuildings: 4,
+    structureNearCastsShadows: casts,
+  }, builder);
+  return { scene, system, dispose: () => { system.dispose(); scene.dispose(); engine.dispose(); } };
+}
+
+const flush = async () => {
+  for (let k = 0; k < 4; k += 1) await Promise.resolve();
+};
+
+describe("the structure renderer", () => {
+  it("draws each set's landed build as a new mesh, and empties a set whose buildings leave", async () => {
+    const { system, dispose } = rig(new InlineStructureMeshBuilder());
+    system.apply([{ key: "settlements:0:0", structures: [record(1, 100, 50), record(2, 130, 60), record(3, 2_500, 0)] }], []);
+    system.update({ x: 100, y: 400, z: 0 });
+    expect(system.pendingWork).toBeGreaterThan(0);
+    await flush();
+    expect(system.pendingWork).toBe(0);
+    const stats = system.statistics;
+    expect(stats.farBuildings).toBe(3);
+    expect(stats.nearBuildings).toBe(2);
+    expect(stats.farTriangles).toBeGreaterThan(0);
+    expect(system.meshes.map((mesh) => mesh.name).sort()).toEqual(["structures-far", "structures-near"]);
+    const far = system.meshes.find((mesh) => mesh.name === "structures-far")!;
+
+    // A region more: the far set is rebuilt, as a new mesh, and the old one goes.
+    system.apply([{ key: "settlements:1:0", structures: [record(4, 3_000, 900)] }], []);
+    system.update({ x: 100, y: 400, z: 0 });
+    await flush();
+    const rebuilt = system.meshes.find((mesh) => mesh.name === "structures-far")!;
+    expect(rebuilt).not.toBe(far);
+    expect(far.isDisposed()).toBe(true);
+    expect(system.statistics.farBuildings).toBe(4);
+
+    system.apply([], ["settlements:0:0", "settlements:1:0"]);
+    system.update({ x: 100, y: 400, z: 0 });
+    await flush();
+    expect(system.meshes).toEqual([]);
+    expect(rebuilt.isDisposed()).toBe(true);
+    dispose();
+  });
+
+  it("keeps one build a set in flight, and builds the latest decision once it lands", async () => {
+    const builder = new HeldBuilder();
+    const { system, dispose } = rig(builder);
+    system.apply([{ key: "settlements:0:0", structures: [record(1, 0, 0)] }], []);
+    system.update({ x: 0, y: 400, z: 0 });
+    const farAsks = () => builder.asked.filter((ask) => ask.set === "far");
+    expect(farAsks()).toHaveLength(1);
+    // Two more changes while it is out: neither is asked for yet.
+    system.apply([{ key: "settlements:1:0", structures: [record(2, 3_000, 0)] }], []);
+    system.update({ x: 0, y: 40, z: 0 });
+    system.apply([{ key: "settlements:2:0", structures: [record(3, 3_100, 0)] }], []);
+    system.update({ x: 0, y: 40, z: 0 });
+    expect(farAsks()).toHaveLength(1);
+    expect(system.pendingWork).toBeGreaterThanOrEqual(2);
+    builder.land(builder.asked.indexOf(farAsks()[0]!));
+    await flush();
+    // The latest, only.
+    expect(farAsks()).toHaveLength(2);
+    expect(farAsks()[1]!.ids).toEqual([1, 2, 3]);
+    dispose();
+  });
+
+  it("casts only the near shells, where the profile casts", async () => {
+    for (const casts of [true, false]) {
+      const { system, dispose } = rig(new InlineStructureMeshBuilder(), casts);
+      system.apply([{ key: "settlements:0:0", structures: [record(1, 10, 10), record(2, 1_500, 0)] }], []);
+      system.update({ x: 0, y: 40, z: 0 });
+      await flush();
+      const collected: Mesh[] = [];
+      system.addShadowCasters((mesh) => collected.push(mesh));
+      expect(collected.map((mesh) => mesh.name)).toEqual(casts ? ["structures-near"] : []);
+      dispose();
+    }
+  });
+
+  it("places each mesh at its build origin less the floating origin, and binds the camera in that frame", async () => {
+    const { system, dispose } = rig(new InlineStructureMeshBuilder());
+    system.apply([{ key: "settlements:0:0", structures: [record(1, 5_010, -2_990)] }], []);
+    system.update({ x: 5_000.4, y: 40, z: -3_000.6 });
+    await flush();
+    system.setFloatingOrigin(4_096, -2_048);
+    for (const mesh of system.meshes) {
+      expect(mesh.position.x).toBe(5_000 - 4_096);
+      expect(mesh.position.z).toBe(-3_001 + 2_048);
+    }
+    system.update({ x: 5_020, y: 40, z: -3_010 });
+    const near = system.materials.find((material) => material.name === "structures-near")!;
+    const plugin = near.pluginManager!.getPlugin("structure-surface") as StructureMaterialPlugin;
+    expect(plugin.binding!.cameraX).toBeCloseTo(20, 9);
+    expect(plugin.binding!.cameraZ).toBeCloseTo(-9, 9);
+    dispose();
+  });
+
+  it("takes its radii from the profile, the blocks no further than the settlements stream", () => {
+    const rows = [0, 1, 2, 3].map((tier) => {
+      const [quality, mode] = ([["low", "balanced"], ["medium", "balanced"], ["high", "balanced"], ["high", "ultra"]] as const)[tier]!;
+      return resolveWebGpuQualityProfile(quality, mode);
+    });
+    expect(rows.map((p) => p.structureNearRadiusMeters)).toEqual([250, 400, 600, 800]);
+    expect(rows.map((p) => p.structureOpenBuildings)).toEqual([2, 4, 6, 6]);
+    expect(rows.map((p) => p.structureNearCastsShadows)).toEqual([false, true, true, true]);
+    for (const profile of rows) {
+      const { system, dispose } = rig(new InlineStructureMeshBuilder());
+      system.setProfile(profile);
+      system.update({ x: 0, y: 0, z: 0 });
+      const far = system.materials.find((material) => material.name === "structures-far")!;
+      const plugin = far.pluginManager!.getPlugin("structure-surface") as StructureMaterialPlugin;
+      expect(plugin.binding!.farRadiusMeters).toBe(Math.min(profile.structureFarRadiusMeters, SETTLEMENT_STREAM_WINDOW));
+      dispose();
+    }
+  });
+
+  it("hooks the shader where the sun and the sky can be cut indoors", () => {
+    // The indoor cut rides each directional light's own colour, as the terrain's horizon shadow does.
+    expect(Object.keys(STRUCTURE_MATERIAL_WGSL.fragmentInjections)).toEqual([TERRAIN_SURFACE_INJECTION_ANCHORS.sunLightColor]);
+    expect(STRUCTURE_MATERIAL_WGSL.fragmentBeforeFinalColor).toContain("finalIrradiance *= structureSkyShare;");
+    expect(STRUCTURE_MATERIAL_WGSL.fragmentBeforeFinalColor).toContain("finalRadianceScaled *= structureSkyShare;");
+  });
+});
+
+describe("the kit's arrays for each set", () => {
+  it("are blocks far, shells near and open buildings with glass, each vertex carrying its building's centre", () => {
+    const records = [record(1, 100, 50), record(2, -40, 300, { heading: -2.2, storeys: 1 })];
+    const far = KIT_STRUCTURE_ARRAYS("far", records, 64, 32);
+    const near = KIT_STRUCTURE_ARRAYS("near", records, 64, 32);
+    const open = KIT_STRUCTURE_ARRAYS("open", records, 64, 32);
+    expect(far.glass).toBeNull();
+    expect(near.glass).toBeNull();
+    expect(open.glass!.triangles).toBeGreaterThan(0);
+    // The kit's budgets: 20-60 a block, hundreds a shell, more open.
+    expect(far.opaque.triangles).toBeLessThanOrEqual(2 * 60);
+    expect(near.opaque.triangles).toBeGreaterThan(far.opaque.triangles * 4);
+    expect(open.opaque.triangles).toBeGreaterThan(near.opaque.triangles);
+    // Indoor light only where there are rooms.
+    expect(near.opaque.indoor.some((value) => value > 0)).toBe(false);
+    expect(open.opaque.indoor.some((value) => value > 0)).toBe(true);
+    for (const { opaque } of [far, near, open]) {
+      expect(opaque.positions.length / 3).toBe(opaque.centre.length / 2);
+      const centres = new Set<string>();
+      for (let i = 0; i < opaque.centre.length; i += 2) centres.add(`${opaque.centre[i]},${opaque.centre[i + 1]}`);
+      expect([...centres].sort()).toEqual([`${100 - 64},${50 - 32}`, `${-40 - 64},${300 - 32}`].sort());
+    }
+  });
+
+  it("wind every face the other way round from its normal, this right-handed scene's front faces", () => {
+    // The kit winds by the right-hand rule; drawn so, the blocks vanished on
+    // the GPU and the shells showed their insides (tests/gpu/structure-system).
+    const records = [record(1, 100, 50), record(2, -40, 300, { heading: -2.2, storeys: 1 })];
+    for (const set of ["far", "near", "open"] as const) {
+      const build = KIT_STRUCTURE_ARRAYS(set, records, 64, 32);
+      for (const arrays of [build.opaque, build.glass]) {
+        if (!arrays) continue;
+        const { positions: p, normals: n, indices } = arrays;
+        let along = 0;
+        let against = 0;
+        for (let t = 0; t < indices.length; t += 3) {
+          const [a, b, c] = [indices[t]! * 3, indices[t + 1]! * 3, indices[t + 2]! * 3];
+          const u = [p[b]! - p[a]!, p[b + 1]! - p[a + 1]!, p[b + 2]! - p[a + 2]!];
+          const v = [p[c]! - p[a]!, p[c + 1]! - p[a + 1]!, p[c + 2]! - p[a + 2]!];
+          const cross = [u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!];
+          const dot = cross[0]! * n[a]! + cross[1]! * n[a + 1]! + cross[2]! * n[a + 2]!;
+          if (dot > 1e-9) along += 1;
+          else if (dot < -1e-9) against += 1;
+        }
+        expect(along, `${set}: faces wound along their normal`).toBe(0);
+        expect(against).toBeGreaterThan(0);
+      }
+    }
+  });
+});
