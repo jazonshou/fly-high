@@ -81,7 +81,7 @@ export function structureSetArrays(
   originX: number,
   originZ: number,
   weathered = true,
-): { readonly opaque: StructureMeshArrays; readonly glass: StructureMeshArrays | null } {
+): { readonly opaque: StructureMeshArrays; readonly glass: StructureMeshArrays | null; readonly chimneys: Float32Array } {
   const level = STRUCTURE_SET_LEVEL[set];
   const open = level === "open";
   const origin = { x: originX, y: 0, z: originZ };
@@ -90,8 +90,23 @@ export function structureSetArrays(
   const thin: [number, number][] = [];
   // Each building's vertex range and its code offset (lamp threshold and weather).
   const codes: [number, number, number][] = [];
-  for (const record of records) {
+  // Each chimney's flue, relative to the origin, and its record's index in `records`.
+  const chimneys: number[] = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]!;
     const model = STRUCTURE_KIT.drawn(record, level);
+    if (model.chimneys.length > 0) {
+      const c = Math.cos(record.heading);
+      const s = Math.sin(record.heading);
+      for (const flue of model.chimneys) {
+        chimneys.push(
+          record.x + flue.x * c + flue.z * s - originX,
+          record.floorY + flue.y,
+          record.z - flue.x * s + flue.z * c - originZ,
+          index,
+        );
+      }
+    }
     const light = open ? structureIndoorLight(STRUCTURE_KIT.layout(record)) : undefined;
     const first = opaque.vertices;
     const weathering = weathered ? structureWeathering(record) : undefined;
@@ -111,5 +126,6 @@ export function structureSetArrays(
   return {
     opaque: reverseStructureWinding(opaqueArrays),
     glass: glassArrays ? reverseStructureWinding(glassArrays) : null,
+    chimneys: new Float32Array(chimneys),
   };
 }

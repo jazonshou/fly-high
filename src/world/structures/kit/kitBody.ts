@@ -934,6 +934,8 @@ function drawChimney(ctx: DrawContext): void {
     const bottom = g.wallTop - 0.4;
     const [cx, cz] = frame.roof.ridge === "x" ? [offset, 0] : [0, offset];
     const [hx, hz] = frame.roof.ridge === "x" ? [cw * 0.5, cd * 0.5] : [cd * 0.5, cw * 0.5];
+    // The flue: over the stack's cap.
+    b.chimney({ x: cx, y: top + 0.2, z: cz });
     if (b.block) {
       b.box(cx - hx, cx + hx, g.ridgeY - 0.3, top, cz - hz, cz + hz, "stone", look.chimneyColour, FACE.all & ~FACE.ny);
       return;
@@ -950,6 +952,7 @@ function drawChimney(ctx: DrawContext): void {
   const [px, pz] = frame.roof.ridge === "x" ? [pipeAlong, -c] : [-c, pipeAlong];
   const surf = g.surfaceAt(c);
   const size = b.block ? 0.25 : 0.16;
+  b.chimney({ x: px, y: surf + 1.08, z: pz });
   b.box(px - size * 0.5, px + size * 0.5, surf - 0.15, surf + 1.0, pz - size * 0.5, pz + size * 0.5, "steel", look.chimneyColour, FACE.sides);
   if (!b.block) b.box(px - 0.14, px + 0.14, surf + 1.0, surf + 1.08, pz - 0.14, pz + 0.14, "steel", look.chimneyColour, FACE.all);
   b.capsule([px, surf, pz], [px, surf + 1.0, pz], 0.08, "metal");

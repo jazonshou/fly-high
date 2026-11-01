@@ -394,6 +394,7 @@ describe("the light-point draw's groups", () => {
       structureNearCastsShadows: false,
       structureTextureEdge: 0,
       structureLampPoints: 1_024,
+      structureChimneySmoke: false,
     }, builder, null);
     const points = new LightPointSystem(scene, [lamp(0, [1, 0, 0])], 1);
     system.setLamps(points, () => 0);

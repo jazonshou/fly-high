@@ -249,6 +249,7 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
         (p: (typeof PROFILES)[number]) => p.marinaCastsShadows],
       ["Structure shells cast shadows",
         (p: (typeof PROFILES)[number]) => p.structureNearCastsShadows],
+      ["Chimney smoke", (p: (typeof PROFILES)[number]) => p.structureChimneySmoke],
     ];
 
   it.each(TIER_BOOLEAN_ROW_CHECKS)(

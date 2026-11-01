@@ -119,6 +119,7 @@ describe("the structures on the GPU", () => {
         structureNearCastsShadows: false,
         structureTextureEdge: 0,
         structureLampPoints: 1_024,
+        structureChimneySmoke: false,
       }, builder);
       system.setFloatingOrigin(0, 0);
       const near = record(1, -20, 0);
@@ -278,6 +279,7 @@ describe("the structures on the GPU", () => {
         structureNearCastsShadows: false,
         structureTextureEdge: 256,
         structureLampPoints: 1_024,
+        structureChimneySmoke: false,
       }, builder);
       system.setFloatingOrigin(0, 0);
       system.apply([{ key: "settlements:0:0", structures: [record(1, 0, 0)] }], []);
@@ -430,6 +432,7 @@ describe("the structures on the GPU", () => {
           structureNearCastsShadows: false,
           structureTextureEdge,
           structureLampPoints: 1_024,
+          structureChimneySmoke: false,
         }, inline);
         system.setFloatingOrigin(0, 0);
         system.apply([{ key: "settlements:0:0", structures: [record(1, 0, 0)] }], []);
@@ -495,6 +498,7 @@ describe("the structures on the GPU", () => {
           structureNearCastsShadows: false,
           structureTextureEdge,
           structureLampPoints: 1_024,
+          structureChimneySmoke: false,
         }, inline);
         system.setFloatingOrigin(0, 0);
         system.apply([{ key: "settlements:0:0", structures: [barn] }], []);

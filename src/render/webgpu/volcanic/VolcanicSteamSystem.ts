@@ -98,6 +98,22 @@ export const STEAM_FLOATS_PER_WISP = 12;
  * f32 in the shader however long the flight.
  */
 export const STEAM_CYCLE_PERIOD_SECONDS = 960;
+/**
+ * Other wisps than a vent's (`setExtraWisps`: the buildings' chimney smoke)
+ * add this to their noise seed to be drawn as smoke: the seed's whole part is
+ * otherwise unused (the wobble's sine and the noise's offset are periodic in
+ * it), so the flag costs no attribute.
+ */
+export const STEAM_SMOKE_SEED_OFFSET = 2;
+/** Wood smoke's single-scattering albedo, linear: a light blue-grey. */
+export const STEAM_SMOKE_ALBEDO: readonly [number, number, number] = Object.freeze([0.56, 0.58, 0.62] as const);
+
+/**
+ * Writes `count` wisp records (`writeSteamWisps`' layout) at float `offset`
+ * of `out`, x and z relative to the anchor, for wind of `windSpeed` m/s.
+ */
+export type SteamWispWriter = (anchorX: number, anchorZ: number, windSpeed: number, out: Float32Array, offset: number) => void;
+
 /** Volcanism's seed channels are 240-259; steam takes the last, mixed with each vent's own seed. */
 export const STEAM_SEED_CHANNEL = 259;
 
@@ -299,6 +315,7 @@ const STEAM_BACKWARD_G: f32 = ${wgslFloat(CLOUD.backwardPhaseG)};
 const STEAM_BACKWARD_BLEND: f32 = ${wgslFloat(CLOUD.backwardPhaseBlend)};
 const STEAM_MULTIPLE_SCATTERING: f32 = ${wgslFloat(CLOUD.multipleScatteringFactor)};
 const STEAM_AMBIENT_STRENGTH: f32 = ${wgslFloat(CLOUD.ambientStrength)};
+const STEAM_SMOKE_ALBEDO: vec3f = vec3f(${STEAM_SMOKE_ALBEDO.map(wgslFloat).join(", ")});
 
 // cloudLighting's phase: forward and backward lobes, mixed, at an octave's g scale.
 fn steamPhase(mu: f32, gScale: f32) -> f32 {
@@ -377,7 +394,10 @@ fn main(input: VertexInputs) -> FragmentInputs {
     orderEnergy *= STEAM_MULTIPLE_SCATTERING;
     orderScale *= 0.5;
   }
-  let radiance = sunAtWisp * phase + skyRadiance(rayDirection) * STEAM_AMBIENT_STRENGTH;
+  // Chimney smoke (a noise seed of 2 or more, \`STEAM_SMOKE_SEED_OFFSET\`) is
+  // the same medium greyed: wood smoke scatters less of what it is lit by.
+  let albedo = select(vec3f(1.0), STEAM_SMOKE_ALBEDO, recordC.x >= ${wgslFloat(STEAM_SMOKE_SEED_OFFSET)});
+  let radiance = (sunAtWisp * phase + skyRadiance(rayDirection) * STEAM_AMBIENT_STRENGTH) * albedo;
   let haze = aerialPerspective(centre.y, distanceMeters, mu);
 
   vertexOutputs.position = clip;
@@ -568,6 +588,10 @@ export class VolcanicSteamSystem {
   private readonly scratchVent: MutableVent = { x: 0, z: 0, radiusMeters: 0, strength: 0, seed: 0 };
   private instances: Float32Array | null = null;
   private liveWisps = 0;
+  /** The other source's wisps (chimney smoke), after the vents' within the cap. */
+  private extraCount = 0;
+  private extraWriter: SteamWispWriter | null = null;
+  private extraWisps = 0;
   private cellX = Number.NaN;
   private cellZ = Number.NaN;
   private rebuildRequested = true;
@@ -706,6 +730,24 @@ export class VolcanicSteamSystem {
     this.rebuildRequested = true;
   }
 
+  /**
+   * Wisps from another source than the vents, drawn in this same draw after
+   * the vents' (the generated buildings' chimney smoke): `count` records,
+   * written by `writer` now and again whenever the vents' set is swapped in
+   * (a new anchor). The vents come first under the tier's cap. 0 removes them.
+   */
+  setExtraWisps(count: number, writer: SteamWispWriter | null): void {
+    this.extraCount = writer ? Math.max(0, Math.floor(count)) : 0;
+    this.extraWriter = writer;
+    const gpu = this.gpu;
+    if (gpu && !this.building) this.writeInstances(gpu, this.live);
+  }
+
+  /** Extra wisps (chimney smoke) in the instances now. */
+  get extraWispCount(): number {
+    return this.extraWisps;
+  }
+
   /** Per-frame haze binding, fanned out by the renderer like every ShaderMaterial consumer's. */
   setAerialPerspective(binding: AerialPerspectiveBinding): void {
     this.binding = binding;
@@ -752,7 +794,7 @@ export class VolcanicSteamSystem {
     }
     if (this.building) this.continueRebuild(gpu);
 
-    const draw = this.primePending || this.anyLiveVentInRange(cameraWorldX, cameraWorldZ);
+    const draw = this.primePending || this.extraWisps > 0 || this.anyLiveVentInRange(cameraWorldX, cameraWorldZ);
     this.primePending = false;
     if (gpu.mesh.isEnabled(false) !== draw) gpu.mesh.setEnabled(draw);
     if (!draw) return;
@@ -996,6 +1038,15 @@ export class VolcanicSteamSystem {
     }
     if (this.heightCursor < set.count) return;
 
+    this.writeInstances(gpu, set);
+    this.pending = this.live;
+    this.live = set;
+    this.building = false;
+    this.anchorUniform.set(set.anchorX - this.originX, 0, set.anchorZ - this.originZ);
+  }
+
+  /** The set's vents' wisps, then the extra source's, into the instances, uploaded. */
+  private writeInstances(gpu: SteamGpu, set: SteamVentSet): void {
     const instances = this.instances!;
     const vent = this.scratchVent;
     let wisps = 0;
@@ -1020,14 +1071,23 @@ export class VolcanicSteamSystem {
       );
       wisps += count;
     }
+    const vents = wisps;
+    const extra = Math.min(this.extraCount, this.maxWisps - wisps);
+    if (extra > 0 && this.extraWriter) {
+      // The writer fills its whole count; past the cap it goes to scratch and only `extra` are kept.
+      if (extra === this.extraCount) {
+        this.extraWriter(set.anchorX, set.anchorZ, this.windSpeed, instances, wisps * STEAM_FLOATS_PER_WISP);
+      } else {
+        const scratch = new Float32Array(this.extraCount * STEAM_FLOATS_PER_WISP);
+        this.extraWriter(set.anchorX, set.anchorZ, this.windSpeed, scratch, 0);
+        instances.set(scratch.subarray(0, extra * STEAM_FLOATS_PER_WISP), wisps * STEAM_FLOATS_PER_WISP);
+      }
+      wisps += extra;
+    }
     if (wisps === 0) instances.fill(0, 0, STEAM_FLOATS_PER_WISP);
     gpu.buffer.updateDirectly(instances, 0);
     gpu.mesh.forcedInstanceCount = Math.max(1, wisps);
-
-    this.pending = this.live;
-    this.live = set;
-    this.liveWisps = wisps;
-    this.building = false;
-    this.anchorUniform.set(set.anchorX - this.originX, 0, set.anchorZ - this.originZ);
+    this.liveWisps = vents;
+    this.extraWisps = Math.max(0, extra);
   }
 }

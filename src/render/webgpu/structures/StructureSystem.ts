@@ -11,6 +11,14 @@ import type { StructureTexturePlans } from "../../structures/structureTextures";
 import type { StructureNightLighting } from "../../structures/structureNightLighting";
 import { StructureLampPool, type StructureLampSink, type StructureLampStatistics } from "../../structures/StructureLampPool";
 import { LIGHT_POINT_STRUCTURES } from "../lighting/LightPoints";
+import {
+  STRUCTURE_SMOKE_RANGE_METERS,
+  STRUCTURE_SMOKE_WISPS,
+  structureSmokeFlues,
+  writeStructureSmokeWisps,
+  type StructureSmokeFlue,
+} from "../../structures/structureSmoke";
+import { STEAM_FLOATS_PER_WISP, type SteamWispWriter } from "../volcanic/VolcanicSteamSystem";
 import { StructureRecordStore, type StructureHidden, type StructureRegionRecords } from "../../structures/StructureRecordStore";
 import {
   STRUCTURE_HANDOFF_BAND_METERS,
@@ -74,7 +82,20 @@ export interface StructureSystemProfile extends StructureDrawRanges {
   readonly structureTextureEdge: 0 | StructureTextureEdge;
   /** The most light points the buildings' lights take (`StructureLampPool`). */
   readonly structureLampPoints: number;
+  /** The homes' chimneys smoke (`structureSmoke.ts`), as wisps of the steam's draw. */
+  readonly structureChimneySmoke: boolean;
 }
+
+/** Where chimney smoke goes: the volcanic steam's draw (`VolcanicSteamSystem.setExtraWisps`). */
+export interface StructureSmokeSink {
+  setExtraWisps(count: number, writer: SteamWispWriter | null): void;
+}
+
+/** The camera moves this far before the smoking chimneys are chosen again. */
+export const STRUCTURE_SMOKE_RESELECT_METERS = 100;
+
+/** The most chimneys smoking at once (the steam's cap, vents first, may allow fewer). */
+export const STRUCTURE_SMOKE_MAX_FLUES = 32;
 
 /** Which set a build is for. */
 export type StructureSetName = "far" | "near" | "open";
@@ -83,6 +104,12 @@ export type StructureSetName = "far" | "near" | "open";
 export interface StructureMeshBuild {
   readonly opaque: StructureMeshArrays;
   readonly glass: StructureMeshArrays | null;
+  /**
+   * The set's chimney flues, four floats each: x and z relative to the
+   * build's origin, absolute y, and the index of the flue's building in the
+   * build's records. Absent from builders that make none.
+   */
+  readonly chimneys?: Float32Array;
 }
 
 /** Where a set's arrays are made: the structures worker, or inline in tests. */
@@ -199,6 +226,12 @@ export class StructureSystem {
   private textureRequests = 0;
   private textureFailures = 0;
   private lamps: StructureLampPool | null = null;
+  private smoke: StructureSmokeSink | null = null;
+  /** The far set's smoking flues, as drawn now; chosen near the camera into the steam's draw. */
+  private flues: readonly StructureSmokeFlue[] = [];
+  private smokeDirty = false;
+  private smokeChosenAt: { x: number; z: number } | null = null;
+  private smoking = 0;
   private night: StructureNightLighting | null = null;
 
   constructor(
@@ -252,6 +285,7 @@ export class StructureSystem {
     for (const { plugin } of Object.values(this.materialsByRole)) plugin.setTextured(textured);
     this.wantTextures();
     this.lamps?.setRanges(this.lampRanges());
+    this.smokeDirty = true;
   }
 
   /** The buildings' lights (`structureNightLighting`), every frame or on a change; off until set. */
@@ -259,6 +293,21 @@ export class StructureSystem {
     this.night = night;
     for (const { plugin } of Object.values(this.materialsByRole)) plugin.setNight(night);
     this.lamps?.setNight(night);
+  }
+
+  /**
+   * Where the chimney smoke goes: wisps of the volcanic steam's draw. None
+   * until set; drawn only where the profile says (`structureChimneySmoke`).
+   */
+  setSmoke(sink: StructureSmokeSink): void {
+    this.smoke?.setExtraWisps(0, null);
+    this.smoke = sink;
+    this.smokeDirty = true;
+  }
+
+  /** Chimneys smoking now. */
+  get smokingChimneys(): number {
+    return this.smoking;
   }
 
   /**
@@ -302,6 +351,45 @@ export class StructureSystem {
     this.drawnOpen = this.sets.openDrawn((record) => this.open.ids.has(record.id)).slice(0, STRUCTURE_OPEN_SLOTS);
     this.bind(camera);
     this.lamps?.update(camera, records, this.store.version);
+    this.updateSmoke(camera);
+  }
+
+  /** The nearest smoking chimneys into the steam's draw, chosen again as the camera moves or the far set changes. */
+  private updateSmoke(camera: StructurePoint): void {
+    const sink = this.smoke;
+    if (!sink) return;
+    const at = this.smokeChosenAt;
+    if (!this.smokeDirty && at && Math.hypot(camera.x - at.x, camera.z - at.z) < STRUCTURE_SMOKE_RESELECT_METERS) return;
+    this.smokeDirty = false;
+    this.smokeChosenAt = { x: camera.x, z: camera.z };
+    const near: { flue: StructureSmokeFlue; distance: number }[] = [];
+    if (this.profile.structureChimneySmoke) {
+      const reach = STRUCTURE_SMOKE_RANGE_METERS + STRUCTURE_SMOKE_RESELECT_METERS;
+      for (const flue of this.flues) {
+        const distance = Math.hypot(flue.x - camera.x, flue.z - camera.z);
+        if (distance <= reach) near.push({ flue, distance });
+      }
+      near.sort((a, b) => a.distance - b.distance || a.flue.seed - b.flue.seed);
+    }
+    const chosen = near.slice(0, STRUCTURE_SMOKE_MAX_FLUES).map((entry) => entry.flue);
+    this.smoking = chosen.length;
+    if (chosen.length === 0) {
+      sink.setExtraWisps(0, null);
+      return;
+    }
+    sink.setExtraWisps(chosen.length * STRUCTURE_SMOKE_WISPS, (anchorX, anchorZ, windSpeed, out, offset) => {
+      for (let index = 0; index < chosen.length; index += 1) {
+        writeStructureSmokeWisps(
+          chosen[index]!,
+          anchorX,
+          anchorZ,
+          windSpeed,
+          STRUCTURE_SMOKE_WISPS,
+          out,
+          offset + index * STRUCTURE_SMOKE_WISPS * STEAM_FLOATS_PER_WISP,
+        );
+      }
+    });
   }
 
   /** The renderer's caster sync: the near shells, where the profile casts. */
@@ -342,6 +430,8 @@ export class StructureSystem {
     this.disposed = true;
     this.lamps?.dispose();
     this.lamps = null;
+    this.smoke?.setExtraWisps(0, null);
+    this.smoke = null;
     for (const set of [this.far, this.near, this.open]) {
       set.opaque?.dispose(false, false);
       set.glass?.dispose(false, false);
@@ -447,6 +537,11 @@ export class StructureSystem {
       set.triangles = build?.opaque.triangles ?? 0;
       set.glassTriangles = build?.glass?.triangles ?? 0;
       this.place(set);
+      if (set.name === "far") {
+        // Every building's chimneys are in the far set (it holds them all, as blocks).
+        this.flues = build?.chimneys ? structureSmokeFlues(build.chimneys, job.records, job.originX, job.originZ) : [];
+        this.smokeDirty = true;
+      }
     }
     const next = set.next;
     set.next = null;

@@ -31,8 +31,8 @@ workerScope.addEventListener("message", (event: MessageEvent<StructuresWorkerCom
     }
     if (command.type !== "build") return;
     const build = structureSetArrays(command.set, command.records, command.originX, command.originZ);
-    answer = { type: "built", id: command.id, opaque: build.opaque, glass: build.glass, milliseconds: performance.now() - started };
-    workerScope.postMessage(answer, structureMeshTransfer(build.glass, structureMeshTransfer(build.opaque)));
+    answer = { type: "built", id: command.id, opaque: build.opaque, glass: build.glass, chimneys: build.chimneys, milliseconds: performance.now() - started };
+    workerScope.postMessage(answer, [...structureMeshTransfer(build.glass, structureMeshTransfer(build.opaque)), build.chimneys.buffer]);
   } catch (error) {
     answer = { type: "error", id: command.id, message: error instanceof Error ? error.message : String(error) };
     workerScope.postMessage(answer);

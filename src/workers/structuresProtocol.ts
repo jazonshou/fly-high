@@ -35,6 +35,8 @@ export interface StructuresWorkerBuilt {
   readonly id: number;
   readonly opaque: StructureMeshArrays;
   readonly glass: StructureMeshArrays | null;
+  /** The chimney flues (`StructureMeshBuild.chimneys`). */
+  readonly chimneys: Float32Array;
   /** The worker's time on it, milliseconds. */
   readonly milliseconds: number;
 }

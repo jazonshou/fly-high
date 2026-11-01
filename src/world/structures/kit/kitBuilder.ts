@@ -1,5 +1,6 @@
 import type {
   StructureBoxPart,
+  StructureChimney,
   StructureCollider,
   StructureColliderMaterial,
   StructureDrawnLevel,
@@ -47,6 +48,7 @@ export class KitBuilder {
   readonly volumes: StructureInteriorVolume[] = [];
   readonly portals: StructurePortal[] = [];
   readonly windows: StructureWindowLight[] = [];
+  readonly chimneys: StructureChimney[] = [];
 
   constructor(readonly level: StructureDrawnLevel) {}
 
@@ -162,6 +164,11 @@ export class KitBuilder {
   windowLight(light: StructureWindowLight): void {
     if (!this.open) return;
     this.windows.push(light);
+  }
+
+  /** A chimney's flue (every level: the smoke rises from the blocks too). */
+  chimney(flue: StructureChimney): void {
+    this.chimneys.push(flue);
   }
 }
 

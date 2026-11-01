@@ -1817,6 +1817,8 @@ export class FlightRenderer implements FlightRenderingSystem {
           : {}),
       });
       cleanup.push(() => steam.dispose());
+      // The homes' chimney smoke rides the steam's draw (High and Ultra).
+      structures?.setSmoke(steam);
       // Only with a boat, so an aircraft or car session builds and compiles
       // none of it. Before the readiness gate, as the steam is.
       const boatEffects = surfaceVehicle && vehicleClass(surfaceVehicle.kind) === "boat"

@@ -520,6 +520,12 @@ export interface WebGpuQualityProfile {
    * nearest the near radius.
    */
   readonly structureLampPoints: number;
+  /**
+   * The homes' chimneys smoke (`structureSmoke.ts`): wisps of the volcanic
+   * steam's one draw, within its wisp cap (vents first), so the draw is
+   * submitted wherever a smoking chimney is within 1.5 km.
+   */
+  readonly structureChimneySmoke: boolean;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -640,6 +646,7 @@ function resolveBaseQualityProfile(
       structureNearCastsShadows: false,
       structureTextureEdge: 0,
       structureLampPoints: 256,
+      structureChimneySmoke: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -759,6 +766,7 @@ function resolveBaseQualityProfile(
       structureNearCastsShadows: true,
       structureTextureEdge: 256,
       structureLampPoints: 1_024,
+      structureChimneySmoke: false,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -867,6 +875,7 @@ function resolveBaseQualityProfile(
       structureNearCastsShadows: true,
       structureTextureEdge: 256,
       structureLampPoints: 2_048,
+      structureChimneySmoke: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -977,6 +986,7 @@ function resolveBaseQualityProfile(
     structureNearCastsShadows: true,
     structureTextureEdge: 512,
     structureLampPoints: 2_048,
+    structureChimneySmoke: true,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,

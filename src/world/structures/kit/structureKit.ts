@@ -43,7 +43,7 @@ function build(record: StructureRecord, level: StructureDrawnLevel): Built {
       break;
   }
   const built: Built = {
-    drawn: Object.freeze({ parts: b.parts, glass: b.glass }),
+    drawn: Object.freeze({ parts: b.parts, glass: b.glass, chimneys: b.chimneys }),
     layout: level === "open"
       ? Object.freeze({ colliders: b.colliders, volumes: b.volumes, portals: b.portals, windows: b.windows })
       : null,

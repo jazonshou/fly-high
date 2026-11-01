@@ -207,11 +207,20 @@ export interface StructureLayoutModel {
   readonly windows: readonly StructureWindowLight[];
 }
 
+/** A chimney's flue: the top centre of its stack or stovepipe, building frame, where its smoke leaves. */
+export interface StructureChimney {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
 /** One drawn level of a building. */
 export interface StructureDrawnModel {
   readonly parts: readonly StructurePart[];
   /** The open level's window glass, drawn in its own transparent mesh; empty for the others. */
   readonly glass: readonly StructurePart[];
+  /** Its chimneys' flues, the same at every level. */
+  readonly chimneys: readonly StructureChimney[];
 }
 
 export type StructureDrawnLevel = "closed" | "open" | "block";

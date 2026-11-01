@@ -163,7 +163,7 @@ export class WorkerStructureMeshBuilder implements StructureMeshBuilder {
     this.pending.delete(event.id);
     if (event.type === "built") {
       this.answered.worker += 1;
-      pending.resolve({ opaque: event.opaque, glass: event.glass });
+      pending.resolve({ opaque: event.opaque, glass: event.glass, chimneys: event.chimneys });
       return;
     }
     // One build the kit could not make: the main thread tries the same records.
