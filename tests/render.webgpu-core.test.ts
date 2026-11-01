@@ -103,6 +103,18 @@ describe("WebGPU quality profiles", () => {
     }
   });
 
+  it("refreshes tier 0's sun shadow and cloud depth every 2nd frame, and every other tier's every frame", () => {
+    // PR B part 2 (T0c), on every quality × mode pair.
+    for (const quality of ["low", "medium", "high"] as const) {
+      for (const mode of ["performance", "balanced", "ultra"] as const) {
+        const profile = resolveWebGpuQualityProfile(quality, mode);
+        const frames = profile.tier === 0 ? 2 : 1;
+        expect(profile.shadowRefreshFrames, `${quality} ${mode}`).toBe(frames);
+        expect(profile.cloudDepthRefreshFrames, `${quality} ${mode}`).toBe(frames);
+      }
+    }
+  });
+
   it("caps rendered pixels and device pixel ratio per tier (1A-6a)", () => {
     expect(resolveWebGpuQualityProfile("low", "performance")).toMatchObject({
       maxRenderPixels: 850_000,

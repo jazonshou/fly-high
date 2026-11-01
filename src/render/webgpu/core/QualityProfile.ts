@@ -489,8 +489,11 @@ function resolveBaseQualityProfile(
       // scaling), where the memory estimate falls 258.87 -> 254.67 of 260 MiB;
       // 1366x768 and 1080p laptops at 125-150% render below it, unchanged.
       maxRenderPixels: 850_000,
-      shadowRefreshFrames: 1,
-      cloudDepthRefreshFrames: 1,
+      // PR B part 2 (T0c): the sun-shadow map and the cloud depth every 2nd
+      // frame. A held map lags the aircraft's own shadow by a frame, about
+      // 1 m at 62 m/s; Jason accepted that for Low (2026-11-01).
+      shadowRefreshFrames: 2,
+      cloudDepthRefreshFrames: 2,
       governorPixelFloorRatio: 0.6,
       maxDevicePixelRatio: 1,
       bloomEnabled: false,
