@@ -1,3 +1,5 @@
+import { SETTLEMENT_STREAM_WINDOW, settlementRegionKey } from "../settlements/settlementStreaming";
+import { roadRegionKey } from "./roadInfrastructure";
 import { roadLayerWindow, roadRegionBox, roadRegionOf, ROAD_LAYERS, ROAD_REGION_METERS, type RoadLayer } from "./roadNetwork";
 
 /**
@@ -11,7 +13,27 @@ import { roadLayerWindow, roadRegionBox, roadRegionOf, ROAD_LAYERS, ROAD_REGION_
  * region of either point, so an observer pacing a boundary does not install
  * and drop the same row over and over. Urgency is the distance to the nearer
  * of the two points: the ground under the observer first, then ahead.
+ *
+ * The roads worker streams the settlements too (`settlementStreaming.ts`):
+ * a third layer on the same regions, after the roads at the same distance,
+ * in a window inside the tracks' by the roads a settlements region reads.
  */
+
+/** A layer the roads worker streams: the roads' two, and the settlements laid out along them. */
+export type RoadStreamLayer = RoadLayer | "settlements";
+
+/** In the order a tie in distance is asked in. */
+export const ROAD_STREAM_LAYERS: readonly RoadStreamLayer[] = Object.freeze([...ROAD_LAYERS, "settlements"]);
+
+/** A stream layer's window, metres. */
+export function roadStreamWindow(layer: RoadStreamLayer): number {
+  return layer === "settlements" ? SETTLEMENT_STREAM_WINDOW : roadLayerWindow(layer);
+}
+
+/** A stream layer's region's stage key. */
+export function roadStreamRegionKey(layer: RoadStreamLayer, rx: number, rz: number): string {
+  return layer === "settlements" ? settlementRegionKey(rx, rz) : roadRegionKey(layer, rx, rz);
+}
 
 /** How far ahead along the velocity the window is also held, seconds. */
 export const ROAD_STREAM_LEAD_SECONDS = 20;
@@ -24,7 +46,7 @@ export interface RoadStreamObserver {
 }
 
 export interface RoadStreamRegion {
-  readonly layer: RoadLayer;
+  readonly layer: RoadStreamLayer;
   readonly rx: number;
   readonly rz: number;
   /** Metres from the nearer of the observer and its lead point to the region's square. */
@@ -48,8 +70,8 @@ export function roadStreamRegions(observer: RoadStreamObserver, margin = 0): Roa
   const leadX = observer.x + observer.velocityX * ROAD_STREAM_LEAD_SECONDS;
   const leadZ = observer.z + observer.velocityZ * ROAD_STREAM_LEAD_SECONDS;
   const found: RoadStreamRegion[] = [];
-  for (const layer of ROAD_LAYERS) {
-    const reach = roadLayerWindow(layer) + margin;
+  for (const layer of ROAD_STREAM_LAYERS) {
+    const reach = roadStreamWindow(layer) + margin;
     const minX = roadRegionOf(Math.min(observer.x, leadX) - reach);
     const maxX = roadRegionOf(Math.max(observer.x, leadX) + reach);
     const minZ = roadRegionOf(Math.min(observer.z, leadZ) - reach);
@@ -65,7 +87,7 @@ export function roadStreamRegions(observer: RoadStreamObserver, margin = 0): Roa
     }
   }
   found.sort((left, right) => left.distance - right.distance
-    || (left.layer < right.layer ? -1 : left.layer > right.layer ? 1 : 0)
+    || ROAD_STREAM_LAYERS.indexOf(left.layer) - ROAD_STREAM_LAYERS.indexOf(right.layer)
     || left.rz - right.rz
     || left.rx - right.rx);
   return found;

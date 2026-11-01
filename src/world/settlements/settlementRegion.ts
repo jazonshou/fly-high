@@ -5,6 +5,7 @@ import type { StructureRecord } from "../structures/structureRecord";
 import { layoutSettlement, type SettlementLayout } from "./settlementLayout";
 import { SettlementRoads } from "./settlementRoads";
 import { SETTLEMENT_SITE_RADIUS_MAX, settlementCandidates, settlementSitesKept } from "./settlementSites";
+import { SETTLEMENT_ROADS_REACH, settlementRegionKey } from "./settlementStreaming";
 
 /**
  * The settlements as the infrastructure stage takes them: one streamed
@@ -21,14 +22,12 @@ import { SETTLEMENT_SITE_RADIUS_MAX, settlementCandidates, settlementSitesKept }
  * neighbours, gives the same stage.
  */
 
-export function settlementRegionKey(rx: number, rz: number): string {
-  return `settlements:${rx}:${rz}`;
-}
+export { settlementRegionKey };
 
 /** Past a region, how far its neighbours' sites are looked for: two of the widest sites, metres. */
 const CANDIDATE_MARGIN = 2 * SETTLEMENT_SITE_RADIUS_MAX;
 /** Past that, how far the roads are read: a cabin's road clearance and a little, metres. */
-const ROADS_MARGIN = 360;
+export const SETTLEMENT_ROADS_MARGIN = SETTLEMENT_ROADS_REACH - CANDIDATE_MARGIN;
 
 export interface SettlementRegion {
   readonly rx: number;
@@ -42,7 +41,7 @@ export function settlementRegion(network: RoadNetwork, rx: number, rz: number): 
   const world = network.world;
   const box = roadRegionBox(rx, rz);
   const candidateBox = expandRoadBox(box, CANDIDATE_MARGIN);
-  const roads = new SettlementRoads(network, expandRoadBox(candidateBox, ROADS_MARGIN));
+  const roads = new SettlementRoads(network, expandRoadBox(candidateBox, SETTLEMENT_ROADS_MARGIN));
   const candidates = settlementCandidates(world, roads, candidateBox);
   const own = candidates.filter((site) => site.x >= box.minX && site.x < box.maxX && site.z >= box.minZ && site.z < box.maxZ);
   const layouts = settlementSitesKept(own, candidates)

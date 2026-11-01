@@ -7,6 +7,7 @@ import {
   type InfrastructureRegionsUpdate,
 } from "@/src/world/infrastructureSync";
 import type { RoadStreamObserver } from "@/src/world/roads/roadStreaming";
+import { isSettlementRegionKey } from "@/src/world/settlements/settlementStreaming";
 import type { RoadsWorkerRegionEvent } from "@/src/workers/roadsProtocol";
 import type { TerrainPagePublication } from "@/src/workers/terrainAuthority";
 import type { RoadSurfaceRegion } from "../webgpu/roads/RoadSurfaceIndex";
@@ -28,6 +29,11 @@ export interface RoadStreamConsumers {
   publishInfrastructure(update: InfrastructureRegionsUpdate): void;
   /** The ribbons and rails drawn on the ground (`RoadSurfaceSystem`): last, as they lie on what the rest built. */
   roadSurfaceChanged(install: readonly RoadSurfaceRegion[], remove: readonly string[]): void;
+}
+
+/** Whether a region is the roads' (the settlements' bring no ribbon, rail or pad to draw). */
+export function isRoadSurfaceRegion(event: RoadsWorkerRegionEvent): boolean {
+  return event.address.layer !== "settlements";
 }
 
 /** What a region brings to the drawing. */
@@ -91,7 +97,10 @@ export class RoadStreamRuntime {
       bins: new Set(),
       plantBins: new Set(),
     });
-    consumers.roadSurfaceChanged([...this.controller.installedRegions.values()].map(roadSurfaceRegionOf), []);
+    consumers.roadSurfaceChanged(
+      [...this.controller.installedRegions.values()].filter(isRoadSurfaceRegion).map(roadSurfaceRegionOf),
+      [],
+    );
   }
 
   /** Regions still to come or to install (`RoadStreamController.pendingRegions`). */
@@ -154,6 +163,9 @@ export class RoadStreamRuntime {
     consumers.detailInfrastructureChanged(update, infrastructure);
     consumers.groundCoverInfrastructureChanged(infrastructure);
     consumers.infrastructureChanged(infrastructure);
-    consumers.roadSurfaceChanged(change.installed.map(roadSurfaceRegionOf), change.removed);
+    consumers.roadSurfaceChanged(
+      change.installed.filter(isRoadSurfaceRegion).map(roadSurfaceRegionOf),
+      change.removed.filter((key) => !isSettlementRegionKey(key)),
+    );
   }
 }

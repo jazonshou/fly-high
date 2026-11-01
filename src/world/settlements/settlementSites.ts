@@ -93,7 +93,7 @@ export const SETTLEMENT_CABIN_SPACING = 1_500;
 export const SETTLEMENT_LOOKOUT_SPACING = 4_000;
 export const SETTLEMENT_LIGHTHOUSE_SPACING = 5_000;
 /** A cabin keeps this far from every road's centreline, metres. */
-const CABIN_ROAD_CLEARANCE = 350;
+export const SETTLEMENT_CABIN_ROAD_CLEARANCE = 350;
 /** A summit stands this far above the mean of its 500 m ring, metres. */
 const LOOKOUT_PROMINENCE = 50;
 
@@ -264,7 +264,7 @@ function cabinSites(world: WorldDefinition, roads: SettlementRoads, box: RoadBox
     const style = settlementStyleAt(world, x, z, h);
     if (settlementRandom(world, 12, i, j) >= settlementStyleRule(style).cabin) return;
     if (!anchorClear(world, "cabin", x, z) || roadGroundAt(world, x, z, h) !== RoadGround.land) return;
-    if (roads.nearestCentreline(x, z, CABIN_ROAD_CLEARANCE) !== null) return;
+    if (roads.nearestCentreline(x, z, SETTLEMENT_CABIN_ROAD_CLEARANCE) !== null) return;
     found.push(site(world, "cabin", `cabin:${i}:${j}`, x, z, h, { cell: { i, j } }));
   });
 }

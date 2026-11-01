@@ -7,7 +7,7 @@ import {
   type RoadsWorker,
   type RoadStreamChange,
 } from "@/src/render/roads/RoadStreamController";
-import { RoadStreamRuntime, type RoadStreamConsumers } from "@/src/render/roads/RoadStreamRuntime";
+import { isRoadSurfaceRegion, RoadStreamRuntime, type RoadStreamConsumers } from "@/src/render/roads/RoadStreamRuntime";
 import { WORLD_PAGE_BASE_EXTENT_METERS } from "@/src/render/webgpu/world/pageGeometry";
 import type {
   RoadRegionAddress,
@@ -26,15 +26,23 @@ import {
 import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import { INFRASTRUCTURE_PROFILE } from "@/src/world/infrastructureProfiles";
 import { roadClass, ROAD_CLASS } from "@/src/world/roads/roadClasses";
-import { roadRegionKey } from "@/src/world/roads/roadInfrastructure";
-import { roadLayerWindow, roadRegionBox } from "@/src/world/roads/roadNetwork";
+import { roadRegionBox } from "@/src/world/roads/roadNetwork";
 import {
   roadRegionDistance,
+  roadStreamRegionKey,
+  roadStreamWindow,
   roadStreamRegions,
   ROAD_STREAM_KEEP_MARGIN,
   ROAD_STREAM_LEAD_SECONDS,
   type RoadStreamObserver,
 } from "@/src/world/roads/roadStreaming";
+import { SETTLEMENT_ROADS_MARGIN } from "@/src/world/settlements/settlementRegion";
+import { SETTLEMENT_CABIN_ROAD_CLEARANCE, SETTLEMENT_SITE_RADIUS_MAX } from "@/src/world/settlements/settlementSites";
+import {
+  isSettlementRegionKey,
+  SETTLEMENT_ROADS_REACH,
+  SETTLEMENT_STREAM_WINDOW,
+} from "@/src/world/settlements/settlementStreaming";
 import { createWorld } from "@/src/world/world";
 
 /**
@@ -52,13 +60,37 @@ const world = createWorld();
 afterEach(() => clearInfrastructureRegions());
 
 describe("the regions an observer needs", () => {
+  it("hold the settlements inside the tracks' window by the roads a settlements region reads", () => {
+    expect(SETTLEMENT_ROADS_REACH).toBeGreaterThanOrEqual(2 * SETTLEMENT_SITE_RADIUS_MAX + SETTLEMENT_CABIN_ROAD_CLEARANCE);
+    expect(SETTLEMENT_ROADS_MARGIN).toBeGreaterThanOrEqual(SETTLEMENT_CABIN_ROAD_CLEARANCE);
+    expect(SETTLEMENT_STREAM_WINDOW + SETTLEMENT_ROADS_REACH).toBeLessThanOrEqual(roadStreamWindow("track"));
+    // Far enough out that buildings stream before Medium draws them (its far set reaches 4 km).
+    expect(SETTLEMENT_STREAM_WINDOW).toBeGreaterThanOrEqual(3_800);
+    for (const observer of [
+      { x: 1_000, z: -500, velocityX: 0, velocityZ: 0 },
+      { x: -7_300, z: 12_100, velocityX: 180, velocityZ: -170 },
+    ]) {
+      const regions = roadStreamRegions(observer);
+      const settlements = regions.filter((region) => region.layer === "settlements");
+      expect(settlements.length).toBeGreaterThan(4);
+      // At the same distance a region's roads come before its settlements.
+      const order = regions.map((region) => `${region.layer}:${region.rx}:${region.rz}`);
+      for (const region of settlements) {
+        expect(region.distance).toBeLessThanOrEqual(SETTLEMENT_STREAM_WINDOW);
+        const track = order.indexOf(`track:${region.rx}:${region.rz}`);
+        expect(track).toBeGreaterThanOrEqual(0);
+        expect(track).toBeLessThan(order.indexOf(`settlements:${region.rx}:${region.rz}`));
+      }
+    }
+  });
+
   it("come nearest first, the ground underfoot before anything ahead", () => {
     const observer = { x: 1_000, z: -500, velocityX: 0, velocityZ: 0 };
     const regions = roadStreamRegions(observer);
     expect(regions[0]!.distance).toBe(0);
     for (let k = 1; k < regions.length; k += 1) expect(regions[k]!.distance).toBeGreaterThanOrEqual(regions[k - 1]!.distance);
     for (const region of regions) {
-      expect(region.distance).toBeLessThanOrEqual(roadLayerWindow(region.layer));
+      expect(region.distance).toBeLessThanOrEqual(roadStreamWindow(region.layer));
       expect(roadRegionDistance(region.rx, region.rz, observer.x, observer.z)).toBe(region.distance);
     }
     // The same observer, the same list.
@@ -76,8 +108,8 @@ describe("the regions an observer needs", () => {
     const beyond = jet.filter((region) => !stillKeys.has(keyOf(region)));
     expect(beyond.length).toBeGreaterThan(0);
     for (const region of beyond) {
-      expect(roadRegionDistance(region.rx, region.rz, 0, 0)).toBeGreaterThan(roadLayerWindow(region.layer));
-      expect(roadRegionDistance(region.rx, region.rz, 0, ahead)).toBeLessThanOrEqual(roadLayerWindow(region.layer));
+      expect(roadRegionDistance(region.rx, region.rz, 0, 0)).toBeGreaterThan(roadStreamWindow(region.layer));
+      expect(roadRegionDistance(region.rx, region.rz, 0, ahead)).toBeLessThanOrEqual(roadStreamWindow(region.layer));
     }
     const kept = new Set(roadStreamRegions({ x: 0, z: 0, velocityX: 0, velocityZ: 250 }, ROAD_STREAM_KEEP_MARGIN).map(keyOf));
     expect(jet.every((region) => kept.has(keyOf(region)))).toBe(true);
@@ -151,7 +183,7 @@ function regionEvent(address: RoadRegionAddress, pieces = 1): RoadsWorkerRegionE
   return {
     type: "region",
     address,
-    infrastructure: { key: roadRegionKey(address.layer, address.rx, address.rz), segments },
+    infrastructure: { key: roadStreamRegionKey(address.layer, address.rx, address.rz), segments },
     pieces: [],
     pads: [],
     milliseconds: 1,
@@ -307,7 +339,7 @@ describe("the road stream controller", () => {
     const back = controller.flush()!;
     expect(back.installed.length).toBeGreaterThan(0);
     const again = worker.commands.length > commands ? worker.lastWant : [];
-    const keyOf = (address: RoadRegionAddress) => roadRegionKey(address.layer, address.rx, address.rz);
+    const keyOf = (address: RoadRegionAddress) => roadStreamRegionKey(address.layer, address.rx, address.rz);
     const installed = new Set(back.installed.map((event) => event.infrastructure.key));
     expect(again.some((address) => installed.has(keyOf(address)))).toBe(false);
     expect(back.installed.length + again.length).toBe(asked.length);
@@ -337,7 +369,7 @@ describe("the road stream controller", () => {
 describe("a road region that fails", () => {
   const home = { x: 0, z: 0, velocityX: 0, velocityZ: 0 };
   const away = { x: 40_000, z: 0, velocityX: 0, velocityZ: 0 };
-  const keyOf = (address: RoadRegionAddress) => roadRegionKey(address.layer, address.rx, address.rz);
+  const keyOf = (address: RoadRegionAddress) => roadStreamRegionKey(address.layer, address.rx, address.rz);
   const asks = (worker: FakeRoadsWorker) => worker.commands.filter((command) => command.type === "want").length;
   const failure = (address: RoadRegionAddress, message: string): RoadsWorkerEvent => ({ type: "error", address, message });
 
@@ -354,7 +386,7 @@ describe("a road region that fails", () => {
     const { warn, error } = quietConsole();
     const worker = new FakeRoadsWorker();
     const controller = new RoadStreamController(world, () => worker);
-    const all = roadStreamRegions(home).map((region) => roadRegionKey(region.layer, region.rx, region.rz));
+    const all = roadStreamRegions(home).map((region) => roadStreamRegionKey(region.layer, region.rx, region.rz));
     expect(all.length).toBeGreaterThan(60);
     let nowMs = 0;
     for (let round = 0; round < 6; round += 1) {
@@ -552,8 +584,10 @@ describe("the renderer's road stream runtime", () => {
     const version = change.infrastructure.version;
     expect(calls.map((call) => call.to)).toEqual(["simulation", "detail", "groundCover", "terrain", "drawing"]);
     expect(calls.filter((call) => call.to !== "drawing").every((call) => call.version === version)).toBe(true);
-    // The drawing gets the regions' pieces, pads and rails under the same keys.
-    expect(drawn).toEqual([{ install: change.installed.map((event) => event.infrastructure.key), remove: [] }]);
+    // The drawing gets the roads' regions' pieces, pads and rails under the
+    // same keys; a settlements region has none of them, so it is not drawn.
+    expect(change.installed.some((event) => event.address.layer === "settlements")).toBe(true);
+    expect(drawn).toEqual([{ install: change.installed.filter(isRoadSurfaceRegion).map((event) => event.infrastructure.key), remove: [] }]);
     // The workers get the regions themselves, as an increment on what they hold.
     const update = calls[0]!.update!;
     expect(update).toEqual({
@@ -570,7 +604,7 @@ describe("the renderer's road stream runtime", () => {
     expect(leaving.removed).toHaveLength(3);
     expect(calls.map((call) => call.to)).toEqual(["simulation", "detail", "groundCover", "terrain", "drawing"]);
     expect(calls[0]!.update!.remove).toEqual(leaving.removed);
-    expect(drawn.at(-1)).toEqual({ install: [], remove: leaving.removed });
+    expect(drawn.at(-1)).toEqual({ install: [], remove: leaving.removed.filter((key) => !isSettlementRegionKey(key)) });
     runtime.dispose();
   });
 
@@ -585,7 +619,8 @@ describe("the renderer's road stream runtime", () => {
     const { calls, consumers, drawn } = recordingConsumers();
     runtime.setConsumers(consumers);
     expect(calls.map((call) => call.to)).toEqual(["simulation", "detail", "drawing"]);
-    expect([...drawn[0]!.install].sort()).toEqual(change.installed.map((event) => event.infrastructure.key).sort());
+    expect([...drawn[0]!.install].sort())
+      .toEqual(change.installed.filter(isRoadSurfaceRegion).map((event) => event.infrastructure.key).sort());
     const snapshot = calls[0]!.update!;
     expect(snapshot.version).toBe(change.infrastructure.version);
     expect(snapshot.reset).toBe(true);
@@ -630,7 +665,7 @@ describe("the renderer's road stream runtime", () => {
     // The perf flight's 9 km jump: what it leaves goes in the order it left
     // (install order), installs first, one at least every flush.
     const away = { x: 9_000, z: 0, velocityX: 0, velocityZ: 0 };
-    const kept = new Set(roadStreamRegions(away, ROAD_STREAM_KEEP_MARGIN).map((region) => roadRegionKey(region.layer, region.rx, region.rz)));
+    const kept = new Set(roadStreamRegions(away, ROAD_STREAM_KEEP_MARGIN).map((region) => roadStreamRegionKey(region.layer, region.rx, region.rz)));
     const left = [...homeEvents.keys()].filter((key) => !kept.has(key));
     expect(left.length).toBeGreaterThan(20);
     changes.length = 0;
@@ -660,10 +695,10 @@ describe("the renderer's road stream runtime", () => {
     // was told of every bin it would have been told of.
     const end = new Set(installedInfrastructureRegionKeys(world));
     expect(end).toEqual(new Set([...homeEvents.keys()].filter((key) => kept.has(key))
-      .concat(roadStreamRegions(away).map((region) => roadRegionKey(region.layer, region.rx, region.rz)))));
+      .concat(roadStreamRegions(away).map((region) => roadStreamRegionKey(region.layer, region.rx, region.rz)))));
     expect(held.simulation).toEqual(end);
     expect(held.detail).toEqual(end);
-    expect(held.drawing).toEqual(end);
+    expect(held.drawing).toEqual(new Set([...end].filter((key) => !isSettlementRegionKey(key))));
     const arrivals = changes.flatMap((change) => change.installed.map((event) => event.infrastructure));
     clearInfrastructureRegions();
     changeInfrastructureRegions(world, [...homeEvents.values()].map((event) => event.infrastructure));
@@ -742,5 +777,38 @@ describe("the roads worker", () => {
     send({ type: "want", regions: [address] });
     await until(() => posted.length === 2);
     expect(posted[1]).toBe(posted[0]);
+  });
+
+  it("answers a settlements region with the settlements' stage region, no pieces or pads of its own", async () => {
+    vi.resetModules();
+    const posted: RoadsWorkerEvent[] = [];
+    let listener: ((event: MessageEvent<RoadsWorkerCommand>) => void) | null = null;
+    vi.stubGlobal("self", {
+      addEventListener: (_type: string, handler: (event: MessageEvent<RoadsWorkerCommand>) => void) => {
+        listener = handler;
+      },
+      postMessage: (event: RoadsWorkerEvent) => posted.push(event),
+    });
+    try {
+      await import("@/src/workers/roads.worker");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const send = (command: RoadsWorkerCommand) => listener!({ data: command } as MessageEvent<RoadsWorkerCommand>);
+    for (let k = 0; k < 2_000 && posted.length === 0; k += 1) {
+      if (k === 0) {
+        send({ type: "world", world });
+        send({ type: "want", regions: [{ layer: "settlements", rx: 400, rz: 400 }] });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const event = posted[0]!;
+    expect(event.type).toBe("region");
+    if (event.type !== "region") return;
+    // Far out at sea: nothing to build, but an answer all the same.
+    expect(event.infrastructure.key).toBe("settlements:400:400");
+    expect(event.infrastructure.structures).toEqual([]);
+    expect(event.pieces).toEqual([]);
+    expect(event.pads).toEqual([]);
   });
 });

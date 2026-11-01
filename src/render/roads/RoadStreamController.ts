@@ -4,8 +4,8 @@ import {
   prepareInfrastructureRegion,
   type InfrastructureChange,
 } from "@/src/world/infrastructure";
-import { roadRegionKey } from "@/src/world/roads/roadInfrastructure";
 import {
+  roadStreamRegionKey,
   roadStreamRegions,
   ROAD_STREAM_KEEP_MARGIN,
   type RoadStreamObserver,
@@ -183,7 +183,7 @@ export class RoadStreamController {
     this.scans += 1;
     const kept = new Set<string>();
     for (const region of roadStreamRegions(observer, ROAD_STREAM_KEEP_MARGIN)) {
-      kept.add(roadRegionKey(region.layer, region.rx, region.rz));
+      kept.add(roadStreamRegionKey(region.layer, region.rx, region.rz));
     }
     this.keep = kept;
     for (const key of this.leaving) {
@@ -199,7 +199,7 @@ export class RoadStreamController {
     const window = this.failures.size > 0 ? new Set<string>() : null;
     let retryDue = false;
     for (const region of roadStreamRegions(observer)) {
-      const key = roadRegionKey(region.layer, region.rx, region.rz);
+      const key = roadStreamRegionKey(region.layer, region.rx, region.rz);
       window?.add(key);
       if (this.installed.has(key) || this.arrived.some((event) => event.infrastructure.key === key)) continue;
       const cached = this.dropped.get(key);
@@ -315,7 +315,7 @@ export class RoadStreamController {
     if (!this.worker) return Promise.resolve();
     const keys = roadStreamRegions({ ...observer, velocityX: 0, velocityZ: 0 })
       .filter((region) => region.distance <= radiusMeters)
-      .map((region) => roadRegionKey(region.layer, region.rx, region.rz));
+      .map((region) => roadStreamRegionKey(region.layer, region.rx, region.rz));
     return new Promise<void>((resolve) => {
       const waiter = { keys, resolve };
       this.primeWaiters.push(waiter);
@@ -403,7 +403,7 @@ export class RoadStreamController {
     this.stateVersion += 1;
     if (event.type === "error") {
       if (event.address) {
-        this.fail(roadRegionKey(event.address.layer, event.address.rx, event.address.rz), event.message);
+        this.fail(roadStreamRegionKey(event.address.layer, event.address.rx, event.address.rz), event.message);
       } else {
         console.error("Road region failed", event.message);
       }
