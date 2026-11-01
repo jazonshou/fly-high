@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { InlineStructureMeshBuilder } from "../../src/render/structures/InlineStructureMeshBuilder";
 import { structureSetArrays } from "../../src/render/structures/structureMeshArrays";
 import { structureTexturePlans, type StructureTexturePlans } from "../../src/render/structures/structureTextures";
+import { STRUCTURE_NIGHT_OFF } from "../../src/render/structures/structureNightLighting";
 import { StructureSystem, type StructureMeshBuilder, type StructureSetName } from "../../src/render/webgpu/structures/StructureSystem";
 import type { StructureRecord } from "../../src/world/structures/structureRecord";
 
@@ -24,7 +25,8 @@ import type { StructureRecord } from "../../src/world/structures/structureRecord
  * compatibility mode, materials frozen after their first ready draw), and a
  * set rebuilt after the first draw is seen redrawn. On a textured tier the
  * materials compile reading flat placeholders, and the kit's arrays, once
- * in, add detail around the parts' colours without moving their mean.
+ * in, add detail around the parts' colours without moving their mean. At
+ * night a lit building's windows glow warm, and with the share at 0 none do.
  */
 
 const CANVAS = 240;
@@ -335,6 +337,110 @@ describe("the structures on the GPU", () => {
       // About the parts' colours: the layers average mid-grey, so the roof's mean holds.
       expect(Math.abs(textured.mean - flat.mean)).toBeLessThan(flat.mean * 0.25);
       system.dispose();
+      scene.dispose();
+    } finally {
+      console.warn = warn;
+      console.error = error;
+      engine.dispose();
+      canvas.remove();
+    }
+  }, 60_000);
+  it("light a lit building's windows warm at night, on Low and on the kit's arrays, and none with the share at 0", async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = CANVAS;
+    canvas.height = CANVAS;
+    document.body.appendChild(canvas);
+    const engine = new WebGPUEngine(canvas, { antialias: false, enableAllFeatures: false, setMaximumLimits: false });
+    const errors: string[] = [];
+    const warn = console.warn;
+    const error = console.error;
+    const capture = (...args: unknown[]) => {
+      const text = args.map(String).join(" ");
+      if (/WGSL|shader|Shader|compil/u.test(text)) errors.push(text);
+    };
+    console.warn = (...args: unknown[]) => { capture(...args); warn(...args); };
+    console.error = (...args: unknown[]) => { capture(...args); error(...args); };
+    try {
+      await engine.initAsync();
+      engine.compatibilityMode = false;
+      const device = (engine as unknown as { _device: GPUDevice })._device;
+      device.addEventListener("uncapturederror", (event) => {
+        errors.push(String((event as GPUUncapturedErrorEvent).error.message));
+      });
+      const scene = new Scene(engine);
+      scene.useRightHandedSystem = true;
+      scene.performancePriority = ScenePerformancePriority.Intermediate;
+      scene.autoClear = true;
+      scene.clearColor = new Color4(0, 0, 0, 1);
+      // The house's front (it faces +z) from 60 m off, past the open radius: its closed shell.
+      const camera = new FreeCamera("front", new Vector3(0, 3, 60), scene);
+      camera.fov = 0.4;
+      camera.minZ = 0.5;
+      camera.maxZ = 500;
+      camera.setTarget(new Vector3(0, 2.5, 0));
+      scene.activeCamera = camera;
+      // Moonlight, near enough: the walls barely show.
+      new HemisphericLight("sky", new Vector3(0.3, 1, 0.2), scene).intensity = 0.02;
+
+      const warmPixels = async (system: StructureSystem) => {
+        const at = { x: 0, y: 3, z: 60 };
+        for (let pass = 0; pass < 6; pass += 1) {
+          system.update(at);
+          await Promise.resolve();
+          await Promise.resolve();
+          engine.beginFrame();
+          scene.render();
+          engine.endFrame();
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        }
+        // Read back in the frame's own task: a presented canvas reads empty.
+        system.update(at);
+        engine.beginFrame();
+        scene.render();
+        engine.endFrame();
+        const copy = document.createElement("canvas");
+        copy.width = CANVAS;
+        copy.height = CANVAS;
+        const context = copy.getContext("2d")!;
+        context.drawImage(canvas, 0, 0);
+        const pixels = context.getImageData(0, 0, CANVAS, CANVAS).data;
+        let warm = 0;
+        let lit = 0;
+        for (let index = 0; index < pixels.length; index += 4) {
+          const [r, g, b] = [pixels[index]!, pixels[index + 1]!, pixels[index + 2]!];
+          if (r > 60) lit += 1;
+          if (r > 60 && r > g && g > b && r > b + 30) warm += 1;
+        }
+        return { warm, lit };
+      };
+
+      for (const structureTextureEdge of [0, 256] as const) {
+        const inline = new InlineStructureMeshBuilder();
+        const system = new StructureSystem(scene, {
+          structureNearRadiusMeters: 400,
+          structureFarRadiusMeters: 2_000,
+          structureOpenBuildings: 2,
+          structureNearCastsShadows: false,
+          structureTextureEdge,
+        }, inline);
+        system.setFloatingOrigin(0, 0);
+        system.apply([{ key: "settlements:0:0", structures: [record(1, 0, 0)] }], []);
+        // Brighter than the real 60 cd/m², which needs the renderer's night exposure to show.
+        system.setNight({ litFraction: 1, windowScene: 0.4, lampScene: 0.2 });
+        const on = await warmPixels(system);
+        system.setNight({ litFraction: 0, windowScene: 0.4, lampScene: 0.2 });
+        const shareZero = await warmPixels(system);
+        system.setNight(STRUCTURE_NIGHT_OFF);
+        const off = await warmPixels(system);
+        expect(errors.join(" | ")).toBe("");
+        expect(system.statistics.nearBuildings).toBe(1);
+        expect(system.statistics.drawnOpen).toBe(0);
+        // The windows: a few hundred pixels at this size, warm.
+        expect(on.warm, `edge ${structureTextureEdge}`).toBeGreaterThan(150);
+        expect(shareZero.lit).toBe(0);
+        expect(off.lit).toBe(0);
+        system.dispose();
+      }
       scene.dispose();
     } finally {
       console.warn = warn;

@@ -3,6 +3,7 @@ import { StructureMeshBuilder, type StructureMeshArrays } from "@/src/world/stru
 import { STRUCTURE_KIT } from "@/src/world/structures/kit/structureKit";
 import type { StructureDrawnLevel } from "@/src/world/structures/structureModel";
 import type { StructureArchetype, StructureRecord } from "@/src/world/structures/structureRecord";
+import { STRUCTURE_LAMP_CODE_STRIDE, STRUCTURE_LAMP_STEPS, structureLampThreshold } from "./structureNightLighting";
 
 /**
  * What the structure renderer uploads for one of its meshes: many buildings
@@ -62,7 +63,13 @@ export const STRUCTURE_THIN_NEAR_METERS = 250;
  */
 export const STRUCTURE_THIN_INDOOR = -1;
 
-/** One set's arrays: the opaque mesh and, for the open set, its glass (with the rooms' indoor light per vertex). */
+/**
+ * One set's arrays: the opaque mesh and, for the open set, its glass (with
+ * the rooms' indoor light per vertex). Every opaque vertex's surface is its
+ * code (`structureLampCode`): the surface id plus its building's lamp
+ * threshold, which the vertex stage compares with the night's lit share. The
+ * glass never lights and keeps bare ids.
+ */
 export function structureSetArrays(
   set: StructureSetLevelName,
   records: readonly StructureRecord[],
@@ -75,17 +82,25 @@ export function structureSetArrays(
   const opaque = new StructureMeshBuilder(open ? 16_384 : 4_096);
   const glass = open ? new StructureMeshBuilder(1_024) : null;
   const thin: [number, number][] = [];
+  // Each building's vertex range and its lamp threshold's code offset.
+  const lamps: [number, number, number][] = [];
   for (const record of records) {
     const model = STRUCTURE_KIT.drawn(record, level);
     const light = open ? structureIndoorLight(STRUCTURE_KIT.layout(record)) : undefined;
     const first = opaque.vertices;
     opaque.append(record, model.parts, origin, light);
     if (!open && STRUCTURE_THIN_ARCHETYPES.has(record.archetype)) thin.push([first, opaque.vertices]);
+    const offset = STRUCTURE_LAMP_CODE_STRIDE * Math.round(structureLampThreshold(record) * STRUCTURE_LAMP_STEPS);
+    if (offset > 0) lamps.push([first, opaque.vertices, offset]);
     if (glass && model.glass.length > 0) glass.append(record, model.glass, origin);
   }
   const glassArrays = glass?.finish();
   const opaqueArrays = opaque.finish();
   for (const [first, end] of thin) opaqueArrays.indoor.fill(STRUCTURE_THIN_INDOOR, first, end);
+  const surface = opaqueArrays.surface;
+  for (const [first, end, offset] of lamps) {
+    for (let vertex = first; vertex < end; vertex += 1) surface[vertex] = surface[vertex]! + offset;
+  }
   return {
     opaque: reverseStructureWinding(opaqueArrays),
     glass: glassArrays ? reverseStructureWinding(glassArrays) : null,

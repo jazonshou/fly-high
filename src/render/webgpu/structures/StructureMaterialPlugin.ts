@@ -9,6 +9,13 @@ import type { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
 import type { Nullable } from "@babylonjs/core/types";
 import { STRUCTURE_SURFACES } from "@/src/world/structures/structureModel";
 import { structureSurfaceTextureTable } from "@/src/world/structures/kit/kitTextures";
+import {
+  STRUCTURE_LAMP_CODE_STRIDE,
+  STRUCTURE_LAMP_RGB,
+  STRUCTURE_LAMP_STEPS,
+  STRUCTURE_NIGHT_OFF,
+  type StructureNightLighting,
+} from "../../structures/structureNightLighting";
 import { STRUCTURE_TEXTURE_LAYER_COUNT, structurePlaceholderTexel } from "../../structures/structureTextures";
 import { TERRAIN_SURFACE_INJECTION_ANCHORS } from "../terrain/TerrainSurfacePlugin";
 
@@ -54,6 +61,15 @@ import { TERRAIN_SURFACE_INJECTION_ANCHORS } from "../terrain/TerrainSurfacePlug
  * `CUSTOM_LIGHT{X}_COLOR`, so lamps and clustered lights still reach it) and
  * only that share of the sky's ambient light and reflections. So rooms need
  * no second pipeline and no shadows to be dark where they should be.
+ *
+ * AT NIGHT (`setNight`, `structureNightLighting.ts`). A vertex's surface is
+ * a code: the surface id plus its building's lamp threshold, which the
+ * vertex stage compares with the night's lit share; a lit building's faces
+ * pass their id plus `STRUCTURE_LAMP_CODE_STRIDE` on. Its windows' glass
+ * glows (the window layer's A, its glass, on the textured tiers; about the
+ * same share of the quad on Low), its doorways show a lamp-lit inside, and
+ * its rooms' faces add a warm lamp's light, brightest by the windows as the
+ * indoor factor is. The glass role never lights.
  */
 
 /** Which of the four meshes a material draws. */
@@ -96,6 +112,16 @@ export interface StructureMaterialBinding {
 export const STRUCTURE_BASE_ROUGHNESS = 0.82;
 export const STRUCTURE_GLASS_ROUGHNESS = 0.06;
 
+/** The share of a window quad that glows on Low, which has no window layer (about the layer's mean glass). */
+export const STRUCTURE_UNTEXTURED_GLASS_SHARE = 0.75;
+
+/** A lit building's doorway (the dark inside, on its shells) at this share of a lamp-lit room's light, on a room of this albedo. */
+export const STRUCTURE_DOORWAY_LAMP_SHARE = 0.5;
+export const STRUCTURE_ROOM_ALBEDO = 0.45;
+
+const WINDOW_ID = STRUCTURE_SURFACES.indexOf("window");
+const DOORWAY_ID = STRUCTURE_SURFACES.indexOf("doorway");
+
 /** A centre no building has. */
 const NO_CENTRE = 1e9;
 
@@ -114,7 +140,8 @@ attribute structureUv: vec2f;
 // cascades already passes 13, and the inter-stage limit is 16.
 // rgb: the part's colour; a: the indoor factor.
 varying structureColourIndoorV: vec4f;
-// xy: the face's UV (metres); z: the surface id; w: the share of the building drawn (0..1).
+// xy: the face's UV (metres); z: the surface id, plus the code stride if the
+// building is lit; w: the share of the building drawn (0..1).
 varying structureUvSurfaceShareV: vec4f;
 
 fn structureDropped(centre: vec2f) -> bool {
@@ -152,8 +179,14 @@ const VERTEX_UPDATE_POSITION = /* wgsl */ `
     // The whole building to one point: its triangles have no area.
     positionUpdated = vec3f(0.0, -100000.0, 0.0);
   }
+  // The surface code: the id, and the building's lamp threshold in steps.
+  let structureSteps = floor((vertexInputs.structureSurface + 0.5) / ${wgslNumber(STRUCTURE_LAMP_CODE_STRIDE)});
+  let structureSurfaceId = vertexInputs.structureSurface - ${wgslNumber(STRUCTURE_LAMP_CODE_STRIDE)} * structureSteps;
+  let structureLit = select(0.0, 1.0,
+    (structureSteps / ${wgslNumber(STRUCTURE_LAMP_STEPS)} < uniforms.structureNight.x) && (structureRole < 2.5));
   vertexOutputs.structureColourIndoorV = vec4f(vertexInputs.structureColour, vertexInputs.structureIndoor);
-  vertexOutputs.structureUvSurfaceShareV = vec4f(vertexInputs.structureUv, vertexInputs.structureSurface, structureShare);
+  vertexOutputs.structureUvSurfaceShareV = vec4f(vertexInputs.structureUv,
+    structureSurfaceId + ${wgslNumber(STRUCTURE_LAMP_CODE_STRIDE)} * structureLit, structureShare);
 }
 `;
 
@@ -221,11 +254,16 @@ let structurePositionDy = dpdy(fragmentInputs.vPositionW);
 
 const FRAGMENT_BEFORE_LIGHTS = /* wgsl */ `
 surfaceAlbedo = fragmentInputs.structureColourIndoorV.rgb;
+// The building's lamps (the vertex stage's lit flag) and the bare surface id.
+let structureLitFace = fragmentInputs.structureUvSurfaceShareV.z > ${wgslNumber(STRUCTURE_LAMP_CODE_STRIDE - 0.5)};
+let structureSurfaceCode = fragmentInputs.structureUvSurfaceShareV.z - select(0.0, ${wgslNumber(STRUCTURE_LAMP_CODE_STRIDE)}, structureLitFace);
+// The share of a window face that is glass: the window layer's A where it is drawn.
+var structureGlassMask = ${wgslNumber(STRUCTURE_UNTEXTURED_GLASS_SHARE)};
 #ifdef STRUCTURE_TEXTURED
 var structureRoughness = ${wgslNumber(STRUCTURE_BASE_ROUGHNESS)};
 var structureCavity = 1.0;
 {
-  let structureId = u32(clamp(round(fragmentInputs.structureUvSurfaceShareV.z), 0.0, ${wgslNumber(STRUCTURE_SURFACES.length - 1)}));
+  let structureId = u32(clamp(round(structureSurfaceCode), 0.0, ${wgslNumber(STRUCTURE_SURFACES.length - 1)}));
   let structureEntry = structureSurfaceTable[structureId];
   let structureStrength = structureEntry.z;
   if (structureStrength > 0.0) {
@@ -241,6 +279,7 @@ var structureCavity = 1.0;
     surfaceAlbedo = mix(surfaceAlbedo, structurePainted, structureStrength);
     structureRoughness = mix(${wgslNumber(STRUCTURE_BASE_ROUGHNESS)}, structureNormalTexel.b, structureStrength);
     structureCavity = mix(1.0, structureNormalTexel.a, structureStrength);
+    if (structureId == ${WINDOW_ID}u) { structureGlassMask = structureDetailTexel.a; }
     // The cotangent frame: the surface gradients of u and v, solved from the
     // screen derivatives (signed by the solve's determinant, so neither the
     // framebuffer's y direction nor the face's winding flips the bumps).
@@ -290,6 +329,18 @@ finalIrradiance *= structureSkyShare;
 finalRadianceScaled *= structureSkyShare;
 #endif
 #endif
+if (structureLitFace) {
+  // A lit building: its windows' glass glows, its doorways and its rooms take a lamp's light.
+  let structureLamp = vec3f(${STRUCTURE_LAMP_RGB.map((c) => wgslNumber(Math.fround(c))).join(", ")});
+  let structureNight = uniforms.structureNight;
+  let structureWindow = abs(structureSurfaceCode - ${wgslNumber(WINDOW_ID)}) < 0.5;
+  let structureDoorway = abs(structureSurfaceCode - ${wgslNumber(DOORWAY_ID)}) < 0.5;
+  // A doorway is the room behind it: a lamp-lit inside of a middling albedo, not the quad's daytime dark.
+  let structureFlatGlow = select(0.0, structureNight.y * structureGlassMask, structureWindow)
+    + select(0.0, structureNight.z * ${wgslNumber(STRUCTURE_DOORWAY_LAMP_SHARE * STRUCTURE_ROOM_ALBEDO)}, structureDoorway);
+  let structureRoomLight = select(0.0, 0.5 + 0.5 * clamp(fragmentInputs.structureColourIndoorV.a, 0.0, 1.0), structureInside);
+  finalEmissive += structureLamp * (vec3f(structureFlatGlow) + surfaceAlbedo * (structureNight.z * structureRoomLight));
+}
 `;
 
 /** The kit's two material arrays as uploaded. */
@@ -303,6 +354,7 @@ export class StructureMaterialPlugin extends MaterialPluginBase {
   private texturedNow: boolean;
   private arrays: StructureTextureArrays | null = null;
   private placeholders: StructureTextureArrays | null = null;
+  private nightNow: StructureNightLighting = STRUCTURE_NIGHT_OFF;
 
   /** `textured`: the material reads the kit's arrays (never the glass). */
   constructor(material: Material, readonly role: StructureMaterialRole, textured = false) {
@@ -337,6 +389,15 @@ export class StructureMaterialPlugin extends MaterialPluginBase {
 
   get textures(): StructureTextureArrays | null {
     return this.arrays;
+  }
+
+  /** The buildings' lights for the next draws (`structureNightLighting`); off until set. */
+  setNight(night: StructureNightLighting): void {
+    this.nightNow = night;
+  }
+
+  get night(): StructureNightLighting {
+    return this.nightNow;
   }
 
   /** What the next draws bind; the material is not drawn until one is set. */
@@ -393,6 +454,7 @@ export class StructureMaterialPlugin extends MaterialPluginBase {
         { name: "structureDroppedA", size: 4, type: "vec4" },
         { name: "structureDroppedB", size: 4, type: "vec4" },
         { name: "structureDroppedC", size: 4, type: "vec4" },
+        { name: "structureNight", size: 4, type: "vec4" },
       ],
     };
   }
@@ -418,6 +480,8 @@ export class StructureMaterialPlugin extends MaterialPluginBase {
     uniformBuffer.updateFloat4("structureDroppedA", at(0), at(1), at(2), at(3));
     uniformBuffer.updateFloat4("structureDroppedB", at(4), at(5), at(6), at(7));
     uniformBuffer.updateFloat4("structureDroppedC", at(8), at(9), at(10), at(11));
+    const night = this.nightNow;
+    uniformBuffer.updateFloat4("structureNight", night.litFraction, night.windowScene, night.lampScene, 0);
   }
 
   private placeholderArrays(): StructureTextureArrays {

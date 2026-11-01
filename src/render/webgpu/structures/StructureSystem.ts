@@ -8,6 +8,7 @@ import { SETTLEMENT_STREAM_WINDOW } from "@/src/world/settlements/settlementStre
 import type { StructureRecord } from "@/src/world/structures/structureRecord";
 import { STRUCTURE_THIN_NEAR_METERS, type StructureMeshArrays } from "../../structures/structureMeshArrays";
 import type { StructureTexturePlans } from "../../structures/structureTextures";
+import type { StructureNightLighting } from "../../structures/structureNightLighting";
 import { StructureRecordStore, type StructureHidden, type StructureRegionRecords } from "../../structures/StructureRecordStore";
 import {
   STRUCTURE_HANDOFF_BAND_METERS,
@@ -242,6 +243,11 @@ export class StructureSystem {
     const textured = profile.structureTextureEdge > 0;
     for (const { plugin } of Object.values(this.materialsByRole)) plugin.setTextured(textured);
     this.wantTextures();
+  }
+
+  /** The buildings' lights (`structureNightLighting`), every frame or on a change; off until set. */
+  setNight(night: StructureNightLighting): void {
+    for (const { plugin } of Object.values(this.materialsByRole)) plugin.setNight(night);
   }
 
   setFloatingOrigin(x: number, z: number): void {

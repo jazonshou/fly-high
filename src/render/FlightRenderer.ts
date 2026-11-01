@@ -162,6 +162,7 @@ import { MarinaSystem } from "./webgpu/marina/MarinaSystem";
 import { RoadSurfaceSystem } from "./webgpu/roads/RoadSurfaceSystem";
 import { KIT_STRUCTURE_ARRAYS } from "./structures/InlineStructureMeshBuilder";
 import { WorkerStructureMeshBuilder } from "./structures/WorkerStructureMeshBuilder";
+import { structureNightLighting } from "./structures/structureNightLighting";
 import { StructureSystem } from "./webgpu/structures/StructureSystem";
 import {
   SpawnedAirfieldManager,
@@ -773,6 +774,10 @@ export class FlightRenderer implements FlightRenderingSystem {
    * third time and drifting.
    */
   private lastDaylightAttenuation = 1;
+  /** The clock's solar hour as last set, and the buildings' lights last handed on for it. */
+  private structureSolarHours = Number.NaN;
+  private structureNightKey = Number.NaN;
+  private structureNightDaylight = Number.NaN;
   /** One-shot latch: a refused cast pool is worth saying once, not per frame. */
   private castPoolWarned = false;
   /**
@@ -2405,6 +2410,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     const galactic = this.stars.galacticFrame(clock, this.latitudeDegrees);
     this.atmosphere.setGalacticFrame(galactic.pole, galactic.center);
     this.applyScotopicState();
+    this.structureSolarHours = clock.solarTimeHours;
     // R-13: the terrain's baked snow blanket and the detail generator follow
     // the same clock the sky does.
     this.terrain.setSeasonalDayOfYear(clock.dayOfYear);
@@ -3566,6 +3572,13 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // against the same world camera, and their construction inside its own
     // per-frame budget.
     this.spawnedAirfields?.setDaylightAttenuation(daylightAttenuation);
+    // The buildings' lights: who is home by the clock, lit once it is dark,
+    // by the same daylight law as every lamp here. Handed on when either moves.
+    if (this.structures && (!Object.is(this.structureSolarHours, this.structureNightKey) || !Object.is(daylightAttenuation, this.structureNightDaylight))) {
+      this.structureNightKey = this.structureSolarHours;
+      this.structureNightDaylight = daylightAttenuation;
+      this.structures.setNight(structureNightLighting(this.structureSolarHours, daylightAttenuation));
+    }
     this.spawnedAirfields?.update(
       this.camera.position.x + this.originX,
       this.camera.position.y,
