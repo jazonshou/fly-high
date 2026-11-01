@@ -5,6 +5,7 @@ import { FlightRenderer } from "../src/render/FlightRenderer";
 import { resolveHardwareScalingLevel } from "../src/render/renderScaleLevel";
 import {
   createGovernorState,
+  FALLBACK_OFF,
   governorConfigForProfile,
   type GovernorConfig,
   type GovernorState,
@@ -352,6 +353,45 @@ describe("setGovernorHold", () => {
     holdGovernor(target, false);
     for (let window = 0; window < 8; window += 1) runWindow(target, 1_000 / 60, 8);
     expect(target.governorState.cpuWorkLevel).toBe(free.governorState.cpuWorkLevel);
+  });
+});
+
+describe("cadenceFallbackRequest (PR B part 2b, G6)", () => {
+  const sixty: PresentationCadence = { frameCapHz: 60, divisor: 1, displayPeriodMs: 1_000 / 60, periodConfirmed: true };
+  const lowAt30 = { ...resolveWebGpuQualityProfile("low", "balanced"), cadenceFallbackHz: 30 };
+
+  /** FlightRenderer's receiver, on the fields it reads; the config as resolveGovernorConfig gives it. */
+  function asked(pinnedRenderScale: number | null, phase: "off" | "engaged" | "settled") {
+    const fields = { profile: lowAt30, presentationCadence: sixty, pinnedRenderScale };
+    const target = Object.assign(Object.create(FlightRenderer.prototype) as object, fields) as typeof fields & {
+      governorConfig: GovernorConfig;
+      governorState: GovernorState;
+    };
+    target.governorConfig = (Reflect.get(FlightRenderer.prototype, "resolveGovernorConfig") as (this: typeof target) => GovernorConfig)
+      .call(target);
+    target.governorState = Object.freeze({
+      ...createGovernorState(target.governorConfig),
+      fallback: Object.freeze({ ...FALLBACK_OFF, phase, minIntervalMs: 22 }),
+    });
+    return FlightRenderer.prototype.cadenceFallbackRequest.call(target as unknown as FlightRenderer);
+  }
+
+  it("is null for a fresh governor, and asks while the fallback is engaged", () => {
+    expect(asked(null, "off")).toBeNull();
+    expect(asked(null, "engaged")).toEqual({ hz: 30, minIntervalMs: 22 });
+    expect(asked(null, "settled")).toEqual({ hz: 30, minIntervalMs: 22 });
+  });
+
+  it("is null while pinned, whatever the state", () => {
+    expect(asked(0.72, "engaged")).toBeNull();
+    expect(asked(0.72, "settled")).toBeNull();
+  });
+
+  it("reports the phase in diagnostics only where the config allows a fallback, and the cadence's rate", () => {
+    expect(renderer).toMatch(
+      /cadenceFallback: this\.pinnedRenderScale !== null \|\| this\.governorConfig\.cadenceFallbackHz === null \? null : \{/u,
+    );
+    expect(renderer).toContain("fallbackHz: this.presentationCadence.fallbackHz ?? null,");
   });
 });
 

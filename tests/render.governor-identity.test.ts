@@ -3,15 +3,20 @@ import type { QualityLevel, RequestedRenderingMode } from "../src/game/types";
 import { FlightRenderer } from "../src/render/FlightRenderer";
 import { resolveGovernedWork } from "../src/render/governedWork";
 import {
+  cadenceFallbackRequest,
   createGovernorState,
+  FALLBACK_OFF,
   governorConfigForProfile,
   governorExhausted,
   nextGovernorDecision,
   rebaseGovernorState,
   workLeverSettingsFor,
+  type CadenceFallbackPhase,
   type GovernorConfig,
   type GovernorSignals,
+  type GovernorState,
 } from "../src/render/webgpu/core/AdaptiveGovernor";
+import type { FrameRateCap, PresentationCadence } from "../src/render/webgpu/core/presentationCadence";
 import { resolveWebGpuQualityProfile, type WebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 
 /**
@@ -30,6 +35,10 @@ import { resolveWebGpuQualityProfile, type WebGpuQualityProfile } from "../src/r
  * unlatched and with no spent windows, and the levers at (0, 0) leave the
  * cloud march, the CSM and cloud-depth refresh and CDLOD selection on the
  * profile's own values.
+ *
+ * Part 2b (G6) adds the even fallback's gate: without a cadence the config
+ * allows no fallback, whatever the profile's rate, so a harness never falls
+ * back; and the state starts with the fallback off.
  */
 
 /** bench-b1's literals for one tier, plus what only PR B's unfrozen governor reads. */
@@ -60,6 +69,9 @@ function expectedConfig(tier: number, renderScale: number): GovernorConfig {
     strikeForgivenAfterWindows: ultra ? 30 : 60,
     lateFailureWindows: ultra ? 8 : 15,
     cpuRecoveryCeilingMs: 0.9 * (ultra ? 1_000 / 30 : 1_000 / 60),
+    // PR B part 2b (G6): no cadence, so no fallback; and 120 frames at the target.
+    cadenceFallbackHz: null,
+    windowMs: 120 * (ultra ? 1_000 / 30 : 1_000 / 60),
   };
 }
 
@@ -145,6 +157,8 @@ describe("the governor without a cadence (captures, perf:ab, perf:flight)", () =
     for (const [quality, mode] of PAIRS) {
       const initial = createGovernorState(governorConfigForProfile(resolveWebGpuQualityProfile(quality, mode)));
       expect(initial, `${quality} ${mode}`).toMatchObject({ urgent: false, latchedAtGpuLevel: null, spentWindows: 0 });
+      // PR B part 2b (G6): and with the fallback off, so nothing is asked of the pacer.
+      expect(initial.fallback, `${quality} ${mode}`).toBe(FALLBACK_OFF);
       expect(governorExhausted(initial), `${quality} ${mode}`).toBe(false);
     }
     const spent = Object.freeze({
@@ -156,6 +170,126 @@ describe("the governor without a cadence (captures, perf:ab, perf:flight)", () =
     expect(governorExhausted(spent)).toBe(true);
     // The cadence moving is a new judgement; the latch it was set at stays.
     expect(rebaseGovernorState(spent)).toMatchObject({ urgent: false, latchedAtGpuLevel: 4, spentWindows: 0 });
+    expect(rebaseGovernorState(spent).fallback).toBe(FALLBACK_OFF);
+  });
+});
+
+/** A cadence as the pacer reports it: cap, divisor, refresh in Hz (or null) and confirmation. */
+function cadenceOf(
+  frameCapHz: FrameRateCap,
+  divisor: number,
+  hz: number | null,
+  periodConfirmed: boolean,
+  fallbackHz?: number,
+): PresentationCadence {
+  return {
+    frameCapHz,
+    divisor,
+    displayPeriodMs: hz === null ? null : 1_000 / hz,
+    periodConfirmed,
+    ...(fallbackHz !== undefined ? { fallbackHz } : {}),
+  };
+}
+
+describe("the fallback gate (PR B part 2b, G6)", () => {
+  const low = resolveWebGpuQualityProfile("low", "balanced");
+  const lowAt30 = { ...low, cadenceFallbackHz: 30 };
+  const lowAt0 = { ...low, cadenceFallbackHz: 0 };
+  // [case, cadence, the config's rate for a profile of 30] (design §21.10).
+  const cases: readonly [string, PresentationCadence | null, number | null][] = [
+    ["no cadence (every harness)", null, null],
+    ["the 60 setting at 60 Hz", cadenceOf(60, 1, 60, true), 30],
+    ["the 60 setting at 120 Hz", cadenceOf(60, 2, 120, true), 30],
+    ["the 60 setting at 144 Hz", cadenceOf(60, 2, 144, true), 30],
+    ["the 60 setting at 75 Hz", cadenceOf(60, 1, 75, true), 30],
+    // Red team: a confirmed 50 Hz period is not trusted under the 60 setting,
+    // and falling back there gave 25 fps for the session.
+    ["the 60 setting on a 50 Hz display", cadenceOf(60, 1, 50, true), null],
+    ["the 60 setting on a 30 Hz display", cadenceOf(60, 1, 30, true), null],
+    ["the 30 fps setting at 60 Hz", cadenceOf(30, 2, 60, true), null],
+    ["Match display at 60 Hz", cadenceOf(null, 1, 60, true), null],
+    // Already applied: the divisor is the fallback's, so the range test cannot pass.
+    ["the 60 setting at 60 Hz, falling back", cadenceOf(60, 2, 60, true, 30), 30],
+    ["the 60 setting with no period yet", cadenceOf(60, 1, null, false), null],
+    ["the 60 setting at 60 Hz, unconfirmed", cadenceOf(60, 1, 60, false), null],
+  ];
+
+  for (const [name, cadence, hz] of cases) {
+    it(`${name}: ${hz === null ? "none" : `${hz} Hz`}, and none for a profile of 0`, () => {
+      expect(governorConfigForProfile(lowAt30, cadence).cadenceFallbackHz).toBe(hz);
+      expect(governorConfigForProfile(lowAt0, cadence).cadenceFallbackHz).toBeNull();
+    });
+  }
+
+  it("allows none without a cadence, for every quality and mode at any rate", () => {
+    for (const [quality, mode] of PAIRS) {
+      for (const cadenceFallbackHz of [0, 30]) {
+        const profile = { ...resolveWebGpuQualityProfile(quality, mode), cadenceFallbackHz };
+        expect(governorConfigForProfile(profile).cadenceFallbackHz, `${quality} ${mode} at ${cadenceFallbackHz}`).toBeNull();
+        expect(governorConfigForProfile(profile, null).cadenceFallbackHz, `${quality} ${mode} at ${cadenceFallbackHz}`).toBeNull();
+      }
+    }
+  });
+
+  it("measures a window's length at the paced interval", () => {
+    expect(governorConfigForProfile(low).windowMs).toBeCloseTo(2_000, 9);
+    expect(governorConfigForProfile(low, cadenceOf(60, 2, 144, true)).windowMs).toBeCloseTo(120 * 2_000 / 144, 9);
+    expect(governorConfigForProfile(low, cadenceOf(30, 2, 60, true)).windowMs).toBeCloseTo(4_000, 9);
+    // Under the fallback the window runs at its interval: 30 fps at 60 Hz.
+    expect(governorConfigForProfile(lowAt30, cadenceOf(60, 2, 60, true, 30)).windowMs).toBeCloseTo(4_000, 9);
+  });
+
+  /** A state in `phase`, as the fallback machine will leave it. */
+  function inPhase(config: GovernorConfig, phase: CadenceFallbackPhase): GovernorState {
+    return Object.freeze({
+      ...createGovernorState(config),
+      fallback: Object.freeze({ ...FALLBACK_OFF, phase, minIntervalMs: 22 }),
+    });
+  }
+
+  it("asks the pacer for the fallback only while engaged or settled, and never frozen", () => {
+    const config = governorConfigForProfile(lowAt30, cadenceOf(60, 1, 60, true));
+    expect(cadenceFallbackRequest(createGovernorState(config), config)).toBeNull();
+    expect(cadenceFallbackRequest(inPhase(config, "off"), config)).toBeNull();
+    expect(cadenceFallbackRequest(inPhase(config, "trial"), config)).toBeNull();
+    expect(cadenceFallbackRequest(inPhase(config, "engaged"), config)).toEqual({ hz: 30, minIntervalMs: 22 });
+    expect(cadenceFallbackRequest(inPhase(config, "settled"), config)).toEqual({ hz: 30, minIntervalMs: 22 });
+    // A config that allows none, and a pinned one, never ask.
+    const none = governorConfigForProfile(lowAt0, cadenceOf(60, 1, 60, true));
+    expect(cadenceFallbackRequest(inPhase(none, "engaged"), none)).toBeNull();
+    const frozen = Object.freeze({ ...config, frozen: true });
+    expect(cadenceFallbackRequest(inPhase(frozen, "engaged"), frozen)).toBeNull();
+  });
+
+  it("counts the governor exhausted while the fallback is on, and a rebase keeps the phase and clocks", () => {
+    const config = governorConfigForProfile(lowAt30, cadenceOf(60, 2, 60, true, 30));
+    for (const phase of ["engaged", "trial", "settled"] as const) {
+      const state = inPhase(config, phase);
+      // The engaging rebase zeroes the spent count (red team).
+      expect(state.spentWindows).toBe(0);
+      expect(governorExhausted(state), phase).toBe(true);
+    }
+    expect(governorExhausted(inPhase(config, "off"))).toBe(false);
+    const trial = Object.freeze({
+      ...createGovernorState(config),
+      spentWindows: 3,
+      fallback: Object.freeze({
+        ...FALLBACK_OFF,
+        phase: "trial" as const,
+        trialDueInMs: 0,
+        trialFrom: "settled" as const,
+        trialLates: Object.freeze([0.01]),
+        failedTrials: 1,
+        msSinceExit: null,
+        minIntervalMs: 24,
+      }),
+    });
+    expect(rebaseGovernorState(trial).fallback).toEqual({ ...trial.fallback, trialLates: [] });
+    const engaged = Object.freeze({
+      ...trial,
+      fallback: Object.freeze({ ...trial.fallback, phase: "engaged" as const, trialDueInMs: 40_000, trialLates: Object.freeze([]) }),
+    });
+    expect(rebaseGovernorState(engaged).fallback).toBe(engaged.fallback);
   });
 });
 

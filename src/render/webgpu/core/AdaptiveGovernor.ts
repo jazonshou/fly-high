@@ -40,6 +40,7 @@ import {
   PRESENTATION_HEADROOM_MS,
   SLOWEST_TRUSTED_DISPLAY_PERIOD_MS,
   cadenceFloorMs,
+  fallbackDivisorRange,
   type PresentationCadence,
 } from "./presentationCadence";
 // Type-only: QualityProfile.ts imports presentationCadence, never this file.
@@ -55,7 +56,10 @@ export type GovernorMode =
   | "balanced"
   | "on-cadence"
   | "holding"
-  | "no-gpu-timing";
+  | "no-gpu-timing"
+  // PR B part 2b (G6): a window judged only to decide the even fallback's
+  // trial at the setting's cadence; no lever moves.
+  | "fallback-trial";
 
 /** Window-aggregated timing signals; null means the stream was unavailable. */
 export interface GovernorSignals {
@@ -150,6 +154,17 @@ export interface GovernorConfig {
    * line). Frozen, the governor measures but never steps.
    */
   readonly frozen?: boolean;
+  /**
+   * PR B part 2b (G6): the even rate an exhausted governor may ask the pacer
+   * to fall back to: the profile's `cadenceFallbackHz` where the pacer could
+   * apply it (`fallbackAllowed`), else null. Null under "Match display" and
+   * "30 fps", with no cadence (captures, perf:ab and perf:flight), without a
+   * confirmed period the governor trusts (so never on a 30 or 50 Hz display),
+   * and at every tier whose rate is 0.
+   */
+  readonly cadenceFallbackHz: number | null;
+  /** PR B part 2b (G6): a window's nominal length in ms at the paced interval; the fallback's clocks count in it. */
+  readonly windowMs: number;
 }
 
 /**
@@ -162,7 +177,7 @@ export interface GovernorConfig {
  * way (72 fps at 144 Hz, 30 at the 30 fps setting).
  */
 export function governorConfigForProfile(
-  profile: Pick<WebGpuQualityProfile, "tier" | "renderScale" | "governorPixelFloorRatio">,
+  profile: Pick<WebGpuQualityProfile, "tier" | "renderScale" | "governorPixelFloorRatio" | "cadenceFallbackHz">,
   cadence: PresentationCadence | null = null,
 ): GovernorConfig {
   const tierPresentationMs = profile.tier === 3 ? 1_000 / 30 : 1_000 / 60;
@@ -200,7 +215,25 @@ export function governorConfigForProfile(
     lateFailureWindows: windowsFor(LATE_FAILURE_SECONDS),
     cpuRecoveryCeilingMs: CPU_RECOVERY_RATIO
       * Math.min(presentationTargetMs, onTimeIntervalFor(presentationTargetMs, lateIntervalMs, cadence)),
+    cadenceFallbackHz: fallbackAllowed(profile.cadenceFallbackHz, cadence) ? profile.cadenceFallbackHz : null,
+    windowMs,
   });
+}
+
+/**
+ * PR B part 2b (G6): whether the pacer could apply a fallback near `hz` on
+ * this cadence: only under the 60 fps setting, and only on a confirmed
+ * period the governor trusts with an even divisor above the paced one.
+ */
+function fallbackAllowed(hz: number, cadence: PresentationCadence | null): boolean {
+  if (!(hz > 0) || cadence === null || cadence.frameCapHz !== 60) return false;
+  // Already applied: the divisor is the fallback's, so the range test below would fail.
+  if (cadence.fallbackHz !== undefined) return true;
+  // Only a confirmed period part 1 trusts (red team): a 50 Hz period is not
+  // trusted under the 60 setting, and falling back there gave 25 fps for the session.
+  const period = cadence.periodConfirmed ? cadence.displayPeriodMs : null;
+  if (period === null || period > SLOWEST_TRUSTED_DISPLAY_PERIOD_MS) return false;
+  return fallbackDivisorRange(1_000 / period, hz, cadence.divisor) !== null;
 }
 
 /** The backoff after a ladder's first, second, and third or later unforgiven failed trial. */
@@ -581,6 +614,67 @@ export interface GovernorState {
    * exhausted (`governorExhausted`).
    */
   readonly spentWindows: number;
+  /** PR B part 2b (G6): the even fallback's phase and clocks. */
+  readonly fallback: CadenceFallbackState;
+}
+
+/**
+ * PR B part 2b (G6): the even fallback. "off": the setting's cadence.
+ * "engaged": the pacer draws at the fallback's even rate, and the governor
+ * judges against that interval and sheds only, so the trial tests the state
+ * that was exhausted. "trial": the pacer draws at the setting's cadence again
+ * and two windows are judged against it, moving no lever. "settled": the
+ * fallback stays, the governor recovers at its rate, and a trial runs only
+ * from full quality.
+ */
+export type CadenceFallbackPhase = "off" | "engaged" | "trial" | "settled";
+
+export interface CadenceFallbackState {
+  readonly phase: CadenceFallbackPhase;
+  /** Window time left, in ms, before the next trial may start (engaged or settled). */
+  readonly trialDueInMs: number;
+  /** The phase a failed trial returns to. */
+  readonly trialFrom: "engaged" | "settled";
+  /** The open trial's on-cadence windows, by their late shares. */
+  readonly trialLates: readonly number[];
+  /** Failed trials since the last forgiveness; a re-entry soon after an exit counts as one. */
+  readonly failedTrials: number;
+  /** Window time, in ms, since the fallback last ended on a passed trial; null once that is forgotten. */
+  readonly msSinceExit: number | null;
+  /**
+   * The shortest interval the pacer may draw at under the fallback: the mean
+   * interval of the window that engaged it, raised when the host cannot hold
+   * the divisor it chose. 0 while off.
+   */
+  readonly minIntervalMs: number;
+}
+
+export const FALLBACK_OFF: CadenceFallbackState = Object.freeze({
+  phase: "off" as CadenceFallbackPhase,
+  trialDueInMs: 0,
+  trialFrom: "engaged" as const,
+  trialLates: Object.freeze([]) as readonly number[],
+  failedTrials: 0,
+  msSinceExit: null,
+  minIntervalMs: 0,
+});
+
+/** PR B part 2b (G6): what the governor asks the frame pacer for: the rate, and the shortest interval to draw at. */
+export interface CadenceFallbackRequest {
+  readonly hz: number;
+  readonly minIntervalMs: number;
+}
+
+/**
+ * PR B part 2b (G6): the fallback the pacer should apply now, or null for
+ * the setting's own cadence. Null whenever the config allows none or is
+ * frozen; otherwise a request while the fallback is engaged or settled.
+ */
+export function cadenceFallbackRequest(state: GovernorState, config: GovernorConfig): CadenceFallbackRequest | null {
+  if (config.cadenceFallbackHz === null || config.frozen) return null;
+  const phase = state.fallback.phase;
+  if (phase !== "engaged" && phase !== "settled") return null;
+  return Object.freeze({ hz: config.cadenceFallbackHz, minIntervalMs: state.fallback.minIntervalMs });
 }
 
 const FRESH_LADDER: LadderRecovery = Object.freeze({
@@ -613,6 +707,7 @@ export function createGovernorState(config: GovernorConfig): GovernorState {
     urgent: false,
     latchedAtGpuLevel: null,
     spentWindows: 0,
+    fallback: FALLBACK_OFF,
   });
 }
 
@@ -621,11 +716,14 @@ export const EXHAUSTED_AFTER_WINDOWS = 4;
 
 /**
  * PR B part 2 (G6): the governor has had nothing left to shed for four
- * judged windows in a row, each well over its reference interval. What Auto
- * will read to move a machine down a tier.
+ * judged windows in a row, each well over its reference interval, or (part
+ * 2b) it is running on the even fallback that answered that. The engaging
+ * rebase zeroes the spent count, so without the phase the bench and the HUD
+ * would read a host on the fallback as not exhausted. What Auto will read
+ * to move a machine down a tier.
  */
 export function governorExhausted(state: GovernorState): boolean {
-  return state.spentWindows >= EXHAUSTED_AFTER_WINDOWS;
+  return state.spentWindows >= EXHAUSTED_AFTER_WINDOWS || state.fallback.phase !== "off";
 }
 
 /** PR B part 2 (G6): means closer than this to a threshold are on it (float noise on the vsync lattice). */
@@ -1468,8 +1566,11 @@ export function summariseIntervals(
  * pending probe, the calm streak, the hot counts, urgency and the spent
  * count. Levels, scale, latch and recovery records stay, and an open trial
  * restarts its count rather than escaping its verdict (red team finding 11).
+ * The even fallback (part 2b) keeps its phase and clocks, since the cadence
+ * moving is what it asked for, and only its trial's windows restart.
  */
 export function rebaseGovernorState(state: GovernorState): GovernorState {
+  const fallback = state.fallback;
   return Object.freeze({
     ...state,
     pendingProbe: null,
@@ -1482,5 +1583,8 @@ export function rebaseGovernorState(state: GovernorState): GovernorState {
     trial: state.trial === null ? null : Object.freeze({ ...state.trial, windowsPassed: 0 }),
     spentWindows: 0,
     urgent: false,
+    fallback: fallback.trialLates.length === 0
+      ? fallback
+      : Object.freeze({ ...fallback, trialLates: Object.freeze([]) as readonly number[] }),
   });
 }

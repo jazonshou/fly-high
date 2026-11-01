@@ -139,6 +139,7 @@ audit is why it now carries all four tiers):
 | CSM refresh interval (frames at the tier's frame rate; G5) | 2 | 1 | 1 | 1 |
 | Cloud-depth refresh interval (frames at the tier's frame rate; G5) | 2 | 1 | 1 | 1 |
 | Governor pixel floor (share of the capped pixels; G4) | 0.6 | 0.6 | 0.5625 | 0.5625 |
+| Even fallback rate when the governor is exhausted (Hz, 0 = none; G6) | 0 | 0 | 0 | 0 |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
 Ultra's material array edge is 512², not §5.3's published 1024²: `3-1`

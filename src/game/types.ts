@@ -199,6 +199,8 @@ export type RenderGovernorMode =
   | "on-cadence"
   | "holding"
   | "no-gpu-timing"
+  // PR B part 2b (G6): a window judged only for the even fallback's trial.
+  | "fallback-trial"
   | "pinned";
 
 /** One frame-graph pass's aggregated CPU cost (1A-1). */
@@ -342,14 +344,33 @@ export interface RenderDiagnostics {
   governorUrgent: boolean;
   /** PR B part 2 (G6): judged windows in a row with nothing left to shed, each over 1.2× that reference. */
   governorSpentWindows: number;
-  /** PR B part 2 (G6): four spent windows in a row; what Auto will read. */
+  /**
+   * PR B part 2 (G6): four spent windows in a row, or (part 2b) running on
+   * the even fallback that answered them; what Auto will read.
+   */
   governorExhausted: boolean;
+  /**
+   * PR B part 2b (G6): the even fallback where the governor may ask for one;
+   * null while pinned, at a tier without a fallback rate, under a setting
+   * other than "60 fps", and without a confirmed display period it trusts.
+   */
+  cadenceFallback: {
+    phase: "off" | "engaged" | "trial" | "settled";
+    /** Failed trials not yet forgiven. */
+    failedTrials: number;
+    /** Seconds of judged windows before the next trial may start (engaged or settled). */
+    trialDueInS: number;
+    /** The shortest interval the pacer may draw at under the fallback; 0 while off. */
+    minIntervalMs: number;
+  } | null;
   /** PR B: the frame pacer's cadence as the renderer last heard it; null when nothing paces. */
   presentationCadence: {
     frameCapHz: 60 | 30 | null;
     divisor: number;
     displayHz: number | null;
     confirmed: boolean;
+    /** PR B part 2b (G6): the even rate drawn while the pacer applies the fallback; null otherwise. */
+    fallbackHz: number | null;
   } | null;
   /** Pixels actually rasterised after the DPR ceiling, scale, and pixel cap. */
   renderPixels: number;

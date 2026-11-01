@@ -178,7 +178,8 @@ describe("flight HUD camera and terminal-state presentation", () => {
       governorUrgent: true,
       governorSpentWindows: 2,
       governorExhausted: false,
-      presentationCadence: { frameCapHz: 60, divisor: 2, displayHz: 120, confirmed: true },
+      cadenceFallback: null,
+      presentationCadence: { frameCapHz: 60, divisor: 2, displayHz: 120, confirmed: true, fallbackHz: null },
       renderPixels: 1_480_000,
       topPassesByCpuMs: [
         { name: "world-page-visibility", p95Ms: 3.7 },
@@ -291,5 +292,36 @@ describe("flight HUD camera and terminal-state presentation", () => {
     expect(markup).toContain("world-page-visibility 3.7 · volumetric-cloud-integration 1.2 ms CPU p95");
     expect(markup).toContain("RUN GPU BUDGET PROBE");
     expect(markup).toContain("world-page-visibility 0.6 ms GPU");
+
+    // PR B part 2b (G6): the GOV line names the even fallback's trial window
+    // and its phase while it is not off, so a manual flight can see the
+    // switch, the trial and the settle.
+    const governorLine = (overrides: Partial<RenderDiagnostics>) => {
+      const fallbackMarkup = renderToStaticMarkup(createElement(Hud, {
+        state: INITIAL_VISUAL_STATE,
+        aircraft: "trainer",
+        mode: "full",
+        flightMode: "unassisted",
+        units: "aviation",
+        diagnostics: { ...diagnostics, ...overrides },
+        showDiagnostics: true,
+        cameraMode: "chase",
+        cameraLabel: "CHASE CAM",
+        seedLabel: "AUD1T0",
+        mouseFlight: false,
+        onRunBudgetProbe: () => undefined,
+      }));
+      return /<span class="diagnostics__wide">(GOV [^<]*)<\/span>/.exec(fallbackMarkup)?.[1];
+    };
+    const fallback = { phase: "off", failedTrials: 0, trialDueInS: 0, minIntervalMs: 0 } as const;
+    const plainGovernor = "GOV CPU-WORK · RES-INSENSITIVE · cpu L3 · gpu L1 (terrain-page-requests) · ~402 MiB est";
+    expect(governorLine({})).toBe(plainGovernor);
+    expect(governorLine({ cadenceFallback: fallback })).toBe(plainGovernor);
+    expect(governorLine({ cadenceFallback: { ...fallback, phase: "engaged", trialDueInS: 42, minIntervalMs: 22 } }))
+      .toBe(plainGovernor.replace(" · cpu L3", " · FALLBACK ENGAGED · cpu L3"));
+    expect(governorLine({ activeGovernor: "fallback-trial", cadenceFallback: { ...fallback, phase: "trial" } }))
+      .toBe(plainGovernor.replace("GOV CPU-WORK", "GOV FALLBACK-TRIAL").replace(" · cpu L3", " · FALLBACK TRIAL · cpu L3"));
+    expect(governorLine({ cadenceFallback: { ...fallback, phase: "settled", failedTrials: 2 } }))
+      .toBe(plainGovernor.replace(" · cpu L3", " · FALLBACK SETTLED · cpu L3"));
   });
 });

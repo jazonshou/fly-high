@@ -113,6 +113,7 @@ import {
 } from "./webgpu/core/FrameGraph";
 import { assertStartupInvariants } from "./webgpu/core/RenderInvariants";
 import {
+  cadenceFallbackRequest,
   createGovernorState,
   governorConfigForProfile,
   governorExhausted,
@@ -122,6 +123,7 @@ import {
   sameGovernorTargets,
   summariseIntervals,
   workLeverSettingsFor,
+  type CadenceFallbackRequest,
   type GovernorConfig,
   type GovernorSignals,
   type GovernorState,
@@ -2204,6 +2206,16 @@ export class FlightRenderer implements FlightRenderingSystem {
   }
 
   /**
+   * PR B part 2b (G6): the even fallback the governor asks the pacer for.
+   * A pinned capture never asks; nor does any config that allows none,
+   * which is every tier without a fallback rate and every harness (no
+   * cadence).
+   */
+  cadenceFallbackRequest(): CadenceFallbackRequest | null {
+    return this.pinnedRenderScale === null ? cadenceFallbackRequest(this.governorState, this.governorConfig) : null;
+  }
+
+  /**
    * PR B: while the flight is paused the scene is static and nothing
    * streams, so render() falls and the backlog drains. Judged, those windows
    * gave back flight-only sheds that the resume then paid for again. Held,
@@ -2964,11 +2976,18 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       governorUrgent: this.governorState.urgent,
       governorSpentWindows: this.governorState.spentWindows,
       governorExhausted: governorExhausted(this.governorState),
+      cadenceFallback: this.pinnedRenderScale !== null || this.governorConfig.cadenceFallbackHz === null ? null : {
+        phase: this.governorState.fallback.phase,
+        failedTrials: this.governorState.fallback.failedTrials,
+        trialDueInS: this.governorState.fallback.trialDueInMs / 1_000,
+        minIntervalMs: this.governorState.fallback.minIntervalMs,
+      },
       presentationCadence: this.presentationCadence === null ? null : {
         frameCapHz: this.presentationCadence.frameCapHz,
         divisor: this.presentationCadence.divisor,
         displayHz: cadenceDisplayHz(this.presentationCadence),
         confirmed: this.presentationCadence.periodConfirmed,
+        fallbackHz: this.presentationCadence.fallbackHz ?? null,
       },
       renderPixels: this.engine.getRenderWidth() * this.engine.getRenderHeight(),
       topPassesByCpuMs: this.passTimingHistory

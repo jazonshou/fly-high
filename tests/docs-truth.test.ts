@@ -214,6 +214,8 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["CSM refresh interval", (p: (typeof PROFILES)[number]) => p.shadowRefreshFrames],
     ["Cloud-depth refresh interval", (p: (typeof PROFILES)[number]) => p.cloudDepthRefreshFrames],
     ["Governor pixel floor", (p: (typeof PROFILES)[number]) => p.governorPixelFloorRatio],
+    // PR B part 2b (G6).
+    ["Even fallback rate", (p: (typeof PROFILES)[number]) => p.cadenceFallbackHz],
     ["Frame target", (p: (typeof PROFILES)[number]) => p.frameTargetMs],
     ["Rendered stems/ha", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.nearStemsPerHectare],
     ["Impostor floor share", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.impostorFloorShare],
@@ -345,8 +347,8 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     // by its last row as well as by the count.
     const rows = tierTableRowLabels();
     expect(rows.length).toBeGreaterThan(20);
-    // PR B part 2 adds three rows (34 to 37), part 2b a fourth; the next
-    // row-adding change raises this again, deliberately.
+    // PR B part 2 adds three rows (34 to 37) and part 2b a fourth (38); the
+    // next row-adding change raises this again, deliberately.
     expect(rows.length, "the walk ran past the end of the tier table").toBeLessThan(40);
     expect(rows.at(-1), "the walk ran past the end of the tier table").toContain("Frame target");
     expect(TIER_ROW_CHECKS.length + DECLARED_UNVERIFIABLE.length).toBeGreaterThan(20);

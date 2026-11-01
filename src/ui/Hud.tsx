@@ -503,6 +503,9 @@ export function Hud({
           <span className="diagnostics__wide">
             GOV {diagnostics.activeGovernor.toUpperCase()}
             {diagnostics.resolutionInsensitive ? " · RES-INSENSITIVE" : ""}
+            {diagnostics.cadenceFallback && diagnostics.cadenceFallback.phase !== "off"
+              ? ` · FALLBACK ${diagnostics.cadenceFallback.phase.toUpperCase()}`
+              : ""}
             {" · "}cpu L{diagnostics.cpuWorkLevel} · gpu L{diagnostics.gpuWorkLevel}
             {diagnostics.cpuWorkLever ? ` (${diagnostics.cpuWorkLever})` : ""}
             {" · ~"}{Math.round(diagnostics.estimatedGpuMemoryMiB)} MiB est

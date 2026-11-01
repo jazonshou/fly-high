@@ -9,6 +9,7 @@ import type { EnvironmentClock } from "@/src/world/environmentClock";
 import type { AirportDefinition } from "@/src/world/types";
 import type { RenderingMode } from "@/src/settings";
 import type { PresentationCadence } from "@/src/render/webgpu/core/presentationCadence";
+import type { CadenceFallbackRequest } from "@/src/render/webgpu/core/AdaptiveGovernor";
 import type {
   TerrainMacroGrid,
   TerrainPagePublication,
@@ -109,6 +110,14 @@ export interface FlightRenderingSystem {
    * behaviour: every refresh, judged against the tier's own target.
    */
   setPresentationCadence(cadence: PresentationCadence | null): void;
+  /**
+   * PR B part 2b (G6): the even fallback the governor asks the frame pacer
+   * for, read after each frame and passed to the pacer's next tick. Null
+   * while pinned, and wherever the governor may not ask for one: every tier
+   * without a fallback rate, every setting but "60 fps", and every harness,
+   * which never paces.
+   */
+  cadenceFallbackRequest(): CadenceFallbackRequest | null;
   /**
    * True while the flight is paused (PR B): the governor judges no window
    * of the static scene, so a pause neither sheds nor gives back work.

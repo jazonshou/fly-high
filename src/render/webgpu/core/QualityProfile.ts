@@ -118,6 +118,12 @@ export interface WebGpuQualityProfile {
    * capped pixels; the render-scale floor is renderScale × sqrt(ratio).
    */
   readonly governorPixelFloorRatio: number;
+  /**
+   * PR B part 2b (G6): the even rate an exhausted governor may fall back to
+   * under the 60 fps setting; the pacer draws at the even divisor nearest it
+   * that the host can hold. 0 = never.
+   */
+  readonly cadenceFallbackHz: number;
   /** Per-tier ceiling on the device pixel ratio entering the scale product (1A-6a). */
   readonly maxDevicePixelRatio: number;
   /**
@@ -496,6 +502,7 @@ function resolveBaseQualityProfile(
       shadowRefreshFrames: 2,
       cloudDepthRefreshFrames: 2,
       governorPixelFloorRatio: 0.6,
+      cadenceFallbackHz: 0,
       maxDevicePixelRatio: 1,
       bloomEnabled: false,
       msaaSamples: 1,
@@ -589,6 +596,7 @@ function resolveBaseQualityProfile(
       shadowRefreshFrames: 1,
       cloudDepthRefreshFrames: 1,
       governorPixelFloorRatio: 0.6,
+      cadenceFallbackHz: 0,
       maxDevicePixelRatio: 1.5,
       // Tier 1 is the strict playability contract. Closed opaque crowns make
       // early-Z useful, but a 2× multisampled half-float beauty target still
@@ -700,6 +708,7 @@ function resolveBaseQualityProfile(
       cloudDepthRefreshFrames: 1,
       // 0.75², so tiers 2 and 3 keep the 0.75 render-scale floor they have always had.
       governorPixelFloorRatio: 0.5625,
+      cadenceFallbackHz: 0,
       maxDevicePixelRatio: 2,
       // `4-8b` restores 4×, which the `1B-11` decision in ARCHITECTURE.md
       // explicitly deferred to this item: Phase 1's full-distance 4096² CSM
@@ -801,6 +810,7 @@ function resolveBaseQualityProfile(
     shadowRefreshFrames: 1,
     cloudDepthRefreshFrames: 1,
     governorPixelFloorRatio: 0.5625,
+    cadenceFallbackHz: 0,
     maxDevicePixelRatio: 2,
     bloomEnabled: false,
     msaaSamples: 4,
