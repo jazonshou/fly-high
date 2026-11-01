@@ -3700,6 +3700,84 @@ below, 0.24% of the frame.
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
 delivery.
 
+## Roads and the Land Cruiser: all thirty-nine promoted (2026-11-01, PR #37)
+
+The land PR adds streamed roads and the Land Cruiser 76. The car is in none of
+the thirty-nine baseline shots; the roads are in many. A road's 3D surface
+draws within `roadRibbonRangeMeters` of the camera (150 m on Low to 1,200 m on
+Ultra). Further out the terrain paints the road into its splat, and trees are
+cleared along each corridor.
+
+**All thirty-nine baselines promoted 2026-11-01 from the hosted macOS runner's
+2026-10-29 capture**, the same way as 2026-10-29. Jason approved the road look
+from the PR's before/after chase frames on #32's textured ground. Source: the
+PR's capture at `16dce46`, after main (#32, #36, #38) was merged in at
+`6df1197` (gpu-tests run 40928082863, artifact `perf-capture-40928082863-1`,
+zip sha256 `f3d5093758b5b0e1…9c26`). Before promotion it failed 6 visual gates
+on 4 of its 47 shots, every one a divergence from the committed baselines:
+`lake-island-piercing` 0.9814 (worst tile 0.5676), `veg-seam-1600ft-oblique`
+0.9788 (tile 0.6821), `apron-hangar-variety` 0.9791 and the
+`reference-viewport` tile 0.7106. No draw, triangle or memory gate failed.
+The four `boat-*` and four `car-*` shots still have no committed baseline.
+Main's own capture at `3d20f39` (gpu-tests run 40917976407) sits within
+0.03/255 of the committed baselines on every shot, so all of the change below
+is this PR's.
+
+**Cost on the capture**, main's `3d20f39` capture → this capture:
+
+- Draw calls: +1 on sixteen shots (a road surface layer in view), equal on the
+  other twenty-three. No draw ceiling moves, but main pins each ceiling one
+  above its own count, so fourteen of the sixteen now sit exactly at their
+  ceiling (`cruise-horizon` 201, `forest-500ft-sunbehind` 249,
+  `ground-2m-lowsun` 122, ...). The next draw on those shots needs a re-pin.
+- Triangles: −200 on twenty-two shots, +88 on seven, and +1,132 to +4,672 on
+  eight with road surfaces near the camera. `apron-hangar-variety` gains
+  102,304.
+- Inventoried GPU memory: +4.5 to +4.6 MiB on every shot. Buffers grow
+  +2.6 MiB (the road index, "Roads at jet speed" above), geometry
+  +1.8-1.9 MiB and textures +0.1 MiB. Estimated GPU memory is equal on every
+  shot.
+
+**A/B**: Performance A/B run 40928082926, head `16dce46` against main
+`3d20f39` (SwiftShader GPU time, Hodges-Lehmann estimate and its 95% interval;
+CPU time is the guard; each part's runner CPU in brackets):
+
+| shot | GPU time | CPU time (guard) | draw calls | GPU work |
+| --- | --- | --- | --- | --- |
+| `approach-500ft` (9V74) | same +0.9% (+0.8% to +1.0%) | same -3.8% | 247 → 247 | identical |
+| `cruise-horizon` (9V45) | same +1.2% (+0.7% to +1.7%) | same +7.2% | 200 → 201 | +1 bundle, +3.5k upload bytes |
+| `forest-500ft-sunbehind` (9V45) | same +3.8% (+3.5% to +4.1%) | same +1.1% | 248 → 249 | +1 bundle, +3.5k upload bytes |
+| `ground-2m-lowsun` (7763) | same +3.9% (+3.7% to +4.1%) | same -0.5% | 121 → 122 | +1 bundle |
+| `water-25ft` (9V74) | same +0.9% (+0.7% to +1.1%) | same +1.8% | 224 → 224 | identical |
+
+The forest and ground calls sit higher than on `6df1197` (run 40921550342,
+the same roads without the ribbon's crunch): forest +1.2% and ground -0.6%
+there. Forest ran on a 9V45 both times, and its head held still (median
+8,313 → 8,276 ms a frame) while main's base moved (8,198 → 7,961 ms), so the
+difference is the base arm's run-to-run spread. Ground ran on a 9V45, then a
+7763, which weigh the work differently ("Compare CI parts on one CPU model"
+above). The macOS runner's advisory run reads same on four shots (frame wall
+time +0.9% to +2.9%) and inconclusive on `approach-500ft` (+3.5%, +1.4% to
++5.7%).
+
+By shot, main's capture → this capture (mean absolute difference per channel,
+/255; pixels with any channel past 4/255; mean sRGB level change, /255):
+
+| shots | mean abs diff /255 | pixels past 4/255 | mean level |
+| --- | --- | --- | --- |
+| `lake-island-piercing` (a track across the meadow at 300 ft) | 0.80 | 5.0% | +0.32 |
+| `veg-seam-1600ft-oblique`, `apron-hangar-variety`, `approach-lights-outboard` | 0.45-0.56 | 2.9-3.6% | -0.01 to +0.28 |
+| `approach-500ft`, `reference-viewport`, `motion-banked-turn`, `runway-on-approach`, and twelve more with forest in view, at golden hour, dusk and night among them | 0.09-0.26 | 0.6-1.4% | -0.02 to +0.05 |
+| the other nineteen: sky, water and coast, high and straight-down views, `ground-2m-lowsun`, `grove-forest-2m`, cliff and mountain | 0.00-0.05 | 0-0.4% | -0.003 to +0.016 |
+
+Where each shot differs most, it is mostly trees: the corridors cleared
+along roads open short gaps in the forest. The rest is the roads themselves,
+painted far out and drawn as a surface near the camera. `mountain-close` and
+`terrain-material-1600ft-down` are byte-identical to their baselines.
+
+**Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
+delivery.
+
 ## In-app benchmark (?bench=1)
 
 `?bench=1` turns the game into a benchmark anyone can run in their own
