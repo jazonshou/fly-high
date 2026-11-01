@@ -26,6 +26,7 @@ import {
 import type { InfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import { INFRASTRUCTURE_PROFILE } from "@/src/world/infrastructureProfiles";
 import { roadClass, ROAD_CLASS } from "@/src/world/roads/roadClasses";
+import { roadRegionClipKey } from "@/src/world/roads/roadAirports";
 import { roadRegionKey } from "@/src/world/roads/roadInfrastructure";
 import { roadLayerWindow, roadRegionBox } from "@/src/world/roads/roadNetwork";
 import {
@@ -35,6 +36,8 @@ import {
   ROAD_STREAM_LEAD_SECONDS,
   type RoadStreamObserver,
 } from "@/src/world/roads/roadStreaming";
+import { withAirports } from "@/src/world/airportNetwork";
+import type { AirportDefinition } from "@/src/world/types";
 import { createWorld } from "@/src/world/world";
 
 /**
@@ -708,6 +711,115 @@ describe("the renderer's road stream runtime", () => {
     expect(runtime.holdsBack(pageUnder(first!, before + 1))).toBe(false);
     expect(runtime.holdsBack(pageUnder(second!, before + 1))).toBe(true);
     runtime.dispose();
+  });
+});
+
+describe("the streamed roads under a spawned airport", () => {
+  /** A field with the home footprint over the middle of a region (where `regionEvent` lays its pieces). */
+  function fieldOver(address: RoadRegionAddress): Readonly<AirportDefinition> {
+    const box = roadRegionBox(address.rx, address.rz);
+    return Object.freeze({ ...world.airport!, centerX: 0.5 * (box.minX + box.maxX) + 30, centerZ: 0.5 * (box.minZ + box.maxZ) });
+  }
+
+  it("swaps the regions a field spawns over for their clip in one change every copy follows, and back when it retires", () => {
+    const worker = new FakeRoadsWorker();
+    const runtime = new RoadStreamRuntime(world, () => worker);
+    const held = { simulation: new Set<string>(), detail: new Set<string>(), drawing: new Set<string>() };
+    const follow = (set: Set<string>, install: readonly string[], remove: readonly string[], reset = false) => {
+      if (reset) set.clear();
+      for (const key of remove) set.delete(key);
+      for (const key of install) set.add(key);
+    };
+    runtime.setConsumers({
+      publishInfrastructure: (update) => follow(held.simulation, update.install.map((region) => region.key), update.remove, update.reset),
+      detailInfrastructureChanged: (update) => follow(held.detail, update.install.map((region) => region.key), update.remove, update.reset),
+      groundCoverInfrastructureChanged: () => {},
+      infrastructureChanged: () => {},
+      roadSurfaceChanged: (install, remove) => follow(held.drawing, install.map((region) => region.key), remove),
+    });
+    const observer = { x: 0, z: 0, velocityX: 0, velocityZ: 0 };
+    let now = 0;
+    const frame = () => {
+      now += ROAD_STREAM_CHECK_INTERVAL_MS;
+      return runtime.update(observer, now);
+    };
+    frame();
+    worker.answer(Number.POSITIVE_INFINITY, 3);
+    while (frame()) { /* installing */ }
+    const stage = () => new Set(installedInfrastructureRegionKeys(world));
+    // The home world clips nothing: every region under the key the worker gave it.
+    for (const [key, event] of runtime.stream.installedRegions) expect(event.infrastructure.key).toBe(key);
+
+    // A field over one region's square: its track and its major region (the stand-in lays both there).
+    const [first] = runtime.stream.installedRegions.values();
+    const field = fieldOver(first!.address);
+    const under = [...runtime.stream.installedRegions.values()]
+      .filter((event) => event.address.rx === first!.address.rx && event.address.rz === first!.address.rz);
+    expect(under).toHaveLength(2);
+    const raw = under.map((event) => event.infrastructure.key);
+    const clipped = raw.map((key) => roadRegionClipKey(key, [field]));
+    runtime.setWorld(withAirports(world, [world.airport!, field]));
+    expect(runtime.pendingRegions).toBe(2);
+    const swap = frame()!;
+    expect(swap.removed).toEqual(raw);
+    expect(swap.installed.map((event) => event.infrastructure.key)).toEqual(clipped);
+    // All three pieces lie on the field: nothing of either region is left there.
+    for (const event of swap.installed) expect(event.infrastructure.segments).toHaveLength(0);
+    expect(runtime.pendingRegions).toBe(0);
+    expect(frame()).toBeNull();
+    for (const key of raw) expect(stage().has(key)).toBe(false);
+    for (const key of clipped) expect(stage().has(key)).toBe(true);
+    expect(held.simulation).toEqual(stage());
+    expect(held.detail).toEqual(stage());
+    expect(held.drawing).toEqual(stage());
+    // Still by address: the clip is what is installed there.
+    for (const [k, event] of under.entries()) {
+      expect(runtime.stream.installedRegions.get(raw[k]!)!.infrastructure.key).toBe(clipped[k]);
+      expect(runtime.stream.installedRegions.get(raw[k]!)!.address).toEqual(event.address);
+    }
+
+    // Retired: the whole regions come back, the worker's own.
+    runtime.setWorld(world);
+    expect(runtime.pendingRegions).toBe(2);
+    const back = frame()!;
+    expect(back.removed).toEqual(clipped);
+    expect(back.installed.map((event) => event.infrastructure)).toEqual(under.map((event) => event.infrastructure));
+    expect(back.installed.map((event) => event.infrastructure.segments.length)).toEqual([3, 3]);
+    for (const key of raw) expect(stage().has(key)).toBe(true);
+    expect(held.simulation).toEqual(stage());
+    expect(held.drawing).toEqual(stage());
+    runtime.dispose();
+  });
+
+  it("installs a region arriving under a field as its clip, and takes it back from the cache as its clip", () => {
+    const worker = new FakeRoadsWorker();
+    const home = { x: 0, z: 0, velocityX: 0, velocityZ: 0 };
+    const controller = new RoadStreamController(world, () => worker);
+    controller.observe(home, 0);
+    const address = worker.lastWant[0]!;
+    const field = fieldOver(address);
+    controller.setWorld(withAirports(world, [world.airport!, field]));
+    const count = worker.answer();
+    controller.flush();
+    const key = roadRegionKey(address.layer, address.rx, address.rz);
+    expect(controller.installedRegions.get(key)!.infrastructure.key).toBe(roadRegionClipKey(key, [field]));
+    expect(installedInfrastructureRegionKeys(world)).toHaveLength(count);
+    expect(installedInfrastructureRegionKeys(world)).toContain(roadRegionClipKey(key, [field]));
+    expect(installedInfrastructureRegionKeys(world)).not.toContain(key);
+
+    // Away and back: the cache gives the worker's region (or the worker again, past the
+    // cache's size), clipped again as it goes in.
+    controller.observe({ x: 40_000, z: 0, velocityX: 0, velocityZ: 0 }, 1_000);
+    expect(controller.flush()!.removed).toContain(roadRegionClipKey(key, [field]));
+    expect(installedInfrastructureRegionKeys(world)).toHaveLength(0);
+    controller.observe(home, 2_000);
+    if (worker.lastWant.some((wanted) => roadRegionKey(wanted.layer, wanted.rx, wanted.rz) === key)) {
+      worker.post(regionEvent(address));
+    }
+    while (controller.flush()) { /* installing */ }
+    expect(controller.installedRegions.get(key)!.infrastructure.key).toBe(roadRegionClipKey(key, [field]));
+    expect(installedInfrastructureRegionKeys(world)).not.toContain(key);
+    controller.dispose();
   });
 });
 
