@@ -1,6 +1,6 @@
 import { terrainPageAirportDomain, type TerrainMutableWorldRect } from "@/src/render/webgpu/terrain/AirportReach";
 import type { WorldDefinition } from "@/src/world";
-import type { InfrastructureChange } from "@/src/world/infrastructure";
+import type { InfrastructureChange, InfrastructureRegion } from "@/src/world/infrastructure";
 import {
   InfrastructureChangeLog,
   infrastructureRegionsSnapshot,
@@ -29,6 +29,12 @@ export interface RoadStreamConsumers {
   publishInfrastructure(update: InfrastructureRegionsUpdate): void;
   /** The ribbons and rails drawn on the ground (`RoadSurfaceSystem`): last, as they lie on what the rest built. */
   roadSurfaceChanged(install: readonly RoadSurfaceRegion[], remove: readonly string[]): void;
+  /**
+   * The generated buildings (`StructureSystem`): each settlements region's
+   * records in, and the keys of those that left. After the drawn roads, on
+   * the pads the terrain has.
+   */
+  structuresChanged(install: readonly InfrastructureRegion[], remove: readonly string[]): void;
 }
 
 /** Whether a region is the roads' (the settlements' bring no ribbon, rail or pad to draw). */
@@ -62,7 +68,8 @@ export const ROAD_PRIME_TIMEOUT_MS = 4_000;
  * terrain, whose rebuilt pages are published after it; a page batch
  * dispatched before the change and published after it is held back
  * (`holdsBack`) — the terrain rebuilds that page anyway, and the workers have
- * already dropped their copies of it. The drawn ribbons and rails come last.
+ * already dropped their copies of it. The drawn ribbons and rails come next,
+ * and the generated buildings last.
  */
 export class RoadStreamRuntime {
   readonly log = new InfrastructureChangeLog();
@@ -97,10 +104,9 @@ export class RoadStreamRuntime {
       bins: new Set(),
       plantBins: new Set(),
     });
-    consumers.roadSurfaceChanged(
-      [...this.controller.installedRegions.values()].filter(isRoadSurfaceRegion).map(roadSurfaceRegionOf),
-      [],
-    );
+    const installed = [...this.controller.installedRegions.values()];
+    consumers.roadSurfaceChanged(installed.filter(isRoadSurfaceRegion).map(roadSurfaceRegionOf), []);
+    consumers.structuresChanged(installed.filter((event) => !isRoadSurfaceRegion(event)).map((event) => event.infrastructure), []);
   }
 
   /** Regions still to come or to install (`RoadStreamController.pendingRegions`). */
@@ -167,5 +173,10 @@ export class RoadStreamRuntime {
       change.installed.filter(isRoadSurfaceRegion).map(roadSurfaceRegionOf),
       change.removed.filter((key) => !isSettlementRegionKey(key)),
     );
+    const settlements = change.installed.filter((event) => !isRoadSurfaceRegion(event));
+    const settlementsLeft = change.removed.filter(isSettlementRegionKey);
+    if (settlements.length > 0 || settlementsLeft.length > 0) {
+      consumers.structuresChanged(settlements.map((event) => event.infrastructure), settlementsLeft);
+    }
   }
 }

@@ -160,6 +160,9 @@ import { AirportSystem } from "./webgpu/detail/AirportSystem";
 import { airportRoadFenceOpening } from "@/src/world/roads/roadNodes";
 import { MarinaSystem } from "./webgpu/marina/MarinaSystem";
 import { RoadSurfaceSystem } from "./webgpu/roads/RoadSurfaceSystem";
+import { KIT_STRUCTURE_ARRAYS } from "./structures/InlineStructureMeshBuilder";
+import { WorkerStructureMeshBuilder } from "./structures/WorkerStructureMeshBuilder";
+import { StructureSystem } from "./webgpu/structures/StructureSystem";
 import {
   SpawnedAirfieldManager,
   spawnedFloodReserve,
@@ -721,6 +724,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly roads: RoadStreamRuntime | null;
   /** The roads' ribbons and guardrails near the camera, on the ground as drawn; with the streamed roads. */
   private readonly roadSurface: RoadSurfaceSystem | null;
+  /** The generated buildings, from the streamed settlements; with the streamed roads. */
+  private readonly structures: StructureSystem | null;
   private readonly wildlife: WildlifeSystem;
   private readonly toneMap: ImageProcessingPostProcess;
   /** FXAA with the final sharpen fused in; attached only where MSAA is off. */
@@ -981,6 +986,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     groundCover: GroundCoverSystem,
     roads: RoadStreamRuntime | null,
     roadSurface: RoadSurfaceSystem | null,
+    structures: StructureSystem | null,
     wildlife: WildlifeSystem,
     toneMap: ImageProcessingPostProcess,
     fxaa: FxaaSharpenPass,
@@ -1047,6 +1053,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     this.groundCover = groundCover;
     this.roads = roads;
     this.roadSurface = roadSurface;
+    this.structures = structures;
     // Every change to the streamed roads, in the order that keeps each copy
     // of the ground true (`RoadStreamRuntime`): the workers first, on the
     // ports their ground arrives on, then the CPU and GPU consumers here.
@@ -1061,6 +1068,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       },
       infrastructureChanged: (change) => this.terrain.infrastructureChanged(change),
       roadSurfaceChanged: (install, remove) => this.roadSurface?.apply(install, remove),
+      structuresChanged: (install, remove) => this.structures?.apply(install, remove),
     });
     this.wildlife = wildlife;
     this.toneMap = toneMap;
@@ -1476,6 +1484,17 @@ export class FlightRenderer implements FlightRenderingSystem {
         cleanup.push(() => roadSurface.dispose());
         if (pipelineCompiles) for (const material of roadSurface.materials) pipelineCompiles.defer(material);
       }
+      // The generated buildings: at most four meshes, their arrays made by
+      // the building kit in the structures worker (on the main thread if no
+      // worker can be had) as the settlements stream in, each new mesh
+      // warmed off the frame.
+      const structures = roads
+        ? new StructureSystem(scene, profile, new WorkerStructureMeshBuilder(KIT_STRUCTURE_ARRAYS), pipelineCompiles)
+        : null;
+      if (structures) {
+        cleanup.push(() => structures.dispose());
+        if (pipelineCompiles) for (const material of structures.materials) pipelineCompiles.defer(material);
+      }
       const detail = new WorldDetailRuntime(scene, {
         worldSeed: options.world.seed,
         terrainSample: liveTerrainSample,
@@ -1645,6 +1664,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       if (airport) cloudShadowReceivers.registerMeshes(airport.root.getChildMeshes(false));
       cloudShadowReceivers.registerMeshes(marina.meshes);
       if (roadSurface) cloudShadowReceivers.registerMeshes(roadSurface.meshes);
+      if (structures) for (const material of structures.materials) cloudShadowReceivers.registerMaterial(material);
       detail.addPbrMaterials((material) => {
         cloudShadowReceivers.registerMaterial(material);
       });
@@ -1664,6 +1684,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       if (airport) aerialReceivers.registerMeshes(airport.root.getChildMeshes(false));
       aerialReceivers.registerMeshes(marina.meshes);
       if (roadSurface) aerialReceivers.registerMeshes(roadSurface.meshes);
+      if (structures) for (const material of structures.materials) aerialReceivers.registerMaterial(material);
       detail.addPbrMaterials((material) => {
         aerialReceivers.registerMaterial(material);
       });
@@ -2077,6 +2098,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         groundCover,
         roads,
         roadSurface,
+        structures,
         wildlife,
         toneMap,
         fxaa,
@@ -3110,7 +3132,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       pendingTerrainPages: terrain.pendingPages + terrain.slotsGenerating + (this.roads?.pendingRegions ?? 0),
       // Road changes and chunks still to draw (a frame's budget at a time): a capture waits.
       pendingDetailWork: this.detail.pendingWorkItems + this.groundCover.pendingTileRows
-        + (this.roadSurface?.pendingWork ?? 0),
+        + (this.roadSurface?.pendingWork ?? 0)
+        + (this.structures?.pendingWork ?? 0),
       terrainComputeDispatches: terrain.workersBusy,
       estimatedGpuMemoryMiB: estimateGpuMemoryMiB(
         this.profile,
@@ -3205,6 +3228,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.terrain.dispose(),
       () => this.roads?.dispose(),
       () => this.roadSurface?.dispose(),
+      () => this.structures?.dispose(),
       () => this.terrainEvolution.dispose(),
       () => this.bathymetry.dispose(),
       () => this.wildlife.dispose(),
@@ -3264,6 +3288,16 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         phase: "visibility",
         after: ["world-page-visibility"],
         execute: () => this.roadSurface?.update(this.cameraWorld.x, this.cameraWorld.z),
+      });
+    }
+    // The buildings' sets from the camera: the builds they ask for, and each
+    // draw's camera and radii.
+    if (this.structures) {
+      this.graph.register({
+        name: "structures",
+        phase: "visibility",
+        after: ["world-page-visibility"],
+        execute: () => this.structures?.update(this.cameraWorld),
       });
     }
     // 2-10: the shared-planar-water-reflection node is retired with its
@@ -4403,6 +4437,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.wildlife.addShadowCasters(collect);
     this.spawnedAirfields?.addShadowCasters(collect);
     this.marina.addShadowCasters(collect);
+    this.structures?.addShadowCasters(collect);
     for (const [id, mesh] of this.dynamicShadowCasters) {
       if (!active.has(id)) this.atmosphere.shadows.removeShadowCaster(mesh, false);
     }
@@ -4431,6 +4466,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.steam.setFloatingOrigin(this.originX, this.originZ);
     this.marina.setFloatingOrigin(this.originX, this.originZ);
     this.roadSurface?.setFloatingOrigin(this.originX, this.originZ);
+    this.structures?.setFloatingOrigin(this.originX, this.originZ);
     this.boatSpray?.setFloatingOrigin(this.originX, this.originZ);
     this.boatWake?.setFloatingOrigin(this.originX, this.originZ);
     this.carParticles?.setFloatingOrigin(this.originX, this.originZ);
@@ -4487,6 +4523,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.carParticles?.setCap(this.profile.vehicleParticleBudget);
     this.carTracks?.setCap(this.profile.tyreTrackSegments);
     this.roadSurface?.setRanges(this.profile);
+    this.structures?.setProfile(this.profile);
     this.spawnedAirfields?.setLimits(this.profile.spawnedAirfields);
     this.atmosphere.shadows.mapSize = this.profile.shadowMapSize;
     this.atmosphere.shadows.numCascades = this.profile.shadowCascades;
