@@ -946,6 +946,7 @@ export function FlightGame() {
           });
         }
         try {
+          if (input.inputProfile === "person") renderer.applyCharacterLook(input.consumeLook(characterLook));
           // A paused flight draws a static scene, which says nothing about flight.
           renderer.setGovernorHold(phaseRef.current === "paused");
           if (paced.afterReprobe) renderer.discardNextFrameInterval();
@@ -953,7 +954,6 @@ export function FlightGame() {
             renderer.setPresentationCadence(pendingCadence);
             pendingCadence = null;
           }
-          if (input.inputProfile === "person") renderer.applyCharacterLook(input.consumeLook(characterLook));
           renderer.render(frameState, deltaSeconds);
           const view = renderer.characterView();
           input.setCharacterView(view.heading, view.pitch);
