@@ -502,7 +502,11 @@ function resolveBaseQualityProfile(
       shadowRefreshFrames: 2,
       cloudDepthRefreshFrames: 2,
       governorPixelFloorRatio: 0.6,
-      cadenceFallbackHz: 0,
+      // PR B part 2b (T0d): under the 60 fps setting, an exhausted governor
+      // whose frames still average under 50 fps falls back to the even rate
+      // nearest 30 fps that the machine can hold (30 at 60 Hz) and recovers
+      // quality there. Jason said yes to D5 on 2026-11-01.
+      cadenceFallbackHz: 30,
       maxDevicePixelRatio: 1,
       bloomEnabled: false,
       msaaSamples: 1,

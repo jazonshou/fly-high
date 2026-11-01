@@ -306,17 +306,18 @@ describe("G6 under a pinned capture", () => {
 
 /**
  * PR B part 2b (K4, design §21.2): the even fallback's machine, window by
- * window. Tier 0 with the rate T0d ships (30 Hz), on a confirmed 60 Hz
+ * window. Tier 0 as it ships, with T0d's rate (30 Hz), on a confirmed 60 Hz
  * display under the 60 fps setting (`at60`), and on the same display while
  * the pacer draws the fallback, every 2nd refresh (`atFallback`: a 33.3 ms
  * target, late past 41.67 ms, 4 s windows).
  */
 const t0 = resolveWebGpuQualityProfile("low", "balanced");
-const t0Fallback = Object.freeze({ ...t0, cadenceFallbackHz: 30 });
-const at60 = governorConfigForProfile(t0Fallback, cadence(60, 1, 60, true));
-const atFallback = governorConfigForProfile(t0Fallback, { ...cadence(60, 2, 60, true), fallbackHz: 30 });
+/** Tier 0 without a fallback rate: 0, as tiers 1-3 ship and tier 0 did before T0d. */
+const t0NoFallback = Object.freeze({ ...t0, cadenceFallbackHz: 0 });
+const at60 = governorConfigForProfile(t0, cadence(60, 1, 60, true));
+const atFallback = governorConfigForProfile(t0, { ...cadence(60, 2, 60, true), fallbackHz: 30 });
 /** Match display on the same display: no fallback allowed. */
-const atDisplay = governorConfigForProfile(t0Fallback, { frameCapHz: null, divisor: 1, displayPeriodMs: VSYNC_60, periodConfirmed: true });
+const atDisplay = governorConfigForProfile(t0, { frameCapHz: null, divisor: 1, displayPeriodMs: VSYNC_60, periodConfirmed: true });
 
 /** A state with some of the fallback's fields replaced. */
 function withFallback(state: GovernorState, fallback: Partial<CadenceFallbackState>): GovernorState {
@@ -330,6 +331,7 @@ function steady(ms: number, cpuP95Ms: number, governorConfig: GovernorConfig): G
 
 describe("G6 even fallback: the machine (PR B part 2b, K4)", () => {
   it("engages in the window that makes the governor exhausted, with that window's mean as the shortest interval", () => {
+    expect(t0.cadenceFallbackHz).toBe(30);
     expect(at60.cadenceFallbackHz).toBe(30);
     // CPU-bound (render() 22 ms, every frame a refresh late): spent once its ladder is.
     const states = trace(createGovernorState(at60), 20, () => steady(2 * VSYNC_60, 22, at60), { config: at60 });
@@ -347,11 +349,11 @@ describe("G6 even fallback: the machine (PR B part 2b, K4)", () => {
     });
     expect(engaged.fallback.minIntervalMs).toBeCloseTo(2 * VSYNC_60, 9);
     expect(cadenceFallbackRequest(engaged, at60)).toEqual({ hz: 30, minIntervalMs: engaged.fallback.minIntervalMs });
-    // Tier 0 as it ships before T0d, a rate of 0: just as exhausted, and nothing asked.
-    const shipping = governorConfigForProfile(t0, cadence(60, 1, 60, true));
-    const plain = trace(createGovernorState(shipping), 20, () => steady(2 * VSYNC_60, 22, shipping), { config: shipping });
+    // A rate of 0 (tier 0 before T0d): just as exhausted, and nothing asked.
+    const noRate = governorConfigForProfile(t0NoFallback, cadence(60, 1, 60, true));
+    const plain = trace(createGovernorState(noRate), 20, () => steady(2 * VSYNC_60, 22, noRate), { config: noRate });
     expect(firstWindow(plain, governorExhausted)).toBe(exhausted);
-    expect(plain.every((state) => state.fallback === FALLBACK_OFF && cadenceFallbackRequest(state, shipping) === null)).toBe(true);
+    expect(plain.every((state) => state.fallback === FALLBACK_OFF && cadenceFallbackRequest(state, noRate) === null)).toBe(true);
   });
 
   it("does not engage while a resolution step waits for its verdict", () => {
@@ -552,7 +554,7 @@ interface Loop {
 function fly(machine: Machine, options: FlyOptions): Loop {
   const hz = options.hz ?? 60;
   const periodMs = 1_000 / hz;
-  const profile = options.profile ?? t0Fallback;
+  const profile = options.profile ?? t0;
   let seed = (options.seed ?? 12_345) >>> 0;
   const random = (): number => {
     seed = (Math.imul(seed, 1_103_515_245) + 12_345) >>> 0;
@@ -824,7 +826,7 @@ describe("G6 even fallback: closed loop through the real FramePacer (PR B part 2
     const cases: readonly [string, FlyOptions, boolean][] = [
       ["Match display", { seconds: 240, setting: () => "display" }, true],
       ["the 30 fps setting", { seconds: 240, setting: () => "30" }, false],
-      ["a rate of 0 (tier 0 before T0d)", { seconds: 240, profile: t0 }, true],
+      ["a rate of 0 (tier 0 before T0d)", { seconds: 240, profile: t0NoFallback }, true],
       ["no cadence (the capture harnesses)", { seconds: 240, paced: false }, true],
       ["a period never confirmed (no startup probe)", { seconds: 240, probe: false }, true],
       ["a 30 Hz display", { seconds: 240, hz: 30 }, false],

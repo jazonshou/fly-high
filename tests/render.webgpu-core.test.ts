@@ -103,24 +103,27 @@ describe("WebGPU quality profiles", () => {
     }
   });
 
-  it("refreshes tier 0's sun shadow and cloud depth every 2nd frame and every other tier's every frame, with no fallback rate above tier 0", () => {
+  it("refreshes tier 0's sun shadow and cloud depth every 2nd frame and every other tier's every frame, with an even fallback rate of 30 Hz at tier 0 only", () => {
     // PR B part 2 (T0c), on every quality × mode pair. This is the lasting
     // rule for tiers 1-3: they keep every frame, and (part 2b, G6) they have
-    // no even fallback rate. Tier 0's rate is 0 until T0d makes it 30.
-    const pairs = { lowTier: 0, above: 0 };
+    // no even fallback rate. Part 2b's T0d gives tier 0 a rate of 30 (D5).
+    const pairs = { lowTier: 0, above: 0, fallback30: 0, fallback0: 0 };
     for (const quality of ["low", "medium", "high"] as const) {
       for (const mode of ["performance", "balanced", "ultra"] as const) {
         const profile = resolveWebGpuQualityProfile(quality, mode);
         const frames = profile.tier === 0 ? 2 : 1;
         expect(profile.shadowRefreshFrames, `${quality} ${mode}`).toBe(frames);
         expect(profile.cloudDepthRefreshFrames, `${quality} ${mode}`).toBe(frames);
-        expect(profile.cadenceFallbackHz, `${quality} ${mode}`).toBe(0);
+        expect(profile.cadenceFallbackHz, `${quality} ${mode}`).toBe(profile.tier === 0 ? 30 : 0);
         if (profile.tier === 0) pairs.lowTier += 1;
         else pairs.above += 1;
+        if (profile.cadenceFallbackHz === 30) pairs.fallback30 += 1;
+        else if (profile.cadenceFallbackHz === 0) pairs.fallback0 += 1;
       }
     }
-    // Three pairs map to tier 0 and six above it, so neither side passes empty.
-    expect(pairs).toEqual({ lowTier: 3, above: 6 });
+    // Three pairs map to tier 0 and six above it, so neither side passes
+    // empty, and every pair has one of the two rates.
+    expect(pairs).toEqual({ lowTier: 3, above: 6, fallback30: 3, fallback0: 6 });
   });
 
   it("caps rendered pixels and device pixel ratio per tier (1A-6a)", () => {
