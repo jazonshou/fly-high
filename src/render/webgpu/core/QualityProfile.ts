@@ -482,6 +482,29 @@ export interface WebGpuQualityProfile {
    * Data, not a `profile.tier` branch, per the tier rule.
    */
   readonly marinaCastsShadows: boolean;
+  /**
+   * The generated buildings (`StructureSystem`, the structures plan's tier
+   * rows): the kit's full-detail closed shells are drawn within this of the
+   * camera, metres, horizontally to a building's centre, and the blocks past
+   * it, the two dithered across a 40 m band. World content (the pads, the
+   * clearings, the colliders) is the same on every tier; only the drawing
+   * changes.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly structureNearRadiusMeters: number;
+  /**
+   * The blocks out to this, metres; 0 draws none. The settlements stream
+   * only `SETTLEMENT_STREAM_WINDOW` (3.9 km) round the observer, so the
+   * system draws no further than that whatever this says: the plan's 6 and
+   * 8 km on High and Ultra wait for a longer stream, where a 10 m house is
+   * a pixel or two tall anyway.
+   */
+  readonly structureFarRadiusMeters: number;
+  /** How many buildings next to the camera are drawn open (rooms, glass); 0 opens none. */
+  readonly structureOpenBuildings: number;
+  /** The near shells cast the sun's shadows (one caster, drawn once per cascade). */
+  readonly structureNearCastsShadows: boolean;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -596,6 +619,10 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 150,
       barrierDrawRangeMeters: 300,
       marinaCastsShadows: false,
+      structureNearRadiusMeters: 250,
+      structureFarRadiusMeters: 2_500,
+      structureOpenBuildings: 2,
+      structureNearCastsShadows: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -709,6 +736,10 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 500,
       barrierDrawRangeMeters: 600,
       marinaCastsShadows: true,
+      structureNearRadiusMeters: 400,
+      structureFarRadiusMeters: 4_000,
+      structureOpenBuildings: 4,
+      structureNearCastsShadows: true,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -811,6 +842,10 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 800,
       barrierDrawRangeMeters: 900,
       marinaCastsShadows: true,
+      structureNearRadiusMeters: 600,
+      structureFarRadiusMeters: 6_000,
+      structureOpenBuildings: 6,
+      structureNearCastsShadows: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -915,6 +950,10 @@ function resolveBaseQualityProfile(
     roadRibbonRangeMeters: 1_200,
     barrierDrawRangeMeters: 1_200,
     marinaCastsShadows: true,
+    structureNearRadiusMeters: 800,
+    structureFarRadiusMeters: 8_000,
+    structureOpenBuildings: 6,
+    structureNearCastsShadows: true,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,
