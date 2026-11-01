@@ -586,6 +586,11 @@ async function installStateSampler(): Promise<boolean> {
         // PR B part 2 (G6a): urgency, the spent count and exhaustion; null before it.
         urgent: d.governorUrgent ?? null, spent: d.governorSpentWindows ?? null,
         exhausted: d.governorExhausted ?? null,
+        // PR B part 2b (G6): the even fallback's phase, failed trials, time to
+        // the next trial and shortest interval; null before it, while pinned,
+        // and wherever the governor may not ask for one. The rate it draws is
+        // the cadence's fallbackHz.
+        fallback: d.cadenceFallback ?? null,
         pendingTerrainPages: d.pendingTerrainPages, pendingDetailWork: d.pendingDetailWork,
         residentTerrainPages: d.residentTerrainPages, drawCalls: d.drawCalls,
         hydrology: h ? {

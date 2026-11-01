@@ -1,4 +1,10 @@
-import type { PresentationCadence } from "@/src/render/webgpu/core/presentationCadence";
+import type { CadenceFallbackRequest } from "@/src/render/webgpu/core/AdaptiveGovernor";
+import {
+  fallbackDivisorFor,
+  fallbackDivisorRange,
+  SLOWEST_TRUSTED_DISPLAY_PERIOD_MS,
+  type PresentationCadence,
+} from "@/src/render/webgpu/core/presentationCadence";
 import type { FrameRateSetting } from "@/src/settings";
 
 /**
@@ -9,6 +15,17 @@ import type { FrameRateSetting } from "@/src/settings";
  * 165 Hz draws 82.5, and 60-100 Hz displays draw every refresh. "30 fps"
  * uses N = round(rate/30). "Match display" draws every refresh, as the game
  * always did. A tick that does not draw only asks for the next frame.
+ *
+ * Under "60 fps" the governor may ask for an even fallback (PR B part 2b,
+ * G6): with nothing left to shed and frames still averaging under 50 fps,
+ * it asks to draw at an even rate near its tier's `cadenceFallbackHz`
+ * instead. The governor asks and the pacer decides. It applies the request
+ * only under "60 fps", only with an even divisor above its own
+ * (`fallbackDivisorRange`; near 30 fps that is 2 at 60 Hz, 2 or 3 at
+ * 75 Hz and 4 at 120 Hz), the fastest the host's frames fit
+ * (`fallbackDivisorFor`), and only on a confirmed period the governor
+ * trusts, the one its targets follow. The ticks it then skips are its own,
+ * as under "30 fps", so they measure the display the same way.
  *
  * The display period is measured from the ticks themselves, and only
  * evidence render cost cannot stretch may confirm it: clean evidence, which
@@ -453,6 +470,15 @@ export class FramePacer {
   private withdrawals = 0;
   private divisor = 1;
   private cadence: PresentationCadence | null = null;
+  /**
+   * The even fallback's divisor range (G6) and the rate, requested rate and
+   * paced divisor it was computed for: kept until one of them moves, so a
+   * tick allocates nothing.
+   */
+  private fallbackRange: readonly [number, number] | null = null;
+  private fallbackRangeHz = 0;
+  private fallbackRangeTargetHz = 0;
+  private fallbackRangePaced = 0;
   private wasPaused = false;
   private reprobeTicksLeft = 0;
   /** A re-probe or a check skipped ticks since the last drawn one. */
@@ -495,9 +521,17 @@ export class FramePacer {
   /**
    * One requestAnimationFrame tick. `paused` is true while the flight is
    * paused: on the first paused tick the pacer skips `REPROBE_TICKS` ticks
-   * of the static scene to measure the display again.
+   * of the static scene to measure the display again, whatever `fallback`
+   * asks. `fallback` is the governor's even fallback as it asked after the
+   * last frame (PR B part 2b, G6), or null for the setting's own cadence;
+   * `updateCadence` says when it applies.
    */
-  tick(nowMs: number, setting: FrameRateSetting, paused = false): FramePacerTick {
+  tick(
+    nowMs: number,
+    setting: FrameRateSetting,
+    paused = false,
+    fallback: CadenceFallbackRequest | null = null,
+  ): FramePacerTick {
     const effective = effectiveFrameRate(setting, this.pace60, this.canSkipFrames);
     if (paused && effective !== "display" && (!this.wasPaused || this.effective === "display")) this.startReprobe();
     if (!paused || effective === "display") this.reprobeTicksLeft = 0;
@@ -505,7 +539,7 @@ export class FramePacer {
     this.effective = effective;
     this.record(nowMs);
     if (this.samplesSinceEstimate >= ESTIMATE_EVERY_SAMPLES) this.estimate();
-    this.out.cadence = this.updateCadence(effective);
+    this.out.cadence = this.updateCadence(effective, fallback);
     let idle: IdleKind = DREW;
     if (this.reprobeTicksLeft > 0) {
       this.reprobeTicksLeft -= 1;
@@ -554,9 +588,11 @@ export class FramePacer {
 
   /**
    * Forget the timing (a hidden tab, a gap): the next tick draws. The adopted
-   * period, its confirmation and the last cadence are kept, and so is the
-   * last probe run's period, which is what confirmed it. A paused flight
-   * re-probes on its next tick: the display may have changed meanwhile.
+   * period, its confirmation and the last cadence are kept, a fallback's
+   * rate with it (the governor's clocks do not run while hidden, so its
+   * request comes back unchanged), and so is the last probe run's period,
+   * which is what confirmed it. A paused flight re-probes on its next tick:
+   * the display may have changed meanwhile.
    */
   reset(): void {
     this.endForcedRun();
@@ -1410,10 +1446,35 @@ export class FramePacer {
     }
   }
 
-  private updateCadence(effective: FrameRateSetting): PresentationCadence | null {
+  /**
+   * This tick's cadence, emitted only when it changes, and the divisor the
+   * skips follow. Under the governor's even fallback (G6) the divisor is the
+   * fastest in `fallbackDivisorRange` that the host's mean interval fits,
+   * `fallbackHz` the rate it draws, and `frameCapHz` stays the setting's.
+   * Only under "60 fps" ("30 fps" keeps its own round(rate / 30), which the
+   * player chose, and "Match display" draws every refresh), and only on a
+   * confirmed period the governor trusts: `cadenceFloorMs` raises its
+   * targets to the drawn interval on no other, so frames drawn at the
+   * fallback's interval there would all be judged late, and a plain cadence
+   * lets the governor's config, and with it the request, lapse.
+   */
+  private updateCadence(effective: FrameRateSetting, fallback: CadenceFallbackRequest | null): PresentationCadence | null {
     if (this.rateHz === null) return null;
     const frameCapHz = effective === "60" ? 60 : effective === "30" ? 30 : null;
-    const divisor = divisorFor(effective, this.rateHz);
+    const paced = divisorFor(effective, this.rateHz);
+    let divisor = paced;
+    const period = this.periodMs;
+    if (
+      effective === "60" && fallback !== null && this.confirmed
+      && period !== null && period <= SLOWEST_TRUSTED_DISPLAY_PERIOD_MS
+    ) {
+      const range = this.fallbackRangeFor(this.rateHz, fallback.hz, paced);
+      const chosen = range === null ? paced : fallbackDivisorFor(range, period, fallback.minIntervalMs);
+      // A malformed request (no positive rate, no finite interval) gives no
+      // finite divisor and leaves the setting's: the pacer never stops drawing.
+      if (Number.isFinite(chosen)) divisor = chosen;
+    }
+    const fallbackHz = divisor > paced ? this.rateHz / divisor : null;
     this.divisor = divisor;
     const current = this.cadence;
     if (
@@ -1422,14 +1483,28 @@ export class FramePacer {
       && current.divisor === divisor
       && current.displayPeriodMs === this.periodMs
       && current.periodConfirmed === this.confirmed
+      && (current.fallbackHz ?? null) === fallbackHz
     ) return null;
     this.cadence = Object.freeze({
       frameCapHz,
       divisor,
       displayPeriodMs: this.periodMs,
       periodConfirmed: this.confirmed,
+      // Absent, not null, without a fallback: part 1's cadences keep their shape.
+      ...(fallbackHz !== null ? { fallbackHz } : {}),
     });
     return this.cadence;
+  }
+
+  /** `fallbackDivisorRange`, computed again only when the rate, the requested rate or the paced divisor moves. */
+  private fallbackRangeFor(rateHz: number, targetHz: number, paced: number): readonly [number, number] | null {
+    if (rateHz !== this.fallbackRangeHz || targetHz !== this.fallbackRangeTargetHz || paced !== this.fallbackRangePaced) {
+      this.fallbackRangeHz = rateHz;
+      this.fallbackRangeTargetHz = targetHz;
+      this.fallbackRangePaced = paced;
+      this.fallbackRange = fallbackDivisorRange(rateHz, targetHz, paced);
+    }
+    return this.fallbackRange;
   }
 }
 
