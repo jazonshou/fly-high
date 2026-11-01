@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ColliderWorld, type ColliderContact } from "@/src/sim/colliders";
-import { CAR_COLLIDER_MATERIAL, CarColliders, regionColliders } from "@/src/sim/ground/carColliders";
+import {
+  CAR_COLLIDER_MATERIAL,
+  CAR_STRUCTURE_DETAIL_HYSTERESIS_METERS,
+  CAR_STRUCTURE_DETAIL_METERS,
+  CarColliders,
+  regionColliders,
+} from "@/src/sim/ground/carColliders";
 import { rotateVectorInto } from "@/src/sim/math";
 import {
   buildStructureColliders,
@@ -9,6 +15,7 @@ import {
 } from "@/src/sim/structures/colliders";
 import { createWorld } from "@/src/world";
 import type { InfrastructureRegion } from "@/src/world/infrastructure";
+import { STRUCTURE_KIT } from "@/src/world/structures/kit/structureKit";
 import type { StructureColliderBox } from "@/src/world/structures/structureModel";
 import { structureToWorld, type StructureRecord } from "@/src/world/structures/structureRecord";
 
@@ -105,7 +112,7 @@ describe("a building's colliders", () => {
     expect(posed.shape.radius).toBe(0.08);
   });
 
-  it("stand in as the body from the footings to the eaves until the kit lays them out", () => {
+  it("stand in as the body from the footings to the eaves where the kit's are not laid out", () => {
     const building = record();
     const [shell] = structureShellColliders(building);
     const world = new ColliderWorld();
@@ -138,5 +145,58 @@ describe("the car's colliders", () => {
     colliders.applyRegions({ version: 2, reset: false, install: [], remove: [region.key] });
     expect(colliders.regionCount).toBe(0);
     expect(colliders.colliders.size).toBe(before);
+  });
+
+  it("lay out the kit's colliders for the buildings near the car, one a step, nearest first, and box them again behind it", () => {
+    const world = createWorld();
+    const colliders = new CarColliders(world, () => 0);
+    const near = record();
+    const next = record({ id: 2, x: near.x + 60, archetype: "barn", width: 14, depth: 10, storeys: 1 });
+    const far = record({ id: 3, x: near.x + 2_000 });
+    const region: InfrastructureRegion = { key: "settlements:4:5", segments: [], structures: [next, near, far] };
+    const before = colliders.colliders.size;
+    colliders.applyRegions({ version: 1, reset: false, install: [region], remove: [] });
+    expect(colliders.colliders.size).toBe(before + 3);
+    const kit = (building: StructureRecord) => STRUCTURE_KIT.layout(building).colliders.length;
+    expect(kit(near)).toBeGreaterThan(20);
+
+    // The car 20 m off the first building: it is laid out on this step, the barn on the next.
+    const car = { x: near.x - 20, z: near.z };
+    colliders.setFocus(car.x, car.z);
+    expect(colliders.detailedBuildings).toBe(1);
+    expect(colliders.colliders.size).toBe(before + kit(near) + 2);
+    colliders.setFocus(car.x + 0.1, car.z);
+    expect(colliders.detailedBuildings).toBe(2);
+    expect(colliders.colliders.size).toBe(before + kit(near) + kit(next) + 1);
+    // Nothing more to do: the far one stays a box.
+    colliders.setFocus(car.x + 0.2, car.z);
+    expect(colliders.detail.laidOut).toBe(2);
+
+    // What is laid out is the kit's own, posed by the building frame: every one of its colliders is met where it stands.
+    const contact: ColliderContact = {
+      handle: -1, normal: { x: 0, y: 0, z: 0 }, penetration: 0, point: { x: 0, y: 0, z: 0 }, pointVelocity: { x: 0, y: 0, z: 0 }, material: 0,
+    };
+    for (const collider of STRUCTURE_KIT.layout(near).colliders) {
+      const posed = poseStructureCollider(near, collider);
+      const shape = posed.shape;
+      const at = shape.kind === "box" ? shape.center : shape.kind === "capsule" ? shape.a : null;
+      if (!at) throw new Error(`a kit collider of kind ${shape.kind}`);
+      expect(colliders.colliders.deepestSphereContact(at, 0.01, contact)).toBe(true);
+    }
+
+    // Off to the side, both past the radius but inside the hysteresis: still laid out. Past it: boxes again.
+    const side = Math.sqrt((CAR_STRUCTURE_DETAIL_METERS + 0.5 * CAR_STRUCTURE_DETAIL_HYSTERESIS_METERS) ** 2 - 30 ** 2);
+    colliders.setFocus(near.x + 30, near.z + side);
+    expect(colliders.detailedBuildings).toBe(2);
+    colliders.setFocus(near.x + 30, near.z + side + CAR_STRUCTURE_DETAIL_HYSTERESIS_METERS);
+    expect(colliders.detailedBuildings).toBe(0);
+    expect(colliders.colliders.size).toBe(before + 3);
+
+    // A region leaving takes its laid-out buildings with it.
+    colliders.setFocus(car.x, car.z);
+    expect(colliders.detailedBuildings).toBe(1);
+    colliders.applyRegions({ version: 2, reset: false, install: [], remove: [region.key] });
+    expect(colliders.colliders.size).toBe(before);
+    expect(colliders.detailedBuildings).toBe(0);
   });
 });

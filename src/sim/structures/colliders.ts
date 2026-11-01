@@ -11,9 +11,10 @@ import { structureToWorld, type StructureRecord } from "@/src/world/structures/s
  * meets. One collider group per streamed region, so a region leaves in one
  * call (`CarColliders.applyRegions`).
  *
- * Until the building kit lands (phase S3), `structureShellColliders` stands
- * in: each building's body as one solid box from its footings to its eaves,
- * which is all a car needs (it never goes in).
+ * The kit's layout is about a hundred colliders and a millisecond a
+ * building, so the car takes it only near the car (`CarColliders.setFocus`);
+ * further off `structureShellColliders` stands in: the body as one solid box
+ * from its footings to its eaves.
  */
 
 /** A building's colliders in its own frame: the kit's layout, or the shell stand-in. */
