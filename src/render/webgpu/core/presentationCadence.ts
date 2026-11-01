@@ -113,11 +113,26 @@ export function fallbackDivisorRange(
 }
 
 /**
+ * G6 (PR B part 2b, K4): a mean up to this share of a refresh over a
+ * divisor's interval still fits it. Vsync puts a window's mean on the
+ * lattice, so a host whose every frame takes N refreshes averages N
+ * refreshes give or take its timestamps' noise (26.67 ms ± a few µs at
+ * 75 Hz), and a bare ceil turned that noise into 25 fps instead of 37.5. A
+ * mean of N + 0.05 refreshes is 5% of frames one refresh longer: late at a
+ * divisor of N, but no more than a window on cadence may hold. A window
+ * drawn at N never has a frame shorter than N refreshes, so when it is off
+ * cadence its mean always reaches the next divisor.
+ */
+const FALLBACK_FIT_REFRESHES = 0.05;
+
+/**
  * G6: the fastest divisor in the range whose interval covers `minIntervalMs`
- * (the mean interval the host showed when it fell back), else the slowest.
- * So a 75 Hz host averaging 22 ms draws every 2nd refresh (37.5 fps), and
+ * (the mean interval the host showed when it fell back, to within
+ * `FALLBACK_FIT_REFRESHES`), else the slowest. So a 75 Hz host averaging
+ * 22 ms, or every frame on 26.67 ms, draws every 2nd refresh (37.5 fps), and
  * one averaging 30 ms every 3rd (25 fps).
  */
 export function fallbackDivisorFor(range: readonly [number, number], periodMs: number, minIntervalMs: number): number {
-  return Math.min(range[1], Math.max(range[0], Math.ceil(minIntervalMs / periodMs - 1e-6)));
+  // 1e-6 more keeps the 5% itself (6 of 120 frames) inside, past float noise.
+  return Math.min(range[1], Math.max(range[0], Math.ceil(minIntervalMs / periodMs - FALLBACK_FIT_REFRESHES - 1e-6)));
 }

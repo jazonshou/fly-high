@@ -1005,6 +1005,192 @@ function fellBy(before: number | null, after: number | null, share: number): boo
 }
 
 /**
+ * PR B part 2b (G6): the wait before the even fallback's first trial at the
+ * setting's cadence, then before every later one. Window time: the clocks
+ * count judged windows at `windowMs`, so a pause, a hidden tab or a host
+ * slower than its interval stretches them.
+ */
+const FALLBACK_TRIAL_AFTER_MS: readonly number[] = Object.freeze([60_000, 120_000]);
+/** PR B part 2b (G6): on-cadence windows whose pooled late share is calm pass a trial. */
+const FALLBACK_TRIAL_WINDOWS = 2;
+/** PR B part 2b (G6): failed trials that settle the fallback. */
+const FALLBACK_SETTLE_AFTER_FAILED_TRIALS = 2;
+/** PR B part 2b (G6): settled, a trial runs only from full quality, and at most this often. */
+const FALLBACK_SETTLED_TRIAL_AFTER_MS = 300_000;
+/** PR B part 2b (G6): a fallback engaged again this soon after a passed trial counts as a failed trial. */
+const FALLBACK_LATE_FAILURE_MS = 60_000;
+/** PR B part 2b (G6): this long off after a passed trial forgives the failed trials. */
+const FALLBACK_FORGIVE_MS = 240_000;
+/**
+ * PR B part 2b (G6): off-cadence windows in a row at the fallback that show
+ * the host cannot hold the divisor the pacer chose for it.
+ */
+const FALLBACK_UNHELD_WINDOWS = 2;
+
+/**
+ * PR B part 2b (G6): one judged window passes for the even fallback's
+ * clocks, where `tickRecovery` runs. Engaged or settled, the wait for the
+ * next trial runs down; off after a passed trial, the time since it runs up
+ * until it forgives the failed trials. With no fallback allowed (the setting
+ * moved away from "60 fps", or the display period lost the trust the
+ * fallback needs) the phase returns to off and the trial's clocks reset,
+ * but the failed trials and the time since the last exit stay (correctness
+ * red team): a setting toggled away and back must not restart the
+ * trial-and-fail loop the backoff exists to stop.
+ */
+function tickFallback(fallback: CadenceFallbackState, config: GovernorConfig): CadenceFallbackState {
+  if (config.cadenceFallbackHz === null && fallback.phase !== "off") {
+    return Object.freeze({ ...FALLBACK_OFF, failedTrials: fallback.failedTrials, msSinceExit: fallback.msSinceExit });
+  }
+  if (fallback.phase === "engaged" || fallback.phase === "settled") {
+    if (fallback.trialDueInMs <= 0) return fallback;
+    return Object.freeze({ ...fallback, trialDueInMs: Math.max(0, fallback.trialDueInMs - config.windowMs) });
+  }
+  if (fallback.phase === "off" && fallback.msSinceExit !== null) {
+    const since = fallback.msSinceExit + config.windowMs;
+    return since >= FALLBACK_FORGIVE_MS
+      ? Object.freeze({ ...fallback, failedTrials: 0, msSinceExit: null })
+      : Object.freeze({ ...fallback, msSinceExit: since });
+  }
+  return fallback;
+}
+
+/** PR B part 2b (G6): the wait before the next trial, after this many failed ones. */
+function fallbackTrialWait(failedTrials: number): number {
+  return FALLBACK_TRIAL_AFTER_MS[Math.min(failedTrials, FALLBACK_TRIAL_AFTER_MS.length - 1)]!;
+}
+
+/** PR B part 2b (G6): the fallback after a failed trial or an engage: settled at enough failures, else engaged. */
+function fallbackAfterFailures(fallback: CadenceFallbackState, failedTrials: number, settled: boolean): CadenceFallbackState {
+  return Object.freeze({
+    ...fallback,
+    phase: settled ? "settled" as const : "engaged" as const,
+    trialDueInMs: settled ? FALLBACK_SETTLED_TRIAL_AFTER_MS : fallbackTrialWait(failedTrials),
+    trialFrom: settled ? "settled" as const : "engaged" as const,
+    trialLates: Object.freeze([]) as readonly number[],
+    failedTrials,
+    msSinceExit: null,
+  });
+}
+
+/**
+ * PR B part 2b (G6): an off-cadence window left the governor exhausted, and
+ * the config allows a fallback: engage it. The engaging window's mean
+ * interval is the shortest the pacer may draw at, so it takes the fastest
+ * even divisor that covers it (`fallbackDivisorFor`). An engage within
+ * `FALLBACK_LATE_FAILURE_MS` of a passed trial counts as a failed trial,
+ * and at `FALLBACK_SETTLE_AFTER_FAILED_TRIALS` the fallback settles at once.
+ * Never while a resolution step waits for its verdict, the window that took
+ * it included: its probe holds the spent count until then, and one window
+ * moves one lever.
+ */
+function maybeEngageFallback(state: GovernorState, signals: GovernorSignals, config: GovernorConfig): GovernorState {
+  const fallback = state.fallback;
+  if (
+    config.cadenceFallbackHz === null
+    || fallback.phase !== "off"
+    || !governorExhausted(state)
+    || state.pendingProbe !== null
+  ) return state;
+  const late = fallback.msSinceExit !== null && fallback.msSinceExit < FALLBACK_LATE_FAILURE_MS;
+  const failedTrials = fallback.failedTrials + (late ? 1 : 0);
+  const engaged = fallbackAfterFailures(fallback, failedTrials, failedTrials >= FALLBACK_SETTLE_AFTER_FAILED_TRIALS);
+  return Object.freeze({
+    ...state,
+    fallback: Object.freeze({ ...engaged, minIntervalMs: signals.intervalMeanMs ?? 0 }),
+  });
+}
+
+/**
+ * PR B part 2b (G6): engaged, and off cadence for `FALLBACK_UNHELD_WINDOWS`
+ * windows in a row since the engaging rebase: the host cannot hold the
+ * divisor the pacer chose. The shortest interval rises to this window's
+ * mean, which moves the pacer to the slower divisor where the range has one
+ * (75, 144 and 165 Hz). Where it has none (60 Hz), nothing moves.
+ */
+function raiseFallbackInterval(state: GovernorState, signals: GovernorSignals): GovernorState {
+  const fallback = state.fallback;
+  const mean = signals.intervalMeanMs ?? null;
+  if (
+    fallback.phase !== "engaged"
+    || state.offCadenceWindows < FALLBACK_UNHELD_WINDOWS
+    || mean === null
+    || mean <= fallback.minIntervalMs + MEAN_TOLERANCE_MS
+  ) return state;
+  return Object.freeze({ ...state, fallback: Object.freeze({ ...fallback, minIntervalMs: mean }) });
+}
+
+/**
+ * PR B part 2b (G6): whether an on-cadence window may start a trial: the
+ * wait is over, and no recovery trial or resolution probe is open, so the
+ * trial judges a state no lever is about to move.
+ */
+function fallbackTrialDue(state: GovernorState): boolean {
+  return state.fallback.trialDueInMs <= 0 && state.trial === null && state.pendingProbe === null;
+}
+
+/** PR B part 2b (G6): start a trial. The pacer draws at the setting's cadence again from the next frame. */
+function startFallbackTrial(state: GovernorState): GovernorState {
+  return Object.freeze({
+    ...state,
+    calmStreak: Object.freeze([]),
+    mode: "fallback-trial" as GovernorMode,
+    fallback: Object.freeze({
+      ...state.fallback,
+      phase: "trial" as const,
+      trialLates: Object.freeze([]) as readonly number[],
+    }),
+  });
+}
+
+/**
+ * PR B part 2b (G6): a window of the trial at the setting's cadence, judged
+ * against its 60-class target and never acted on.
+ * - Off cadence and clearly so (a mean over `SPENT_MEAN_RATIO` × the
+ *   reference, under 50 fps at 60): settled at once (product red team).
+ *   The machine has just shown, fully shed, that it cannot hold 60.
+ * - Off cadence otherwise: back to the phase the trial came from, or
+ *   settled at the second failed trial.
+ * - On cadence: `FALLBACK_TRIAL_WINDOWS` windows whose pooled late share is
+ *   calm pass. Then the fallback is off, its exit clock starts, and the
+ *   spent count and the calm streak start over. On cadence but not calm,
+ *   the oldest window is dropped and one more decides.
+ */
+function judgeFallbackTrial(
+  state: GovernorState,
+  signals: GovernorSignals,
+  cadenceMet: boolean,
+  config: GovernorConfig,
+): GovernorState {
+  const fallback = state.fallback;
+  const judged: GovernorState = { ...state, mode: "fallback-trial" };
+  if (!cadenceMet) {
+    const failedTrials = fallback.failedTrials + 1;
+    const settled = isSevere(signals, config)
+      || fallback.trialFrom === "settled"
+      || failedTrials >= FALLBACK_SETTLE_AFTER_FAILED_TRIALS;
+    return Object.freeze({
+      ...judged,
+      calmStreak: Object.freeze([]),
+      fallback: fallbackAfterFailures(fallback, failedTrials, settled),
+    });
+  }
+  const trialLates = Object.freeze([...fallback.trialLates, signals.lateFraction ?? 0]);
+  if (trialLates.length < FALLBACK_TRIAL_WINDOWS) {
+    return Object.freeze({ ...judged, fallback: Object.freeze({ ...fallback, trialLates }) });
+  }
+  if (trialLates.reduce((sum, late) => sum + late, 0) / trialLates.length > CALM_LATE_FRACTION) {
+    return Object.freeze({ ...judged, fallback: Object.freeze({ ...fallback, trialLates: Object.freeze(trialLates.slice(1)) }) });
+  }
+  return Object.freeze({
+    ...judged,
+    spentWindows: 0,
+    calmStreak: Object.freeze([]),
+    fallback: Object.freeze({ ...FALLBACK_OFF, failedTrials: fallback.failedTrials, msSinceExit: 0 }),
+  });
+}
+
+/**
  * One decision per completed sample window. Returns the next state; the
  * caller applies `renderScale`/`cpuWorkLevel`/`gpuWorkLevel` differences to
  * the engine and reports downward-step effectiveness through
@@ -1028,6 +1214,7 @@ export function nextGovernorDecision(
     framesSinceScaleChange: state.framesSinceScaleChange + config.windowFrames,
     mode: "holding",
     recovery: tickRecovery(state.recovery, config),
+    fallback: tickFallback(state.fallback, config),
   };
 
   // Re-arm the resolution-insensitive latch on a window clock.
@@ -1100,6 +1287,8 @@ export function nextGovernorDecision(
   }
 
   const cadenceMet = resolved.classification === "on-cadence";
+  // G6 (part 2b): the even fallback's trial windows only decide the trial.
+  if (next.fallback.phase === "trial") return judgeFallbackTrial(next, signals, cadenceMet, config);
   next = { ...next, urgent: !cadenceMet && isUrgent(signals, config) };
   if (next.trial !== null) {
     if (!cadenceMet) return failTrial({ ...next, spentWindows: 0 }, next.trial, config);
@@ -1112,13 +1301,21 @@ export function nextGovernorDecision(
   const spentWindows = outcome === "probe"
     ? next.spentWindows
     : outcome === "spent" && isSevere(signals, config) ? next.spentWindows + 1 : 0;
-  return Object.freeze({ ...decided, spentWindows });
+  const counted: GovernorState = Object.freeze({ ...decided, spentWindows });
+  // G6 (part 2b): exhausted, the governor may engage the even fallback; engaged,
+  // a host that cannot hold the fallback's divisor asks for a slower one.
+  return counted.fallback.phase === "engaged"
+    ? raiseFallbackInterval(counted, signals)
+    : maybeEngageFallback(counted, signals, config);
 }
 
 /**
  * On cadence: never shed. After four on-cadence windows whose pooled late
  * share is calm, recover one step, GPU work first, then CPU work, then
  * resolution, each on trial and each only once its ladder's backoff is over.
+ * On the even fallback (part 2b), engaged recovers nothing and starts the
+ * trial once it is due; settled recovers as above at the fallback's rate and
+ * starts a trial only from full quality.
  */
 function onCadenceDecision(
   state: GovernorState,
@@ -1137,11 +1334,28 @@ function onCadenceDecision(
     gpuHotWindows: 0,
     mode: "on-cadence",
   };
+  const calm = calmStreak.length >= RECOVER_AFTER_CALM_WINDOWS
+    && calmStreak.reduce((sum, late) => sum + late, 0) / calmStreak.length <= CALM_LATE_FRACTION;
+  const fallback = state.fallback.phase;
+  if (fallback === "engaged") {
+    // G6 (part 2b): engaged, the governor sheds only, so the trial tests
+    // exactly the state that was exhausted. It starts from a window on the
+    // fallback's cadence, once its wait is over.
+    return fallbackTrialDue(state) ? startFallbackTrial(held) : Object.freeze(held);
+  }
   if (
-    state.trial !== null
-    || calmStreak.length < RECOVER_AFTER_CALM_WINDOWS
-    || calmStreak.reduce((sum, late) => sum + late, 0) / calmStreak.length > CALM_LATE_FRACTION
+    fallback === "settled"
+    && calm
+    && fallbackTrialDue(state)
+    && state.gpuWorkLevel === 0
+    && state.cpuWorkLevel === 0
+    && state.renderScale >= config.scaleCeiling - 1e-6
   ) {
+    // G6 (part 2b): settled, the governor recovers at the fallback's rate,
+    // and a trial runs only from full quality, so it never moves a lever.
+    return startFallbackTrial(held);
+  }
+  if (state.trial !== null || !calm) {
     return Object.freeze(held);
   }
   // Without timestamps the GPU side has no gate of its own: the trial is the guard.

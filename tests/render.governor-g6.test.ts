@@ -1,21 +1,29 @@
 import { describe, expect, it } from "vitest";
+import { FramePacer, IDLE_PROBE_LEAD_TICKS } from "../src/game/framePacer";
 import {
   CPU_WORK_MAX_LEVEL,
   EXHAUSTED_AFTER_WINDOWS,
+  FALLBACK_OFF,
   GPU_WORK_MAX_LEVEL,
+  cadenceFallbackRequest,
   createGovernorState,
   governorConfigForProfile,
   governorExhausted,
   nextGovernorDecision,
   observeRenderScaleApplication,
   rebaseGovernorState,
+  sameGovernorTargets,
   summariseIntervals,
+  type CadenceFallbackPhase,
+  type CadenceFallbackRequest,
+  type CadenceFallbackState,
   type GovernorConfig,
   type GovernorSignals,
   type GovernorState,
 } from "../src/render/webgpu/core/AdaptiveGovernor";
-import type { PresentationCadence } from "../src/render/webgpu/core/presentationCadence";
+import { sameCadence, type PresentationCadence } from "../src/render/webgpu/core/presentationCadence";
 import { frameTimingPercentile95, resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
+import type { FrameRateSetting } from "../src/settings";
 
 /**
  * PR B part 2 (K3, G6a): urgency, the spent count and the exhausted state,
@@ -293,5 +301,610 @@ describe("G6 under a pinned capture", () => {
       const states = trace(initial, 40, signals, { config: frozen, absorbed: true });
       expect(states.every((state) => state === initial), `host ${index}`).toBe(true);
     }
+  });
+});
+
+/**
+ * PR B part 2b (K4, design §21.2): the even fallback's machine, window by
+ * window. Tier 0 with the rate T0d ships (30 Hz), on a confirmed 60 Hz
+ * display under the 60 fps setting (`at60`), and on the same display while
+ * the pacer draws the fallback, every 2nd refresh (`atFallback`: a 33.3 ms
+ * target, late past 41.67 ms, 4 s windows).
+ */
+const t0 = resolveWebGpuQualityProfile("low", "balanced");
+const t0Fallback = Object.freeze({ ...t0, cadenceFallbackHz: 30 });
+const at60 = governorConfigForProfile(t0Fallback, cadence(60, 1, 60, true));
+const atFallback = governorConfigForProfile(t0Fallback, { ...cadence(60, 2, 60, true), fallbackHz: 30 });
+/** Match display on the same display: no fallback allowed. */
+const atDisplay = governorConfigForProfile(t0Fallback, { frameCapHz: null, divisor: 1, displayPeriodMs: VSYNC_60, periodConfirmed: true });
+
+/** A state with some of the fallback's fields replaced. */
+function withFallback(state: GovernorState, fallback: Partial<CadenceFallbackState>): GovernorState {
+  return Object.freeze({ ...state, fallback: Object.freeze({ ...state.fallback, ...fallback }) });
+}
+
+/** 120 frames of `ms` each, render() p95 `cpuP95Ms`, against `governorConfig`. */
+function steady(ms: number, cpuP95Ms: number, governorConfig: GovernorConfig): GovernorSignals {
+  return windowOf(Array.from({ length: 120 }, () => ms), cpuP95Ms, governorConfig);
+}
+
+describe("G6 even fallback: the machine (PR B part 2b, K4)", () => {
+  it("engages in the window that makes the governor exhausted, with that window's mean as the shortest interval", () => {
+    expect(at60.cadenceFallbackHz).toBe(30);
+    // CPU-bound (render() 22 ms, every frame a refresh late): spent once its ladder is.
+    const states = trace(createGovernorState(at60), 20, () => steady(2 * VSYNC_60, 22, at60), { config: at60 });
+    const exhausted = firstWindow(states, governorExhausted);
+    expect(exhausted).toBe(1 + CPU_WORK_MAX_LEVEL + EXHAUSTED_AFTER_WINDOWS);
+    expect(firstWindow(states, (state) => state.fallback.phase !== "off")).toBe(exhausted);
+    const engaged = states[exhausted - 1]!;
+    expect(engaged.fallback).toMatchObject({
+      phase: "engaged",
+      trialDueInMs: 60_000,
+      trialFrom: "engaged",
+      trialLates: [],
+      failedTrials: 0,
+      msSinceExit: null,
+    });
+    expect(engaged.fallback.minIntervalMs).toBeCloseTo(2 * VSYNC_60, 9);
+    expect(cadenceFallbackRequest(engaged, at60)).toEqual({ hz: 30, minIntervalMs: engaged.fallback.minIntervalMs });
+    // Tier 0 as it ships before T0d, a rate of 0: just as exhausted, and nothing asked.
+    const shipping = governorConfigForProfile(t0, cadence(60, 1, 60, true));
+    const plain = trace(createGovernorState(shipping), 20, () => steady(2 * VSYNC_60, 22, shipping), { config: shipping });
+    expect(firstWindow(plain, governorExhausted)).toBe(exhausted);
+    expect(plain.every((state) => state.fallback === FALLBACK_OFF && cadenceFallbackRequest(state, shipping) === null)).toBe(true);
+  });
+
+  it("does not engage while a resolution step waits for its verdict", () => {
+    // Every GPU rung shed, the scale free, GPU-bound (render() 9 ms): resolution
+    // is stepped twice, which holds the spent count at 4, then latched.
+    const start = Object.freeze({
+      ...createGovernorState(at60),
+      gpuWorkLevel: GPU_WORK_MAX_LEVEL,
+      offCadenceWindows: 2,
+      spentWindows: EXHAUSTED_AFTER_WINDOWS,
+    });
+    const states = trace(start, 3, () => steady(2 * VSYNC_60, 9, at60), { config: at60 });
+    for (const state of states.slice(0, 2)) {
+      expect(state.pendingProbe).not.toBeNull();
+      expect(governorExhausted(state)).toBe(true);
+      expect(state.fallback).toBe(FALLBACK_OFF);
+    }
+    // The second verdict latches and restores the scale; the window is spent, and engages.
+    expect(states[2]).toMatchObject({ pendingProbe: null, resolutionInsensitive: true, renderScale: at60.scaleCeiling });
+    expect(states[2]!.fallback.phase).toBe("engaged");
+  });
+
+  it("fails a trial on an off-cadence window: clearly (under 50 fps) settles at once, otherwise at the second failure", () => {
+    const trial = (failedTrials: number, trialFrom: "engaged" | "settled"): GovernorState => withFallback(
+      Object.freeze({ ...createGovernorState(at60), gpuWorkLevel: GPU_WORK_MAX_LEVEL }),
+      { phase: "trial", trialFrom, failedTrials },
+    );
+    // 12 of 120 frames a refresh late: a mean of 18.3 ms (55 fps). 30 of them: 20.8 ms (48 fps).
+    const narrow = windowOf(intervals(12), 5, at60);
+    const clear = windowOf(intervals(30), 5, at60);
+    expect(narrow.intervalMeanMs!).toBeLessThan(1.2 * VSYNC_60);
+    expect(clear.intervalMeanMs!).toBeGreaterThan(1.2 * VSYNC_60);
+    const cases: readonly [GovernorState, GovernorSignals, Partial<CadenceFallbackState>][] = [
+      [trial(0, "engaged"), narrow, { phase: "engaged", failedTrials: 1, trialDueInMs: 120_000, trialFrom: "engaged" }],
+      [trial(1, "engaged"), narrow, { phase: "settled", failedTrials: 2, trialDueInMs: 300_000, trialFrom: "settled" }],
+      [trial(0, "settled"), narrow, { phase: "settled", failedTrials: 1, trialDueInMs: 300_000, trialFrom: "settled" }],
+      [trial(0, "engaged"), clear, { phase: "settled", failedTrials: 1, trialDueInMs: 300_000, trialFrom: "settled" }],
+    ];
+    for (const [index, [state, signals, expected]] of cases.entries()) {
+      const next = nextGovernorDecision(state, signals, at60);
+      expect(next.fallback, `case ${index}`).toMatchObject({ ...expected, trialLates: [], msSinceExit: null });
+      // Judged, never acted on.
+      expect(next, `case ${index}`).toMatchObject({ mode: "fallback-trial", gpuWorkLevel: GPU_WORK_MAX_LEVEL, cpuWorkLevel: 0 });
+      expect(next.renderScale).toBe(at60.scaleCeiling);
+    }
+  });
+
+  it("passes a trial on two calm on-cadence windows, and judges one more when two are on cadence but not calm", () => {
+    const trial = withFallback(
+      Object.freeze({ ...createGovernorState(at60), gpuWorkLevel: GPU_WORK_MAX_LEVEL }),
+      { phase: "trial", failedTrials: 1 },
+    );
+    // 5 of 120 frames late (4.2%: on cadence, not calm) twice, then none: pooled 4.2%, then 2.1%.
+    const late = [5, 5, 0];
+    const states = trace(trial, 3, (window) => windowOf(intervals(late[window - 1]!), 5, at60), { config: at60 });
+    expect(states.map((state) => state.fallback.phase)).toEqual(["trial", "trial", "off"]);
+    expect(states.every((state) => state.mode === "fallback-trial")).toBe(true);
+    expect(states[1]!.fallback.trialLates).toHaveLength(1);
+    expect(states[2]!.fallback).toEqual({ ...FALLBACK_OFF, failedTrials: 1, msSinceExit: 0 });
+    expect(states[2]).toMatchObject({ spentWindows: 0, calmStreak: [], gpuWorkLevel: GPU_WORK_MAX_LEVEL });
+    expect(states.every((state) => cadenceFallbackRequest(state, at60) === null)).toBe(true);
+  });
+
+  it("counts an engage within 60 s of a passed trial as a failed trial, and settles at two", () => {
+    const spent = Object.freeze({
+      ...createGovernorState(at60),
+      cpuWorkLevel: CPU_WORK_MAX_LEVEL,
+      spentWindows: EXHAUSTED_AFTER_WINDOWS - 1,
+    });
+    const engage = (fallback: Partial<CadenceFallbackState>): CadenceFallbackState =>
+      nextGovernorDecision(withFallback(spent, fallback), steady(2 * VSYNC_60, 22, at60), at60).fallback;
+    // The exit clock runs first: 57 s reads 59 s when the engage is judged.
+    expect(engage({ msSinceExit: 57_000 })).toMatchObject({ phase: "engaged", failedTrials: 1, trialDueInMs: 120_000, msSinceExit: null });
+    expect(engage({ msSinceExit: 57_000, failedTrials: 1 })).toMatchObject({ phase: "settled", failedTrials: 2, trialDueInMs: 300_000 });
+    // 61 s after the exit it is a new engage: the first wait, 60 s.
+    expect(engage({ msSinceExit: 59_000 })).toMatchObject({ phase: "engaged", failedTrials: 0, trialDueInMs: 60_000 });
+    // Two failed trials kept from before (the setting toggled away and back): straight to settled.
+    expect(engage({ failedTrials: 2 })).toMatchObject({ phase: "settled", failedTrials: 2, trialFrom: "settled" });
+  });
+
+  it("returns to off where no fallback is allowed, resetting the trial's clocks but keeping the failed trials", () => {
+    expect(atDisplay.cadenceFallbackHz).toBeNull();
+    for (const phase of ["engaged", "trial", "settled"] as const) {
+      const on = withFallback(createGovernorState(at60), {
+        phase,
+        trialDueInMs: 30_000,
+        trialFrom: phase === "settled" ? "settled" : "engaged",
+        trialLates: [0],
+        failedTrials: 2,
+        minIntervalMs: 2 * VSYNC_60,
+      });
+      // The request stops at once; the phase follows at the next judged window.
+      expect(cadenceFallbackRequest(on, atDisplay), phase).toBeNull();
+      const next = nextGovernorDecision(on, steady(VSYNC_60, 5, atDisplay), atDisplay);
+      expect(next.fallback, phase).toEqual({ ...FALLBACK_OFF, failedTrials: 2 });
+    }
+  });
+
+  it("forgives the failed trials 240 s after a passed trial, under any setting", () => {
+    for (const governorConfig of [at60, atDisplay]) {
+      const exited = withFallback(createGovernorState(governorConfig), { failedTrials: 2, msSinceExit: 0 });
+      const states = trace(exited, 130, () => steady(VSYNC_60, 5, governorConfig), { config: governorConfig });
+      // 120 windows of 2 s, give or take a window to float noise.
+      const forgiven = firstWindow(states, (state) => state.fallback.failedTrials === 0);
+      expect(Math.abs(forgiven - 120)).toBeLessThanOrEqual(1);
+      expect(states.slice(0, forgiven - 1).every((state) => state.fallback.failedTrials === 2)).toBe(true);
+      expect(states[forgiven - 1]!.fallback).toEqual(FALLBACK_OFF);
+    }
+  });
+
+  it("settled, starts a trial only from full quality with a calm streak, and only once 300 s have passed", () => {
+    const settled = { phase: "settled", trialFrom: "settled", failedTrials: 2, minIntervalMs: 2 * VSYNC_60 } as const;
+    const onCadence = (): GovernorSignals => steady(2 * VSYNC_60, 5, atFallback);
+    // Due, but a GPU rung short: four calm windows bring it back on trial
+    // (window 4), two more pass that (6), and the trial waits for a calm
+    // streak of four again, which the rung's recovery cleared (8).
+    const short = withFallback(Object.freeze({ ...createGovernorState(atFallback), gpuWorkLevel: 1 }), { ...settled, trialDueInMs: 0 });
+    const states = trace(short, 10, onCadence, { config: atFallback });
+    expect(firstWindow(states, (state) => state.gpuWorkLevel === 0)).toBe(4);
+    expect(firstWindow(states, (state) => state.trial === null && state.gpuWorkLevel === 0)).toBe(6);
+    expect(firstWindow(states, (state) => state.fallback.phase === "trial")).toBe(8);
+    expect(states[7]!.mode).toBe("fallback-trial");
+    expect(states.slice(0, 7).every((state) => state.fallback.phase === "settled")).toBe(true);
+    // At full quality, the wait: 300 s of 4 s windows.
+    const waiting = withFallback(createGovernorState(atFallback), { ...settled, trialDueInMs: 300_000 });
+    const started = firstWindow(trace(waiting, 80, onCadence, { config: atFallback }), (state) => state.fallback.phase === "trial");
+    expect(Math.abs(started - 75)).toBeLessThanOrEqual(1);
+  });
+});
+
+/**
+ * PR B part 2b (K4, design §21.10): the even fallback closed through the
+ * real FramePacer, as FlightGame closes it. Each tick hands the pacer the
+ * governor's last request. A drawn tick hands the renderer the pacer's new
+ * cadence first: the config follows it, and a move of the targets rebases
+ * the state (at most once a window) and restarts the window. Then the frame
+ * is drawn, and the request is read after it. The display ticks at a fixed
+ * rate with ±0.3 ms of stamp jitter, the startup probe's quiet lead confirms
+ * its period, and a drawn frame that costs more than a refresh pushes the
+ * next tick to the vsync after it.
+ *
+ * A machine is render() and GPU time at full quality and the scale ceiling,
+ * which the ladders cut by up to `cpuSave` and `gpuSave` at their tops and
+ * the scale by its pixels' share of the GPU time, with noise of `jitter`.
+ * No step is absorbed (a display large enough for every step). The governor
+ * sees what shipping gameplay sees: no GPU timestamps, presented intervals on
+ * whole refreshes. The prototype's seconds were simulated with placeholder
+ * ladders, so these tests assert phase sequences and bounds, not seconds.
+ */
+interface Machine {
+  /** render() ms at full quality, by flight time in seconds and the fallback's phase. */
+  readonly cpuMs: (tS: number, phase: CadenceFallbackPhase) => number;
+  /** GPU ms at full quality and the scale ceiling, likewise. */
+  readonly gpuMs: (tS: number, phase: CadenceFallbackPhase) => number;
+  /** The share of each that its ladder saves at the top. */
+  readonly cpuSave: number;
+  readonly gpuSave: number;
+  /** The share of GPU time that follows the pixels. */
+  readonly pixelShare: number;
+  readonly jitter: number;
+}
+
+interface FlyOptions {
+  readonly seconds: number;
+  readonly hz?: number;
+  readonly setting?: (tS: number) => FrameRateSetting;
+  readonly profile?: Parameters<typeof governorConfigForProfile>[0];
+  /** Paused from the first time to the second: the governor held, the pacer re-probing. */
+  readonly pausedS?: readonly [number, number];
+  readonly seed?: number;
+  /** The startup probe's quiet lead, which confirms the display period (on by default). */
+  readonly probe?: boolean;
+  /** False: never hand the renderer a cadence, as the capture harnesses never do. */
+  readonly paced?: boolean;
+}
+
+interface LoopWindow {
+  readonly tS: number;
+  readonly state: GovernorState;
+  /** The config, and the cadence, the window was judged under. */
+  readonly config: GovernorConfig;
+  readonly cadence: PresentationCadence | null;
+  readonly signals: GovernorSignals;
+}
+
+interface Loop {
+  readonly windows: readonly LoopWindow[];
+  /** Each change of the fallback's phase, at the window that made it. */
+  readonly phases: readonly { readonly tS: number; readonly phase: CadenceFallbackPhase; readonly failedTrials: number }[];
+  /** Each cadence that moved into or out of the fallback, or between its divisors. */
+  readonly switches: readonly { readonly tS: number; readonly cadence: PresentationCadence }[];
+  /** The state either side of each rebase. */
+  readonly rebases: readonly { readonly tS: number; readonly before: GovernorState; readonly after: GovernorState }[];
+  /** Ticks on which the pacer was handed a request. */
+  readonly requested: number;
+}
+
+function fly(machine: Machine, options: FlyOptions): Loop {
+  const hz = options.hz ?? 60;
+  const periodMs = 1_000 / hz;
+  const profile = options.profile ?? t0Fallback;
+  let seed = (options.seed ?? 12_345) >>> 0;
+  const random = (): number => {
+    seed = (Math.imul(seed, 1_103_515_245) + 12_345) >>> 0;
+    return seed / 4_294_967_296;
+  };
+  // The sum of four uniforms, scaled to unit variance.
+  const noise = (): number => (random() + random() + random() + random() - 2) / Math.sqrt(1 / 3);
+  const stamp = (tick: number): number => Math.sin(tick * 7.1) * 0.3;
+  const pacer = new FramePacer({ pace60: true });
+  let vsync = 1_000;
+  let tick = 0;
+  if (options.probe ?? true) {
+    for (let lead = 0; lead < IDLE_PROBE_LEAD_TICKS; lead += 1) {
+      pacer.probe(vsync + stamp(tick), true);
+      tick += 1;
+      vsync += periodMs;
+    }
+  }
+  const start = vsync;
+  let cadence: PresentationCadence | null = null;
+  let pending: PresentationCadence | null = null;
+  let config = governorConfigForProfile(profile, null);
+  let state = createGovernorState(config);
+  let request: CadenceFallbackRequest | null = null;
+  let held = false;
+  let rebasedThisWindow = false;
+  let lastDrawnMs: number | null = null;
+  let intervals: number[] = [];
+  let cpus: number[] = [];
+  let requested = 0;
+  const windows: LoopWindow[] = [];
+  const phases: { tS: number; phase: CadenceFallbackPhase; failedTrials: number }[] = [];
+  const switches: { tS: number; cadence: PresentationCadence }[] = [];
+  const rebases: { tS: number; before: GovernorState; after: GovernorState }[] = [];
+  // FlightRenderer.setPresentationCadence.
+  const present = (next: PresentationCadence, tS: number): void => {
+    if (sameCadence(next, cadence)) return;
+    if (cadence !== null && (cadence.divisor !== next.divisor || cadence.fallbackHz !== next.fallbackHz)) {
+      switches.push({ tS, cadence: next });
+    }
+    cadence = next;
+    const nextConfig = governorConfigForProfile(profile, next);
+    const moved = !sameGovernorTargets(nextConfig, config);
+    config = nextConfig;
+    if (!moved || rebasedThisWindow) return;
+    const before = state;
+    state = rebaseGovernorState(state);
+    rebases.push({ tS, before, after: state });
+    intervals = [];
+    cpus = [];
+    rebasedThisWindow = true;
+  };
+  while (vsync - start < options.seconds * 1_000) {
+    const tS = (vsync - start) / 1_000;
+    const now = vsync + stamp(tick);
+    tick += 1;
+    const paused = options.pausedS !== undefined && tS >= options.pausedS[0] && tS < options.pausedS[1];
+    if (request !== null) requested += 1;
+    const paced = pacer.tick(now, options.setting?.(tS) ?? "60", paused, request);
+    if (paced.cadence !== null) pending = paced.cadence;
+    if (!paced.render) {
+      vsync += periodMs;
+      continue;
+    }
+    // FlightGame's frame, then FlightRenderer.render's governor window.
+    if (paused !== held) {
+      held = paused;
+      intervals = [];
+      cpus = [];
+    }
+    if (paced.afterReprobe) lastDrawnMs = null;
+    if (pending !== null && (options.paced ?? true)) present(pending, tS);
+    pending = null;
+    const phase = state.fallback.phase;
+    const pixels = machine.pixelShare * (state.renderScale / config.scaleCeiling) ** 2 + (1 - machine.pixelShare);
+    const cpuMs = machine.cpuMs(tS, phase) * (1 - (machine.cpuSave * state.cpuWorkLevel) / CPU_WORK_MAX_LEVEL)
+      * (1 + machine.jitter * noise());
+    const gpuMs = machine.gpuMs(tS, phase) * (1 - (machine.gpuSave * state.gpuWorkLevel) / GPU_WORK_MAX_LEVEL)
+      * pixels * (1 + machine.jitter * noise());
+    if (lastDrawnMs !== null && !held) {
+      intervals.push(Math.min(100, Math.max(1_000 / 240, now - lastDrawnMs)));
+      cpus.push(cpuMs);
+    }
+    lastDrawnMs = now;
+    if (intervals.length >= config.windowFrames) {
+      const { mean, late } = summariseIntervals(intervals, config.lateIntervalMs);
+      const signals: GovernorSignals = {
+        gpuP95Ms: null,
+        cpuP95Ms: frameTimingPercentile95(cpus),
+        intervalP95Ms: frameTimingPercentile95(intervals),
+        intervalMeanMs: mean,
+        lateFraction: late,
+        streamingBacklog: 0,
+      };
+      intervals = [];
+      cpus = [];
+      rebasedThisWindow = false;
+      const previous = state;
+      state = nextGovernorDecision(state, signals, config);
+      windows.push({ tS, state, config, cadence, signals });
+      if (state.fallback.phase !== previous.fallback.phase) {
+        phases.push({ tS, phase: state.fallback.phase, failedTrials: state.fallback.failedTrials });
+      }
+    }
+    request = cadenceFallbackRequest(state, config);
+    vsync += Math.max(1, Math.ceil((Math.max(cpuMs, gpuMs) + 0.3) / periodMs - 1e-9)) * periodMs;
+  }
+  return { windows, phases, switches, rebases, requested };
+}
+
+const flat = (ms: number) => (): number => ms;
+/**
+ * UHD 620-shaped: GPU-bound, 50 ms a frame at full quality and about 23 ms
+ * with everything shed, so it never holds 60 and always holds 30.
+ */
+const uhd620: Machine = { cpuMs: flat(10), gpuMs: flat(50), cpuSave: 0.3, gpuSave: 0.3, pixelShare: 0.85, jitter: 0.08 };
+/**
+ * Exhausted by a heavy first two minutes, then near 55 fps fully shed (GPU
+ * 32 ms at full quality, 14.8 ms shed): off cadence at 60, but not clearly.
+ */
+const narrow: Machine = { ...uhd620, gpuMs: (tS) => (tS < 120 ? 50 : 32) };
+/** A frame of `ms` whatever the governor sheds. */
+const fixed = (ms: number): Machine => ({ cpuMs: flat(5), gpuMs: flat(ms), cpuSave: 0, gpuSave: 0, pixelShare: 0, jitter: 0.05 });
+
+/** The phases a loop went through, from off. */
+function sequence(loop: Loop): CadenceFallbackPhase[] {
+  return ["off", ...loop.phases.map(({ phase }) => phase)];
+}
+
+/** When the loop entered `phase`, at or after `fromS`. */
+function entered(loop: Loop, phase: CadenceFallbackPhase, fromS = 0): number {
+  const change = loop.phases.find((candidate) => candidate.phase === phase && candidate.tS >= fromS);
+  expect(change, `${phase} after ${fromS} s`).toBeDefined();
+  return change!.tS;
+}
+
+/**
+ * Design §21.4: every rebase keeps the fallback's phase, clocks and shortest
+ * interval and clears only the trial's windows, and a host on the fallback
+ * stays exhausted through it, though it zeroes the spent count.
+ */
+function expectRebasesKeepTheFallback(loop: Loop): void {
+  for (const { tS, before, after } of loop.rebases) {
+    expect(after.fallback, `rebase at ${tS} s`).toEqual({ ...before.fallback, trialLates: [] });
+    expect(after.spentWindows).toBe(0);
+    if (before.fallback.phase !== "off") expect(governorExhausted(after), `rebase at ${tS} s`).toBe(true);
+  }
+}
+
+/** The windows judged wholly in `phase`: the window before it ended there too. */
+function judgedIn(loop: Loop, phase: CadenceFallbackPhase): LoopWindow[] {
+  return loop.windows.filter((_window, index) => index > 0 && loop.windows[index - 1]!.state.fallback.phase === phase);
+}
+
+describe("G6 even fallback: closed loop through the real FramePacer (PR B part 2b, K4)", () => {
+  it("a UHD 620-shaped host engages, settles at once when its first trial fails clearly, and recovers at 30", () => {
+    const loop = fly(uhd620, { seconds: 400 });
+    expect(sequence(loop)).toEqual(["off", "engaged", "trial", "settled"]);
+    const engagedAt = entered(loop, "engaged");
+    const trialAt = entered(loop, "trial");
+    const settledAt = entered(loop, "settled");
+    // The trial about 60 s after engaging; settled by the trial's first window, within about 70 s.
+    expect(trialAt - engagedAt).toBeGreaterThanOrEqual(56);
+    expect(trialAt - engagedAt).toBeLessThanOrEqual(70);
+    expect(settledAt - engagedAt).toBeLessThanOrEqual(75);
+    expect(loop.phases.at(-1)!.failedTrials).toBe(1);
+    // Engaged and settled, the pacer draws every 2nd refresh, judged against
+    // 33.3 ms and late half a refresh past it; the trial at the setting's
+    // cadence, against 16.67 ms, and only judged.
+    for (const window of [...judgedIn(loop, "engaged"), ...judgedIn(loop, "settled")]) {
+      expect(window.cadence).toEqual({ frameCapHz: 60, divisor: 2, displayPeriodMs: expect.closeTo(VSYNC_60, 2), periodConfirmed: true, fallbackHz: expect.closeTo(30, 2) });
+      expect(window.config.presentationTargetMs).toBeCloseTo(2 * VSYNC_60, 1);
+      expect(window.config.lateIntervalMs).toBeCloseTo(2.5 * VSYNC_60, 1);
+    }
+    const trialWindows = judgedIn(loop, "trial");
+    expect(trialWindows).toHaveLength(1);
+    expect(trialWindows[0]!.cadence).toMatchObject({ divisor: 1 });
+    expect(trialWindows[0]!.cadence?.fallbackHz).toBeUndefined();
+    expect(trialWindows[0]!.config.presentationTargetMs).toBeCloseTo(VSYNC_60, 1);
+    expect(trialWindows[0]!.signals.intervalMeanMs!).toBeGreaterThan(1.2 * VSYNC_60);
+    expect(trialWindows[0]!.state.mode).toBe("fallback-trial");
+    // Shed only while engaged, through the trial.
+    const engaged = loop.windows.filter((window) => window.tS >= engagedAt && window.tS <= settledAt);
+    for (let index = 1; index < engaged.length; index += 1) {
+      const [was, now] = [engaged[index - 1]!.state, engaged[index]!.state];
+      expect(now.gpuWorkLevel).toBeGreaterThanOrEqual(was.gpuWorkLevel);
+      expect(now.cpuWorkLevel).toBeGreaterThanOrEqual(was.cpuWorkLevel);
+      expect(now.renderScale).toBeLessThanOrEqual(was.renderScale);
+    }
+    // Exhausted from the engage on, through the rebase that zeroed the spent count.
+    expect(loop.windows.filter((window) => window.tS >= engagedAt).every((window) => governorExhausted(window.state))).toBe(true);
+    const engageRebase = loop.rebases.find((rebase) => rebase.tS >= engagedAt)!;
+    expect(engageRebase.before.spentWindows).toBeGreaterThanOrEqual(EXHAUSTED_AFTER_WINDOWS);
+    expect(engageRebase.after).toMatchObject({ spentWindows: 0, fallback: { phase: "engaged" } });
+    expect(governorExhausted(engageRebase.after)).toBe(true);
+    expectRebasesKeepTheFallback(loop);
+    // Settled, rungs come back at 30.
+    const atSettle = loop.windows.find((window) => window.tS === settledAt)!.state;
+    expect(loop.windows.at(-1)!.state.gpuWorkLevel).toBeLessThan(atSettle.gpuWorkLevel);
+  });
+
+  it("a host that narrowly fails goes engaged, trial, engaged, trial (+120 s), settled", () => {
+    const loop = fly(narrow, { seconds: 400 });
+    expect(sequence(loop)).toEqual(["off", "engaged", "trial", "engaged", "trial", "settled"]);
+    const failedAt = loop.phases[2]!.tS;
+    const secondTrialAt = entered(loop, "trial", failedAt);
+    expect(secondTrialAt - failedAt).toBeGreaterThanOrEqual(116);
+    expect(secondTrialAt - failedAt).toBeLessThanOrEqual(130);
+    expect(loop.phases.map(({ failedTrials }) => failedTrials)).toEqual([0, 0, 1, 1, 2]);
+    // Each trial failed on one window off cadence at 60, not clearly: 50 fps or more.
+    for (const window of judgedIn(loop, "trial")) {
+      expect(window.signals.lateFraction!).toBeGreaterThan(0.05);
+      expect(window.signals.intervalMeanMs!).toBeLessThanOrEqual(1.2 * VSYNC_60);
+    }
+    expectRebasesKeepTheFallback(loop);
+  });
+
+  it("a heavy stretch engages, the first trial passes, and every rung comes back after the exit", () => {
+    const heavy: Machine = { ...uhd620, cpuMs: flat(8), gpuMs: (tS) => (tS >= 20 && tS < 110 ? 40 : 11) };
+    const loop = fly(heavy, { seconds: 600 });
+    expect(sequence(loop)).toEqual(["off", "engaged", "trial", "off"]);
+    const exitedAt = loop.phases.at(-1)!.tS;
+    expect(loop.phases.at(-1)!.failedTrials).toBe(0);
+    const atExit = loop.windows.find((window) => window.tS === exitedAt)!.state;
+    expect(atExit).toMatchObject({ gpuWorkLevel: GPU_WORK_MAX_LEVEL, spentWindows: 0, calmStreak: [] });
+    expect(atExit.fallback).toEqual({ ...FALLBACK_OFF, msSinceExit: 0 });
+    expect(loop.windows.at(-1)!.state).toMatchObject({ gpuWorkLevel: 0, cpuWorkLevel: 0, renderScale: t0.renderScale });
+    // Back at the setting's cadence after the exit, and no request since.
+    expect(loop.windows.filter((window) => window.tS > exitedAt).every((window) => window.cadence?.fallbackHz === undefined)).toBe(true);
+    expectRebasesKeepTheFallback(loop);
+  });
+
+  it("alternating load switches the cadence at most twice in any 120 s from the first trial on", () => {
+    for (const [heavyS, lightS] of [[60, 60], [90, 30], [120, 120]] as const) {
+      for (const seed of [1, 7, 42]) {
+        const alternating: Machine = {
+          ...uhd620,
+          cpuMs: flat(8),
+          gpuMs: (tS) => (tS % (heavyS + lightS) < heavyS ? 40 : 11),
+        };
+        const loop = fly(alternating, { seconds: 1_200, seed });
+        const label = `${heavyS}/${lightS} s, seed ${seed}`;
+        const firstTrial = entered(loop, "trial");
+        const times = loop.switches.map(({ tS }) => tS).filter((tS) => tS >= firstTrial);
+        expect(times.length, label).toBeGreaterThanOrEqual(2);
+        for (const from of times) {
+          expect(times.filter((tS) => tS >= from && tS < from + 120).length, `${label}, from ${from.toFixed(0)} s`)
+            .toBeLessThanOrEqual(2);
+        }
+        expectRebasesKeepTheFallback(loop);
+      }
+    }
+  });
+
+  it("a host too slow for 30 stays engaged and is never trialled", () => {
+    // GPU 90 ms at full quality, 42 ms shed: every fallback frame takes three refreshes.
+    const loop = fly({ ...uhd620, gpuMs: flat(90) }, { seconds: 400 });
+    expect(sequence(loop)).toEqual(["off", "engaged"]);
+    const engaged = judgedIn(loop, "engaged");
+    expect(engaged.length).toBeGreaterThan(30);
+    expect(engaged.every((window) => window.state.mode !== "fallback-trial" && window.signals.lateFraction! > 0.05)).toBe(true);
+    // It cannot hold 2, and asks for longer: at 60 Hz the range has nothing slower.
+    expect(loop.windows.at(-1)!.state.fallback.minIntervalMs).toBeGreaterThan(2.5 * VSYNC_60);
+    expect(engaged.every((window) => window.cadence?.divisor === 2)).toBe(true);
+    expect(loop.switches).toHaveLength(1);
+  });
+
+  it("never falls back under Match display or 30 fps, at a rate of 0, without a confirmed cadence, or on a 30 or 50 Hz display", () => {
+    const cases: readonly [string, FlyOptions, boolean][] = [
+      ["Match display", { seconds: 240, setting: () => "display" }, true],
+      ["the 30 fps setting", { seconds: 240, setting: () => "30" }, false],
+      ["a rate of 0 (tier 0 before T0d)", { seconds: 240, profile: t0 }, true],
+      ["no cadence (the capture harnesses)", { seconds: 240, paced: false }, true],
+      ["a period never confirmed (no startup probe)", { seconds: 240, probe: false }, true],
+      ["a 30 Hz display", { seconds: 240, hz: 30 }, false],
+      ["a 50 Hz display (red team)", { seconds: 240, hz: 50 }, true],
+    ];
+    for (const [label, options, exhausts] of cases) {
+      const loop = fly(uhd620, options);
+      expect(sequence(loop), label).toEqual(["off"]);
+      expect(loop.requested, label).toBe(0);
+      expect(loop.windows.every((window) => window.cadence?.fallbackHz === undefined), label).toBe(true);
+      // Not vacuous: the governor is exhausted wherever the display can show the target.
+      expect(loop.windows.some((window) => governorExhausted(window.state)), label).toBe(exhausts);
+    }
+  });
+
+  it("75 Hz: 37.5 fps for a host at 22 ms a frame, 25 for one at 30, and 2 → 3 for one that cannot hold 2 (red team)", () => {
+    const rate = (loop: Loop): { divisor: number; fallbackHz: number | undefined; targetMs: number }[] =>
+      judgedIn(loop, "engaged").map(({ cadence, config }) => ({
+        divisor: cadence!.divisor,
+        fallbackHz: cadence!.fallbackHz,
+        targetMs: Math.round(config.presentationTargetMs * 100) / 100,
+      }));
+    const fits = fly(fixed(22), { seconds: 200, hz: 75 });
+    expect(sequence(fits).slice(0, 2)).toEqual(["off", "engaged"]);
+    expect(new Set(rate(fits).map((entry) => JSON.stringify(entry)))).toEqual(new Set([JSON.stringify({ divisor: 2, fallbackHz: 37.5, targetMs: 26.67 })]));
+    expect(judgedIn(fits, "engaged").every((window) => window.state.mode !== "frame-pacing" && window.signals.lateFraction! <= 0.05)).toBe(true);
+    const slower = fly(fixed(30), { seconds: 200, hz: 75 });
+    expect(new Set(rate(slower).map((entry) => JSON.stringify(entry)))).toEqual(new Set([JSON.stringify({ divisor: 3, fallbackHz: 25, targetMs: 40 })]));
+    // Heavier once on the fallback: two windows off cadence at 2, then 3, where it holds.
+    const unheld = fly({ ...fixed(22), gpuMs: (_tS, phase) => (phase === "off" ? 22 : 30) }, { seconds: 200, hz: 75 });
+    const engaged = rate(unheld);
+    expect(engaged.slice(0, 2)).toEqual([
+      { divisor: 2, fallbackHz: 37.5, targetMs: 26.67 },
+      { divisor: 2, fallbackHz: 37.5, targetMs: 26.67 },
+    ]);
+    expect(new Set(engaged.slice(2).map((entry) => JSON.stringify(entry)))).toEqual(new Set([JSON.stringify({ divisor: 3, fallbackHz: 25, targetMs: 40 })]));
+    expect(judgedIn(unheld, "engaged").slice(2).every((window) => window.signals.lateFraction! <= 0.05)).toBe(true);
+    expectRebasesKeepTheFallback(unheld);
+  });
+
+  it("144 Hz: 36 fps or 28.8 by the host's mean", () => {
+    const divisors = (loop: Loop): Set<string> => new Set(judgedIn(loop, "engaged").map(({ cadence, config }) =>
+      `${cadence!.divisor} at ${config.presentationTargetMs.toFixed(2)} ms`));
+    expect(divisors(fly(fixed(25), { seconds: 200, hz: 144 }))).toEqual(new Set(["4 at 27.78 ms"]));
+    expect(divisors(fly(fixed(30), { seconds: 200, hz: 144 }))).toEqual(new Set(["5 at 34.72 ms"]));
+  });
+
+  it("a pause delays the trial by the pause's length and keeps the phase", () => {
+    const unpaused = fly(uhd620, { seconds: 300 });
+    const engagedAt = entered(unpaused, "engaged");
+    const pause = [engagedAt + 10, engagedAt + 40] as const;
+    const paused = fly(uhd620, { seconds: 300, pausedS: pause });
+    expect(sequence(paused)).toEqual(sequence(unpaused));
+    expect(entered(paused, "engaged")).toBe(engagedAt);
+    const delay = entered(paused, "trial") - entered(unpaused, "trial");
+    expect(delay).toBeGreaterThanOrEqual(30 - 4);
+    expect(delay).toBeLessThanOrEqual(30 + 8);
+    // No window is judged while paused.
+    expect(paused.windows.some((window) => window.tS > pause[0] + 1 && window.tS < pause[1])).toBe(false);
+  });
+
+  it("a setting toggled 60 → display → 60 after two failed trials keeps them, so the engage settles at once (red team)", () => {
+    const settledAt = entered(fly(narrow, { seconds: 300 }), "settled");
+    const away = settledAt + 20;
+    const back = settledAt + 80;
+    // The heavy load comes back with the toggle, so the governor is exhausted again.
+    const loop = fly({ ...narrow, gpuMs: (tS) => (tS < 120 || tS >= away ? 50 : 32) }, {
+      seconds: back + 60,
+      setting: (tS) => (tS >= away && tS < back ? "display" : "60"),
+    });
+    expect(sequence(loop)).toEqual(["off", "engaged", "trial", "engaged", "trial", "settled", "off", "settled"]);
+    const [off, settled] = loop.phases.slice(-2);
+    expect(off!.tS).toBeGreaterThanOrEqual(away);
+    expect(off!.tS).toBeLessThan(back);
+    expect(off!.failedTrials).toBe(2);
+    expect(settled!.tS).toBeGreaterThanOrEqual(back);
+    expect(settled!.failedTrials).toBe(2);
+    // Under Match display, nothing asked and nothing drawn at the fallback.
+    expect(loop.windows.filter((window) => window.tS > off!.tS && window.tS < back).every((window) =>
+      window.cadence?.fallbackHz === undefined && window.config.cadenceFallbackHz === null)).toBe(true);
+    expectRebasesKeepTheFallback(loop);
   });
 });

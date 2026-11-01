@@ -206,6 +206,22 @@ describe("the even fallback's divisor (PR B part 2b, G6)", () => {
     expect(rate(165, 2, 32)).toBeCloseTo(27.5, 9);
   });
 
+  it("fits a mean on the lattice whatever its timestamps' noise, and up to 5% of frames a refresh longer (K4)", () => {
+    for (const [hz, paced] of [[75, 1], [144, 2], [165, 2]] as const) {
+      const range = fallbackDivisorRange(hz, 30, paced)!;
+      const periodMs = 1_000 / hz;
+      const fasterMs = range[0] * periodMs;
+      // Every frame on the faster neighbour's interval, its mean a few µs either side.
+      for (const noiseMs of [-0.01, -0.001, 0.001, 0.01]) {
+        expect(fallbackDivisorFor(range, periodMs, fasterMs + noiseMs), `${hz} Hz, ${noiseMs} ms`).toBe(range[0]);
+      }
+      // 6 frames of 120 a refresh longer: late at the faster divisor, but within the 5% a window on cadence may hold.
+      expect(fallbackDivisorFor(range, periodMs, fasterMs + (6 / 120) * periodMs), `${hz} Hz, 6 late`).toBe(range[0]);
+      // 7 of 120: off cadence there, so the slower divisor.
+      expect(fallbackDivisorFor(range, periodMs, fasterMs + (7 / 120) * periodMs), `${hz} Hz, 7 late`).toBe(range[0] + 1);
+    }
+  });
+
   it("holds only divisors above the paced one, so the setting's own cadence is never a fallback", () => {
     for (const [hz, paced, range] of FALLBACK_TABLE) {
       if (range !== null) expect(range[0], `${hz} Hz`).toBeGreaterThan(paced);
