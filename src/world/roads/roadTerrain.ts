@@ -13,8 +13,9 @@ import { roadLakeWallAt } from "./roadLakes";
  * roads go), and what that ground is made of.
  *
  * Only the home airport counts: a spawned airport depends on where the
- * aircraft flew, and the network must not, so spawned fields keep clear of
- * roads instead (`roadsVetoAirport`).
+ * aircraft flew, and the network must not, so a spawned field keeps clear of
+ * the gravel and sealed roads instead (`roadsVetoAirport`), and the tracks it
+ * overruns stop at its earthworks (`clipRoadRegionForAirports`).
  */
 
 /** What a road may not, or would rather not, be built on. */

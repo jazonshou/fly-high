@@ -4,6 +4,7 @@ import {
   prepareInfrastructureRegion,
   type InfrastructureChange,
 } from "@/src/world/infrastructure";
+import { clipRoadRegionForAirports } from "@/src/world/roads/roadAirports";
 import {
   roadStreamRegionKey,
   roadStreamRegions,
@@ -72,7 +73,11 @@ interface RoadRegionFailure {
 
 /** One frame's change to the installed roads. */
 export interface RoadStreamChange {
-  /** Regions installed this change, with the pieces and pads they were laid out from. */
+  /**
+   * Regions installed this change, with the pieces and pads they were laid
+   * out from: as installed, so clipped round the spawned airports
+   * (`clipRoadRegionForAirports`, under its own stage key) where one reaches.
+   */
   readonly installed: readonly RoadsWorkerRegionEvent[];
   /** Stage keys of the regions removed. */
   readonly removed: readonly string[];
@@ -92,18 +97,30 @@ export interface RoadStreamChange {
  *
  * `prime` holds startup until the regions round the spawn are in, so the
  * first pages bake with their roads rather than rebuilding under the car.
+ *
+ * Every region goes in clipped round the live world's spawned airports
+ * (`clipRoadRegionForAirports`: what reaches a field's earthworks is taken
+ * out, under a key of its own), and when the airports change (`setWorld`)
+ * each installed region whose clip changes is swapped for the new one, a
+ * flush's share at a time, its removal and install in one change. The
+ * bookkeeping is by region address (`roadStreamRegionKey`); the stage, the
+ * listeners and the change's `removed` see the installed regions' own keys.
  */
 export class RoadStreamController {
   private worker: RoadsWorker | null = null;
   private workerUnavailable = false;
-  /** Installed regions by stage key. */
+  /** Installed regions as installed (clipped round the spawned airports), by address key. */
   private readonly installed = new Map<string, RoadsWorkerRegionEvent>();
+  /** The same regions as the worker sent them, by address key: what a re-clip starts from. */
+  private readonly sources = new Map<string, RoadsWorkerRegionEvent>();
+  /** Installed address keys whose clip the airports changed, to swap: oldest change first. */
+  private readonly reclip = new Set<string>();
   /** Arrived since the last flush. */
   private arrived: RoadsWorkerRegionEvent[] = [];
   /**
-   * Regions dropped lately, oldest first: an observer turning back takes its
-   * roads from here rather than the worker (which skips a region it posted in
-   * the last few seconds).
+   * Regions dropped lately (as the worker sent them), oldest first: an
+   * observer turning back takes its roads from here rather than the worker
+   * (which skips a region it posted in the last few seconds).
    */
   private readonly dropped = new Map<string, RoadsWorkerRegionEvent>();
   /** Stage keys within the keep margin at the last check. */
@@ -137,19 +154,23 @@ export class RoadStreamController {
     return () => this.listeners.delete(listener);
   }
 
-  /** Regions installed now, by stage key. Observation only. */
+  /**
+   * Regions installed now, as installed, by address key (`roadStreamRegionKey`;
+   * a clipped region's own key is its `infrastructure.key`). Observation only.
+   */
   get installedRegions(): ReadonlyMap<string, RoadsWorkerRegionEvent> {
     return this.installed;
   }
 
   /**
-   * Regions still to come, to install or to drop: asked of the worker and
-   * not yet arrived, arrived and not yet flushed, or left and not yet
-   * dropped. Zero once the observer's window is in and nothing else is; a
-   * capture waits for it. Observation only.
+   * Regions still to come, to install, swap or drop: asked of the worker and
+   * not yet arrived, arrived and not yet flushed, clipped differently by the
+   * airports and not yet swapped, or left and not yet dropped. Zero once the
+   * observer's window is in and nothing else is; a capture waits for it.
+   * Observation only.
    */
   get pendingRegions(): number {
-    return this.wanted.size + this.arrived.length + this.leaving.size;
+    return this.wanted.size + this.arrived.length + this.reclip.size + this.leaving.size;
   }
 
   /** Region scans `observe` has made. Observation only. */
@@ -157,10 +178,19 @@ export class RoadStreamController {
     return this.scans;
   }
 
-  /** The live world (a spawned airport's new one shares the terrain, so its regions). */
+  /**
+   * The live world (a spawned airport's new one shares the terrain, so its
+   * regions). When its airports changed, each installed region whose clip
+   * round them changes is queued to be swapped by the next flushes.
+   */
   setWorld(world: WorldDefinition): void {
+    const airportsChanged = world.airports !== this.world.airports;
     this.world = world;
     this.scannedVersion = -1;
+    if (!airportsChanged) return;
+    for (const [key, source] of this.sources) {
+      if (this.clip(source).infrastructure.key !== this.installed.get(key)!.infrastructure.key) this.reclip.add(key);
+    }
   }
 
   /**
@@ -254,50 +284,79 @@ export class RoadStreamController {
    */
   flush(): RoadStreamChange | null {
     if (this.disposed) return null;
-    if (this.arrived.length === 0 && this.leaving.size === 0) return null;
+    if (this.arrived.length === 0 && this.reclip.size === 0 && this.leaving.size === 0) return null;
     this.stateVersion += 1;
-    const install: RoadsWorkerRegionEvent[] = [];
+    /** By address key: the region as the worker sent it, and as it goes in. */
+    const install = new Map<string, { readonly source: RoadsWorkerRegionEvent; readonly event: RoadsWorkerRegionEvent }>();
+    /** Address keys of the regions swapped out (their sources stay). */
+    const swapped: string[] = [];
     let segments = 0;
+    // Swaps first: the ground under a new field is wrong until they land.
+    const settled: string[] = [];
+    for (const key of this.reclip) {
+      const source = this.sources.get(key)!;
+      const event = this.clip(source);
+      const installed = this.installed.get(key)!;
+      if (event.infrastructure.key !== installed.infrastructure.key) {
+        const size = event.infrastructure.segments.length + installed.infrastructure.segments.length;
+        if (install.size > 0 && segments + size > ROAD_STREAM_FLUSH_SEGMENTS) break;
+        install.set(key, { source, event });
+        swapped.push(key);
+        segments += size;
+      }
+      settled.push(key);
+    }
+    for (const key of settled) this.reclip.delete(key);
     let taken = 0;
     for (; taken < this.arrived.length; taken += 1) {
-      const event = this.arrived[taken]!;
-      const key = event.infrastructure.key;
-      if (this.installed.has(key) || install.some((other) => other.infrastructure.key === key)) continue;
+      const source = this.arrived[taken]!;
+      const key = source.infrastructure.key;
+      if (this.installed.has(key) || install.has(key)) continue;
       if (!this.keep.has(key)) {
         // Arrived after the observer left it: kept like a dropped region, so
         // a return takes it from the cache instead of asking again.
-        this.cacheDropped(key, event);
+        this.cacheDropped(key, source);
         continue;
       }
+      const event = this.clip(source);
       const size = event.infrastructure.segments.length;
-      if (install.length > 0 && segments + size > ROAD_STREAM_FLUSH_SEGMENTS) break;
-      install.push(event);
+      if (install.size > 0 && segments + size > ROAD_STREAM_FLUSH_SEGMENTS) break;
+      install.set(key, { source, event });
       segments += size;
     }
     this.arrived = this.arrived.slice(taken);
-    const removed: string[] = [];
+    const left: string[] = [];
     for (const key of this.leaving) {
+      if (install.has(key)) continue;
       const size = this.installed.get(key)!.infrastructure.segments.length;
-      if (removed.length > 0 && segments + size > ROAD_STREAM_FLUSH_SEGMENTS) break;
-      removed.push(key);
+      if (left.length > 0 && segments + size > ROAD_STREAM_FLUSH_SEGMENTS) break;
+      left.push(key);
       segments += size;
     }
-    for (const key of removed) this.leaving.delete(key);
-    if (install.length === 0 && removed.length === 0) return null;
+    for (const key of left) {
+      this.leaving.delete(key);
+      this.reclip.delete(key);
+    }
+    // The stage keys out: each region left, and each swapped for a new clip.
+    const removed = [...left, ...swapped].map((key) => this.installed.get(key)!.infrastructure.key);
+    if (install.size === 0 && removed.length === 0) return null;
     const infrastructure = changeInfrastructureRegions(
       this.world,
-      install.map((event) => event.infrastructure),
+      [...install.values()].map(({ event }) => event.infrastructure),
       removed,
     );
-    for (const key of removed) {
-      const event = this.installed.get(key)!;
+    for (const key of left) {
       this.installed.delete(key);
-      this.cacheDropped(key, event);
+      this.cacheDropped(key, this.sources.get(key)!);
+      this.sources.delete(key);
     }
-    for (const event of install) this.installed.set(event.infrastructure.key, event);
+    for (const [key, { source, event }] of install) {
+      this.installed.set(key, event);
+      this.sources.set(key, source);
+    }
     // Null only in an eroded world, which has no stage: nothing to tell.
     if (!infrastructure) return null;
-    const change: RoadStreamChange = { installed: install, removed, infrastructure };
+    const change: RoadStreamChange = { installed: [...install.values()].map(({ event }) => event), removed, infrastructure };
     for (const listener of this.listeners) listener(change);
     this.resolvePrimes();
     return change;
@@ -334,6 +393,12 @@ export class RoadStreamController {
     this.primeWaiters = [];
     this.worker?.terminate();
     this.worker = null;
+  }
+
+  /** A region as the live world's spawned airports leave it (the home field never clips). */
+  private clip(source: RoadsWorkerRegionEvent): RoadsWorkerRegionEvent {
+    const airports = this.world.airports ?? [];
+    return airports.length > 1 ? clipRoadRegionForAirports(source, airports.slice(1)) : source;
   }
 
   private cacheDropped(key: string, event: RoadsWorkerRegionEvent): void {

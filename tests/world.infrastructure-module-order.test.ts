@@ -8,14 +8,16 @@ import { describe, expect, it, vi } from "vitest";
  * worker died loading, in a browser only, and no road ever streamed.
  */
 describe("the infrastructure modules", () => {
-  for (const entry of ["profiles", "road layout", "roads worker", "stage"] as const) {
+  for (const entry of ["profiles", "road layout", "roads worker", "airport spawn worker", "stage"] as const) {
     it(`load whichever comes first: the ${entry}`, async () => {
       vi.resetModules();
-      if (entry === "roads worker") {
+      if (entry === "roads worker" || entry === "airport spawn worker") {
+        // The spawn worker reaches the roads through their veto (`roadsVetoAirport`).
         const listeners: string[] = [];
         vi.stubGlobal("self", { addEventListener: (type: string) => listeners.push(type), postMessage: () => undefined });
         try {
-          await import("@/src/workers/roads.worker");
+          if (entry === "roads worker") await import("@/src/workers/roads.worker");
+          else await import("@/src/workers/airportSpawn.worker");
         } finally {
           vi.unstubAllGlobals();
         }
