@@ -1,6 +1,7 @@
 import type { StructureRecord } from "../structureRecord";
 import { type StructurePart, type StructureSurface, structureSurfaceId } from "../structureModel";
 import type { StructureIndoorLight } from "./kitIndoorLight";
+import { weatherColour, type StructureWeathering } from "./kitWeathering";
 
 /**
  * Parts to vertex arrays, Babylon-free: what the renderer uploads as it
@@ -110,6 +111,8 @@ export class StructureMeshBuilder {
   private faceIndoor = -1;
   private pose: Pose = { cos: 1, sin: 0, ox: 0, oy: 0, oz: 0 };
   private light: StructureIndoorLight | undefined;
+  private weathering: StructureWeathering | undefined;
+  private readonly aged: [number, number, number] = [0, 0, 0];
 
   constructor(capacityVertices = 4096) {
     this.positions = new Grow(capacityVertices * 3);
@@ -134,13 +137,16 @@ export class StructureMeshBuilder {
    * Append one building's parts, posed by its record, less `origin` (world
    * metres). `light` (`structureIndoorLight(kit.layout(record))`) gives
    * indoor faces a factor per vertex and cuts large ones into cells; without
-   * it every vertex takes its part's own `indoor`.
+   * it every vertex takes its part's own `indoor`. `weathering`
+   * (`structureWeathering(record)`) ages the outdoor parts' colours
+   * (`weatherColour`); without it they are drawn as the kit gives them.
    */
   append(
     record: Pick<StructureRecord, "x" | "z" | "heading" | "floorY">,
     parts: readonly StructurePart[],
     origin: { readonly x: number; readonly y: number; readonly z: number } = { x: 0, y: 0, z: 0 },
     light?: StructureIndoorLight,
+    weathering?: StructureWeathering,
   ): void {
     this.pose = {
       cos: Math.cos(record.heading),
@@ -150,6 +156,7 @@ export class StructureMeshBuilder {
       oz: record.z - origin.z,
     };
     this.light = light;
+    this.weathering = weathering;
     for (const part of parts) {
       this.setMaterial(part.surface, part.colour, part.indoor);
       if (part.kind === "box") this.appendBox(part);
@@ -184,6 +191,12 @@ export class StructureMeshBuilder {
     this.g = SRGB_TO_LINEAR[(colour >> 8) & 255]!;
     this.b = SRGB_TO_LINEAR[colour & 255]!;
     this.partIndoor = indoor;
+    if (this.weathering && indoor <= 0) {
+      const aged = weatherColour(this.r, this.g, this.b, surface, colour, this.weathering, this.aged);
+      this.r = aged[0];
+      this.g = aged[1];
+      this.b = aged[2];
+    }
   }
 
   private reserve(vertices: number, indices: number): void {

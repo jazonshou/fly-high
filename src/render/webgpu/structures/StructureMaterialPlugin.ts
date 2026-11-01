@@ -10,12 +10,13 @@ import type { Nullable } from "@babylonjs/core/types";
 import { STRUCTURE_SURFACES } from "@/src/world/structures/structureModel";
 import { structureSurfaceTextureTable } from "@/src/world/structures/kit/kitTextures";
 import {
-  STRUCTURE_LAMP_CODE_STRIDE,
   STRUCTURE_LAMP_RGB,
   STRUCTURE_LAMP_STEPS,
   STRUCTURE_NIGHT_OFF,
   type StructureNightLighting,
 } from "../../structures/structureNightLighting";
+import { STRUCTURE_CODE_LAMP_SPAN, STRUCTURE_CODE_STRIDE } from "../../structures/structureSurfaceCode";
+import { STRUCTURE_CLIMATES, STRUCTURE_WEAR_STEPS } from "@/src/world/structures/kit/kitWeathering";
 import { STRUCTURE_TEXTURE_LAYER_COUNT, structurePlaceholderTexel } from "../../structures/structureTextures";
 import { TERRAIN_SURFACE_INJECTION_ANCHORS } from "../terrain/TerrainSurfacePlugin";
 
@@ -62,10 +63,20 @@ import { TERRAIN_SURFACE_INJECTION_ANCHORS } from "../terrain/TerrainSurfacePlug
  * only that share of the sky's ambient light and reflections. So rooms need
  * no second pipeline and no shadows to be dark where they should be.
  *
- * AT NIGHT (`setNight`, `structureNightLighting.ts`). A vertex's surface is
- * a code: the surface id plus its building's lamp threshold, which the
- * vertex stage compares with the night's lit share; a lit building's faces
- * pass their id plus `STRUCTURE_LAMP_CODE_STRIDE` on. Its windows' glass
+ * A vertex's surface is a code (`structureSurfaceCode.ts`): the surface id,
+ * its building's lamp threshold and its weather (wear and climate).
+ *
+ * WEATHERED (`kitWeathering.ts`). The colours come aged from the CPU; here,
+ * on every tier, grime in the face's own metres (its UV), seeded by the
+ * part's colour (which the CPU scatters per building): mottled stains on
+ * every outside face, rain streaks down walls and dirt splashed up their
+ * foot, moss or lichen on roofs where the climate is damp, dust where it is
+ * dry, rust on corrugated iron and steel. The fine terms fade out with the
+ * pixel's footprint, so they never shimmer far off.
+ *
+ * AT NIGHT (`setNight`, `structureNightLighting.ts`). The vertex stage
+ * compares the building's lamp threshold with the night's lit share and
+ * passes the fragment stage the id, the lit flag and the weather. Its windows' glass
  * glows (the window layer's A, its glass, on the textured tiers; about the
  * same share of the quad on Low), its doorways show a lamp-lit inside, and
  * its rooms' faces add a warm lamp's light, brightest by the windows as the
@@ -122,6 +133,118 @@ export const STRUCTURE_ROOM_ALBEDO = 0.45;
 const WINDOW_ID = STRUCTURE_SURFACES.indexOf("window");
 const DOORWAY_ID = STRUCTURE_SURFACES.indexOf("doorway");
 
+const SURFACE_ID = (surface: (typeof STRUCTURE_SURFACES)[number]) => STRUCTURE_SURFACES.indexOf(surface);
+
+/** Linear colours the grime mixes towards, per climate (`STRUCTURE_CLIMATES` order). */
+export const STRUCTURE_GRIME = Object.freeze({
+  /** Moss (damp), lichen (cold), dust (dry), mould and moss (humid), on roofs. */
+  roofGrowth: [[0.075, 0.095, 0.035], [0.2, 0.22, 0.16], [0.36, 0.3, 0.22], [0.05, 0.075, 0.03]],
+  /** How much of a roof the growth may take, at full wear. */
+  roofGrowthShare: [0.6, 0.45, 0.35, 0.8],
+  /** The foot of a wall: splashed earth, green where damp, dust where dry. */
+  footTint: [[0.6, 0.58, 0.46], [0.66, 0.63, 0.58], [0.8, 0.68, 0.52], [0.5, 0.6, 0.4]],
+  /** Bare, silvered wood where paint has peeled. */
+  peeled: [0.24, 0.23, 0.21],
+  /** Rain streaks' darkening at full wear. */
+  streak: [0.45, 0.38, 0.3, 0.55],
+  /** How much paint may have peeled off wooden walls and trim, at full wear. */
+  peelShare: [0.7, 0.8, 1.0, 0.8],
+  /** Rust on iron and steel: how much, at full wear. */
+  rustShare: [0.5, 0.4, 0.35, 0.75],
+  rust: [0.2, 0.07, 0.025],
+});
+
+const vec3Table = (rows: readonly (readonly number[])[]) =>
+  `array<vec3f, 4>(${rows.map((row) => `vec3f(${row.map((value) => wgslNumber(value)).join(", ")})`).join(", ")})`;
+const floatTable = (values: readonly number[]) => `array<f32, 4>(${values.map((value) => wgslNumber(value)).join(", ")})`;
+
+if (STRUCTURE_CLIMATES.length !== 4) throw new Error("the grime tables have a row per climate");
+
+/** The grime's per-climate tables, as private arrays (indexed at run time, which a const array value is not, portably). */
+const GRIME_TABLES_WGSL = /* wgsl */ `
+var<private> structureRoofGrowth: array<vec3f, 4> = ${vec3Table(STRUCTURE_GRIME.roofGrowth)};
+var<private> structureRoofGrowthShare: array<f32, 4> = ${floatTable(STRUCTURE_GRIME.roofGrowthShare)};
+var<private> structureFootTint: array<vec3f, 4> = ${vec3Table(STRUCTURE_GRIME.footTint)};
+var<private> structureStreakShare: array<f32, 4> = ${floatTable(STRUCTURE_GRIME.streak)};
+var<private> structurePeelShare: array<f32, 4> = ${floatTable(STRUCTURE_GRIME.peelShare)};
+var<private> structureRustShare: array<f32, 4> = ${floatTable(STRUCTURE_GRIME.rustShare)};
+`;
+
+/**
+ * The grime, after the layers (so it ages the painted surface) and before
+ * the lights: only on outside faces (indoor 0, or a thin tower's -1) that
+ * are not a window or a doorway, and only on a weathered building.
+ */
+const WEATHERING_WGSL = /* wgsl */ `
+{
+  let structureWearStep = floor((structureWeatherCode + 0.5) / 4.0);
+  let structureWear = structureWearStep / ${wgslNumber(STRUCTURE_WEAR_STEPS)};
+  let structureClimate = u32(clamp(structureWeatherCode - 4.0 * structureWearStep, 0.0, 3.0));
+  let structureFitted = abs(structureSurfaceCode - ${wgslNumber(WINDOW_ID)}) < 0.5 || abs(structureSurfaceCode - ${wgslNumber(DOORWAY_ID)}) < 0.5;
+  if (structureWear > 0.0 && fragmentInputs.structureColourIndoorV.a <= ${wgslNumber(1e-3)} && !structureFitted) {
+    let structureUvM = fragmentInputs.structureUvSurfaceShareV.xy;
+    // Metres a pixel spans on the face: the fine terms fade out before they alias.
+    let structureFootprint = max(length(structureUvDx), length(structureUvDy));
+    let structureFine = 1.0 - smoothstep(0.05, 0.22, structureFootprint);
+    let structureCoarse = 1.0 - smoothstep(0.5, 2.0, structureFootprint);
+    // Seeded by the part's colour, which the CPU scatters per building.
+    let structureQ = vec3u(clamp(fragmentInputs.structureColourIndoorV.rgb, vec3f(0.0), vec3f(4.0)) * 1023.0 + 0.5);
+    let structureSeed = (structureQ.x * 73856093u) ^ (structureQ.y * 19349663u) ^ (structureQ.z * 83492791u);
+    let structureShift = vec2f(f32(structureSeed & 255u), f32((structureSeed >> 8u) & 255u));
+    let structureGeomNormal = normalize(fragmentInputs.vNormalW);
+    // Mottled stains everywhere outside.
+    let structureStain = structureNoise(structureUvM * 0.45 + structureShift, structureSeed) * 0.6
+      + structureNoise(structureUvM * 1.3 + structureShift.yx, structureSeed + 1u) * 0.4;
+    var structureAged = surfaceAlbedo * mix(1.0, 0.62 + 0.55 * structureStain, structureWear * structureCoarse);
+    let structurePainted = abs(structureSurfaceCode - ${wgslNumber(SURFACE_ID("clapboard"))}) < 0.5
+      || abs(structureSurfaceCode - ${wgslNumber(SURFACE_ID("boards"))}) < 0.5
+      || abs(structureSurfaceCode - ${wgslNumber(SURFACE_ID("trim"))}) < 0.5;
+    if (structurePainted) {
+      // Paint peeled off wood in flakes and patches, the grey boards showing.
+      let structurePeel = structureNoise(vec2f(structureUvM.x * 2.6, structureUvM.y * 1.4) + structureShift.yx, structureSeed + 7u) * 0.55
+        + structureNoise(structureUvM * 7.0 + structureShift, structureSeed + 8u) * 0.45;
+      let structurePeelMask = smoothstep(0.74 - 0.14 * structureWear, 0.8 - 0.1 * structureWear, structurePeel)
+        * structureFine * structureWear * structurePeelShare[structureClimate];
+      structureAged = mix(structureAged, vec3f(${STRUCTURE_GRIME.peeled.map((value) => wgslNumber(value)).join(", ")}), structurePeelMask);
+    }
+    if (abs(structureGeomNormal.y) < 0.35) {
+      // Walls: rain streaks, narrow across and long down, and the foot splashed with earth.
+      let structureStreak = structureNoise(vec2f(structureUvM.x * 3.5, structureUvM.y * 0.22) + structureShift, structureSeed + 2u);
+      structureAged *= 1.0 - smoothstep(0.55, 0.9, structureStreak) * structureFine * structureWear
+        * structureStreakShare[structureClimate];
+      let structureFoot = 1.0 - smoothstep(-0.1, 0.55 + 0.35 * structureStain, structureUvM.y);
+      structureAged = mix(structureAged, structureAged * structureFootTint[structureClimate],
+        structureFoot * structureWear);
+    }
+    // Moss and lichen take shingle, tile and slate; iron roofs rust instead.
+    let structureRoof = structureSurfaceCode > ${wgslNumber(SURFACE_ID("shingle") - 0.5)} && structureSurfaceCode < ${wgslNumber(SURFACE_ID("slate") + 0.5)};
+    if (structureRoof && structureGeomNormal.y > 0.2) {
+      // Roofs: moss or lichen (dust where dry) in small tufts, gathered where a
+      // broad field says the roof stays damp; the tufts blur to their mean far off.
+      let structureGrowthField = structureNoise(structureUvM * 0.45 + structureShift, structureSeed + 3u);
+      let structureTufts = mix(0.5, structureNoise(structureUvM * 4.5 + structureShift.yx, structureSeed + 4u), structureFine);
+      let structureGrowthMask = smoothstep(0.55, 0.85, structureGrowthField * (0.55 + 0.6 * structureWear) + structureTufts * 0.45)
+        * structureRoofGrowthShare[structureClimate] * structureWear;
+      structureAged = mix(structureAged, structureRoofGrowth[structureClimate], structureGrowthMask);
+    }
+    let structureIron = abs(structureSurfaceCode - ${wgslNumber(SURFACE_ID("metal"))}) < 0.5 || abs(structureSurfaceCode - ${wgslNumber(SURFACE_ID("steel"))}) < 0.5;
+    if (structureIron) {
+      // Rust in streaks down the sheet (v runs up a roof's slope and a wall),
+      // where a broad field says the galvanising has gone.
+      let structureRustField = structureNoise(structureUvM * 0.5 + structureShift.yx, structureSeed + 5u);
+      let structureRustStreaks = mix(0.5, structureNoise(vec2f(structureUvM.x * 3.2, structureUvM.y * 0.4) + structureShift, structureSeed + 6u), structureFine);
+      let structureRust = smoothstep(0.55, 0.85, structureRustField * (0.5 + 0.6 * structureWear) + structureRustStreaks * 0.45)
+        * structureRustShare[structureClimate] * structureWear;
+      structureAged = mix(structureAged, vec3f(${STRUCTURE_GRIME.rust.map((value) => wgslNumber(value)).join(", ")}), structureRust);
+#ifdef STRUCTURE_TEXTURED
+      structureRoughness = mix(structureRoughness, 0.92, structureRust);
+#endif
+    }
+    surfaceAlbedo = structureAged;
+  }
+}
+`;
+
 /** A centre no building has. */
 const NO_CENTRE = 1e9;
 
@@ -141,7 +264,8 @@ attribute structureUv: vec2f;
 // rgb: the part's colour; a: the indoor factor.
 varying structureColourIndoorV: vec4f;
 // xy: the face's UV (metres); z: the surface id, plus the code stride if the
-// building is lit; w: the share of the building drawn (0..1).
+// building is lit, plus twice the stride times its weather; w: the share of
+// the building drawn (0..1).
 varying structureUvSurfaceShareV: vec4f;
 
 fn structureDropped(centre: vec2f) -> bool {
@@ -179,14 +303,17 @@ const VERTEX_UPDATE_POSITION = /* wgsl */ `
     // The whole building to one point: its triangles have no area.
     positionUpdated = vec3f(0.0, -100000.0, 0.0);
   }
-  // The surface code: the id, and the building's lamp threshold in steps.
-  let structureSteps = floor((vertexInputs.structureSurface + 0.5) / ${wgslNumber(STRUCTURE_LAMP_CODE_STRIDE)});
-  let structureSurfaceId = vertexInputs.structureSurface - ${wgslNumber(STRUCTURE_LAMP_CODE_STRIDE)} * structureSteps;
+  // The surface code: the id, the building's lamp threshold in steps and its weather.
+  let structureTotal = floor((vertexInputs.structureSurface + 0.5) / ${wgslNumber(STRUCTURE_CODE_STRIDE)});
+  let structureWeather = floor((structureTotal + 0.5) / ${wgslNumber(STRUCTURE_CODE_LAMP_SPAN)});
+  let structureSteps = structureTotal - ${wgslNumber(STRUCTURE_CODE_LAMP_SPAN)} * structureWeather;
+  let structureSurfaceId = vertexInputs.structureSurface - ${wgslNumber(STRUCTURE_CODE_STRIDE)} * structureTotal;
   let structureLit = select(0.0, 1.0,
     (structureSteps / ${wgslNumber(STRUCTURE_LAMP_STEPS)} < uniforms.structureNight.x) && (structureRole < 2.5));
   vertexOutputs.structureColourIndoorV = vec4f(vertexInputs.structureColour, vertexInputs.structureIndoor);
   vertexOutputs.structureUvSurfaceShareV = vec4f(vertexInputs.structureUv,
-    structureSurfaceId + ${wgslNumber(STRUCTURE_LAMP_CODE_STRIDE)} * structureLit, structureShare);
+    structureSurfaceId + ${wgslNumber(STRUCTURE_CODE_STRIDE)} * structureLit + ${wgslNumber(2 * STRUCTURE_CODE_STRIDE)} * structureWeather,
+    structureShare);
 }
 `;
 
@@ -213,6 +340,26 @@ ${surfaceTableWgsl()}
 #endif
 varying structureColourIndoorV: vec4f;
 varying structureUvSurfaceShareV: vec4f;
+${GRIME_TABLES_WGSL}
+// Value noise for the grime: an integer hash per lattice cell, smoothly
+// blended (i32 to u32 is a bit cast, so negative cells hash too).
+fn structureHash(cell: vec2i, seed: u32) -> f32 {
+  var h = (u32(cell.x) * 0x8da6b343u) ^ (u32(cell.y) * 0xd8163841u) ^ (seed * 0xcb1ab31fu);
+  h = (h ^ (h >> 13u)) * 0x5bd1e995u;
+  h = h ^ (h >> 15u);
+  return f32(h & 0xffffffu) / 16777216.0;
+}
+
+fn structureNoise(p: vec2f, seed: u32) -> f32 {
+  let cell = vec2i(floor(p));
+  let f = fract(p);
+  let s = f * f * (3.0 - 2.0 * f);
+  let a = structureHash(cell, seed);
+  let b = structureHash(cell + vec2i(1, 0), seed);
+  let c = structureHash(cell + vec2i(0, 1), seed);
+  let d = structureHash(cell + vec2i(1, 1), seed);
+  return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
+}
 
 // 2-14's ordered 8x8 Bayer threshold in [1/128, 127/128] (the detail
 // plugins' construction), on render-target pixels.
@@ -230,10 +377,11 @@ fn structureBayer8(pixel: vec2u) -> f32 {
 // The dither, first: a building in the handoff band keeps the pixels its
 // share owns. The far blocks keep the complement of the shells' pixels.
 const FRAGMENT_MAIN_BEGIN = /* wgsl */ `
-#ifdef STRUCTURE_TEXTURED
-// Before anything can discard or branch: the textures' gradients and frame.
+// Before anything can discard or branch: the UV's gradients (the grime's
+// footprint, the textures' mips) and, textured, the position's for the frame.
 let structureUvDx = dpdx(fragmentInputs.structureUvSurfaceShareV.xy);
 let structureUvDy = dpdy(fragmentInputs.structureUvSurfaceShareV.xy);
+#ifdef STRUCTURE_TEXTURED
 let structurePositionDx = dpdx(fragmentInputs.vPositionW);
 let structurePositionDy = dpdy(fragmentInputs.vPositionW);
 #endif
@@ -254,9 +402,11 @@ let structurePositionDy = dpdy(fragmentInputs.vPositionW);
 
 const FRAGMENT_BEFORE_LIGHTS = /* wgsl */ `
 surfaceAlbedo = fragmentInputs.structureColourIndoorV.rgb;
-// The building's lamps (the vertex stage's lit flag) and the bare surface id.
-let structureLitFace = fragmentInputs.structureUvSurfaceShareV.z > ${wgslNumber(STRUCTURE_LAMP_CODE_STRIDE - 0.5)};
-let structureSurfaceCode = fragmentInputs.structureUvSurfaceShareV.z - select(0.0, ${wgslNumber(STRUCTURE_LAMP_CODE_STRIDE)}, structureLitFace);
+// The building's weather, its lamps (the vertex stage's lit flag) and the bare surface id.
+let structureWeatherCode = floor((fragmentInputs.structureUvSurfaceShareV.z + 0.5) / ${wgslNumber(2 * STRUCTURE_CODE_STRIDE)});
+let structureCodeRest = fragmentInputs.structureUvSurfaceShareV.z - ${wgslNumber(2 * STRUCTURE_CODE_STRIDE)} * structureWeatherCode;
+let structureLitFace = structureCodeRest > ${wgslNumber(STRUCTURE_CODE_STRIDE - 0.5)};
+let structureSurfaceCode = structureCodeRest - select(0.0, ${wgslNumber(STRUCTURE_CODE_STRIDE)}, structureLitFace);
 // The share of a window face that is glass: the window layer's A where it is drawn.
 var structureGlassMask = ${wgslNumber(STRUCTURE_UNTEXTURED_GLASS_SHARE)};
 #ifdef STRUCTURE_TEXTURED
@@ -297,6 +447,7 @@ var structureCavity = 1.0;
   }
 }
 #endif
+${WEATHERING_WGSL}
 // Inside: no sun or moon, and only the indoor share of the sky.
 let structureInside = fragmentInputs.structureColourIndoorV.a > ${wgslNumber(1e-3)};
 let structureSunShare = select(1.0, 0.0, structureInside);

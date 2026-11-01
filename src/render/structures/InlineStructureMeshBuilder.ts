@@ -18,6 +18,8 @@ export type StructureSetArrays = (
   records: readonly StructureRecord[],
   originX: number,
   originZ: number,
+  /** False draws the buildings as new, unweathered (the shots' "before"). */
+  weathered?: boolean,
 ) => StructureMeshBuild;
 
 /** The building kit's levels: blocks far, closed shells near, open buildings with their glass. */

@@ -12,6 +12,7 @@ import { structureTexturePlans, type StructureTexturePlans } from "../../src/ren
 import { STRUCTURE_NIGHT_OFF } from "../../src/render/structures/structureNightLighting";
 import { StructureSystem, type StructureMeshBuilder, type StructureSetName } from "../../src/render/webgpu/structures/StructureSystem";
 import type { StructureRecord } from "../../src/world/structures/structureRecord";
+import { structureWeathering } from "../../src/world/structures/kit/kitWeathering";
 
 /**
  * The structures' material and meshes on the adapter: the far blocks, the
@@ -27,6 +28,8 @@ import type { StructureRecord } from "../../src/world/structures/structureRecord
  * materials compile reading flat placeholders, and the kit's arrays, once
  * in, add detail around the parts' colours without moving their mean. At
  * night a lit building's windows glow warm, and with the share at 0 none do.
+ * And a weathered building is aged over much of it, unevenly, against the
+ * same building as new, its tone kept.
  */
 
 const CANVAS = 240;
@@ -102,7 +105,8 @@ describe("the structures on the GPU", () => {
       new HemisphericLight("sky", Vector3.Up(), scene).intensity = 1.5;
 
       const builder = new InlineStructureMeshBuilder((set, records, originX, originZ) => {
-        const arrays = structureSetArrays(set, records, originX, originZ).opaque;
+        // As new: the weathering's grime would tint the sets' colours.
+        const arrays = structureSetArrays(set, records, originX, originZ, false).opaque;
         const colour = new Float32Array(arrays.colour.length);
         for (let index = 0; index < colour.length; index += 3) colour.set(SET_COLOURS[set], index);
         return { opaque: { ...arrays, colour }, glass: null };
@@ -258,7 +262,8 @@ describe("the structures on the GPU", () => {
       new HemisphericLight("sky", new Vector3(0.3, 1, 0.2), scene).intensity = 1.5;
 
       // The kit's builds as they are; the arrays held until the test lets them land.
-      const inline = new InlineStructureMeshBuilder();
+      // As new: the weathering's own grain is not what this measures.
+      const inline = new InlineStructureMeshBuilder((set, records, originX, originZ) => structureSetArrays(set, records, originX, originZ, false));
       let land: (plans: StructureTexturePlans) => void = () => {};
       const builder: StructureMeshBuilder = {
         build: (set, records, originX, originZ) => inline.build(set, records, originX, originZ),
@@ -449,4 +454,103 @@ describe("the structures on the GPU", () => {
       canvas.remove();
     }
   }, 60_000);
+  it("weather a building: much of it aged, unevenly, against the same building as new, its tone kept", async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = CANVAS;
+    canvas.height = CANVAS;
+    document.body.appendChild(canvas);
+    const engine = new WebGPUEngine(canvas, { antialias: false, enableAllFeatures: false, setMaximumLimits: false });
+    const errors: string[] = [];
+    try {
+      await engine.initAsync();
+      engine.compatibilityMode = false;
+      const device = (engine as unknown as { _device: GPUDevice })._device;
+      device.addEventListener("uncapturederror", (event) => {
+        errors.push(String((event as GPUUncapturedErrorEvent).error.message));
+      });
+      const scene = new Scene(engine);
+      scene.useRightHandedSystem = true;
+      scene.performancePriority = ScenePerformancePriority.Intermediate;
+      scene.clearColor = new Color4(0, 0, 0, 1);
+      // A long-neglected barn (an outpost's), from the front at 45 m: its closed shell.
+      const camera = new FreeCamera("front", new Vector3(18, 5, 41), scene);
+      camera.fov = 0.45;
+      camera.minZ = 0.5;
+      camera.maxZ = 500;
+      camera.setTarget(new Vector3(0, 3, 0));
+      scene.activeCamera = camera;
+      new HemisphericLight("sky", new Vector3(0.3, 1, 0.5), scene).intensity = 1.4;
+      const barn: StructureRecord = { ...record(7, 0, 0), archetype: "barn", width: 14, depth: 10, settlementKind: "outpost" };
+      expect(structureWeathering(barn).wear).toBeGreaterThan(0.6);
+
+      const measure = async (weathered: boolean, structureTextureEdge: 0 | 256) => {
+        const inline = new InlineStructureMeshBuilder((set, records, originX, originZ) => structureSetArrays(set, records, originX, originZ, weathered));
+        const system = new StructureSystem(scene, {
+          structureNearRadiusMeters: 400,
+          structureFarRadiusMeters: 2_000,
+          structureOpenBuildings: 0,
+          structureNearCastsShadows: false,
+          structureTextureEdge,
+        }, inline);
+        system.setFloatingOrigin(0, 0);
+        system.apply([{ key: "settlements:0:0", structures: [barn] }], []);
+        const at = { x: 18, y: 5, z: 41 };
+        for (let pass = 0; pass < 12; pass += 1) {
+          system.update(at);
+          await Promise.resolve();
+          await Promise.resolve();
+          engine.beginFrame();
+          scene.render();
+          engine.endFrame();
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        }
+        system.update(at);
+        engine.beginFrame();
+        scene.render();
+        engine.endFrame();
+        const copy = document.createElement("canvas");
+        copy.width = CANVAS;
+        copy.height = CANVAS;
+        const context = copy.getContext("2d")!;
+        context.drawImage(canvas, 0, 0);
+        const pixels = context.getImageData(0, 0, CANVAS, CANVAS).data;
+        system.dispose();
+        const luminance = new Float32Array(CANVAS * CANVAS);
+        for (let index = 0; index < luminance.length; index += 1) {
+          luminance[index] = 0.2126 * pixels[index * 4]! + 0.7152 * pixels[index * 4 + 1]! + 0.0722 * pixels[index * 4 + 2]!;
+        }
+        return luminance;
+      };
+
+      for (const edge of [0, 256] as const) {
+        const asNew = await measure(false, edge);
+        const aged = await measure(true, edge);
+        expect(errors.join(" | ")).toBe("");
+        let drawn = 0;
+        let changed = 0;
+        let sumNew = 0;
+        let sumAged = 0;
+        let spread = 0;
+        for (let index = 0; index < asNew.length; index += 1) {
+          if (asNew[index]! < 1 && aged[index]! < 1) continue;
+          drawn += 1;
+          sumNew += asNew[index]!;
+          sumAged += aged[index]!;
+          const difference = aged[index]! - asNew[index]!;
+          spread += difference * difference;
+          if (Math.abs(difference) > 6) changed += 1;
+        }
+        expect(drawn).toBeGreaterThan(5_000);
+        // Stains, streaks, peeled boards and rust over much of it, unevenly...
+        expect(changed / drawn, `edge ${edge}`).toBeGreaterThan(0.3);
+        expect(Math.sqrt(spread / drawn), `edge ${edge}`).toBeGreaterThan(8);
+        // ...aged, not repainted: its tone moves a little.
+        expect(Math.abs(sumAged - sumNew) / sumNew, `edge ${edge}`).toBeLessThan(0.3);
+      }
+      scene.dispose();
+    } finally {
+      engine.dispose();
+      canvas.remove();
+    }
+  }, 120_000);
 });

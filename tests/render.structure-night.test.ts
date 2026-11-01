@@ -3,7 +3,6 @@ import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
 import { KIT_STRUCTURE_ARRAYS } from "@/src/render/structures/InlineStructureMeshBuilder";
 import {
-  STRUCTURE_LAMP_CODE_STRIDE,
   STRUCTURE_LAMP_KIND,
   STRUCTURE_LAMP_NEVER,
   STRUCTURE_LAMP_RGB,
@@ -11,13 +10,20 @@ import {
   STRUCTURE_NIGHT_OFF,
   STRUCTURE_SCENE_UNIT_TO_NITS,
   STRUCTURE_WORK_LIT_SHARE,
-  structureLampCode,
   structureLampLit,
   structureLampThreshold,
   structureLitFraction,
   structureNightLighting,
 } from "@/src/render/structures/structureNightLighting";
+import {
+  STRUCTURE_CODE_LAMP_SPAN,
+  STRUCTURE_CODE_STRIDE,
+  STRUCTURE_WEATHER_CODES,
+  decodeStructureSurfaceCode,
+  structureSurfaceCode,
+} from "@/src/render/structures/structureSurfaceCode";
 import { SCENE_UNIT_TO_NITS } from "@/src/render/webgpu/nature/EnvironmentDirector";
+import { structureWeatherCode, structureWeathering } from "@/src/world/structures/kit/kitWeathering";
 import { STRUCTURE_MATERIAL_WGSL, type StructureMaterialPlugin } from "@/src/render/webgpu/structures/StructureMaterialPlugin";
 import { StructureSystem, type StructureMeshBuilder } from "@/src/render/webgpu/structures/StructureSystem";
 import { STRUCTURE_SURFACES } from "@/src/world/structures/structureModel";
@@ -119,34 +125,50 @@ describe("the buildings' lights by the clock", () => {
   });
 });
 
-describe("the lamp codes on the buildings' vertices", () => {
-  it("carry each building's threshold over its surface ids, on every opaque vertex and no glass", () => {
+describe("the surface codes on the buildings' vertices", () => {
+  it("pack the id, the lamp threshold and the weather exactly in a float32, at every extreme", () => {
+    const largest = structureSurfaceCode(STRUCTURE_CODE_STRIDE - 1, STRUCTURE_LAMP_NEVER, STRUCTURE_WEATHER_CODES - 1);
+    expect(largest).toBeLessThan(2 ** 24);
+    for (const id of [0, 7, STRUCTURE_CODE_STRIDE - 1]) {
+      for (const threshold of [0, 1 / STRUCTURE_LAMP_STEPS, 0.5, 1, STRUCTURE_LAMP_NEVER]) {
+        for (const weather of [0, 1, 37, STRUCTURE_WEATHER_CODES - 1]) {
+          const code = structureSurfaceCode(id, threshold, weather);
+          expect(Math.fround(code)).toBe(code);
+          expect(decodeStructureSurfaceCode(code)).toEqual({ id, lampThreshold: threshold, weather });
+        }
+      }
+    }
+    expect(STRUCTURE_CODE_LAMP_SPAN).toBe(STRUCTURE_LAMP_STEPS * STRUCTURE_LAMP_NEVER + 1);
+    expect(() => structureSurfaceCode(STRUCTURE_CODE_STRIDE, 0, 0)).toThrow(RangeError);
+    expect(() => structureSurfaceCode(0, 0, STRUCTURE_WEATHER_CODES)).toThrow(RangeError);
+  });
+
+  it("carry each building's threshold and weather over its surface ids, on every opaque vertex and no glass", () => {
     const house = record(11, 100, 50);
     const barn = record(12, -40, 300, { archetype: "barn", storeys: 1 });
     const mast = record(13, 300, -80, { archetype: "mast", width: 3, depth: 3, storeys: 1 });
-    expect(STRUCTURE_SURFACES.length).toBeLessThan(STRUCTURE_LAMP_CODE_STRIDE);
+    expect(STRUCTURE_SURFACES.length).toBeLessThan(STRUCTURE_CODE_STRIDE);
     for (const set of ["far", "near", "open"] as const) {
       const { opaque, glass } = KIT_STRUCTURE_ARRAYS(set, [house, barn, mast], 0, 0);
       for (let v = 0; v < opaque.surface.length; v += 1) {
         const x = opaque.centre[v * 2]!;
         const building = [house, barn, mast].find((r) => Math.abs(r.x - x) < 1e-3)!;
-        const threshold = structureLampThreshold(building);
-        const code = opaque.surface[v]!;
-        const id = code - STRUCTURE_LAMP_CODE_STRIDE * Math.round(threshold * STRUCTURE_LAMP_STEPS);
-        expect(Number.isInteger(id) && id >= 0 && id < STRUCTURE_SURFACES.length).toBe(true);
-        expect(code).toBe(structureLampCode(id, threshold));
-        // The vertex stage's decode, in float32.
-        const steps = Math.floor((Math.fround(code) + 0.5) / STRUCTURE_LAMP_CODE_STRIDE);
-        expect(steps / STRUCTURE_LAMP_STEPS).toBe(threshold);
-        expect(Math.fround(code) - STRUCTURE_LAMP_CODE_STRIDE * steps).toBe(id);
+        const decoded = decodeStructureSurfaceCode(opaque.surface[v]!);
+        expect(Number.isInteger(decoded.id) && decoded.id >= 0 && decoded.id < STRUCTURE_SURFACES.length).toBe(true);
+        expect(decoded.lampThreshold).toBe(structureLampThreshold(building));
+        expect(decoded.weather).toBe(structureWeatherCode(structureWeathering(building)));
       }
-      if (glass) expect(glass.surface.every((code) => code < STRUCTURE_LAMP_CODE_STRIDE)).toBe(true);
+      if (glass) expect(glass.surface.every((code) => code < STRUCTURE_CODE_STRIDE)).toBe(true);
     }
+    // Unweathered (the shots' "before"): the lamp threshold alone.
+    const { opaque } = KIT_STRUCTURE_ARRAYS("near", [house], 0, 0, false);
+    expect(new Set([...opaque.surface].map((code) => decodeStructureSurfaceCode(code).weather))).toEqual(new Set([0]));
   });
 
   it("are decoded and compared in the vertex stage, and lit faces glow at the window, the doorway and indoors", () => {
     const vertex = STRUCTURE_MATERIAL_WGSL.vertexUpdatePosition;
-    expect(vertex).toContain(`floor((vertexInputs.structureSurface + 0.5) / ${STRUCTURE_LAMP_CODE_STRIDE}.0)`);
+    expect(vertex).toContain(`floor((vertexInputs.structureSurface + 0.5) / ${STRUCTURE_CODE_STRIDE}.0)`);
+    expect(vertex).toContain(`floor((structureTotal + 0.5) / ${STRUCTURE_CODE_LAMP_SPAN}.0)`);
     expect(vertex).toContain(`structureSteps / ${STRUCTURE_LAMP_STEPS}.0 < uniforms.structureNight.x`);
     // The glass role (3) never lights.
     expect(vertex).toContain("(structureRole < 2.5)");
@@ -158,6 +180,17 @@ describe("the lamp codes on the buildings' vertices", () => {
     expect(STRUCTURE_MATERIAL_WGSL.fragmentBeforeLights).toContain(
       `if (structureId == ${STRUCTURE_SURFACES.indexOf("window")}u) { structureGlassMask = structureDetailTexel.a; }`,
     );
+  });
+
+  it("weather only the outside of a weathered building, never its windows or doorways, finer terms fading with distance", () => {
+    const lights = STRUCTURE_MATERIAL_WGSL.fragmentBeforeLights;
+    expect(lights).toContain(`floor((fragmentInputs.structureUvSurfaceShareV.z + 0.5) / ${2 * STRUCTURE_CODE_STRIDE}.0)`);
+    expect(lights).toContain("if (structureWear > 0.0 && fragmentInputs.structureColourIndoorV.a <= 0.001 && !structureFitted) {");
+    expect(lights).toContain("let structureFine = 1.0 - smoothstep(0.05, 0.22, structureFootprint);");
+    // The UV's gradients are taken on every tier, before anything can discard.
+    const begin = STRUCTURE_MATERIAL_WGSL.fragmentMainBegin;
+    expect(begin.indexOf("dpdx(fragmentInputs.structureUvSurfaceShareV.xy)")).toBeLessThan(begin.indexOf("#ifdef STRUCTURE_TEXTURED"));
+    expect(begin.indexOf("dpdx(fragmentInputs.structureUvSurfaceShareV.xy)")).toBeLessThan(begin.indexOf("{ discard; }"));
   });
 
   it("are lit by the night the system hands every role", () => {

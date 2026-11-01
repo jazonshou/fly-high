@@ -10,7 +10,7 @@ import type { StructureArchetype, StructureRecord } from "@/src/world/structures
  * from its id and its archetype) and is lit while the share is above it, so
  * a building stays lit or dark as the share moves past it and the same
  * buildings light up every evening. The threshold rides the building's
- * vertices (`structureLampCode`) and the light points read the same value,
+ * vertices (`structureSurfaceCode`) and the light points read the same value,
  * so a house's windows and its light point far off agree.
  *
  * WHEN. The share is the clock's (who is home and awake: most of the evening,
@@ -152,15 +152,4 @@ export function structureLampThreshold(record: Pick<StructureRecord, "id" | "arc
 /** Whether a building with this threshold is lit at this share: the shader's comparison, in the same float32 values. */
 export function structureLampLit(threshold: number, litFraction: number): boolean {
   return threshold < Math.fround(litFraction);
-}
-
-/**
- * The surface attribute's stride: a vertex carries its surface id plus this
- * times the threshold's steps (`structureLampCode`); ids are below it. The
- * largest code, 31 + 32 x 4,096, is far inside a float32's exact integers.
- */
-export const STRUCTURE_LAMP_CODE_STRIDE = 32;
-
-export function structureLampCode(surfaceId: number, threshold: number): number {
-  return surfaceId + STRUCTURE_LAMP_CODE_STRIDE * Math.round(threshold * STRUCTURE_LAMP_STEPS);
 }
