@@ -94,6 +94,34 @@ export function structureBodyDistance(record: StructureRecord, point: StructureP
   return Math.hypot(ex, ey, ez);
 }
 
+/** Enterable buildings whose body is mostly open air (outside stairs, a platform): the camera is never indoors in them. */
+const STRUCTURE_OPEN_AIR_BODIES: ReadonlySet<StructureRecord["archetype"]> = new Set<StructureRecord["archetype"]>([
+  "watchtower",
+  "lookout",
+]);
+
+/** The indoor share ramps in over this far inside the walls, metres: a doorway is about half in. */
+export const STRUCTURE_INDOOR_RAMP_METERS = 1;
+
+/**
+ * How far indoors a point is in a building: 0 outside its body (its
+ * footprint, from its floor to its eaves), rising smoothly to 1 a metre in
+ * from the walls. A pure function of the point, so a captured frame is too.
+ */
+export function structureIndoorShare(record: StructureRecord, point: StructurePoint): number {
+  if (!ENTERABLE_STRUCTURE_ARCHETYPES.has(record.archetype) || STRUCTURE_OPEN_AIR_BODIES.has(record.archetype)) return 0;
+  if (point.y < record.floorY || point.y > record.floorY + record.storeys * STOREY_METERS) return 0;
+  const c = Math.cos(record.heading);
+  const s = Math.sin(record.heading);
+  const dx = point.x - record.x;
+  const dz = point.z - record.z;
+  const lx = dx * c - dz * s;
+  const lz = dx * s + dz * c;
+  const inside = Math.min(record.width * 0.5 - Math.abs(lx), record.depth * 0.5 - Math.abs(lz));
+  const t = Math.min(1, Math.max(0, inside / STRUCTURE_INDOOR_RAMP_METERS));
+  return t * t * (3 - 2 * t);
+}
+
 export class StructureSets {
   private ranges: StructureDrawRanges;
   private storeVersion = -1;

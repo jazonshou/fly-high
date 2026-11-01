@@ -22,6 +22,8 @@ import {
   STRUCTURE_BASE_ROUGHNESS,
   StructureMaterialPlugin,
   STRUCTURE_MATERIAL_WGSL,
+  STRUCTURE_WINDOW_GROUND_ALBEDO,
+  STRUCTURE_WINDOW_GROUND_SHARE,
 } from "@/src/render/webgpu/structures/StructureMaterialPlugin";
 import {
   StructureSystem,
@@ -261,6 +263,21 @@ describe("the structure renderer", () => {
     ]);
     expect(STRUCTURE_MATERIAL_WGSL.fragmentBeforeFinalColor).toContain("finalIrradiance *= structureSkyShare;");
     expect(STRUCTURE_MATERIAL_WGSL.fragmentBeforeFinalColor).toContain("finalRadianceScaled *= structureSkyShare;");
+  });
+
+  it("lights rooms by day with the sunlit ground's bounce through their windows, inside faces only", () => {
+    // Gathered from each directional light before the indoor cut, from its own colour and height ...
+    const lights = Object.values(STRUCTURE_MATERIAL_WGSL.fragmentInjections)[0]!;
+    expect(lights.indexOf("structureGroundLight += diffuse$2.rgb * max(-light$2.vLightData.y, 0.0);"))
+      .toBeLessThan(lights.indexOf("diffuse$2 = vec4f(diffuse$2.rgb * structureSunShare"));
+    expect(STRUCTURE_MATERIAL_WGSL.fragmentBeforeLights).toContain("var structureGroundLight = vec3f(0.0);");
+    // ... and added, at the sky's indoor share, where the sky's light is, inside faces alone.
+    const final = STRUCTURE_MATERIAL_WGSL.fragmentBeforeFinalColor;
+    const bounce = final.slice(final.indexOf("if (structureInside) {"), final.indexOf("#endif"));
+    expect(bounce).toContain("finalIrradiance += structureGroundLight");
+    expect(bounce).toContain("structureSkyShare");
+    const tint = [...bounce.matchAll(/vec3f\(([^)]*)\)/g)].map((match) => match[1]!.split(",").map(Number))[0]!;
+    STRUCTURE_WINDOW_GROUND_ALBEDO.forEach((albedo, k) => expect(tint[k]).toBeCloseTo(albedo * STRUCTURE_WINDOW_GROUND_SHARE, 6));
   });
 });
 

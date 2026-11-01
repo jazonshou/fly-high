@@ -6,6 +6,8 @@ import {
   STRUCTURE_OPEN_BUILD_METERS,
   STRUCTURE_OPEN_DRAW_METERS,
   structureBodyDistance,
+  STRUCTURE_INDOOR_RAMP_METERS,
+  structureIndoorShare,
   StructureSets,
   type StructureDrawRanges,
 } from "@/src/render/structures/StructureSets";
@@ -166,5 +168,25 @@ describe("the structure sets", () => {
     expect(structureBodyDistance(building, out(0, 2 * 2.9 + 4, 0))).toBeCloseTo(4, 9);
     expect(structureBodyDistance(building, out(5 + 3, 1, 4 + 4))).toBeCloseTo(5, 9);
     expect(STRUCTURE_OPEN_DRAW_METERS).toBeLessThan(STRUCTURE_OPEN_BUILD_METERS);
+  });
+
+  it("puts the camera indoors only inside an enterable building's walls, from its floor to its eaves", () => {
+    const building = record(1, 100, -40, { heading: 1.1 });
+    const at = (lx: number, ly: number, lz: number) => structureToWorld(building, lx, ly, lz, { x: 0, y: 0, z: 0 });
+    // Well inside, at eye height on either storey: fully indoors.
+    expect(structureIndoorShare(building, at(0, 1.6, 0))).toBe(1);
+    expect(structureIndoorShare(building, at(2, 2.9 + 1.6, -1))).toBe(1);
+    // In the doorway's plane (the wall) and outside it: out.
+    expect(structureIndoorShare(building, at(5, 1.6, 0))).toBeCloseTo(0, 9);
+    expect(structureIndoorShare(building, at(6, 1.6, 0))).toBe(0);
+    // Half the ramp in from a wall: half in, smoothly.
+    expect(structureIndoorShare(building, at(0, 1.6, 4 - STRUCTURE_INDOOR_RAMP_METERS / 2))).toBeCloseTo(0.5, 9);
+    // Under the floor (a house on posts) and over the eaves: out.
+    expect(structureIndoorShare(building, at(0, -0.5, 0))).toBe(0);
+    expect(structureIndoorShare(building, at(0, 2 * 2.9 + 0.5, 0))).toBe(0);
+    // Not a building you can be inside of, or one that is mostly open air.
+    for (const archetype of ["mast", "tank", "watchtower", "lookout"] as const) {
+      expect(structureIndoorShare({ ...building, archetype }, at(0, 1.6, 0))).toBe(0);
+    }
   });
 });

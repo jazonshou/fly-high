@@ -23,6 +23,7 @@ import { StructureRecordStore, type StructureHidden, type StructureRegionRecords
 import {
   STRUCTURE_HANDOFF_BAND_METERS,
   StructureSets,
+  structureIndoorShare,
   type StructureDrawRanges,
   type StructurePoint,
 } from "../../structures/StructureSets";
@@ -303,6 +304,16 @@ export class StructureSystem {
     this.smoke?.setExtraWisps(0, null);
     this.smoke = sink;
     this.smokeDirty = true;
+  }
+
+  /**
+   * How far indoors the camera is (`structureIndoorShare`) in the buildings
+   * drawn open now, as of the last update: 0 outside, 1 well inside.
+   */
+  indoorShare(camera: StructurePoint): number {
+    let share = 0;
+    for (const record of this.drawnOpen) share = Math.max(share, structureIndoorShare(record, camera));
+    return share;
   }
 
   /** Chimneys smoking now. */

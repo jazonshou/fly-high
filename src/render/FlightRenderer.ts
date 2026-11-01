@@ -21,6 +21,7 @@ import type {
 import type { EnvironmentClock } from "@/src/world/environmentClock";
 import {
   exposureForState,
+  indoorExposureGain,
   horizontalIlluminanceLux,
   resolveEnvironmentState,
   SCENE_UNIT_TO_NITS,
@@ -3308,7 +3309,13 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         name: "structures",
         phase: "visibility",
         after: ["world-page-visibility"],
-        execute: () => this.structures?.update(this.cameraWorld),
+        execute: () => {
+          const structures = this.structures;
+          if (!structures) return;
+          structures.update(this.cameraWorld);
+          // Indoors, the eye adapts to the room (`indoorExposureGain`); 1 outside, so no outdoor frame moves.
+          this.atmosphere.setIndoorExposure(indoorExposureGain(structures.indoorShare(this.cameraWorld)));
+        },
       });
     }
     // 2-10: the shared-planar-water-reflection node is retired with its

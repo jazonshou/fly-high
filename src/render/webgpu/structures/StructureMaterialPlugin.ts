@@ -127,6 +127,17 @@ export const STRUCTURE_GLASS_ROUGHNESS = 0.06;
 /** The share of a window quad that glows on Low, which has no window layer (about the layer's mean glass). */
 export const STRUCTURE_UNTEXTURED_GLASS_SHARE = STRUCTURE_GLASS_SHARE;
 
+/**
+ * Daylight that comes in through a room's windows off the sunlit ground
+ * outside (and its yard, and the next house's wall): a window's lower half
+ * sees ground, not sky, so a room facing a sunny yard is lit by its bounce as
+ * much as by the sky. Inside faces take, at their indoor factor, this share
+ * of a sunlit ground's radiance (the sun's own light on the ground, at this
+ * albedo: grass, gravel and earth, a little warm). Outside faces never do.
+ */
+export const STRUCTURE_WINDOW_GROUND_SHARE = 0.5;
+export const STRUCTURE_WINDOW_GROUND_ALBEDO: readonly [number, number, number] = Object.freeze([0.2, 0.18, 0.13]);
+
 /** A lit building's doorway (the dark inside, on its shells) at this share of a lamp-lit room's light, on a room of this albedo. */
 export const STRUCTURE_DOORWAY_LAMP_SHARE = 0.5;
 export const STRUCTURE_ROOM_ALBEDO = 0.45;
@@ -451,6 +462,8 @@ var structureCavity = 1.0;
 ${WEATHERING_WGSL}
 // Inside: no sun or moon, and only the indoor share of the sky.
 let structureInside = fragmentInputs.structureColourIndoorV.a > ${wgslNumber(1e-3)};
+// The sun's and moon's light on level ground, gathered as their lights are cut (the window bounce).
+var structureGroundLight = vec3f(0.0);
 let structureSunShare = select(1.0, 0.0, structureInside);
 let structureSkyShare = select(1.0, clamp(fragmentInputs.structureColourIndoorV.a, 0.0, 1.0), structureInside);
 `;
@@ -458,6 +471,7 @@ let structureSkyShare = select(1.0, clamp(fragmentInputs.structureColourIndoorV.
 const FRAGMENT_INJECTIONS = Object.freeze({
   [TERRAIN_SURFACE_INJECTION_ANCHORS.sunLightColor]: /* wgsl */ `$1
 #ifdef DIRLIGHT$2
+structureGroundLight += diffuse$2.rgb * max(-light$2.vLightData.y, 0.0);
 diffuse$2 = vec4f(diffuse$2.rgb * structureSunShare, diffuse$2.a);
 #endif
 `,
@@ -479,6 +493,11 @@ const FRAGMENT_BEFORE_FINAL_COLOR = /* wgsl */ `
 #ifdef REFLECTION
 finalIrradiance *= structureSkyShare;
 finalRadianceScaled *= structureSkyShare;
+// Inside: the sunlit ground's light through the windows, at the same share as the sky's.
+if (structureInside) {
+  finalIrradiance += structureGroundLight * vec3f(${STRUCTURE_WINDOW_GROUND_ALBEDO.map((c) => wgslNumber(c * STRUCTURE_WINDOW_GROUND_SHARE)).join(", ")})
+    * surfaceAlbedo * (structureSkyShare * uniforms.vLightingIntensity.x) * aoOut.ambientOcclusionColor;
+}
 #endif
 #endif
 if (structureLitFace) {
