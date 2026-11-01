@@ -3,7 +3,10 @@ import { createWorld, type WorldDefinition } from "@/src/world";
 import {
   clearInfrastructureRegions,
   infrastructureCapsuleDistance,
+  infrastructureIndex,
   infrastructureNear,
+  infrastructurePlantExclusions,
+  infrastructurePlantFactor,
   installInfrastructureRegions,
   type InfrastructureSegment,
 } from "@/src/world/infrastructure";
@@ -362,8 +365,11 @@ describe("a settlement's buildings", () => {
     try {
       let plinths = 0;
       let posts = 0;
+      const plants = infrastructurePlantExclusions(infrastructureIndex(world));
       for (const { record } of buildings) {
         for (const { x, z } of bodyPoints(record)) {
+          // No tree or grass blade inside a building.
+          expect(infrastructurePlantFactor(plants, x, z)).toBe(0);
           const h = sampleTerrainHeight(world, x, z);
           if (record.foundation === "plinth") {
             // The pad's level ground, the plinth on it and the footing below.

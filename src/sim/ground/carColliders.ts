@@ -25,6 +25,7 @@ import { homeMarina } from "@/src/world/marina";
 import type { AirportDefinition, WorldDefinition } from "@/src/world/types";
 import { ColliderWorld, type ColliderShape } from "../colliders";
 import { addMarinaColliders } from "../marina/colliders";
+import { buildStructureColliders } from "../structures/colliders";
 import type { Quaternion } from "../types";
 
 /**
@@ -163,15 +164,27 @@ export function guardrailColliders(
   return out;
 }
 
-/** A streamed region's colliders for the car: its guardrails. */
+/**
+ * A streamed region's colliders for the car: its guardrails, and its
+ * buildings (`buildStructureColliders`), whose fences give like a guardrail.
+ */
 export function regionColliders(
   region: Readonly<InfrastructureRegion>,
   groundHeight: CarColliderGroundHeight,
 ): readonly CarRegionCollider[] {
   const rails = region.rails;
-  if (!rails || rails.length === 0) return [];
+  const structures = region.structures;
+  if ((!rails || rails.length === 0) && (!structures || structures.length === 0)) return [];
   const out: CarRegionCollider[] = [];
-  for (const rail of rails) guardrailColliders(rail, groundHeight, out);
+  if (rails) for (const rail of rails) guardrailColliders(rail, groundHeight, out);
+  if (structures) {
+    for (const collider of buildStructureColliders(structures)) {
+      out.push({
+        shape: collider.shape,
+        material: collider.material === "fence" ? CAR_COLLIDER_MATERIAL.guardrail : CAR_COLLIDER_MATERIAL.building,
+      });
+    }
+  }
   return out;
 }
 
