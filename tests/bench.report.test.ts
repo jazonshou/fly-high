@@ -88,7 +88,7 @@ describe(`the ${BENCH_SCHEMA} report`, () => {
     expect(full.schema).toBe(BENCH_SCHEMA);
     expect(full.benchVersion).toBe(BENCH_VERSION);
     // The one deliberate literal: a schema bump is a decision, made here.
-    expect(BENCH_SCHEMA).toBe("fly-high.bench/3");
+    expect(BENCH_SCHEMA).toBe("fly-high.bench/4");
     expect(Object.keys(full.run).sort()).toEqual([
       "finishedAt", "firstLoad", "id", "ignoredParams", "nonStandard", "plan", "repeatability", "settingsKeyUnchanged",
       "startedAt", "status", "tierLabels", "userLabel", "verdict", "voidReasons", "warnings", "workload",
@@ -113,15 +113,18 @@ describe(`the ${BENCH_SCHEMA} report`, () => {
     });
     expect(full.run.plan.frameRate).toBe(DEFAULT_SETTINGS.frameRate);
     expect(full.run.nonStandard).toBe(false);
+    const cadence = { frameCapHz: FRAME_PACING_ENABLED ? 60 : null, divisor: 1, displayHz: 60, confirmed: true, fallbackHz: null };
     expect(full.steps[0]!.result!.pacing).toEqual({
       setting: "60",
       effective: effective60,
-      cadenceAtFlightStart: { frameCapHz: FRAME_PACING_ENABLED ? 60 : null, divisor: 1, displayHz: 60, confirmed: true },
-      cadenceAtEnd: { frameCapHz: FRAME_PACING_ENABLED ? 60 : null, divisor: 1, displayHz: 60, confirmed: true },
+      cadenceAtFlightStart: cadence,
+      cadenceAtEnd: cadence,
       cadenceChanges: 0,
       rafTicks: 4_500,
       renderedFrames: expect.any(Number),
       pacedHz: 60,
+      fallbackFrames: 0,
+      fallbackShare: 0,
       governorConfigAtFlightStart: full.profiles["1"]!.governorConfig,
     });
   });
@@ -170,17 +173,19 @@ describe(`the ${BENCH_SCHEMA} report`, () => {
     expect(badValues(parsed)).toEqual([]);
   });
 
-  it("downloads a four-step run in at most 125 KB, with no per-frame array", () => {
+  it("downloads a four-step run in at most 130 KB, with no per-frame array", () => {
     // The plan's 60 KB came before the ground window, the compile split, the
     // long-animation-frame scripts and the detail snapshots. This fixture
-    // measures about 122 KB: 27 KB a step, of which the governor decisions
-    // are 6.5 KB and the per-second table 3.9 KB, and 14 KB of profiles and
-    // device. `/3`'s urgency, spent and exhaustion slots added 3.3 KB to the
-    // 118.5 KB of `/2`, which left the old 120 KB bound no room. The download
-    // has no paste limit (S4); the bound is there to catch a per-frame array,
-    // which would add about 27 KB a step.
+    // measures about 126 KB: 28 KB a step, of which the governor decisions
+    // are 7 KB and the per-second table 3.9 KB, and 15 KB of profiles,
+    // device and definitions. `/3`'s urgency, spent and exhaustion slots
+    // added 3.3 KB to the 118.5 KB of `/2`; `/4`'s fallback phase slot, its
+    // five events per window and the pacing's fallback fields added 2.7 KB
+    // to the 123 KB of `/3`, which left the old 125 KB bound no room. The
+    // download has no paste limit (S4); the bound is there to catch a
+    // per-frame array, which would add about 27 KB a step.
     const text = reportToJson(full);
-    expect(text.length).toBeLessThanOrEqual(125_000);
+    expect(text.length).toBeLessThanOrEqual(130_000);
     for (const step of full.steps) expect(reportToJson(step).length).toBeLessThanOrEqual(30_000);
     // A realistic run, not an empty one: about fifty governor decisions a step.
     expect(full.steps[0]!.result!.governor.decisions.length).toBeGreaterThanOrEqual(40);
@@ -405,6 +410,27 @@ describe("the verdict", () => {
     const slow = computeRepeatability([slowFirst, steps[1]!, steps[2]!, slowLast])!;
     expect(slow).toMatchObject({ window: "early-check", first: 5, last: 4.9, passed: true });
     expect(verdictOf(withSteps(run, [slowFirst, steps[1]!, steps[2]!, slowLast])).verdict).toBe("valid");
+  });
+
+  it("voids when the even fallback ran in one check flight and not the other (G6)", () => {
+    // Low first and last, where the governor may fall back to an even 30 fps.
+    const low = benchRunRecord({ steps: [{ tierIndex: 0 }, { tierIndex: 0 }] });
+    const fellBack = (step: BenchStepRecord, fallbackFrames: number): BenchStepRecord => ({
+      ...step,
+      result: { ...step.result!, pacing: { ...step.result!.pacing, fallbackFrames, fallbackShare: fallbackFrames / 4_000 } },
+    });
+    const [lowFirst, lowLast] = low.steps as [BenchStepRecord, BenchStepRecord];
+    expect(verdictOf(low)).toEqual({ verdict: "valid", voidReasons: [] });
+    const once = withSteps(low, [lowFirst, fellBack(lowLast, 1_200)]);
+    expect(verdictOf(once)).toEqual({ verdict: "void", voidReasons: ["fallback in 1 of 2 flights"] });
+    expect(verdictText(report(once).run)).toBe(
+      "Void: fallback in 1 of 2 flights. Close other programs, let the computer cool, and run it again.",
+    );
+    // Both fell back: the two compare like with like.
+    expect(verdictOf(withSteps(low, [fellBack(lowFirst, 900), fellBack(lowLast, 1_200)])).verdict).toBe("valid");
+    // A flight between them does not count: only the two the run checks itself with.
+    const between = benchStepRecord(1, { tierIndex: 0 });
+    expect(verdictOf(withSteps(low, [lowFirst, fellBack(between, 600), lowLast])).verdict).toBe("valid");
   });
 
   it("is unchecked when the plan does not start and end on the same tier", () => {

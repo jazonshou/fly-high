@@ -3693,17 +3693,24 @@ divides the refresh rate and 62.8 ms at 144 Hz),
 stutters over 50 and 100 ms, `render()`'s main-thread time, pipelines
 compiled, long tasks, the governor's decisions and shares, and, in pinned
 mode, GPU milliseconds. Each governor decision records whether its window
-was urgent, the spent count and whether the governor was exhausted; the
-events count urgent sheds and exhausted windows. Each flight also records
-its pacing: the frame-rate setting and what the build does with it, the
-cadence at the first and last frames (the divisor, the display rate, and
-whether the rate was confirmed on ticks that drew nothing or a faster period
-than any frame could make), and the bench's rAF ticks against the frames the
-game rendered. Missed refreshes
-are counted against the paced cadence, and the vsync buckets count paced
-slots. At every setting the game waits for its display probe's quiet lead
-before it creates the renderer (0.3 s, up to 1 s where the first frames come
-late or stall), which builds before PR B did not; the start-up trace charges
+was urgent, the spent count, whether the governor was exhausted and the
+even fallback's phase; the events count urgent sheds, exhausted windows,
+and the fallback's engages, trials, failed trials, exits and settles. Each
+flight also records its pacing: the frame-rate setting and what the build
+does with it, the cadence at the first and last frames (the divisor, the
+display rate, whether the rate was confirmed on ticks that drew nothing or a
+faster period than any frame could make, and the fallback's rate while it
+holds), and the bench's rAF ticks against the frames the game rendered.
+Each frame is judged against the cadence in force when it was drawn: frames
+drawn under the fallback count against its interval, are neither hitches
+nor missed refreshes, and are reported as `pacing.fallbackFrames` and
+`fallbackShare`. Missed refreshes are counted against that paced cadence,
+and the vsync buckets count its slots. A standard flight is 75 s, and the
+fallback takes longer than that to engage on the machines it is for, so
+`fallbackShare` usually reads 0; the bench is not the instrument for the
+fallback. At every setting the game waits for its display probe's quiet
+lead before it creates the renderer (0.3 s, up to 1 s where the first
+frames come late or stall), which builds before PR B did not; the start-up trace charges
 that wait to its first stage, WebGPU capability discovery, so that stage
 reads up to 0.3 s longer than before PR B, and up to 1 s on such a start.
 Each tier gets a plain label, the worse of its two windows:
@@ -3721,9 +3728,11 @@ Medium first and last, and **valid** means those two flights' mean fps agree
 within 10% and the window kept its size. The two are compared over the air
 window, or, when either stopped early, over the stretch the early check
 reads (3 s to 20 s), which both flew. **Void** means they did not (a
-throttling laptop, another program, a window resized between them); those
-two are the only rules that void a run, and every number is still in the
-report.
+throttling laptop, another program, a window resized between them). A run
+in which only some check flights fell back carries the reason "fallback in
+k of n flights" and is void too, because their fps compare two cadences,
+not the machine with itself. Those three are the only rules that void a
+run, and every number is still in the report.
 **Incomplete** is a run that was stopped or whose check flight did not
 finish, and **unchecked** a plan of one flight, or one that does not start
 and end on the same tier. Everything else worth knowing (a display under 50 Hz, a refresh rate
@@ -3733,13 +3742,17 @@ numbers, and the first flight in the tab is marked, because it pays the
 cold shader and pipeline caches.
 
 **Where reports go.** **Download report (.json)** saves the full report
-(`fly-high.bench/3`, `fly-high-bench-<vendor>-<time>.json`; a `/2` report
-has no urgency, spent-window or exhaustion fields, judged the pixel cap at
-the applied scale, and its governor shed without urgency, so `/2` and `/3`
-steps are not comparable; a `/1` report was flown without frame pacing); it
-is the one to keep. **Open GitHub issue** copies a compact report to the
-clipboard and opens a prefilled issue to paste it into, and **Copy short
-summary** gives a few lines for a chat. A report kept as evidence is
+(`fly-high.bench/4`, `fly-high-bench-<vendor>-<time>.json`; a `/3` report
+has no fallback fields and judged every frame against the cadence at the
+flight's first frame, and its tier-0 governor could not fall back, so `/3`
+and `/4` steps are not comparable at tier 0; the profiles of a `/4` report
+carry `cadenceFallbackHz`, so their fingerprints differ from `/3`'s; a `/2`
+report has no urgency, spent-window or exhaustion fields, judged the pixel
+cap at the applied scale, and its governor shed without urgency, so `/2`
+and `/3` steps are not comparable; a `/1` report was flown without frame
+pacing); it is the one to keep. **Open GitHub issue** copies a compact
+report to the clipboard and opens a prefilled issue to paste it into, and
+**Copy short summary** gives a few lines for a chat. A report kept as evidence is
 committed as `docs/evidence/bench-<label>-<ISO>.json`, where the label names
 the machine (for example `bench-rtx3050-laptop-2026-10-26T09-14-03Z.json`),
 and cited from here by that path. **Run the GPU comparison pass** flies the

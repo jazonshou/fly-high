@@ -11,7 +11,7 @@ import type { WorldDefinition } from "@/src/world";
 /**
  * The `?bench=1` benchmark's shared contract: what FlightGame sees of a bench
  * session, what the tab-scoped run store holds between page loads, and the
- * `fly-high.bench/3` report.
+ * `fly-high.bench/4` report.
  *
  * Types only. FlightGame imports this file with `import type` and nothing
  * else of src/bench statically, so no bench code reaches a player's bundle.
@@ -263,6 +263,21 @@ export interface BenchFrameLog {
   readonly gpuMs: Float32Array;
   /** The recorder's own time outside `inner.render()`, ms. */
   readonly overheadMs: Float32Array;
+  /**
+   * The divisor of the cadence the renderer held when it drew the frame
+   * (PR B part 2b); 0 where none was logged, and the window's context
+   * divisor stands in. Frame `i`'s interval is judged by frame `i + 1`'s
+   * entry: the pacer skips and draws by a new cadence from the tick it
+   * emits it, so the next frame's cadence decided when this one left the
+   * screen.
+   */
+  readonly divisor: Uint8Array;
+  /**
+   * `hitchThresholdMilliseconds` of the tier and that cadence, ms (PR B part
+   * 2b); NaN where none was logged, and the context's threshold stands in.
+   * Read for frame `i`'s interval at `i + 1`, as `divisor` is.
+   */
+  readonly hitchMs: Float64Array;
 }
 
 export interface BenchLongTaskEntry {
@@ -468,11 +483,16 @@ export interface BenchGpuSummary {
 }
 
 /**
- * Intervals in paced slots: one slot is `divisor` refresh periods, so a
- * flight paced to every 2nd refresh lands in x1 when it keeps up.
+ * Intervals in paced slots: one slot is the divisor of the cadence that
+ * paced the interval times the refresh period, so a flight paced to every
+ * 2nd refresh, or drawn under the even fallback at 60 Hz, lands in x1 when
+ * it keeps up.
  */
 export interface BenchVsyncBuckets {
-  /** The pacer's divisor at the flight's first frame; 1 draws every refresh. */
+  /**
+   * The pacer's divisor at the flight's first frame; 1 draws every refresh.
+   * Since `/4` each interval is bucketed by its own cadence's divisor.
+   */
   readonly divisor: number;
   readonly x1: number;
   readonly x2: number;
@@ -504,9 +524,10 @@ export interface BenchWindowMetrics {
   /** 1000 / mean interval. */
   readonly fps: number | null;
   /**
-   * The median interval sits on the paced slot (the pacer's divisor times
-   * the refresh period): the display and the frame-rate setting, not the
-   * game, set the pace.
+   * The median interval sits on its paced slot (the divisor of the cadence
+   * that paced it times the refresh period): the display and the pacer, at
+   * the frame-rate setting or the even fallback, not the frame's cost, set
+   * the pace.
    */
   readonly displayCapped: boolean;
   readonly intervalMs: BenchIntervalSummary | null;
@@ -515,10 +536,17 @@ export interface BenchWindowMetrics {
     readonly "27.4": BenchCount;
     readonly "50": BenchCount;
     readonly "100": BenchCount;
-    /** Against the tier's own hitch threshold: 27.4 ms, or 60 ms on Ultra. */
+    /**
+     * Each interval against the tier's hitch threshold for the cadence that
+     * paced it: 27.4 ms, or 60 ms on Ultra, at the 30 fps setting and under
+     * the even fallback at 60 Hz. `thresholdMs` is the largest any of the
+     * window's intervals was judged against, which the smoothness label
+     * reads the p99 against, so a window drawn under the fallback reads as
+     * one at the 30 fps setting does.
+     */
     readonly hitch: BenchCount & { readonly thresholdMs: number };
   };
-  /** Intervals longer than the paced slot plus half a refresh period. */
+  /** Intervals longer than their paced slot plus half a refresh period. */
   readonly missedRefresh: { readonly count: number; readonly per240: number; readonly longestStreak: number } | null;
   readonly vsyncBuckets: BenchVsyncBuckets | null;
   readonly renderMs: BenchRenderSummary | null;
@@ -640,11 +668,13 @@ export interface BenchGovernorSnapshot {
 /**
  * One decision: [t s, mode, class, proxy ms, target scale, applied scale,
  * rendered pixels, CPU level, GPU level, lever, insensitive, GPU p95, CPU p95,
- * interval p95, late share, urgent, spent windows, exhausted]. t counts from
- * the flight's first frame, so the settle's decisions read below zero. The
- * last three are the state the decision left (PR B part 2, G6a): its window
- * was urgent, the spent windows in a row, and `governorExhausted`. A tuple,
- * because a run holds up to 128 of them per step.
+ * interval p95, late share, urgent, spent windows, exhausted, fallback
+ * phase]. t counts from the flight's first frame, so the settle's decisions
+ * read below zero. Urgent, spent and exhausted are the state the decision
+ * left (PR B part 2, G6a): its window was urgent, the spent windows in a
+ * row, and `governorExhausted`. The fallback phase is the even fallback's
+ * after the decision (PR B part 2b, G6): "off", "engaged", "trial" or
+ * "settled". A tuple, because a run holds up to 128 of them per step.
  */
 export type BenchGovernorDecision = readonly [
   t: number,
@@ -665,6 +695,7 @@ export type BenchGovernorDecision = readonly [
   urgent: boolean,
   spentWindows: number,
   exhausted: boolean,
+  fallbackPhase: string,
 ];
 
 export interface BenchGovernorEvents {
@@ -679,6 +710,20 @@ export interface BenchGovernorEvents {
   readonly urgentSheds: number;
   /** PR B part 2 (G6a): decisions after which the governor was exhausted. */
   readonly exhaustedWindows: number;
+  /** PR B part 2b (G6): decisions that switched the even fallback on, to engaged or straight to settled. */
+  readonly fallbackEngaged: number;
+  /** PR B part 2b (G6): decisions that started a trial at the setting's cadence. */
+  readonly fallbackTrials: number;
+  /**
+   * PR B part 2b (G6): failed trials, read from the governor's own count
+   * (`failedTrials` rising), so a re-entry soon after an exit, which the
+   * governor counts as one, is here too.
+   */
+  readonly fallbackTrialsFailed: number;
+  /** PR B part 2b (G6): trials that passed and ended the fallback. */
+  readonly fallbackExits: number;
+  /** PR B part 2b (G6): decisions that settled the fallback. */
+  readonly fallbackSettled: number;
 }
 
 /**
@@ -794,6 +839,12 @@ export interface BenchCadence {
    * nothing, or drawn ticks faster than the rate held before.
    */
   readonly confirmed: boolean;
+  /**
+   * PR B part 2b (G6): the even rate the pacer draws at under the
+   * governor's fallback (the display rate over `divisor`); null when the
+   * cadence is the setting's own.
+   */
+  readonly fallbackHz: number | null;
 }
 
 /** How the frame pacer ran during one flight. */
@@ -816,6 +867,15 @@ export interface BenchPacing {
   readonly renderedFrames: number;
   /** The rate the cadence at the end paces to: its display rate over its divisor; null without a rate. */
   readonly pacedHz: number | null;
+  /**
+   * PR B part 2b (G6): the rendered frames, counted as `renderedFrames` is,
+   * that the renderer drew under the even fallback (a cadence with
+   * `fallbackHz`), and their share of `renderedFrames`; the share is null
+   * when the flight rendered none. A standard 75 s flight rarely lasts long
+   * enough for the fallback to engage, so the share usually reads 0.
+   */
+  readonly fallbackFrames: number;
+  readonly fallbackShare: number | null;
   /**
    * The renderer's governor config at the flight's first frame, which shows
    * the targets the cadence set; null when the flight never began.
@@ -923,7 +983,7 @@ export interface BenchDeviceReport {
   };
 }
 
-// --- the report (`fly-high.bench/3`) ----------------------------------------------
+// --- the report (`fly-high.bench/4`) ----------------------------------------------
 
 export type BenchVerdict = "valid" | "void" | "incomplete" | "unchecked";
 
@@ -1054,7 +1114,7 @@ export interface BenchEarlierRun {
 }
 
 export interface BenchReport {
-  readonly schema: "fly-high.bench/3";
+  readonly schema: "fly-high.bench/4";
   readonly benchVersion: number;
   readonly createdAt: string;
   readonly build: BenchBuildInfo;
