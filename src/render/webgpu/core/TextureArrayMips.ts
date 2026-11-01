@@ -48,7 +48,7 @@ export interface MippedTextureArrayOptions {
  */
 export function uploadMippedTextureArrayPlan(
   scene: Scene,
-  plan: MippedTextureArrayPlan,
+  plan: Pick<MippedTextureArrayPlan, "edge" | "layerCount" | "mipLevelCount" | "packedLevels">,
   options?: Pick<MippedTextureArrayOptions, "name" | "samplingMode">,
 ): RawTexture2DArray {
   // Generation ON and NO data: every layer's chain is allocated and nothing

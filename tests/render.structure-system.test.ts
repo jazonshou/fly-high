@@ -2,15 +2,31 @@ import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
+import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import { InlineStructureMeshBuilder, KIT_STRUCTURE_ARRAYS } from "@/src/render/structures/InlineStructureMeshBuilder";
+import {
+  STRUCTURE_NORMAL_ROUGHNESS_GAIN,
+  structurePlaceholderTexel,
+  structureTexturePlans,
+  type StructureTexturePlans,
+} from "@/src/render/structures/structureTextures";
+import { mipChainByteFactor } from "@/src/render/webgpu/core/PerformanceBudget";
 import { resolveWebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
-import { StructureMaterialPlugin, STRUCTURE_MATERIAL_WGSL } from "@/src/render/webgpu/structures/StructureMaterialPlugin";
+import { TOKSVIG_ROUGHNESS_GAIN } from "@/src/render/webgpu/terrain/MaterialArraySynthesis";
+import {
+  STRUCTURE_BASE_ROUGHNESS,
+  StructureMaterialPlugin,
+  STRUCTURE_MATERIAL_WGSL,
+} from "@/src/render/webgpu/structures/StructureMaterialPlugin";
 import {
   StructureSystem,
   type StructureMeshBuild,
   type StructureMeshBuilder,
   type StructureSetName,
+  type StructureTextureUpload,
 } from "@/src/render/webgpu/structures/StructureSystem";
+import { STRUCTURE_SURFACES } from "@/src/world/structures/structureModel";
+import { STRUCTURE_TEXTURE_LAYERS, structureSurfaceTextureTable, type StructureTextureEdge } from "@/src/world/structures/kit/kitTextures";
 import { SETTLEMENT_STREAM_WINDOW } from "@/src/world/settlements/settlementStreaming";
 import type { StructureRecord } from "@/src/world/structures/structureRecord";
 import { TERRAIN_SURFACE_INJECTION_ANCHORS } from "@/src/render/webgpu/terrain/TerrainSurfacePlugin";
@@ -20,8 +36,10 @@ import { TERRAIN_SURFACE_INJECTION_ANCHORS } from "@/src/render/webgpu/terrain/T
  * as a new mesh that replaces the old, one build per set is in flight at a
  * time (the latest decision waits for it), the near shells are the one
  * shadow caster where the profile casts, meshes follow the floating origin,
- * and the tier rows are data. And the kit's arrays are what the renderer
- * uploads: each set's level, one centre per building, wound for this scene.
+ * and the tier rows are data; the kit's material arrays are asked for once
+ * at the profile's edge and bound to every textured role (never the glass).
+ * And the kit's arrays are what the renderer uploads: each set's level, one
+ * centre per building, wound for this scene.
  */
 
 function record(id: number, x: number, z: number, overrides: Partial<StructureRecord> = {}): StructureRecord {
@@ -47,9 +65,21 @@ function record(id: number, x: number, z: number, overrides: Partial<StructureRe
   };
 }
 
-/** A builder whose builds land only when the test says. */
+/** A builder whose builds (and material arrays) land only when the test says. */
 class HeldBuilder implements StructureMeshBuilder {
   readonly asked: { set: StructureSetName; ids: number[]; originX: number; originZ: number; resolve: (build: StructureMeshBuild) => void }[] = [];
+  readonly texturesAsked: { edge: StructureTextureEdge; resolve: (plans: StructureTexturePlans) => void; reject: (error: Error) => void }[] = [];
+
+  textures(edge: StructureTextureEdge): Promise<StructureTexturePlans> {
+    return new Promise((resolve, reject) => this.texturesAsked.push({ edge, resolve, reject }));
+  }
+
+  /** The arrays' bytes don't matter here: an edge-1 stand-in of the right shape. */
+  landTextures(index: number): void {
+    const ask = this.texturesAsked[index]!;
+    const level = { edge: 1, layerCount: STRUCTURE_TEXTURE_LAYERS.length, mipLevelCount: 1, packedLevels: [new Uint8Array(52)], totalBytes: 52 };
+    ask.resolve({ edge: ask.edge, detail: level, normal: level });
+  }
 
   build(set: StructureSetName, records: readonly StructureRecord[], originX: number, originZ: number): Promise<StructureMeshBuild> {
     return new Promise((resolve) => {
@@ -65,7 +95,18 @@ class HeldBuilder implements StructureMeshBuilder {
   dispose(): void {}
 }
 
-function rig(builder: StructureMeshBuilder, casts = true) {
+/** Uploads that record what they made and what was let go (a null engine has no array textures). */
+function fakeUploads() {
+  const made: { edge: number; disposed: boolean; detail: BaseTexture; normal: BaseTexture }[] = [];
+  const upload: StructureTextureUpload = (_scene, plans) => {
+    const entry = { edge: plans.edge, disposed: false, detail: { name: `detail-${plans.edge}` } as BaseTexture, normal: { name: `normal-${plans.edge}` } as BaseTexture };
+    made.push(entry);
+    return { detail: entry.detail, normal: entry.normal, dispose: () => { entry.disposed = true; } };
+  };
+  return { made, upload };
+}
+
+function rig(builder: StructureMeshBuilder, casts = true, structureTextureEdge: 0 | StructureTextureEdge = 0, upload?: StructureTextureUpload) {
   const engine = new NullEngine();
   const scene = new Scene(engine);
   const system = new StructureSystem(scene, {
@@ -73,8 +114,14 @@ function rig(builder: StructureMeshBuilder, casts = true) {
     structureFarRadiusMeters: 4_000,
     structureOpenBuildings: 4,
     structureNearCastsShadows: casts,
-  }, builder);
+    structureTextureEdge,
+  }, builder, null, upload);
   return { scene, system, dispose: () => { system.dispose(); scene.dispose(); engine.dispose(); } };
+}
+
+function pluginOf(system: StructureSystem, role: string): StructureMaterialPlugin {
+  const material = system.materials.find((m) => m.name === `structures-${role}`)!;
+  return material.pluginManager!.getPlugin("structure-surface") as StructureMaterialPlugin;
 }
 
 const flush = async () => {
@@ -174,6 +221,8 @@ describe("the structure renderer", () => {
     expect(rows.map((p) => p.structureNearRadiusMeters)).toEqual([250, 400, 600, 800]);
     expect(rows.map((p) => p.structureOpenBuildings)).toEqual([2, 4, 6, 6]);
     expect(rows.map((p) => p.structureNearCastsShadows)).toEqual([false, true, true, true]);
+    // High's 700 MiB ceiling has no room for the 512 set (PerformanceBudget's structures lane).
+    expect(rows.map((p) => p.structureTextureEdge)).toEqual([0, 256, 256, 512]);
     for (const profile of rows) {
       const { system, dispose } = rig(new InlineStructureMeshBuilder());
       system.setProfile(profile);
@@ -185,11 +234,129 @@ describe("the structure renderer", () => {
     }
   });
 
-  it("hooks the shader where the sun and the sky can be cut indoors", () => {
-    // The indoor cut rides each directional light's own colour, as the terrain's horizon shadow does.
-    expect(Object.keys(STRUCTURE_MATERIAL_WGSL.fragmentInjections)).toEqual([TERRAIN_SURFACE_INJECTION_ANCHORS.sunLightColor]);
+  it("hooks the shader where the sun and the sky can be cut indoors, and where the layers set roughness and cavity", () => {
+    // The indoor cut rides each directional light's own colour, as the terrain's horizon shadow does;
+    // the layers' roughness and cavity ride the terrain's own anchors in main.
+    expect(Object.keys(STRUCTURE_MATERIAL_WGSL.fragmentInjections)).toEqual([
+      TERRAIN_SURFACE_INJECTION_ANCHORS.sunLightColor,
+      TERRAIN_SURFACE_INJECTION_ANCHORS.ambientOcclusion,
+      TERRAIN_SURFACE_INJECTION_ANCHORS.roughness,
+    ]);
     expect(STRUCTURE_MATERIAL_WGSL.fragmentBeforeFinalColor).toContain("finalIrradiance *= structureSkyShare;");
     expect(STRUCTURE_MATERIAL_WGSL.fragmentBeforeFinalColor).toContain("finalRadianceScaled *= structureSkyShare;");
+  });
+});
+
+describe("the kit's material arrays", () => {
+  it("are asked for once at a textured edge, held as pending work, and bound to every role but the glass", async () => {
+    const builder = new HeldBuilder();
+    const uploads = fakeUploads();
+    const { system, dispose } = rig(builder, true, 256, uploads.upload);
+    expect(builder.texturesAsked.map((ask) => ask.edge)).toEqual([256]);
+    expect(system.pendingWork).toBe(1);
+    for (const role of ["far", "near", "open"]) expect(pluginOf(system, role).textured).toBe(true);
+    expect(pluginOf(system, "glass").textured).toBe(false);
+    // Until they land, the materials read their placeholders.
+    expect(pluginOf(system, "near").textures).toBeNull();
+    builder.landTextures(0);
+    await flush();
+    expect(system.pendingWork).toBe(0);
+    expect(uploads.made.map((entry) => entry.edge)).toEqual([256]);
+    for (const role of ["far", "near", "open"]) expect(pluginOf(system, role).textures?.detail).toBe(uploads.made[0]!.detail);
+    expect(pluginOf(system, "glass").textures).toBeNull();
+    expect(system.statistics.textureEdge).toBe(256);
+    // The same edge again asks for nothing.
+    system.setProfile({ ...system["profile"], structureTextureEdge: 256 });
+    expect(builder.texturesAsked).toHaveLength(1);
+    dispose();
+    expect(uploads.made[0]!.disposed).toBe(true);
+  });
+
+  it("asks again at a new edge, lets the old arrays go once the new are in, and drops them all at edge 0", async () => {
+    const builder = new HeldBuilder();
+    const uploads = fakeUploads();
+    const { system, dispose } = rig(builder, true, 256, uploads.upload);
+    builder.landTextures(0);
+    await flush();
+    const profile = system["profile"];
+    system.setProfile({ ...profile, structureTextureEdge: 512 });
+    expect(builder.texturesAsked.map((ask) => ask.edge)).toEqual([256, 512]);
+    // The 256 set stays drawn until the 512 one is in.
+    expect(uploads.made[0]!.disposed).toBe(false);
+    builder.landTextures(1);
+    await flush();
+    expect(uploads.made.map((entry) => entry.edge)).toEqual([256, 512]);
+    expect(uploads.made[0]!.disposed).toBe(true);
+    expect(pluginOf(system, "far").textures?.detail).toBe(uploads.made[1]!.detail);
+
+    system.setProfile({ ...profile, structureTextureEdge: 0 });
+    expect(uploads.made[1]!.disposed).toBe(true);
+    for (const role of ["far", "near", "open"]) {
+      expect(pluginOf(system, role).textured).toBe(false);
+      expect(pluginOf(system, role).textures).toBeNull();
+    }
+    expect(system.statistics.textureEdge).toBe(0);
+    dispose();
+  });
+
+  it("lets go of a set that lands after the profile left its edge, and asks for the profile's", async () => {
+    const builder = new HeldBuilder();
+    const uploads = fakeUploads();
+    const { system, dispose } = rig(builder, true, 256, uploads.upload);
+    const profile = system["profile"];
+    system.setProfile({ ...profile, structureTextureEdge: 512 });
+    // One request at a time: the 512 one waits for the 256 one.
+    expect(builder.texturesAsked.map((ask) => ask.edge)).toEqual([256]);
+    builder.landTextures(0);
+    await flush();
+    expect(uploads.made).toEqual([]);
+    expect(builder.texturesAsked.map((ask) => ask.edge)).toEqual([256, 512]);
+    expect(system.pendingWork).toBe(1);
+    builder.landTextures(1);
+    await flush();
+    expect(uploads.made.map((entry) => entry.edge)).toEqual([512]);
+    dispose();
+  });
+
+  it("keeps the placeholders when the arrays cannot be made, and does not ask again", async () => {
+    const builder = new HeldBuilder();
+    const { system, dispose } = rig(builder, true, 256, fakeUploads().upload);
+    builder.texturesAsked[0]!.reject(new Error("no"));
+    await flush();
+    expect(system.pendingWork).toBe(0);
+    expect(system.statistics.textureFailures).toBe(1);
+    system.update({ x: 0, y: 40, z: 0 });
+    expect(builder.texturesAsked).toHaveLength(1);
+    dispose();
+  });
+
+  it("are the kit's layers, fully mipped, the bytes the memory budget counts", () => {
+    const plans = structureTexturePlans(256);
+    for (const array of [plans.detail, plans.normal]) {
+      expect(array.layerCount).toBe(STRUCTURE_TEXTURE_LAYERS.length);
+      expect(array.mipLevelCount).toBe(9);
+      expect(array.packedLevels.map((level) => level.length)).toEqual(
+        [256, 128, 64, 32, 16, 8, 4, 2, 1].map((edge) => edge * edge * 4 * STRUCTURE_TEXTURE_LAYERS.length),
+      );
+      expect(array.totalBytes).toBeCloseTo(STRUCTURE_TEXTURE_LAYERS.length * 256 * 256 * 4 * mipChainByteFactor(256), 6);
+    }
+    // The terrain arrays' Toksvig gain.
+    expect(STRUCTURE_NORMAL_ROUGHNESS_GAIN).toBe(TOKSVIG_ROUGHNESS_GAIN);
+  });
+
+  it("puts the kit's surface table in the shader, and flat placeholders that leave a part its colour", () => {
+    const table = structureSurfaceTextureTable();
+    const wgsl = STRUCTURE_MATERIAL_WGSL.fragmentDefinitions;
+    const rows = [...wgsl.matchAll(/vec4f\(([^)]*)\)/g)].map((match) => match[1]!.split(",").map(Number));
+    expect(rows).toHaveLength(STRUCTURE_SURFACES.length);
+    rows.forEach((row, id) => row.forEach((value, k) => expect(value).toBeCloseTo(table[id * 4 + k]!, 6)));
+    const detail = structurePlaceholderTexel("detail", STRUCTURE_BASE_ROUGHNESS);
+    // albedo = mix(rgb, colour * rgb * 2, a): the colour, to 0.4%.
+    expect(detail[3]).toBe(255);
+    expect(Math.abs((detail[0] / 255) * 2 - 1)).toBeLessThan(0.004);
+    const normal = structurePlaceholderTexel("normal", STRUCTURE_BASE_ROUGHNESS);
+    expect([normal[0], normal[1], normal[3]]).toEqual([128, 128, 255]);
+    expect(normal[2] / 255).toBeCloseTo(STRUCTURE_BASE_ROUGHNESS, 2);
   });
 });
 

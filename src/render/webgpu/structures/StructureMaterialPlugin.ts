@@ -1,8 +1,15 @@
+import { Constants } from "@babylonjs/core/Engines/constants";
 import type { Material } from "@babylonjs/core/Materials/material";
 import type { MaterialDefines } from "@babylonjs/core/Materials/materialDefines";
 import { MaterialPluginBase } from "@babylonjs/core/Materials/materialPluginBase";
+import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
+import { RawTexture2DArray } from "@babylonjs/core/Materials/Textures/rawTexture2DArray";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer";
 import type { Nullable } from "@babylonjs/core/types";
+import { STRUCTURE_SURFACES } from "@/src/world/structures/structureModel";
+import { structureSurfaceTextureTable } from "@/src/world/structures/kit/kitTextures";
+import { STRUCTURE_TEXTURE_LAYER_COUNT, structurePlaceholderTexel } from "../../structures/structureTextures";
 import { TERRAIN_SURFACE_INJECTION_ANCHORS } from "../terrain/TerrainSurfacePlugin";
 
 /**
@@ -30,7 +37,16 @@ import { TERRAIN_SURFACE_INJECTION_ANCHORS } from "../terrain/TerrainSurfacePlug
  * Bayer threshold.
  *
  * WHAT A FACE LOOKS LIKE. Its albedo is its vertex colour (linear RGB), which
- * is all Low draws; the textured tiers add the kit's synthesised layers.
+ * is all Low draws. The textured tiers (`structureTextureEdge` > 0; never the
+ * glass) add the kit's synthesised layers (`kitTextures.ts`): the surface's
+ * layer at its UV over the layer's tile (window and doorway fitted 0 to 1),
+ * albedo `mix(rgb, colour * rgb * 2, a)`, the normal map's RG in the face's
+ * (u, v) frame, B the roughness and A the cavity, each scaled towards flat by
+ * the surface's strength. The frame comes from the screen derivatives of the
+ * UV and the position (a cotangent frame), so it is the UV's own whatever
+ * way the face or the building turns, and the vertices carry no tangent.
+ * The derivatives are taken first thing in `main`, in uniform control flow,
+ * and the arrays read with explicit gradients after the dither's discard.
  *
  * INSIDE. A face with an indoor factor (`structureIndoor`, 0 outside; inside
  * about 0.15 in a corner to 1 by a window: an eye adapted indoors) sees no
@@ -73,6 +89,10 @@ export interface StructureMaterialBinding {
   /** Centres (x, z pairs, relative to the same origin) of buildings the near set drops, at most `STRUCTURE_OPEN_SLOTS`. */
   readonly dropped: readonly number[];
 }
+
+/** The material's own roughness, which the textured tiers' layers vary about. */
+export const STRUCTURE_BASE_ROUGHNESS = 0.82;
+export const STRUCTURE_GLASS_ROUGHNESS = 0.06;
 
 /** A centre no building has. */
 const NO_CENTRE = 1e9;
@@ -138,7 +158,27 @@ vertexOutputs.structureUvV = vertexInputs.structureUv;
 vertexOutputs.structureSurfaceV = vertexInputs.structureSurface;
 `;
 
+/** The kit's surface table (layer, 1 / tile, strength, fitted) as WGSL, a vec4 per surface id. */
+function surfaceTableWgsl(): string {
+  const table = structureSurfaceTextureTable();
+  const rows: string[] = [];
+  for (let id = 0; id < STRUCTURE_SURFACES.length; id += 1) {
+    const row = [0, 1, 2, 3].map((k) => wgslNumber(Math.fround(table[id * 4 + k]!)));
+    rows.push(`vec4f(${row.join(", ")})`);
+  }
+  // var<private>, not const: an index known only at run time reads a
+  // reference everywhere, where indexing a const array value is not portable.
+  return `var<private> structureSurfaceTable: array<vec4f, ${STRUCTURE_SURFACES.length}> = array<vec4f, ${STRUCTURE_SURFACES.length}>(\n  ${rows.join(",\n  ")},\n);`;
+}
+
 const FRAGMENT_DEFINITIONS = /* wgsl */ `
+#ifdef STRUCTURE_TEXTURED
+var structureDetailSampler: sampler;
+var structureDetail: texture_2d_array<f32>;
+var structureNormalSampler: sampler;
+var structureNormal: texture_2d_array<f32>;
+${surfaceTableWgsl()}
+#endif
 varying structureColourV: vec3f;
 varying structureIndoorV: f32;
 varying structureUvV: vec2f;
@@ -161,6 +201,13 @@ fn structureBayer8(pixel: vec2u) -> f32 {
 // The dither, first: a building in the handoff band keeps the pixels its
 // share owns. The far blocks keep the complement of the shells' pixels.
 const FRAGMENT_MAIN_BEGIN = /* wgsl */ `
+#ifdef STRUCTURE_TEXTURED
+// Before anything can discard or branch: the textures' gradients and frame.
+let structureUvDx = dpdx(fragmentInputs.structureUvV);
+let structureUvDy = dpdy(fragmentInputs.structureUvV);
+let structurePositionDx = dpdx(fragmentInputs.vPositionW);
+let structurePositionDy = dpdy(fragmentInputs.vPositionW);
+#endif
 {
   let structureShare = fragmentInputs.structureDitherV.x;
   if (structureShare < 0.999) {
@@ -178,6 +225,43 @@ const FRAGMENT_MAIN_BEGIN = /* wgsl */ `
 
 const FRAGMENT_BEFORE_LIGHTS = /* wgsl */ `
 surfaceAlbedo = fragmentInputs.structureColourV;
+#ifdef STRUCTURE_TEXTURED
+var structureRoughness = ${wgslNumber(STRUCTURE_BASE_ROUGHNESS)};
+var structureCavity = 1.0;
+{
+  let structureId = u32(clamp(round(fragmentInputs.structureSurfaceV), 0.0, ${wgslNumber(STRUCTURE_SURFACES.length - 1)}));
+  let structureEntry = structureSurfaceTable[structureId];
+  let structureStrength = structureEntry.z;
+  if (structureStrength > 0.0) {
+    // Tiled surfaces at metres over the tile; window and doorway as laid, 0 to 1.
+    let structureScale = select(structureEntry.y, 1.0, structureEntry.w > 0.5);
+    let structureUv = fragmentInputs.structureUvV * structureScale;
+    let structureLayer = i32(structureEntry.x + 0.5);
+    let structureDetailTexel = textureSampleGrad(structureDetail, structureDetailSampler, structureUv, structureLayer,
+      structureUvDx * structureScale, structureUvDy * structureScale);
+    let structureNormalTexel = textureSampleGrad(structureNormal, structureNormalSampler, structureUv, structureLayer,
+      structureUvDx * structureScale, structureUvDy * structureScale);
+    let structurePainted = mix(structureDetailTexel.rgb, surfaceAlbedo * structureDetailTexel.rgb * 2.0, structureDetailTexel.a);
+    surfaceAlbedo = mix(surfaceAlbedo, structurePainted, structureStrength);
+    structureRoughness = mix(${wgslNumber(STRUCTURE_BASE_ROUGHNESS)}, structureNormalTexel.b, structureStrength);
+    structureCavity = mix(1.0, structureNormalTexel.a, structureStrength);
+    // The cotangent frame: the surface gradients of u and v, solved from the
+    // screen derivatives (signed by the solve's determinant, so neither the
+    // framebuffer's y direction nor the face's winding flips the bumps).
+    let structureN = normalize(normalW);
+    let structureDp2Perp = cross(structurePositionDy, structureN);
+    let structureDp1Perp = cross(structureN, structurePositionDx);
+    let structureSign = select(-1.0, 1.0, dot(structurePositionDx, structureDp2Perp) >= 0.0);
+    let structureT = (structureDp2Perp * structureUvDx.x + structureDp1Perp * structureUvDy.x) * structureSign;
+    let structureB = (structureDp2Perp * structureUvDx.y + structureDp1Perp * structureUvDy.y) * structureSign;
+    let structureInvLength = inverseSqrt(max(max(dot(structureT, structureT), dot(structureB, structureB)), 1e-20));
+    let structureTangentXy = (structureNormalTexel.rg * 2.0 - 1.0) * structureStrength;
+    let structureTangentZ = sqrt(max(0.0, 1.0 - dot(structureTangentXy, structureTangentXy)));
+    normalW = normalize((structureT * structureTangentXy.x + structureB * structureTangentXy.y) * structureInvLength
+      + structureN * structureTangentZ);
+  }
+}
+#endif
 // Inside: no sun or moon, and only the indoor share of the sky.
 let structureInside = fragmentInputs.structureIndoorV > ${wgslNumber(1e-3)};
 let structureSunShare = select(1.0, 0.0, structureInside);
@@ -188,6 +272,17 @@ const FRAGMENT_INJECTIONS = Object.freeze({
   [TERRAIN_SURFACE_INJECTION_ANCHORS.sunLightColor]: /* wgsl */ `$1
 #ifdef DIRLIGHT$2
 diffuse$2 = vec4f(diffuse$2.rgb * structureSunShare, diffuse$2.a);
+#endif
+`,
+  // Both anchors are in main alone (not the clustered helper; see the terrain's notes on them).
+  [TERRAIN_SURFACE_INJECTION_ANCHORS.ambientOcclusion]: /* wgsl */ `$1
+#ifdef STRUCTURE_TEXTURED
+aoOut.ambientOcclusionColor *= vec3f(structureCavity);
+#endif
+`,
+  [TERRAIN_SURFACE_INJECTION_ANCHORS.roughness]: /* wgsl */ `$1
+#ifdef STRUCTURE_TEXTURED
+roughness = structureRoughness;
 #endif
 `,
 });
@@ -201,14 +296,51 @@ finalRadianceScaled *= structureSkyShare;
 #endif
 `;
 
+/** The kit's two material arrays as uploaded. */
+export interface StructureTextureArrays {
+  readonly detail: BaseTexture;
+  readonly normal: BaseTexture;
+}
+
 export class StructureMaterialPlugin extends MaterialPluginBase {
   private bound: StructureMaterialBinding | null = null;
+  private texturedNow: boolean;
+  private arrays: StructureTextureArrays | null = null;
+  private placeholders: StructureTextureArrays | null = null;
 
-  constructor(material: Material, readonly role: StructureMaterialRole) {
-    super(material, "structure-surface", 195, { STRUCTURE_SURFACE: false }, true, false);
+  /** `textured`: the material reads the kit's arrays (never the glass). */
+  constructor(material: Material, readonly role: StructureMaterialRole, textured = false) {
+    super(material, "structure-surface", 195, { STRUCTURE_SURFACE: false, STRUCTURE_TEXTURED: false }, true, false);
     this.doNotSerialize = true;
     // Extra events before enabling, or hardBindForSubMesh never fires.
     this.registerForExtraEvents = true;
+    this.texturedNow = textured && role !== "glass";
+  }
+
+  get textured(): boolean {
+    return this.texturedNow;
+  }
+
+  /**
+   * A profile change turns the arrays on or off: the defines change, and a
+   * material the scene's priority froze after its first ready draw must be
+   * told to prepare again (`markDirty(true)`).
+   */
+  setTextured(textured: boolean): void {
+    const next = textured && this.role !== "glass";
+    if (next === this.texturedNow) return;
+    this.texturedNow = next;
+    this.markAllDefinesAsDirty();
+    this._material.markDirty(true);
+  }
+
+  /** The arrays to read; until they are in (or with null), flat 1 x 1 placeholders. Not disposed here. */
+  setTextures(arrays: StructureTextureArrays | null): void {
+    this.arrays = arrays;
+  }
+
+  get textures(): StructureTextureArrays | null {
+    return this.arrays;
   }
 
   /** What the next draws bind; the material is not drawn until one is set. */
@@ -228,6 +360,18 @@ export class StructureMaterialPlugin extends MaterialPluginBase {
 
   override prepareDefines(defines: MaterialDefines): void {
     defines["STRUCTURE_SURFACE"] = true;
+    defines["STRUCTURE_TEXTURED"] = this.texturedNow;
+  }
+
+  override getSamplers(samplers: string[]): void {
+    for (const name of ["structureDetail", "structureNormal"]) if (!samplers.includes(name)) samplers.push(name);
+  }
+
+  override dispose(forceDisposeTextures?: boolean): void {
+    this.placeholders?.detail.dispose();
+    this.placeholders?.normal.dispose();
+    this.placeholders = null;
+    super.dispose(forceDisposeTextures);
   }
 
   override getClassName(): string {
@@ -260,6 +404,11 @@ export class StructureMaterialPlugin extends MaterialPluginBase {
   override hardBindForSubMesh(uniformBuffer: UniformBuffer): void {
     const binding = this.bound;
     if (!binding) return;
+    if (this.texturedNow) {
+      const arrays = this.arrays ?? this.placeholderArrays();
+      uniformBuffer.setTexture("structureDetail", arrays.detail);
+      uniformBuffer.setTexture("structureNormal", arrays.normal);
+    }
     uniformBuffer.updateFloat4("structureCamera", binding.cameraX, binding.cameraZ, ROLE_ID[this.role], 0);
     uniformBuffer.updateFloat4("structureRanges", binding.nearRadiusMeters, binding.bandMeters, binding.farRadiusMeters, 0);
     const dropped = binding.dropped;
@@ -267,6 +416,33 @@ export class StructureMaterialPlugin extends MaterialPluginBase {
     uniformBuffer.updateFloat4("structureDroppedA", at(0), at(1), at(2), at(3));
     uniformBuffer.updateFloat4("structureDroppedB", at(4), at(5), at(6), at(7));
     uniformBuffer.updateFloat4("structureDroppedC", at(8), at(9), at(10), at(11));
+  }
+
+  private placeholderArrays(): StructureTextureArrays {
+    if (!this.placeholders) {
+      const scene = this._material.getScene();
+      const flat = (array: "detail" | "normal") => {
+        const texel = structurePlaceholderTexel(array, STRUCTURE_BASE_ROUGHNESS);
+        const texels = new Uint8Array(STRUCTURE_TEXTURE_LAYER_COUNT * 4);
+        for (let layer = 0; layer < STRUCTURE_TEXTURE_LAYER_COUNT; layer += 1) texels.set(texel, layer * 4);
+        const texture = new RawTexture2DArray(
+          texels,
+          1,
+          1,
+          STRUCTURE_TEXTURE_LAYER_COUNT,
+          Constants.TEXTUREFORMAT_RGBA,
+          scene,
+          false,
+          false,
+          Texture.NEAREST_SAMPLINGMODE,
+          Constants.TEXTURETYPE_UNSIGNED_BYTE,
+        );
+        texture.name = `structures-${array}-placeholder`;
+        return texture;
+      };
+      this.placeholders = { detail: flat("detail"), normal: flat("normal") };
+    }
+    return this.placeholders;
   }
 
   override getCustomCode(shaderType: "vertex" | "fragment", shaderLanguage?: unknown): Nullable<Record<string, string>> {

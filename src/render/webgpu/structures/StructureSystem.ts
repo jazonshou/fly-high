@@ -3,9 +3,11 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { Scene } from "@babylonjs/core/scene";
+import type { StructureTextureEdge } from "@/src/world/structures/kit/kitTextures";
 import { SETTLEMENT_STREAM_WINDOW } from "@/src/world/settlements/settlementStreaming";
 import type { StructureRecord } from "@/src/world/structures/structureRecord";
 import type { StructureMeshArrays } from "../../structures/structureMeshArrays";
+import type { StructureTexturePlans } from "../../structures/structureTextures";
 import { StructureRecordStore, type StructureHidden, type StructureRegionRecords } from "../../structures/StructureRecordStore";
 import {
   STRUCTURE_HANDOFF_BAND_METERS,
@@ -14,12 +16,16 @@ import {
   type StructurePoint,
 } from "../../structures/StructureSets";
 import type { PipelineWarmUp } from "../core/AsyncPipelineCompiles";
+import { uploadMippedTextureArrayPlan } from "../core/TextureArrayMips";
 import { prepareMaterialForClusteredLighting } from "../lighting/ClusteredLighting";
 import {
+  STRUCTURE_BASE_ROUGHNESS,
+  STRUCTURE_GLASS_ROUGHNESS,
   STRUCTURE_OPEN_SLOTS,
   STRUCTURE_VERTEX_ATTRIBUTES,
   StructureMaterialPlugin,
   type StructureMaterialRole,
+  type StructureTextureArrays,
 } from "./StructureMaterialPlugin";
 
 /**
@@ -49,12 +55,20 @@ import {
  * (`AsyncPipelineCompiles.defer`); each new mesh is handed to the warm-up,
  * and the far, near and open materials share one effect, so the far blocks
  * that stream in first compile the pipeline the shells use.
+ *
+ * MATERIAL ARRAYS. Where the profile has a `structureTextureEdge`, the kit's
+ * two arrays are asked of the builder once (a worker synthesises, mips and
+ * packs them) and uploaded when they land; the materials are compiled
+ * textured from the start and read flat placeholders until then, so their
+ * arrival swaps two bindings and compiles nothing. A capture waits for them.
  */
 
 /** What the system takes from the quality profile: data, never a tier branch. */
 export interface StructureSystemProfile extends StructureDrawRanges {
   /** The near set casts the sun's shadows. */
   readonly structureNearCastsShadows: boolean;
+  /** The kit's material arrays' edge; 0 draws the part colours alone. */
+  readonly structureTextureEdge: 0 | StructureTextureEdge;
 }
 
 /** Which set a build is for. */
@@ -69,8 +83,42 @@ export interface StructureMeshBuild {
 /** Where a set's arrays are made: the structures worker, or inline in tests. */
 export interface StructureMeshBuilder {
   build(set: StructureSetName, records: readonly StructureRecord[], originX: number, originZ: number): Promise<StructureMeshBuild>;
+  /** The kit's material arrays at an edge, mipped and packed. */
+  textures(edge: StructureTextureEdge): Promise<StructureTexturePlans>;
   dispose(): void;
 }
+
+/** The kit's arrays on the GPU, and how to let them go. */
+export interface StructureUploadedTextures extends StructureTextureArrays {
+  dispose(): void;
+}
+
+/** Plans to GPU arrays: Babylon's raw array textures, or a fake in Node tests. */
+export type StructureTextureUpload = (scene: Scene, plans: StructureTexturePlans) => StructureUploadedTextures;
+
+/** The arrays' anisotropy, the other kit-made atlases' (boats, cars, airfields). */
+const STRUCTURE_TEXTURE_ANISOTROPY = 8;
+
+export const uploadStructureTextures: StructureTextureUpload = (scene, plans) => {
+  const detail = uploadMippedTextureArrayPlan(scene, plans.detail, { name: `structures-detail-${plans.edge}` });
+  let normal;
+  try {
+    normal = uploadMippedTextureArrayPlan(scene, plans.normal, { name: `structures-normal-${plans.edge}` });
+  } catch (error) {
+    detail.dispose();
+    throw error;
+  }
+  detail.anisotropicFilteringLevel = STRUCTURE_TEXTURE_ANISOTROPY;
+  normal.anisotropicFilteringLevel = STRUCTURE_TEXTURE_ANISOTROPY;
+  return {
+    detail,
+    normal,
+    dispose: () => {
+      detail.dispose();
+      normal.dispose();
+    },
+  };
+};
 
 export interface StructureSystemStatistics {
   readonly regions: number;
@@ -94,6 +142,12 @@ export interface StructureSystemStatistics {
   readonly landed: number;
   readonly failures: number;
   readonly pendingWork: number;
+  /** The material arrays drawn now: their edge (0 none yet, or untextured) and bytes with their chains. */
+  readonly textureEdge: number;
+  readonly textureBytes: number;
+  /** Material arrays asked for, and failed. */
+  readonly textureRequests: number;
+  readonly textureFailures: number;
 }
 
 interface SetState {
@@ -132,21 +186,29 @@ export class StructureSystem {
   private landed = 0;
   private failures = 0;
   private disposed = false;
+  /** The material arrays drawn now, the edge asked for, and the edge whose request is in flight. */
+  private textures: { readonly edge: StructureTextureEdge; readonly arrays: StructureUploadedTextures; readonly bytes: number } | null = null;
+  private textureInFlight: StructureTextureEdge | null = null;
+  private textureRequests = 0;
+  private textureFailures = 0;
 
   constructor(
     private readonly scene: Scene,
     profile: StructureSystemProfile,
     private readonly builder: StructureMeshBuilder,
     private readonly pipelineWarmUp: PipelineWarmUp | null = null,
+    private readonly uploadTextures: StructureTextureUpload = uploadStructureTextures,
   ) {
     this.profile = profile;
     this.sets = new StructureSets(effectiveRanges(profile));
+    const textured = profile.structureTextureEdge > 0;
     this.materialsByRole = {
-      far: createMaterial(scene, "far"),
-      near: createMaterial(scene, "near"),
-      open: createMaterial(scene, "open"),
-      glass: createMaterial(scene, "glass"),
+      far: createMaterial(scene, "far", textured),
+      near: createMaterial(scene, "near", textured),
+      open: createMaterial(scene, "open", textured),
+      glass: createMaterial(scene, "glass", false),
     };
+    this.wantTextures();
   }
 
   /** Every material, for the renderer's deferral and the receivers (haze, cloud shadows). */
@@ -177,6 +239,9 @@ export class StructureSystem {
   setProfile(profile: StructureSystemProfile): void {
     this.profile = profile;
     this.sets.setRanges(effectiveRanges(profile));
+    const textured = profile.structureTextureEdge > 0;
+    for (const { plugin } of Object.values(this.materialsByRole)) plugin.setTextured(textured);
+    this.wantTextures();
   }
 
   setFloatingOrigin(x: number, z: number): void {
@@ -189,6 +254,7 @@ export class StructureSystem {
   get pendingWork(): number {
     let pending = 0;
     for (const set of [this.far, this.near, this.open]) pending += (set.inFlight ? 1 : 0) + (set.next ? 1 : 0);
+    if (this.textureInFlight !== null) pending += 1;
     return pending;
   }
 
@@ -230,6 +296,10 @@ export class StructureSystem {
       landed: this.landed,
       failures: this.failures,
       pendingWork: this.pendingWork,
+      textureEdge: this.textures?.edge ?? 0,
+      textureBytes: this.textures?.bytes ?? 0,
+      textureRequests: this.textureRequests,
+      textureFailures: this.textureFailures,
     };
   }
 
@@ -242,7 +312,58 @@ export class StructureSystem {
       set.glass = null;
     }
     for (const { material } of Object.values(this.materialsByRole)) material.dispose();
+    this.textures?.arrays.dispose();
+    this.textures = null;
     this.builder.dispose();
+  }
+
+  /**
+   * The profile's arrays: none at edge 0 (any drawn are let go), else asked
+   * for unless drawn or in flight. One request at a time; one landing at an
+   * edge the profile has left since is let go, and the profile's asked for.
+   */
+  private wantTextures(): void {
+    if (this.disposed) return;
+    const edge = this.profile.structureTextureEdge;
+    if (edge === 0) {
+      if (this.textures) this.showTextures(null);
+      return;
+    }
+    if (this.textures?.edge === edge || this.textureInFlight !== null) return;
+    this.textureInFlight = edge;
+    this.textureRequests += 1;
+    this.builder.textures(edge).then(
+      (plans) => this.landTextures(edge, plans),
+      () => {
+        this.textureFailures += 1;
+        this.textureInFlight = null;
+        // Not asked again: the materials keep their flat placeholders.
+      },
+    );
+  }
+
+  private landTextures(edge: StructureTextureEdge, plans: StructureTexturePlans): void {
+    this.textureInFlight = null;
+    if (this.disposed) return;
+    if (edge !== this.profile.structureTextureEdge) {
+      this.wantTextures();
+      return;
+    }
+    let arrays: StructureUploadedTextures;
+    try {
+      arrays = this.uploadTextures(this.scene, plans);
+    } catch {
+      this.textureFailures += 1;
+      return;
+    }
+    this.showTextures({ edge, arrays, bytes: plans.detail.totalBytes + plans.normal.totalBytes });
+  }
+
+  private showTextures(next: StructureSystem["textures"]): void {
+    const previous = this.textures;
+    this.textures = next;
+    for (const role of ["far", "near", "open"] as const) this.materialsByRole[role].plugin.setTextures(next?.arrays ?? null);
+    previous?.arrays.dispose();
   }
 
   private request(set: SetState, records: readonly StructureRecord[], camera: StructurePoint): void {
@@ -370,11 +491,15 @@ function emptySet(name: StructureSetName): SetState {
 }
 
 /** One role's PBR material and plugin: a dielectric whose albedo is the plugin's. */
-function createMaterial(scene: Scene, role: StructureMaterialRole): { material: PBRMaterial; plugin: StructureMaterialPlugin } {
+function createMaterial(
+  scene: Scene,
+  role: StructureMaterialRole,
+  textured: boolean,
+): { material: PBRMaterial; plugin: StructureMaterialPlugin } {
   const material = new PBRMaterial(`structures-${role}`, scene);
   material.albedoColor = Color3.White();
   material.metallic = 0;
-  material.roughness = role === "glass" ? 0.06 : 0.82;
+  material.roughness = role === "glass" ? STRUCTURE_GLASS_ROUGHNESS : STRUCTURE_BASE_ROUGHNESS;
   if (role === "glass") {
     material.alpha = 0.32;
     material.transparencyMode = PBRMaterial.PBRMATERIAL_ALPHABLEND;
@@ -382,6 +507,6 @@ function createMaterial(scene: Scene, role: StructureMaterialRole): { material: 
   }
   material.metadata = { structures: role };
   prepareMaterialForClusteredLighting(material);
-  const plugin = new StructureMaterialPlugin(material, role);
+  const plugin = new StructureMaterialPlugin(material, role, textured);
   return { material, plugin };
 }

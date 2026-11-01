@@ -8,7 +8,8 @@ import { Scene, ScenePerformancePriority } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
 import { InlineStructureMeshBuilder } from "../../src/render/structures/InlineStructureMeshBuilder";
 import { structureSetArrays } from "../../src/render/structures/structureMeshArrays";
-import { StructureSystem, type StructureSetName } from "../../src/render/webgpu/structures/StructureSystem";
+import { structureTexturePlans, type StructureTexturePlans } from "../../src/render/structures/structureTextures";
+import { StructureSystem, type StructureMeshBuilder, type StructureSetName } from "../../src/render/webgpu/structures/StructureSystem";
 import type { StructureRecord } from "../../src/world/structures/structureRecord";
 
 /**
@@ -21,7 +22,9 @@ import type { StructureRecord } from "../../src/world/structures/structureRecord
  * open mesh alone. Each set paints its own colour, so the probes can tell
  * them apart. The engine and scene run as the flight renderer's do (off
  * compatibility mode, materials frozen after their first ready draw), and a
- * set rebuilt after the first draw is seen redrawn.
+ * set rebuilt after the first draw is seen redrawn. On a textured tier the
+ * materials compile reading flat placeholders, and the kit's arrays, once
+ * in, add detail around the parts' colours without moving their mean.
  */
 
 const CANVAS = 240;
@@ -108,6 +111,7 @@ describe("the structures on the GPU", () => {
         structureFarRadiusMeters: 140,
         structureOpenBuildings: 2,
         structureNearCastsShadows: false,
+        structureTextureEdge: 0,
       }, builder);
       system.setFloatingOrigin(0, 0);
       const near = record(1, -20, 0);
@@ -200,6 +204,136 @@ describe("the structures on the GPU", () => {
         expect(probe(building).near + probe(building).far + probe(building).open).toBe(0);
       }
       expect(system.statistics.visibleBuildings).toBe(0);
+      system.dispose();
+      scene.dispose();
+    } finally {
+      console.warn = warn;
+      console.error = error;
+      engine.dispose();
+      canvas.remove();
+    }
+  }, 60_000);
+
+  it("compile textured on the placeholders, then draw the kit's arrays as detail about the parts' colours", async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = CANVAS;
+    canvas.height = CANVAS;
+    document.body.appendChild(canvas);
+    const engine = new WebGPUEngine(canvas, { antialias: false, enableAllFeatures: false, setMaximumLimits: false });
+    const errors: string[] = [];
+    const warn = console.warn;
+    const error = console.error;
+    const capture = (...args: unknown[]) => {
+      const text = args.map(String).join(" ");
+      if (/WGSL|shader|Shader|compil/u.test(text)) errors.push(text);
+    };
+    console.warn = (...args: unknown[]) => { capture(...args); warn(...args); };
+    console.error = (...args: unknown[]) => { capture(...args); error(...args); };
+    try {
+      await engine.initAsync();
+      engine.compatibilityMode = false;
+      const device = (engine as unknown as { _device: GPUDevice })._device;
+      device.addEventListener("uncapturederror", (event) => {
+        errors.push(String((event as GPUUncapturedErrorEvent).error.message));
+      });
+      const scene = new Scene(engine);
+      scene.useRightHandedSystem = true;
+      scene.performancePriority = ScenePerformancePriority.Intermediate;
+      scene.autoClear = true;
+      scene.clearColor = new Color4(CLEAR[0] / 255, CLEAR[1] / 255, CLEAR[2] / 255, 1);
+      // Ten pixels a metre over one house's roof, from straight above.
+      const camera = new FreeCamera("top", new Vector3(0, 60, 0), scene);
+      camera.mode = Camera.ORTHOGRAPHIC_CAMERA;
+      camera.orthoLeft = -12;
+      camera.orthoRight = 12;
+      camera.orthoTop = 12;
+      camera.orthoBottom = -12;
+      camera.minZ = 1;
+      camera.maxZ = 200;
+      camera.upVector = new Vector3(0, 0, 1);
+      camera.setTarget(Vector3.Zero());
+      scene.activeCamera = camera;
+      new HemisphericLight("sky", new Vector3(0.3, 1, 0.2), scene).intensity = 1.5;
+
+      // The kit's builds as they are; the arrays held until the test lets them land.
+      const inline = new InlineStructureMeshBuilder();
+      let land: (plans: StructureTexturePlans) => void = () => {};
+      const builder: StructureMeshBuilder = {
+        build: (set, records, originX, originZ) => inline.build(set, records, originX, originZ),
+        textures: () => new Promise((resolve) => { land = resolve; }),
+        dispose: () => inline.dispose(),
+      };
+      const system = new StructureSystem(scene, {
+        structureNearRadiusMeters: 400,
+        structureFarRadiusMeters: 2_000,
+        structureOpenBuildings: 2,
+        structureNearCastsShadows: false,
+        structureTextureEdge: 256,
+      }, builder);
+      system.setFloatingOrigin(0, 0);
+      system.apply([{ key: "settlements:0:0", structures: [record(1, 0, 0)] }], []);
+      const at = { x: 0, y: 300, z: 0 };
+
+      /**
+       * Luminance over the middle of the roof (a 10 m square): its mean, and
+       * its grain (the mean step between neighbouring pixels, which the roof's
+       * ridge and pitches barely touch but the layers' courses do).
+       */
+      const frame = async () => {
+        for (let pass = 0; pass < 6; pass += 1) {
+          system.update(at);
+          await Promise.resolve();
+          await Promise.resolve();
+          engine.beginFrame();
+          scene.render();
+          engine.endFrame();
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        }
+        system.update(at);
+        engine.beginFrame();
+        scene.render();
+        engine.endFrame();
+        const copy = document.createElement("canvas");
+        copy.width = CANVAS;
+        copy.height = CANVAS;
+        const context = copy.getContext("2d")!;
+        context.drawImage(canvas, 0, 0);
+        const pixels = context.getImageData(0, 0, CANVAS, CANVAS).data;
+        const luminance = (row: number, column: number) => {
+          const index = (row * CANVAS + column) * 4;
+          return 0.2126 * pixels[index]! + 0.7152 * pixels[index + 1]! + 0.0722 * pixels[index + 2]!;
+        };
+        let clear = 0;
+        let sum = 0;
+        let steps = 0;
+        let count = 0;
+        for (let row = HALF - 50; row < HALF + 50; row += 1) {
+          for (let column = HALF - 50; column < HALF + 50; column += 1) {
+            const index = (row * CANVAS + column) * 4;
+            const rgb = [pixels[index]!, pixels[index + 1]!, pixels[index + 2]!];
+            if (rgb.every((value, channel) => Math.abs(value - CLEAR[channel]!) < 3)) clear += 1;
+            sum += luminance(row, column);
+            steps += Math.abs(luminance(row, column + 1) - luminance(row, column)) + Math.abs(luminance(row + 1, column) - luminance(row, column));
+            count += 1;
+          }
+        }
+        return { mean: sum / count, grain: steps / (2 * count), clear };
+      };
+
+      const flat = await frame();
+      expect(errors.join(" | ")).toBe("");
+      expect(system.pendingWork).toBe(1);
+      expect(flat.clear).toBe(0);
+      land(structureTexturePlans(256));
+      const textured = await frame();
+      expect(errors.join(" | ")).toBe("");
+      expect(system.pendingWork).toBe(0);
+      expect(system.statistics.textureEdge).toBe(256);
+      expect(textured.clear).toBe(0);
+      // Detail: the roof's courses and their shading, where the placeholders drew it plain.
+      expect(textured.grain).toBeGreaterThan(flat.grain * 5 + 1);
+      // About the parts' colours: the layers average mid-grey, so the roof's mean holds.
+      expect(Math.abs(textured.mean - flat.mean)).toBeLessThan(flat.mean * 0.25);
       system.dispose();
       scene.dispose();
     } finally {
