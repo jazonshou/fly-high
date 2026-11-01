@@ -5,6 +5,8 @@ import {
   type InfrastructureChange,
 } from "@/src/world/infrastructure";
 import { clipRoadRegionForAirports } from "@/src/world/roads/roadAirports";
+import { clipSettlementRegionForAirports } from "@/src/world/settlements/settlementAirports";
+import { isSettlementRegionKey } from "@/src/world/settlements/settlementStreaming";
 import {
   roadStreamRegionKey,
   roadStreamRegions,
@@ -99,8 +101,9 @@ export interface RoadStreamChange {
  * first pages bake with their roads rather than rebuilding under the car.
  *
  * Every region goes in clipped round the live world's spawned airports
- * (`clipRoadRegionForAirports`: what reaches a field's earthworks is taken
- * out, under a key of its own), and when the airports change (`setWorld`)
+ * (`clipRoadRegionForAirports`, a settlements region by
+ * `clipSettlementRegionForAirports`: what reaches a field's earthworks is
+ * taken out, under a key of its own), and when the airports change (`setWorld`)
  * each installed region whose clip changes is swapped for the new one, a
  * flush's share at a time, its removal and install in one change. The
  * bookkeeping is by region address (`roadStreamRegionKey`); the stage, the
@@ -398,7 +401,11 @@ export class RoadStreamController {
   /** A region as the live world's spawned airports leave it (the home field never clips). */
   private clip(source: RoadsWorkerRegionEvent): RoadsWorkerRegionEvent {
     const airports = this.world.airports ?? [];
-    return airports.length > 1 ? clipRoadRegionForAirports(source, airports.slice(1)) : source;
+    if (airports.length <= 1) return source;
+    // A settlements region has no pieces or pads, and its buildings go with the ground they stand on.
+    return isSettlementRegionKey(source.infrastructure.key)
+      ? clipSettlementRegionForAirports(source, airports.slice(1))
+      : clipRoadRegionForAirports(source, airports.slice(1));
   }
 
   private cacheDropped(key: string, event: RoadsWorkerRegionEvent): void {

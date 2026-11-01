@@ -45,6 +45,8 @@ import {
   SETTLEMENT_STREAM_WINDOW,
 } from "@/src/world/settlements/settlementStreaming";
 import { withAirports } from "@/src/world/airportNetwork";
+import { structureReachesAirportEarthworks } from "@/src/world/settlements/settlementAirports";
+import type { StructureRecord } from "@/src/world/structures/structureRecord";
 import type { AirportDefinition } from "@/src/world/types";
 import { createWorld } from "@/src/world/world";
 
@@ -844,6 +846,38 @@ describe("the streamed roads under a spawned airport", () => {
     expect(held.simulation).toEqual(stage());
     expect(drawn()).toEqual(stage());
     runtime.dispose();
+  });
+
+  it("clips a settlements region by its buildings, keeping the records of those the field leaves", () => {
+    const worker = new FakeRoadsWorker();
+    const home = { x: 0, z: 0, velocityX: 0, velocityZ: 0 };
+    const controller = new RoadStreamController(world, () => worker);
+    controller.observe(home, 0);
+    const address = worker.lastWant.find((wanted) => wanted.layer === "settlements")!;
+    const field = fieldOver(address);
+    const building = (id: number, x: number, z: number): StructureRecord => ({
+      id, archetype: "house", style: "temperate", x, z, heading: 0.3, width: 10, depth: 8, storeys: 1,
+      floorY: 50, baseY: 49.5, entryY: 49.7, foundation: "plinth", seed: id, settlement: 7,
+      settlementKind: "hamlet", basalt: false,
+    });
+    const onField = building(1, field.centerX, field.centerZ);
+    const offField = building(2, field.centerX + 6_000, field.centerZ);
+    expect(structureReachesAirportEarthworks(field, offField)).toBe(false);
+    const source = regionEvent(address, 0);
+    worker.post({ ...source, infrastructure: { ...source.infrastructure, structures: [onField, offField] } });
+    controller.setWorld(withAirports(world, [world.airport!, field]));
+    controller.flush();
+    const key = roadStreamRegionKey(address.layer, address.rx, address.rz);
+    const clipped = controller.installedRegions.get(key)!.infrastructure;
+    // Not the roads' clip, which keeps no buildings: the field's building goes, the other stays.
+    expect(clipped.key).toBe(roadRegionClipKey(key, [field]));
+    expect(clipped.structures!.map((record) => record.id)).toEqual([2]);
+    // Retired: the whole region, both buildings, under the worker's key.
+    controller.setWorld(world);
+    controller.flush();
+    expect(controller.installedRegions.get(key)!.infrastructure.key).toBe(key);
+    expect(controller.installedRegions.get(key)!.infrastructure.structures!.map((record) => record.id)).toEqual([1, 2]);
+    controller.dispose();
   });
 
   it("installs a region arriving under a field as its clip, and takes it back from the cache as its clip", () => {
