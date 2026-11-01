@@ -6,7 +6,7 @@ import type { Scene } from "@babylonjs/core/scene";
 import type { StructureTextureEdge } from "@/src/world/structures/kit/kitTextures";
 import { SETTLEMENT_STREAM_WINDOW } from "@/src/world/settlements/settlementStreaming";
 import type { StructureRecord } from "@/src/world/structures/structureRecord";
-import type { StructureMeshArrays } from "../../structures/structureMeshArrays";
+import { STRUCTURE_THIN_NEAR_METERS, type StructureMeshArrays } from "../../structures/structureMeshArrays";
 import type { StructureTexturePlans } from "../../structures/structureTextures";
 import { StructureRecordStore, type StructureHidden, type StructureRegionRecords } from "../../structures/StructureRecordStore";
 import {
@@ -452,6 +452,7 @@ export class StructureSystem {
         cameraX: camera.x - set.originX,
         cameraZ: camera.z - set.originZ,
         nearRadiusMeters: ranges.structureNearRadiusMeters,
+        thinNearRadiusMeters: Math.min(STRUCTURE_THIN_NEAR_METERS, ranges.structureNearRadiusMeters),
         bandMeters: STRUCTURE_HANDOFF_BAND_METERS,
         farRadiusMeters: ranges.structureFarRadiusMeters,
         dropped,

@@ -2,7 +2,7 @@ import { structureIndoorLight } from "@/src/world/structures/kit/kitIndoorLight"
 import { StructureMeshBuilder, type StructureMeshArrays } from "@/src/world/structures/kit/kitMesh";
 import { STRUCTURE_KIT } from "@/src/world/structures/kit/structureKit";
 import type { StructureDrawnLevel } from "@/src/world/structures/structureModel";
-import type { StructureRecord } from "@/src/world/structures/structureRecord";
+import type { StructureArchetype, StructureRecord } from "@/src/world/structures/structureRecord";
 
 /**
  * What the structure renderer uploads for one of its meshes: many buildings
@@ -38,6 +38,30 @@ export const STRUCTURE_SET_LEVEL = Object.freeze({
 
 export type StructureSetLevelName = keyof typeof STRUCTURE_SET_LEVEL;
 
+/**
+ * The archetypes built of thin members: the windmill's and mast's 4-5 cm
+ * rods and the towers' 8-12 cm braces fall under a pixel well inside the
+ * near radius, where a lattice shimmers as dotted lines, so these hand over
+ * to their blocks (a solid silhouette) sooner than a house does, at
+ * `STRUCTURE_THIN_NEAR_METERS` (the kit thread's note, measured on its
+ * shots: at 150 m the lattice still reads, at 250 m it is speckle).
+ */
+export const STRUCTURE_THIN_ARCHETYPES: ReadonlySet<StructureArchetype> = new Set(["windmill", "mast", "watchtower", "lookout"]);
+
+/**
+ * Where a thin-member building's closed shell hands over to its block: the
+ * profile's near radius, or this if nearer.
+ */
+export const STRUCTURE_THIN_NEAR_METERS = 250;
+
+/**
+ * The indoor value a far or near vertex of a thin-member building carries:
+ * those levels have no rooms (their indoor is 0 everywhere), so a negative
+ * value is free to tell the vertex stage which handoff radius is the
+ * building's. It reads as outdoors everywhere else.
+ */
+export const STRUCTURE_THIN_INDOOR = -1;
+
 /** One set's arrays: the opaque mesh and, for the open set, its glass (with the rooms' indoor light per vertex). */
 export function structureSetArrays(
   set: StructureSetLevelName,
@@ -50,15 +74,20 @@ export function structureSetArrays(
   const origin = { x: originX, y: 0, z: originZ };
   const opaque = new StructureMeshBuilder(open ? 16_384 : 4_096);
   const glass = open ? new StructureMeshBuilder(1_024) : null;
+  const thin: [number, number][] = [];
   for (const record of records) {
     const model = STRUCTURE_KIT.drawn(record, level);
     const light = open ? structureIndoorLight(STRUCTURE_KIT.layout(record)) : undefined;
+    const first = opaque.vertices;
     opaque.append(record, model.parts, origin, light);
+    if (!open && STRUCTURE_THIN_ARCHETYPES.has(record.archetype)) thin.push([first, opaque.vertices]);
     if (glass && model.glass.length > 0) glass.append(record, model.glass, origin);
   }
   const glassArrays = glass?.finish();
+  const opaqueArrays = opaque.finish();
+  for (const [first, end] of thin) opaqueArrays.indoor.fill(STRUCTURE_THIN_INDOOR, first, end);
   return {
-    opaque: reverseStructureWinding(opaque.finish()),
+    opaque: reverseStructureWinding(opaqueArrays),
     glass: glassArrays ? reverseStructureWinding(glassArrays) : null,
   };
 }

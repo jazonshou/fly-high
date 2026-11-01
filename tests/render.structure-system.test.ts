@@ -5,6 +5,11 @@ import { describe, expect, it } from "vitest";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import { InlineStructureMeshBuilder, KIT_STRUCTURE_ARRAYS } from "@/src/render/structures/InlineStructureMeshBuilder";
 import {
+  STRUCTURE_THIN_ARCHETYPES,
+  STRUCTURE_THIN_INDOOR,
+  STRUCTURE_THIN_NEAR_METERS,
+} from "@/src/render/structures/structureMeshArrays";
+import {
   STRUCTURE_NORMAL_ROUGHNESS_GAIN,
   structurePlaceholderTexel,
   structureTexturePlans,
@@ -230,8 +235,18 @@ describe("the structure renderer", () => {
       const far = system.materials.find((material) => material.name === "structures-far")!;
       const plugin = far.pluginManager!.getPlugin("structure-surface") as StructureMaterialPlugin;
       expect(plugin.binding!.farRadiusMeters).toBe(Math.min(profile.structureFarRadiusMeters, SETTLEMENT_STREAM_WINDOW));
+      expect(plugin.binding!.thinNearRadiusMeters).toBe(Math.min(STRUCTURE_THIN_NEAR_METERS, profile.structureNearRadiusMeters));
       dispose();
     }
+  });
+
+  it("passes two varyings, under the inter-stage limit beside the PBR stage's own", () => {
+    // Five (colour, indoor, uv, surface, dither) took the flight renderer's
+    // PBR vertex stage (haze, cloud shadows, cascades: 13) to 18 of WebGPU's
+    // 16 inter-stage locations, and every structure pipeline failed to build.
+    const declared = (wgsl: string) => [...wgsl.matchAll(/^varying (\w+): (\w+);/gm)].map((match) => `${match[1]}: ${match[2]}`);
+    expect(declared(STRUCTURE_MATERIAL_WGSL.vertexDefinitions)).toEqual(["structureColourIndoorV: vec4f", "structureUvSurfaceShareV: vec4f"]);
+    expect(declared(STRUCTURE_MATERIAL_WGSL.fragmentDefinitions)).toEqual(declared(STRUCTURE_MATERIAL_WGSL.vertexDefinitions));
   });
 
   it("hooks the shader where the sun and the sky can be cut indoors, and where the layers set roughness and cavity", () => {
@@ -382,6 +397,32 @@ describe("the kit's arrays for each set", () => {
       for (let i = 0; i < opaque.centre.length; i += 2) centres.add(`${opaque.centre[i]},${opaque.centre[i + 1]}`);
       expect([...centres].sort()).toEqual([`${100 - 64},${50 - 32}`, `${-40 - 64},${300 - 32}`].sort());
     }
+  });
+
+  it("mark the thin-member buildings' far and near vertices for their nearer handoff, and nothing else", () => {
+    const windmill = record(1, 100, 50, { archetype: "windmill" });
+    const house = record(2, -40, 300);
+    expect(STRUCTURE_THIN_ARCHETYPES.has("windmill")).toBe(true);
+    expect(STRUCTURE_THIN_ARCHETYPES.has("house")).toBe(false);
+    for (const set of ["far", "near", "open"] as const) {
+      const { opaque } = KIT_STRUCTURE_ARRAYS(set, [windmill, house], 0, 0);
+      const marks = { windmill: new Set<number>(), house: new Set<number>() };
+      for (let v = 0; v < opaque.indoor.length; v += 1) {
+        const which = Math.abs(opaque.centre[v * 2]! - windmill.x) < 1e-3 ? "windmill" : "house";
+        if (set !== "open" || opaque.indoor[v]! <= 0) marks[which].add(opaque.indoor[v]!);
+      }
+      if (set === "open") {
+        // Open buildings carry their rooms' light, never the mark.
+        expect([...marks.windmill, ...marks.house].every((value) => value !== STRUCTURE_THIN_INDOOR)).toBe(true);
+      } else {
+        expect([...marks.windmill]).toEqual([STRUCTURE_THIN_INDOOR]);
+        expect([...marks.house]).toEqual([0]);
+      }
+    }
+    // And the vertex stage reads it: the thin radius where the mark is set, the near radius elsewhere.
+    expect(STRUCTURE_MATERIAL_WGSL.vertexUpdatePosition).toContain(
+      "select(structureRanges.x, structureRanges.w, vertexInputs.structureIndoor < -0.5)",
+    );
   });
 
   it("wind every face the other way round from its normal, this right-handed scene's front faces", () => {

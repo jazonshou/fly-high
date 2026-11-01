@@ -84,6 +84,8 @@ export interface StructureMaterialBinding {
   readonly cameraX: number;
   readonly cameraZ: number;
   readonly nearRadiusMeters: number;
+  /** The near radius of the thin-member buildings (`STRUCTURE_THIN_ARCHETYPES`), no further than `nearRadiusMeters`. */
+  readonly thinNearRadiusMeters: number;
   readonly bandMeters: number;
   readonly farRadiusMeters: number;
   /** Centres (x, z pairs, relative to the same origin) of buildings the near set drops, at most `STRUCTURE_OPEN_SLOTS`. */
@@ -108,12 +110,12 @@ attribute structureColour: vec3f;
 attribute structureIndoor: f32;
 attribute structureCentre: vec2f;
 attribute structureUv: vec2f;
-varying structureColourV: vec3f;
-varying structureIndoorV: f32;
-varying structureUvV: vec2f;
-varying structureSurfaceV: f32;
-// x: the share of the building drawn (0..1); y: 1 where the dither is the far blocks' (the complement).
-varying structureDitherV: vec2f;
+// Two varyings for the lot: the PBR stage with haze, cloud shadows and the
+// cascades already passes 13, and the inter-stage limit is 16.
+// rgb: the part's colour; a: the indoor factor.
+varying structureColourIndoorV: vec4f;
+// xy: the face's UV (metres); z: the surface id; w: the share of the building drawn (0..1).
+varying structureUvSurfaceShareV: vec4f;
 
 fn structureDropped(centre: vec2f) -> bool {
   let a = uniforms.structureDroppedA;
@@ -131,15 +133,15 @@ const VERTEX_UPDATE_POSITION = /* wgsl */ `
   let structureRole = uniforms.structureCamera.z;
   let structureDistance = distance(vertexInputs.structureCentre, uniforms.structureCamera.xy);
   let structureBand = max(structureRanges.y, 1e-3);
+  // A thin-member building's block takes over sooner (its far and near vertices carry indoor -1).
+  let structureNear = select(structureRanges.x, structureRanges.w, vertexInputs.structureIndoor < -0.5);
   var structureShare = 1.0;
-  var structureComplement = 0.0;
   if (structureRole < 0.5) {
     // Far: in across the band past the near radius, out across the band inside the far one.
-    structureShare = clamp((structureDistance - structureRanges.x) / structureBand, 0.0, 1.0)
+    structureShare = clamp((structureDistance - structureNear) / structureBand, 0.0, 1.0)
       * clamp((structureRanges.z - structureDistance) / structureBand, 0.0, 1.0);
-    structureComplement = 1.0;
   } else if (structureRole < 1.5) {
-    structureShare = clamp((structureRanges.x + structureBand - structureDistance) / structureBand, 0.0, 1.0);
+    structureShare = clamp((structureNear + structureBand - structureDistance) / structureBand, 0.0, 1.0);
     if (structureDropped(vertexInputs.structureCentre)) { structureShare = 0.0; }
   } else {
     // Open and glass: only the buildings drawn open now (the open mesh holds
@@ -150,12 +152,9 @@ const VERTEX_UPDATE_POSITION = /* wgsl */ `
     // The whole building to one point: its triangles have no area.
     positionUpdated = vec3f(0.0, -100000.0, 0.0);
   }
-  vertexOutputs.structureDitherV = vec2f(structureShare, structureComplement);
+  vertexOutputs.structureColourIndoorV = vec4f(vertexInputs.structureColour, vertexInputs.structureIndoor);
+  vertexOutputs.structureUvSurfaceShareV = vec4f(vertexInputs.structureUv, vertexInputs.structureSurface, structureShare);
 }
-vertexOutputs.structureColourV = vertexInputs.structureColour;
-vertexOutputs.structureIndoorV = vertexInputs.structureIndoor;
-vertexOutputs.structureUvV = vertexInputs.structureUv;
-vertexOutputs.structureSurfaceV = vertexInputs.structureSurface;
 `;
 
 /** The kit's surface table (layer, 1 / tile, strength, fitted) as WGSL, a vec4 per surface id. */
@@ -179,11 +178,8 @@ var structureNormalSampler: sampler;
 var structureNormal: texture_2d_array<f32>;
 ${surfaceTableWgsl()}
 #endif
-varying structureColourV: vec3f;
-varying structureIndoorV: f32;
-varying structureUvV: vec2f;
-varying structureSurfaceV: f32;
-varying structureDitherV: vec2f;
+varying structureColourIndoorV: vec4f;
+varying structureUvSurfaceShareV: vec4f;
 
 // 2-14's ordered 8x8 Bayer threshold in [1/128, 127/128] (the detail
 // plugins' construction), on render-target pixels.
@@ -203,20 +199,20 @@ fn structureBayer8(pixel: vec2u) -> f32 {
 const FRAGMENT_MAIN_BEGIN = /* wgsl */ `
 #ifdef STRUCTURE_TEXTURED
 // Before anything can discard or branch: the textures' gradients and frame.
-let structureUvDx = dpdx(fragmentInputs.structureUvV);
-let structureUvDy = dpdy(fragmentInputs.structureUvV);
+let structureUvDx = dpdx(fragmentInputs.structureUvSurfaceShareV.xy);
+let structureUvDy = dpdy(fragmentInputs.structureUvSurfaceShareV.xy);
 let structurePositionDx = dpdx(fragmentInputs.vPositionW);
 let structurePositionDy = dpdy(fragmentInputs.vPositionW);
 #endif
 {
-  let structureShare = fragmentInputs.structureDitherV.x;
+  let structureShare = fragmentInputs.structureUvSurfaceShareV.w;
   if (structureShare < 0.999) {
     let structureThreshold = structureBayer8(vec2u(fragmentInputs.position.xy));
     // Parenthesised: an unbracketed "a < b, c >= d" parses as a template list.
     let structureKeep = select(
       (structureThreshold < structureShare),
       (structureThreshold >= 1.0 - structureShare),
-      (fragmentInputs.structureDitherV.y > 0.5),
+      (uniforms.structureCamera.z < 0.5),
     );
     if (!structureKeep) { discard; }
   }
@@ -224,18 +220,18 @@ let structurePositionDy = dpdy(fragmentInputs.vPositionW);
 `;
 
 const FRAGMENT_BEFORE_LIGHTS = /* wgsl */ `
-surfaceAlbedo = fragmentInputs.structureColourV;
+surfaceAlbedo = fragmentInputs.structureColourIndoorV.rgb;
 #ifdef STRUCTURE_TEXTURED
 var structureRoughness = ${wgslNumber(STRUCTURE_BASE_ROUGHNESS)};
 var structureCavity = 1.0;
 {
-  let structureId = u32(clamp(round(fragmentInputs.structureSurfaceV), 0.0, ${wgslNumber(STRUCTURE_SURFACES.length - 1)}));
+  let structureId = u32(clamp(round(fragmentInputs.structureUvSurfaceShareV.z), 0.0, ${wgslNumber(STRUCTURE_SURFACES.length - 1)}));
   let structureEntry = structureSurfaceTable[structureId];
   let structureStrength = structureEntry.z;
   if (structureStrength > 0.0) {
     // Tiled surfaces at metres over the tile; window and doorway as laid, 0 to 1.
     let structureScale = select(structureEntry.y, 1.0, structureEntry.w > 0.5);
-    let structureUv = fragmentInputs.structureUvV * structureScale;
+    let structureUv = fragmentInputs.structureUvSurfaceShareV.xy * structureScale;
     let structureLayer = i32(structureEntry.x + 0.5);
     let structureDetailTexel = textureSampleGrad(structureDetail, structureDetailSampler, structureUv, structureLayer,
       structureUvDx * structureScale, structureUvDy * structureScale);
@@ -263,9 +259,9 @@ var structureCavity = 1.0;
 }
 #endif
 // Inside: no sun or moon, and only the indoor share of the sky.
-let structureInside = fragmentInputs.structureIndoorV > ${wgslNumber(1e-3)};
+let structureInside = fragmentInputs.structureColourIndoorV.a > ${wgslNumber(1e-3)};
 let structureSunShare = select(1.0, 0.0, structureInside);
-let structureSkyShare = select(1.0, clamp(fragmentInputs.structureIndoorV, 0.0, 1.0), structureInside);
+let structureSkyShare = select(1.0, clamp(fragmentInputs.structureColourIndoorV.a, 0.0, 1.0), structureInside);
 `;
 
 const FRAGMENT_INJECTIONS = Object.freeze({
@@ -410,7 +406,13 @@ export class StructureMaterialPlugin extends MaterialPluginBase {
       uniformBuffer.setTexture("structureNormal", arrays.normal);
     }
     uniformBuffer.updateFloat4("structureCamera", binding.cameraX, binding.cameraZ, ROLE_ID[this.role], 0);
-    uniformBuffer.updateFloat4("structureRanges", binding.nearRadiusMeters, binding.bandMeters, binding.farRadiusMeters, 0);
+    uniformBuffer.updateFloat4(
+      "structureRanges",
+      binding.nearRadiusMeters,
+      binding.bandMeters,
+      binding.farRadiusMeters,
+      Math.min(binding.thinNearRadiusMeters, binding.nearRadiusMeters),
+    );
     const dropped = binding.dropped;
     const at = (index: number) => (index < dropped.length && index < STRUCTURE_OPEN_SLOTS * 2 ? dropped[index]! : NO_CENTRE);
     uniformBuffer.updateFloat4("structureDroppedA", at(0), at(1), at(2), at(3));
