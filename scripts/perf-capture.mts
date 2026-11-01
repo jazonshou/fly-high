@@ -2217,6 +2217,64 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     ceilings: null,
     drawCallCeiling: 88,
   },
+  // The generated buildings (structures S4), at the four-building farmstead
+  // 3.8 km north-west of home (a house, barn, shed and store, temperate).
+  // Fixed poses worked out for this seed from the kit's own layout, so both
+  // perf:ab arms photograph the same place; the base arm, without buildings,
+  // shows the bare ground. Unbaselined probes.
+  {
+    name: "farmstead-300ft",
+    description:
+      "300 ft over the fields 650 m out from a farmstead, the afternoon sun "
+      + "over the right shoulder: the buildings' blocks and shells at range",
+    cameraMode: "chase",
+    altitudeAglMeters: 91,
+    altitudeMslMeters: null,
+    offsetXMeters: -3_803.67,
+    offsetZMeters: 1_475.94,
+    pitchDownDegrees: 3,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 16 },
+    relativeSunBearingDegrees: 140,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "farmstead-eye",
+    description:
+      "Standing 110 m from the same farmstead at eye height: the kit's closed "
+      + "shells and their materials, the sun from the right",
+    cameraMode: "cockpit",
+    altitudeAglMeters: 0.6,
+    altitudeMslMeters: null,
+    offsetXMeters: -3_387.75,
+    offsetZMeters: 1_825.64,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 16 },
+    relativeSunBearingDegrees: 125,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "farmhouse-inside",
+    description:
+      "Inside the farmhouse at noon, at eye height in the living room, looking "
+      + "along it: the open building, its furniture and the light from its windows",
+    cameraMode: "cockpit",
+    // The cockpit eye sits 1.15 m ahead of and 1.12 m above this point: the
+    // eye is 1.0 m in from the room's end wall, 1.6 m over its floor.
+    altitudeAglMeters: 0.58,
+    altitudeMslMeters: null,
+    offsetXMeters: -3_328.96,
+    offsetZMeters: 1_909.84,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 12.5 },
+    relativeSunBearingDegrees: -153,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
   /**
    * BOATS. Four shots of the Runabout 21 (`boat` has how the pose is made),
    * appended so no aircraft shot's canonical index or wave phase moves. Not
