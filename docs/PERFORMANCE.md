@@ -145,6 +145,7 @@ audit is why it now carries all four tiers):
 | Structure far radius (`structureFarRadiusMeters`; the blocks, drawn no further than the 3.9 km the settlements stream) | 2,500 m | 4,000 m | 6,000 m | 8,000 m |
 | Buildings drawn open (`structureOpenBuildings`; rooms and glass, within 40 m of the camera) | 2 | 4 | 6 | 6 |
 | Structure shells cast shadows (`structureNearCastsShadows`; the near set, one caster) | no | yes | yes | yes |
+| Structure texture edge (`structureTextureEdge`; the kit's 13 material layers, texels; 0 = part colours alone) | 0 | 256 | 256 | 512 |
 | Frame target | 13.7 ms | 13.7 ms | 13.7 ms | 30 ms |
 
 Ultra's material array edge is 512², not §5.3's published 1024²: `3-1`

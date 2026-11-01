@@ -218,6 +218,7 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["Structure near radius", (p: (typeof PROFILES)[number]) => p.structureNearRadiusMeters],
     ["Structure far radius", (p: (typeof PROFILES)[number]) => p.structureFarRadiusMeters],
     ["Buildings drawn open", (p: (typeof PROFILES)[number]) => p.structureOpenBuildings],
+    ["Structure texture edge", (p: (typeof PROFILES)[number]) => p.structureTextureEdge],
     ["Frame target", (p: (typeof PROFILES)[number]) => p.frameTargetMs],
     ["Rendered stems/ha", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.nearStemsPerHectare],
     ["Impostor floor share", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.impostorFloorShare],
@@ -347,8 +348,8 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     // comparing two empty lists — the exact false pass this family exists to
     // make impossible. And an upper bound too: the first attempt ran past the
     // table's end into the next one and collected 32 labels. The table has
-    // grown to 44 rows since (volcanic land added two, boats two, the car
-    // three, the roads two, the structures four), so the end is pinned by its
+    // grown to 45 rows since (volcanic land added two, boats two, the car
+    // three, the roads two, the structures five), so the end is pinned by its
     // last row as well as by the count.
     const rows = tierTableRowLabels();
     expect(rows.length).toBeGreaterThan(20);

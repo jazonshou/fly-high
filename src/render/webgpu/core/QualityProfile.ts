@@ -505,6 +505,13 @@ export interface WebGpuQualityProfile {
   readonly structureOpenBuildings: number;
   /** The near shells cast the sun's shadows (one caster, drawn once per cascade). */
   readonly structureNearCastsShadows: boolean;
+  /**
+   * The building kit's material arrays (`kitTextures.ts`: boards, stone,
+   * shingle, windows...), texels on an edge; 0 draws the parts' colours
+   * alone. 256 is 8.7 MiB with full chains, 512 34.7 MiB — which High's
+   * 700 MiB ceiling has no room for at 2560×1440@2, so only Ultra takes it.
+   */
+  readonly structureTextureEdge: 0 | 256 | 512;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -623,6 +630,7 @@ function resolveBaseQualityProfile(
       structureFarRadiusMeters: 2_500,
       structureOpenBuildings: 2,
       structureNearCastsShadows: false,
+      structureTextureEdge: 0,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -740,6 +748,7 @@ function resolveBaseQualityProfile(
       structureFarRadiusMeters: 4_000,
       structureOpenBuildings: 4,
       structureNearCastsShadows: true,
+      structureTextureEdge: 256,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -846,6 +855,7 @@ function resolveBaseQualityProfile(
       structureFarRadiusMeters: 6_000,
       structureOpenBuildings: 6,
       structureNearCastsShadows: true,
+      structureTextureEdge: 256,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -954,6 +964,7 @@ function resolveBaseQualityProfile(
     structureFarRadiusMeters: 8_000,
     structureOpenBuildings: 6,
     structureNearCastsShadows: true,
+    structureTextureEdge: 512,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,

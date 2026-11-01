@@ -452,8 +452,10 @@ export function mipChainByteFactor(edge: number): number {
 // Tier 0's row funds wave G's ground-cover blades (the policy: a new
 // vegetation allocation is paid for in the same commit): the allowance was
 // carrying 6.7 MiB of slack against Gate A's 1.286 MiB measured actual.
+// 2026-11-01: it funds tier 0's 2 MiB of generated-building meshes the same
+// way (`STRUCTURE_MESH_ALLOWANCE_MIB`), leaving 4.5 against that 1.286.
 const OTHER_DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Object.freeze({
-  0: 6.5,
+  0: 4.5,
   1: 9,
   2: 11,
   3: 13,
@@ -466,6 +468,26 @@ const OTHER_DETAIL_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Ob
  * twelve-level chain (computed from the allocation sizes).
  */
 const MISC_ALLOWANCE_MIB = 40;
+
+/**
+ * The generated buildings' meshes: far blocks, near shells, the open
+ * buildings and their glass, 60 bytes a vertex. Measured 2026-11-01 with the
+ * camera stood in the default world's settlements (each tier's near/far
+ * radii and open count; `structureSetArrays` byte lengths):
+ * maxima 1.92 / 2.84 / 3.05 MiB at tiers 0 / 1 / 2, tier 3 drawing tier 2's
+ * far set (both clamp to the 3.9 km settlements window) with the same six
+ * open buildings. Rows are those maxima rounded up; tier 0's is paid for
+ * from `OTHER_DETAIL_ALLOWANCE_MIB` in the same commit.
+ */
+const STRUCTURE_MESH_ALLOWANCE_MIB: Readonly<Record<PerformanceTier, number>> = Object.freeze({
+  0: 2,
+  1: 3,
+  2: 3.5,
+  3: 3.5,
+});
+/** The kit's material arrays: two (detail, normal), 13 layers, RGBA8 (`kitTextures.ts`). */
+const STRUCTURE_TEXTURE_ARRAYS = 2;
+const STRUCTURE_TEXTURE_LAYERS = 13;
 
 /**
  * Estimate-vs-reality slack.
@@ -649,6 +671,8 @@ export interface GpuMemoryEstimateMiB {
   readonly groundCoverMiB: number;
   readonly otherDetailMiB: number;
   readonly materialArraysMiB: number;
+  /** The generated buildings: their meshes' allowance and the kit's material arrays. */
+  readonly structuresMiB: number;
   readonly miscMiB: number;
   readonly totalMiB: number;
 }
@@ -797,13 +821,19 @@ export function estimateGpuMemoryBreakdown(
       * inputs.materialArrayBytesPerTexel
       * mipChainByteFactor(profile.materialArrayEdge))
     / MIB;
+  const structureEdge = profile.structureTextureEdge;
+  const structuresMiB = STRUCTURE_MESH_ALLOWANCE_MIB[tier]
+    + (structureEdge > 0
+      ? (STRUCTURE_TEXTURE_ARRAYS * STRUCTURE_TEXTURE_LAYERS * structureEdge * structureEdge * 4
+        * mipChainByteFactor(structureEdge)) / MIB
+      : 0);
   const miscMiB = MISC_ALLOWANCE_MIB;
   const totalMiB =
     (framebuffersMiB + shadowsMiB + oceanMiB + cloudsMiB
       + heightAtlasMiB + channelAtlasMiB + heightPyramidMiB
       + macroEvolutionMiB + erosionScratchMiB + bathymetryClipmapMiB + channelGraphMiB
       + detailInstancesMiB + foliageAtlasMiB + impostorAtlasMiB + groundCoverMiB
-      + otherDetailMiB + materialArraysMiB + miscMiB)
+      + otherDetailMiB + materialArraysMiB + structuresMiB + miscMiB)
     * ESTIMATE_FUDGE_FACTOR;
 
   return Object.freeze({
@@ -825,6 +855,7 @@ export function estimateGpuMemoryBreakdown(
     groundCoverMiB,
     otherDetailMiB,
     materialArraysMiB,
+    structuresMiB,
     miscMiB,
     totalMiB,
   });
@@ -864,6 +895,7 @@ export function assertWithinBudget(
     `impostor-atlas ${breakdown.impostorAtlasMiB.toFixed(1)}`,
     `other-detail ${breakdown.otherDetailMiB.toFixed(1)}`,
     `material-arrays ${breakdown.materialArraysMiB.toFixed(1)}`,
+    `structures ${breakdown.structuresMiB.toFixed(1)}`,
     `misc ${breakdown.miscMiB.toFixed(1)}`,
   ].join(", ");
   throw new Error(
