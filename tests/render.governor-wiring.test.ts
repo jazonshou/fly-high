@@ -76,7 +76,7 @@ describe("the CSM and cloud-depth refresh holds (PR B part 2, G5)", () => {
   it("keeps the two holds off each other's frames, after both intervals are synced", () => {
     expect(count(renderer, "staggerRefresh(")).toBe(1);
     expect(renderer).toMatch(
-      /work\.cloudDepthRefreshExtraFrames,\s*\);\s*staggerRefresh\(shadowMap, sceneDepth\);\s*\}/u,
+      /work\.cloudDepthRefreshExtraFrames,\s*\);\s*const shadowCountBefore = this\.shadowRefreshCountSeen;\s*this\.shadowRefreshCountSeen = shadowMap\?\.currentRefreshId \?\? Number\.NaN;\s*staggerRefresh\(shadowMap, sceneDepth, shadowCountBefore\);\s*\}/u,
     );
   });
 

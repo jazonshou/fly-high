@@ -65,11 +65,18 @@ function framePairs(
 ): Array<[boolean, boolean]> {
   const rendered: Array<[boolean, boolean]> = [];
   for (let frame = 0; frame < count; frame += 1) {
-    if (stagger) staggerRefresh(leader, follower);
+    if (stagger) {
+      const before = leaderCountSeen.get(leader) ?? Number.NaN;
+      leaderCountSeen.set(leader, leader.currentRefreshId);
+      staggerRefresh(leader, follower, before);
+    }
     rendered.push([leader._shouldRender(), follower._shouldRender()]);
   }
   return rendered;
 }
+
+/** The leader's count at the last stagger, as the renderer keeps it. */
+const leaderCountSeen = new WeakMap<RenderTargetTexture, number>();
 
 const shared = (pairs: Array<[boolean, boolean]>): number[] =>
   pairs.flatMap(([a, b], frame) => (a && b ? [frame] : []));
@@ -177,8 +184,11 @@ describe("staggerRefresh on Babylon's counter", () => {
     syncRefreshInterval(csm, 2);
     syncRefreshInterval(depth, 3);
     const forced: boolean[] = [];
+    let before = Number.NaN;
     for (let frame = 0; frame < 12; frame += 1) {
-      forced.push(staggerRefresh(csm, depth));
+      const now = csm.currentRefreshId;
+      forced.push(staggerRefresh(csm, depth, before));
+      before = now;
       csm._shouldRender();
       depth._shouldRender();
     }
@@ -186,8 +196,40 @@ describe("staggerRefresh on Babylon's counter", () => {
     const every = renderTarget();
     const other = renderTarget();
     expect(framePairs(every, other, 4).every(([a, b]) => a && b)).toBe(true);
-    expect(staggerRefresh(null, other)).toBe(false);
-    expect(staggerRefresh(every, undefined)).toBe(false);
+    expect(staggerRefresh(null, other, Number.NaN)).toBe(false);
+    expect(staggerRefresh(every, undefined, Number.NaN)).toBe(false);
+  });
+
+  it("a CSM the scene stops checking (sun shadows off) leaves the depth on its own interval", () => {
+    const csm = renderTarget();
+    const depth = renderTarget();
+    syncRefreshInterval(csm, 2);
+    syncRefreshInterval(depth, 2);
+    framePairs(csm, depth, 5);
+    // From here the scene checks only the depth; the CSM's count stands still.
+    let before = Number.NaN;
+    const drawn: boolean[] = [];
+    for (let frame = 0; frame < 12; frame += 1) {
+      const now = csm.currentRefreshId;
+      staggerRefresh(csm, depth, before);
+      before = now;
+      drawn.push(depth._shouldRender());
+    }
+    expect(drawn.filter(Boolean).length).toBe(6);
+  });
+
+  it("INSTRUMENT: without the leader's last count, a CSM that stood still would make the depth draw every frame", () => {
+    const csm = renderTarget();
+    const depth = renderTarget();
+    syncRefreshInterval(csm, 2);
+    syncRefreshInterval(depth, 2);
+    framePairs(csm, depth, 5);
+    const drawn: boolean[] = [];
+    for (let frame = 0; frame < 12; frame += 1) {
+      staggerRefresh(csm, depth, Number.NaN);
+      drawn.push(depth._shouldRender());
+    }
+    expect(drawn.filter(Boolean).length).toBeGreaterThan(6);
   });
 });
 
@@ -214,6 +256,7 @@ describe("refreshIntervalAtCadence", () => {
 
 /** The renderer's fields `syncRefreshHolds` reads, with targets that count the interval writes. */
 interface HoldReceiver {
+  shadowRefreshCountSeen?: number;
   governedWork: GovernedWork;
   governorConfig: { tierPresentationTargetMs: number; presentationTargetMs: number };
   atmosphere: { shadows: { getShadowMap: () => RefreshTarget } };

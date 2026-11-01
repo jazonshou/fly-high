@@ -894,6 +894,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private presentationCadence: PresentationCadence | null = null;
   /** A cadence change already restarted the governor's window in flight (at most once per window). */
   private governorRebasedThisWindow = false;
+  /** G5: the sun-shadow map's refresh count at the last hold sync, so the stagger sees whether it moved. */
+  private shadowRefreshCountSeen = Number.NaN;
   /** The flight is paused: the static scene's frames are no measure of flight, so no window is judged. */
   private governorHeld = false;
   private budgetProbe: FrameGraphBudgetProbe | null = null;
@@ -3215,7 +3217,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       sceneDepth,
       refreshIntervalAtCadence(work.cloudDepthRefreshFrames, tier, shown) + work.cloudDepthRefreshExtraFrames,
     );
-    staggerRefresh(shadowMap, sceneDepth);
+    const shadowCountBefore = this.shadowRefreshCountSeen;
+    this.shadowRefreshCountSeen = shadowMap?.currentRefreshId ?? Number.NaN;
+    staggerRefresh(shadowMap, sceneDepth, shadowCountBefore);
   }
 
   private updatePresentation(): void {

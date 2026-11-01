@@ -51,16 +51,24 @@ export function forceRefresh(target: RefreshTarget | null | undefined): void {
  * That costs one extra follower pass each time they fall into step, which is
  * once per invalidation or interval change. Unequal intervals (a rung on one
  * hold only) are left alone: they meet only on common multiples.
+ *
+ * `leaderCountBefore` is the leader's count at the previous call. At an
+ * interval of 2 or more a target the scene checks moves its count every
+ * frame (a draw sets it to 1, a skip adds one), so a count that stood still
+ * means the scene did not check the leader (sun shadows off), and keeping
+ * off its frames would make the follower draw every frame.
  */
 export function staggerRefresh(
   leader: RefreshTarget | null | undefined,
   follower: RefreshTarget | null | undefined,
+  leaderCountBefore: number,
 ): boolean {
   if (!leader || !follower) return false;
   const interval = follower.refreshRate;
   if (interval < 2 || leader.refreshRate !== interval) return false;
   const count = follower.currentRefreshId;
   if (count < 1 || count >= interval || leader.currentRefreshId !== count) return false;
+  if (leader.currentRefreshId === leaderCountBefore) return false;
   follower.resetRefreshCounter();
   return true;
 }
