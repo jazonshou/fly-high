@@ -56,7 +56,7 @@ function frames(target: RenderTargetTexture, count: number, beforeEach?: () => v
   return rendered;
 }
 
-/** Both targets' `_shouldRender()` per frame, the CSM first as the scene gathers it; `stagger` runs before each. */
+/** Both targets' `_shouldRender()` per frame (each touches only its own counter, so order does not matter); `stagger` runs before each. */
 function framePairs(
   leader: RenderTargetTexture,
   follower: RenderTargetTexture,

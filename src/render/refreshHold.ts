@@ -48,9 +48,10 @@ export function forceRefresh(target: RefreshTarget | null | undefined): void {
  * scene renders; when both counters stand at the same count short of the
  * interval (neither draws this frame), the `follower` draws now, on a frame
  * that would otherwise carry neither, and from then on the two alternate.
- * That costs one extra follower pass each time they fall into step, which is
- * once per invalidation or interval change. Unequal intervals (a rung on one
- * hold only) are left alone: they meet only on common multiples.
+ * That costs one extra follower pass each time a reset brings them into
+ * step: an invalidation, an interval change, or Babylon's own reset of a
+ * target whose meshes or shadow effects were not ready. Unequal intervals (a
+ * rung on one hold only) are left alone: they meet only on common multiples.
  *
  * `leaderCountBefore` is the leader's count at the previous call. At an
  * interval of 2 or more a target the scene checks moves its count every

@@ -3201,8 +3201,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * G5: the CSM and cloud-depth refresh, the profile's rate at the presented
    * cadence plus the governor's whole frames. Every frame, so it also lands
    * on a map `applyProfile` recreated; the setter only writes on a change.
-   * On equal intervals the cloud depth is kept off the CSM's frames, so no
-   * held frame carries both passes.
+   * On equal intervals the cloud depth is kept off the CSM's frames: only a
+   * frame a reset forces carries both passes, and the next moves the depth off.
    */
   private syncRefreshHolds(): void {
     const work = this.governedWork;
