@@ -50,7 +50,13 @@ export function directDaylight(
     // The opening's in-plane axes: across (horizontal) and up.
     const ax = -o.nz;
     const az = o.nx;
-    const cells = 3;
+    // Fewer cells the farther away the opening is: its form factor is smooth there.
+    const ox = o.x - px;
+    const oy = o.y - py;
+    const oz = o.z - pz;
+    const size = Math.max(o.width, o.height);
+    const far2 = (ox * ox + oy * oy + oz * oz) / (size * size);
+    const cells = far2 > 4 ? 1 : far2 > 1.2 ? 2 : 3;
     const cellArea = (o.width * o.height) / (cells * cells);
     let sum = 0;
     for (let i = 0; i < cells; i += 1) {
@@ -112,7 +118,7 @@ interface LitRoom {
  */
 export interface StructureIndoorLight {
   at(px: number, py: number, pz: number, nx: number, ny: number, nz: number): number;
-  /** A room's mean factor over its floor (the work plane, 0.8 m up). */
+  /** A room's mean factor over its floor (the work plane, 0.8 m up, on a 0.9 m grid). */
   roomMean(volume: StructureInteriorVolume): number;
 }
 
@@ -158,26 +164,26 @@ export function structureIndoorLight(layout: StructureLayoutModel): StructureInd
     const openings = roomOpenings(volume, layout);
     return { volume, openings, bounce: bouncedDaylight(volume, openings) };
   });
+  const lit = rooms.filter((r) => !r.volume.room.includes("stairwell"));
+  let last: LitRoom | null = null;
   const roomFor = (px: number, py: number, pz: number, nx: number, ny: number, nz: number): LitRoom | null => {
     // The room the face looks into: a little way along its normal.
     const qx = px + nx * 0.15;
     const qy = py + ny * 0.15;
     const qz = pz + nz * 0.15;
+    // Rooms do not overlap but for stairwells, which take their hall's light (they are not lit apart).
+    if (last && inside(last.volume, qx, qy, qz, 0.02)) return last;
     let best: LitRoom | null = null;
-    let bestSize = Infinity;
-    for (const room of rooms) {
-      if (!inside(room.volume, qx, qy, qz, 0.02)) continue;
-      const v = room.volume;
-      const size = (v.maxX - v.minX) * (v.maxY - v.minY) * (v.maxZ - v.minZ);
-      // The smallest box wins: a stairwell's light inside a hall is the hall's (stairwells are not lit apart).
-      if (size < bestSize && !v.room.endsWith("stairwell")) {
+    for (const room of lit) {
+      if (inside(room.volume, qx, qy, qz, 0.02)) {
         best = room;
-        bestSize = size;
+        break;
       }
     }
     if (!best) {
       for (const room of rooms) if (inside(room.volume, qx, qy, qz, 0.35)) return room;
     }
+    last = best;
     return best;
   };
   const evaluate = (room: LitRoom, px: number, py: number, pz: number, nx: number, ny: number, nz: number) =>
@@ -189,8 +195,8 @@ export function structureIndoorLight(layout: StructureLayoutModel): StructureInd
     const room = rooms.find((r) => r.volume === volume);
     if (!room) return STRUCTURE_INDOOR_MIN;
     const v = volume;
-    const nx = Math.max(1, Math.round((v.maxX - v.minX) / 0.6));
-    const nz = Math.max(1, Math.round((v.maxZ - v.minZ) / 0.6));
+    const nx = Math.max(1, Math.round((v.maxX - v.minX) / 0.9));
+    const nz = Math.max(1, Math.round((v.maxZ - v.minZ) / 0.9));
     const y = Math.min(v.maxY - 0.1, v.minY + 0.8);
     let sum = 0;
     for (let i = 0; i < nx; i += 1) {
