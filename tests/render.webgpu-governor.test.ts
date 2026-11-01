@@ -321,7 +321,7 @@ describe("adaptive governor (1A-6b)", () => {
     expect(workLeverSettingsFor(6, 0).animalBudgetScale).toBe(0.5);
     expect(workLeverSettingsFor(6, 0).terrainPageRequestsPerUpdate).toBe(8);
     expect(workLeverSettingsFor(7, 0).terrainPageRequestsPerUpdate).toBe(4);
-    expect(workLeverSettingsFor(8, 0)).toMatchObject({ cdlodNodeBudgetScale: 0.7, cdlodPixelThresholdScale: 4 / 3 });
+    expect(workLeverSettingsFor(8, 0)).toMatchObject({ cdlodNodeBudgetScale: 0.75, cdlodPixelThresholdScale: 4 / 3 });
     expect(workLeverSettingsFor(8, 0)).toMatchObject({ detailBudgetScale: 0.66, animalBudgetScale: 0.5 });
     expect(workLeverSettingsFor(9, 0)).toMatchObject({ detailBudgetScale: 0.33, animalBudgetScale: 0.25 });
     expect(workLeverSettingsFor(9, 0).terrainPageRequestsPerUpdate).toBe(4);
@@ -331,7 +331,7 @@ describe("adaptive governor (1A-6b)", () => {
       animalBudgetScale: 0.25,
       cloudDepthRefreshExtraFrames: 1,
       shadowRefreshExtraFrames: 1,
-      cdlodNodeBudgetScale: 0.7,
+      cdlodNodeBudgetScale: 0.75,
       cdlodPixelThresholdScale: 4 / 3,
       // GPU-cost levers stay untouched at any CPU level.
       cloudShadowExtraFrames: 0,

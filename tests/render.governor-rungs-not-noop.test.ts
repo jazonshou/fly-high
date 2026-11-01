@@ -374,10 +374,10 @@ describe("every governor rung sheds work on every tier", () => {
   it("resolves the G5 rungs to the values design §2.6 lists, on every tier", () => {
     // [view steps at GPU levels 0, 4 and 8], [CDLOD budget at CPU levels 0, 5 and 8], [threshold at 0 and 8].
     const expected: Record<string, { steps: number[]; budget: number[]; threshold: number[] }> = {
-      T0: { steps: [40, 30, 24], budget: [224, 190, 156], threshold: [4, 16 / 3] },
-      T1: { steps: [60, 45, 36], budget: [320, 272, 224], threshold: [3, 4] },
-      T2: { steps: [96, 72, 58], budget: [448, 380, 313], threshold: [2, 8 / 3] },
-      T3: { steps: [96, 72, 58], budget: [640, 544, 448], threshold: [1.5, 2] },
+      T0: { steps: [40, 30, 24], budget: [224, 190, 168], threshold: [4, 16 / 3] },
+      T1: { steps: [60, 45, 36], budget: [320, 272, 240], threshold: [3, 4] },
+      T2: { steps: [96, 72, 58], budget: [448, 380, 336], threshold: [2, 8 / 3] },
+      T3: { steps: [96, 72, 58], budget: [640, 544, 480], threshold: [1.5, 2] },
     };
     for (const [tier, profile] of TIERS) {
       const at = shipped(profile);
@@ -404,14 +404,15 @@ describe("every governor rung sheds work on every tier", () => {
     // The values above that must be exact in floating point are.
     expect(3 * (4 / 3)).toBe(4);
     expect(1.5 * (4 / 3)).toBe(2);
-    expect(at08(640)).toBe(448);
+    expect(at08(640)).toBe(480);
+    expect(at08(448)).toBe(336);
     expect(Math.round(96 * 0.6)).toBe(58);
   });
 });
 
 /** The second CDLOD notch's budget, as `resolveGovernedWork` floors it. */
 function at08(budget: number): number {
-  return Math.floor(budget * 0.7);
+  return Math.floor(budget * 0.75);
 }
 
 describe("the consumers combine levers with the profile as this test assumes", () => {

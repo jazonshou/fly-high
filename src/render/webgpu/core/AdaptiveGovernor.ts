@@ -402,16 +402,18 @@ const CPU_WORK_LADDER: readonly WorkStep[] = Object.freeze([
   { lever: "cloud-depth-refresh", apply: (s) => ({ ...s, cloudDepthRefreshExtraFrames: 1 }) },
   // A held CSM lags the aircraft's own shadow by a frame, at every tier that
   // reaches this rung. Its place follows Jason's verdict on that lag (PR B
-  // part 2, the CSM clip): accepted, here; rejected, this line moves to the
-  // end, after page requests 2, so every tier sheds it last.
+  // part 2, the CSM clip): accepted (2026-11-01), so it is shed third; had
+  // he rejected it, this line would sit last, after page requests 2.
   { lever: "shadow-refresh", apply: (s) => ({ ...s, shadowRefreshExtraFrames: 1 }) },
   { lever: "detail-cell-budget", apply: (s) => ({ ...s, detailBudgetScale: 0.66 }) },
   { lever: "cdlod-node-budget", apply: (s) => ({ ...s, cdlodNodeBudgetScale: 0.85 }) },
   { lever: "animal-budget", apply: (s) => ({ ...s, animalBudgetScale: 0.5 }) },
   { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 4 }) },
   // The second notch also coarsens the split threshold ×4/3 (+1 px at tier
-  // 1), which the terrain eases in over about 20 selections.
-  { lever: "cdlod-node-budget", apply: (s) => ({ ...s, cdlodNodeBudgetScale: 0.7, cdlodPixelThresholdScale: 4 / 3 }) },
+  // 1), which the terrain eases in over about 20 selections. ×0.75, not ×0.7
+  // (Jason, 2026-11-01): ×0.7 dropped Low two levels under the aircraft at
+  // 60 m and repainted a beach band in one frame; ×0.75 drops one.
+  { lever: "cdlod-node-budget", apply: (s) => ({ ...s, cdlodNodeBudgetScale: 0.75, cdlodPixelThresholdScale: 4 / 3 }) },
   { lever: "detail-and-animal-budget", apply: (s) => ({ ...s, detailBudgetScale: 0.33, animalBudgetScale: 0.25 }) },
   { lever: "terrain-page-requests", apply: (s) => ({ ...s, terrainPageRequestsPerUpdate: 2 }) },
 ]);

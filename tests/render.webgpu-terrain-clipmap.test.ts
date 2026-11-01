@@ -1105,6 +1105,16 @@ function firstCdlodNotch(): WorkLeverSettings {
   return { ...workLeverSettingsFor(0, 0), cdlodNodeBudgetScale: 0.85 };
 }
 
+/** The CPU ladder's second CDLOD notch, found the same way: the first level past the first notch's budget. */
+function secondCdlodNotch(): WorkLeverSettings {
+  const first = firstCdlodNotch().cdlodNodeBudgetScale;
+  for (let level = 1; level <= CPU_WORK_MAX_LEVEL; level += 1) {
+    const settings = workLeverSettingsFor(level, 0);
+    if (settings.cdlodNodeBudgetScale < first) return settings;
+  }
+  throw new Error("the CPU ladder has no second CDLOD notch");
+}
+
 /**
  * Largest level difference between edge-adjacent selected nodes.
  *
@@ -1178,9 +1188,7 @@ describe("CDLOD distance-graded selection (4.5-A1)", () => {
 
   it("the first CDLOD notch keeps L2 under the aircraft at 500 ft", () => {
     // PR B part 2 (G5): the governor's first CDLOD cut must not coarsen the
-    // ground at assertion 107's pose. The second notch (×0.7, 224 nodes)
-    // does reach L3 here, and tier 0's at 60 m AGL: a consequence of that
-    // rung, recorded rather than pinned (×0.75 would keep L2 at both).
+    // ground at assertion 107's pose. The second notch is pinned below.
     const seed = "phase1-perf-baseline";
     const world = createWorld(seed, { worldEvolution: "analytic" });
     const profile = resolveWebGpuQualityProfile("medium", "balanced");
@@ -1204,6 +1212,41 @@ describe("CDLOD distance-graded selection (4.5-A1)", () => {
     const underCamera = nodes.reduce(
       (best, node) => (node.distanceMeters < best.distanceMeters ? node : best));
     expect(underCamera.level, "level under the camera at the approach pose, first notch")
+      .toBeLessThanOrEqual(2);
+    // Non-vacuous: the notch binds at this pose (a split adds three nodes,
+    // so a budget-bound selection ends within one split of its budget).
+    expect(nodes.length).toBeLessThanOrEqual(work.cdlodNodeBudget);
+    expect(nodes.length).toBeGreaterThan(work.cdlodNodeBudget - 3);
+  }, 120_000);
+
+  it("the second CDLOD notch keeps L2 under the aircraft at 500 ft too", () => {
+    // PR B part 2: the second notch is ×0.75 (240 nodes at tier 1), not ×0.7
+    // (224), which reached L3 here and took tier 0 two levels coarser at
+    // 60 m AGL in one frame (Jason chose ×0.75, 2026-11-01).
+    const seed = "phase1-perf-baseline";
+    const world = createWorld(seed, { worldEvolution: "analytic" });
+    const profile = resolveWebGpuQualityProfile("medium", "balanced");
+    const work = resolveGovernedWork(profile, secondCdlodNotch());
+    expect(work.cdlodNodeBudget).toBe(240);
+    expect(work.cdlodPixelThreshold).toBe(4);
+    const airportX = world.airport?.centerX ?? 0;
+    const airportZ = world.airport?.centerZ ?? 0;
+    const ground = sampleFilteredTerrainHeight(world, airportX, airportZ, 0);
+    const nodes = selectTerrainNodes({
+      cameraX: airportX,
+      cameraY: ground + 152,
+      cameraZ: airportZ,
+      pixelsPerMeterAtUnitDistance: 720 / (2 * Math.tan((60 * Math.PI) / 360)),
+      pixelThreshold: work.cdlodPixelThreshold,
+      nodeBudget: work.cdlodNodeBudget,
+      finestResidentLevel: profile.finestResidentLevel,
+      coarsestLevel: 9,
+      farPlaneMeters: 45_000,
+      deviationFor: realKernelDeviations(seed),
+    });
+    const underCamera = nodes.reduce(
+      (best, node) => (node.distanceMeters < best.distanceMeters ? node : best));
+    expect(underCamera.level, "level under the camera at the approach pose, second notch")
       .toBeLessThanOrEqual(2);
     // Non-vacuous: the notch binds at this pose (a split adds three nodes,
     // so a budget-bound selection ends within one split of its budget).
