@@ -441,7 +441,7 @@ Cloud cost is primarily fill rate multiplied by ray steps and density-light samp
 
 ## Detail and wildlife
 
-World detail is deterministic and page-owned rather than attached to transient terrain meshes (villages and buildings were deleted in 1B-5; the airfield is the only settlement content):
+World detail is deterministic and page-owned rather than attached to transient terrain meshes (the old villages and buildings were deleted in 1B-5; the generated settlements of 2026-11 stream with the roads instead, see "Generated buildings" below):
 
 - Default detail cells are 512 m. Terrain biome, climate temperature, slope, moisture, height, and deterministic hashes choose tree and shrub species and rock variants.
 - Near and mid LODs use deterministic far thinning. Velocity-ahead selection reduces pop-in during fast travel.
