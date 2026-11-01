@@ -334,6 +334,13 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     "car-dune-cockpit",
     "car-ford-chase",
     "car-dust-chase",
+    // The generated buildings, after the cars and for the same reason: two of
+    // them hold a whole settlement's meshes, kit textures and interiors on top
+    // of the scenery, and the third stands inside a building. Nobody has
+    // measured them.
+    "hamlet-300ft",
+    "hamlet-eye",
+    "farmhouse-inside",
   ] as readonly string[]),
   tier: 1,
   quality: "medium",
@@ -2217,21 +2224,23 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     ceilings: null,
     drawCallCeiling: 88,
   },
-  // The generated buildings (structures S4), at the four-building farmstead
-  // 3.8 km north-west of home (a house, barn, shed and store, temperate).
-  // Fixed poses worked out for this seed from the kit's own layout, so both
-  // perf:ab arms photograph the same place; the base arm, without buildings,
-  // shows the bare ground. Unbaselined probes.
+  // The generated buildings (structures S4). Fixed poses worked out for this
+  // seed from the settlements' own layout, so both perf:ab arms photograph
+  // the same place; the base arm, without buildings, shows the bare ground.
+  // Unbaselined probes. The first two are the seven-building coastal hamlet
+  // 9.9 km west of home (six houses and a cottage, temperate, open grass
+  // with no forest round it, the sea to its south-west); the third is inside
+  // the farmhouse of the farmstead 3.8 km north-west.
   {
-    name: "farmstead-300ft",
+    name: "hamlet-300ft",
     description:
-      "300 ft over the fields 650 m out from a farmstead, the afternoon sun "
-      + "over the right shoulder: the buildings' blocks and shells at range",
+      "300 ft over the sea 340 m out from a coastal hamlet, the afternoon sun "
+      + "over the right shoulder: the buildings' blocks, roofs and weathering at range",
     cameraMode: "chase",
     altitudeAglMeters: 91,
     altitudeMslMeters: null,
-    offsetXMeters: -3_803.67,
-    offsetZMeters: 1_475.94,
+    offsetXMeters: -10_072.9,
+    offsetZMeters: 913.9,
     pitchDownDegrees: 3,
     airspeedMetersPerSecond: 0,
     clock: { dayOfYear: 171, solarTimeHours: 16 },
@@ -2240,19 +2249,19 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     ceilings: null,
   },
   {
-    name: "farmstead-eye",
+    name: "hamlet-eye",
     description:
-      "Standing 110 m from the same farmstead at eye height: the kit's closed "
-      + "shells and their materials, the sun from the right",
+      "Standing on the grass 90 m from the same hamlet's nearest house at eye "
+      + "height, the sun over the left shoulder: the kit's shells, their materials and wear",
     cameraMode: "cockpit",
     altitudeAglMeters: 0.6,
     altitudeMslMeters: null,
-    offsetXMeters: -3_387.75,
-    offsetZMeters: 1_825.64,
+    offsetXMeters: -9_920.3,
+    offsetZMeters: 1_248.3,
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 0,
     clock: { dayOfYear: 171, solarTimeHours: 16 },
-    relativeSunBearingDegrees: 125,
+    relativeSunBearingDegrees: -130,
     comparesToBaseline: false,
     ceilings: null,
   },

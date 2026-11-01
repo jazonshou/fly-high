@@ -504,11 +504,11 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
     // becomes floor-pinnable the moment somebody runs it on the reference
     // host, by the house method's three runs.
     "water-400ft-glitter",
-    // The generated buildings at a farmstead: from 300 ft, at eye height and
-    // inside the farmhouse. New frames, an unpinned host, and the buildings
+    // The generated buildings: a hamlet from 300 ft and at eye height, and
+    // inside a farmhouse. New frames, an unpinned host, and the buildings
     // still to be reviewed with Jason, as for the boats and cars below.
-    "farmstead-300ft",
-    "farmstead-eye",
+    "hamlet-300ft",
+    "hamlet-eye",
     "farmhouse-inside",
     // Boats: the speedboat at the dock, planing in chase and helm views, and
     // its wake under a low sun. New frames with no predecessor, authored on a
