@@ -152,7 +152,7 @@ describe("walker shots", () => {
     }
     expect(shotState("swim-sea-chase").person.submersion).toBeLessThan(1);
     expect(shotState("dive-sea-up").person.submersion).toBe(1);
-    expect(walkShotLookPitchRadians(shotState("dive-sea-up").shot.walk)).toBeCloseTo((35 * Math.PI) / 180, 12);
+    expect(walkShotLookPitchRadians(shotState("dive-sea-up").shot.walk)).toBeCloseTo((45 * Math.PI) / 180, 12);
     expect(walkShotLookPitchRadians(shotState("swim-sea-chase").shot.walk)).toBe(0);
   });
 
@@ -162,7 +162,9 @@ describe("walker shots", () => {
     const basin = shotState("dive-marina-basin");
     expectParked(basin.state, world);
     expect(Math.hypot(basin.state.position.x - berth.x, basin.state.position.z - berth.z)).toBeLessThan(0.01);
-    expect(basin.person.headDepth).toBeCloseTo(1.5, 9);
+    expect(basin.person.headDepth).toBeCloseTo(0.6, 9);
+    expect(basin.person.mode).toBe("dive");
+    expect(basin.person.submersion).toBe(1);
     expect(berth.stillWaterY - sampleTerrainHeight(world, berth.x, berth.z)).toBeGreaterThan(2);
 
     const pier = shotState("walk-marina-dusk");

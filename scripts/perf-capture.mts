@@ -2562,8 +2562,9 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
   {
     name: "dive-sea-up",
     description:
-      "Under the sea 2 m down over a 6 m bed, the camera looking up past the "
-      + "diver at the surface: the water column, the underside and Snell's window",
+      "Under the sea 1 m down over a 20 m bed, the camera below and behind the "
+      + "diver looking up past it at the surface: the water column, the "
+      + "underside and the edge of Snell's window",
     cameraMode: "chase",
     altitudeAglMeters: null,
     altitudeMslMeters: 0,
@@ -2572,23 +2573,37 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 0,
     locate: "coast",
+    // The shelf 20 m down is the clearest water near the coast (8.8 m of
+    // visibility, docs/UNDERWATER_VIEW.md); shallower beds keep the shore's
+    // sediment and hide the surface. 45 degrees up from the default pitch
+    // puts the camera 1.8 m under the diver, so the window's edge (41.4
+    // degrees up) crosses the top of the frame behind the figure.
     walk: {
       site: "sea",
-      bedDepthMeters: 6,
+      bedDepthMeters: 20,
       mode: "dive",
       speedMetersPerSecond: 0.9,
-      headDepthMeters: 2,
+      headDepthMeters: 1,
       swimPitchDegrees: 10,
-      lookPitchDegrees: 35,
+      lookPitchDegrees: 45,
     },
+    // Under the water everything past a few metres fades into the column, a
+    // smooth gradient by design, so this frame's structure is the diver and
+    // the window's edge: about a quarter of its tiles (0.27 and a mean tile
+    // variance of 0.00013 on SwiftShader at half scale). The floors sit at
+    // about half that and still fail the bare column (no tile structured,
+    // variance 0.000005-0.000007 when the diver and the surface are lost).
+    minMeanTileVariance: 0.000_05,
+    minStructuredTileFraction: 0.15,
     comparesToBaseline: false,
     ceilings: null,
   },
   {
     name: "dive-marina-basin",
     description:
-      "Diving 1.5 m down in the home marina's basin by the start berth: the "
-      + "harbour's murky water, the pontoons' floats and the piles",
+      "Diving 0.6 m down in the home marina's basin by the start berth, the "
+      + "camera level with the diver: the harbour's murky water, the diver's "
+      + "legs near and its body fading, the pontoons' floats and piles lost in it",
     cameraMode: "chase",
     altitudeAglMeters: null,
     altitudeMslMeters: 0,
@@ -2596,7 +2611,14 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     offsetZMeters: 0,
     pitchDownDegrees: 0,
     airspeedMetersPerSecond: 0,
-    walk: { site: "marinaBasin", mode: "dive", speedMetersPerSecond: 0.9, headDepthMeters: 1.5, swimPitchDegrees: 0 },
+    walk: { site: "marinaBasin", mode: "dive", speedMetersPerSecond: 0.9, headDepthMeters: 0.6, swimPitchDegrees: 0, lookPitchDegrees: 10 },
+    // The basin has 3.1 m of visibility (docs/UNDERWATER_VIEW.md), less than
+    // the camera's 3.2 m boom, so only the diver's legs show and the rest of
+    // the frame is the column's smooth gradient: 0.11 of its tiles structured
+    // and a mean tile variance of 0.00003 on SwiftShader at half scale. The
+    // floors sit at about half that and still fail the bare column.
+    minMeanTileVariance: 0.000_015,
+    minStructuredTileFraction: 0.05,
     comparesToBaseline: false,
     ceilings: null,
   },
