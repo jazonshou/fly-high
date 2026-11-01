@@ -340,6 +340,7 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     // measured them.
     "hamlet-300ft",
     "hamlet-eye",
+    "hamlet-night",
     "farmhouse-inside",
   ] as readonly string[]),
   tier: 1,
@@ -2227,15 +2228,15 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
   // The generated buildings (structures S4). Fixed poses worked out for this
   // seed from the settlements' own layout, so both perf:ab arms photograph
   // the same place; the base arm, without buildings, shows the bare ground.
-  // Unbaselined probes. The first two are the seven-building coastal hamlet
-  // 9.9 km west of home (six houses and a cottage, temperate, open grass
-  // with no forest round it, the sea to its south-west); the third is inside
-  // the farmhouse of the farmstead 3.8 km north-west.
+  // Unbaselined probes. The first three are the seven-building hamlet 9.9 km
+  // west of home (six houses and a cottage, temperate, open grass with no
+  // forest round it, by the water); the fourth is inside the farmhouse of the
+  // farmstead 3.8 km north-west.
   {
     name: "hamlet-300ft",
     description:
-      "300 ft over the sea 340 m out from a coastal hamlet, the afternoon sun "
-      + "over the right shoulder: the buildings' blocks, roofs and weathering at range",
+      "300 ft over the grass 340 m out from a hamlet by the water, the afternoon "
+      + "sun over the right shoulder: the buildings' shells, roofs and weathering at range",
     cameraMode: "chase",
     altitudeAglMeters: 91,
     altitudeMslMeters: null,
@@ -2262,6 +2263,24 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     airspeedMetersPerSecond: 0,
     clock: { dayOfYear: 171, solarTimeHours: 16 },
     relativeSunBearingDegrees: -130,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "hamlet-night",
+    description:
+      "The 300 ft hamlet pose at 22:00, the sun 16 degrees down: the near "
+      + "houses' lit windows, the far ones' light points past the near radius",
+    cameraMode: "chase",
+    altitudeAglMeters: 91,
+    altitudeMslMeters: null,
+    offsetXMeters: -10_072.9,
+    offsetZMeters: 913.9,
+    pitchDownDegrees: 3,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 22 },
+    // The sun has moved round: this keeps the 300 ft shot's heading.
+    relativeSunBearingDegrees: 75.45,
     comparesToBaseline: false,
     ceilings: null,
   },

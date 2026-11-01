@@ -35,6 +35,9 @@ import type { StructureArchetype, StructureRecord } from "@/src/world/structures
 export const STRUCTURE_SCENE_UNIT_TO_NITS = 120_000 / (5.2 * Math.PI);
 
 export const STRUCTURE_WINDOW_NITS = 60;
+
+/** The share of a window's quad that is glass (the window layer's mean; the frame and bars are the rest). */
+export const STRUCTURE_GLASS_SHARE = 0.75;
 export const STRUCTURE_LAMP_LUX = 120;
 
 /** A 2,700 K lamp in linear RGB, scaled to unit luminance (Rec. 709 weights). */

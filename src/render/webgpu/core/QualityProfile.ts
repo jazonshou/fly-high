@@ -512,6 +512,14 @@ export interface WebGpuQualityProfile {
    * 700 MiB ceiling has no room for at 2560×1440@2, so only Ultra takes it.
    */
   readonly structureTextureEdge: 0 | 256 | 512;
+  /**
+   * The most light points the buildings' lights take (`StructureLampPool`):
+   * four a building for its lit windows past the near radius, two a weather
+   * mast, four a lighthouse. In the home field's one light-point draw, so
+   * they add vertices and no draw; signal lights first, then the windows
+   * nearest the near radius.
+   */
+  readonly structureLampPoints: number;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -631,6 +639,7 @@ function resolveBaseQualityProfile(
       structureOpenBuildings: 2,
       structureNearCastsShadows: false,
       structureTextureEdge: 0,
+      structureLampPoints: 256,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -749,6 +758,7 @@ function resolveBaseQualityProfile(
       structureOpenBuildings: 4,
       structureNearCastsShadows: true,
       structureTextureEdge: 256,
+      structureLampPoints: 1_024,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -856,6 +866,7 @@ function resolveBaseQualityProfile(
       structureOpenBuildings: 6,
       structureNearCastsShadows: true,
       structureTextureEdge: 256,
+      structureLampPoints: 2_048,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -965,6 +976,7 @@ function resolveBaseQualityProfile(
     structureOpenBuildings: 6,
     structureNearCastsShadows: true,
     structureTextureEdge: 512,
+    structureLampPoints: 2_048,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,

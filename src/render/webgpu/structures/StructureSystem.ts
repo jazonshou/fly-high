@@ -9,6 +9,8 @@ import type { StructureRecord } from "@/src/world/structures/structureRecord";
 import { STRUCTURE_THIN_NEAR_METERS, type StructureMeshArrays } from "../../structures/structureMeshArrays";
 import type { StructureTexturePlans } from "../../structures/structureTextures";
 import type { StructureNightLighting } from "../../structures/structureNightLighting";
+import { StructureLampPool, type StructureLampSink, type StructureLampStatistics } from "../../structures/StructureLampPool";
+import { LIGHT_POINT_STRUCTURES } from "../lighting/LightPoints";
 import { StructureRecordStore, type StructureHidden, type StructureRegionRecords } from "../../structures/StructureRecordStore";
 import {
   STRUCTURE_HANDOFF_BAND_METERS,
@@ -70,6 +72,8 @@ export interface StructureSystemProfile extends StructureDrawRanges {
   readonly structureNearCastsShadows: boolean;
   /** The kit's material arrays' edge; 0 draws the part colours alone. */
   readonly structureTextureEdge: 0 | StructureTextureEdge;
+  /** The most light points the buildings' lights take (`StructureLampPool`). */
+  readonly structureLampPoints: number;
 }
 
 /** Which set a build is for. */
@@ -149,6 +153,8 @@ export interface StructureSystemStatistics {
   /** Material arrays asked for, and failed. */
   readonly textureRequests: number;
   readonly textureFailures: number;
+  /** The buildings' light points (zeros until `setLamps`). */
+  readonly lamps: StructureLampStatistics;
 }
 
 interface SetState {
@@ -192,6 +198,8 @@ export class StructureSystem {
   private textureInFlight: StructureTextureEdge | null = null;
   private textureRequests = 0;
   private textureFailures = 0;
+  private lamps: StructureLampPool | null = null;
+  private night: StructureNightLighting | null = null;
 
   constructor(
     private readonly scene: Scene,
@@ -243,17 +251,36 @@ export class StructureSystem {
     const textured = profile.structureTextureEdge > 0;
     for (const { plugin } of Object.values(this.materialsByRole)) plugin.setTextured(textured);
     this.wantTextures();
+    this.lamps?.setRanges(this.lampRanges());
   }
 
   /** The buildings' lights (`structureNightLighting`), every frame or on a change; off until set. */
   setNight(night: StructureNightLighting): void {
+    this.night = night;
     for (const { plugin } of Object.values(this.materialsByRole)) plugin.setNight(night);
+    this.lamps?.setNight(night);
+  }
+
+  /**
+   * Where the buildings' light points go: a group of the home field's
+   * light-point draw (`LightPointSystem`), so they cost no draw. None until
+   * set; set once, when the draw exists.
+   */
+  setLamps(sink: StructureLampSink, clockSeconds?: () => number): void {
+    this.lamps?.dispose();
+    this.lamps = new StructureLampPool(sink, LIGHT_POINT_STRUCTURES, clockSeconds);
+    this.lamps.setRanges(this.lampRanges());
+    if (this.night) this.lamps.setNight(this.night);
   }
 
   setFloatingOrigin(x: number, z: number): void {
     this.originX = x;
     this.originZ = z;
     for (const set of [this.far, this.near, this.open]) this.place(set);
+  }
+
+  private lampRanges(): ReturnType<typeof lampRangesOf> {
+    return lampRangesOf(this.profile);
   }
 
   /** Builds in flight or waiting, and sets decided but not drawn yet: a capture waits for none. */
@@ -274,6 +301,7 @@ export class StructureSystem {
     if (changes.openWanted) this.request(this.open, changes.openWanted, camera);
     this.drawnOpen = this.sets.openDrawn((record) => this.open.ids.has(record.id)).slice(0, STRUCTURE_OPEN_SLOTS);
     this.bind(camera);
+    this.lamps?.update(camera, records, this.store.version);
   }
 
   /** The renderer's caster sync: the near shells, where the profile casts. */
@@ -306,11 +334,14 @@ export class StructureSystem {
       textureBytes: this.textures?.bytes ?? 0,
       textureRequests: this.textureRequests,
       textureFailures: this.textureFailures,
+      lamps: this.lamps?.statistics ?? { sites: 0, points: 0, dropped: 0, rebuilds: 0, recolours: 0 },
     };
   }
 
   dispose(): void {
     this.disposed = true;
+    this.lamps?.dispose();
+    this.lamps = null;
     for (const set of [this.far, this.near, this.open]) {
       set.opaque?.dispose(false, false);
       set.glass?.dispose(false, false);
@@ -470,6 +501,17 @@ export class StructureSystem {
       set.glass?.setEnabled(shown);
     }
   }
+}
+
+/** The light points' ranges: the far set's (they come in as its blocks do) and the tier's budget. */
+function lampRangesOf(profile: StructureSystemProfile): { nearRadiusMeters: number; bandMeters: number; farRadiusMeters: number; maxPoints: number } {
+  const ranges = effectiveRanges(profile);
+  return {
+    nearRadiusMeters: ranges.structureNearRadiusMeters,
+    bandMeters: STRUCTURE_HANDOFF_BAND_METERS,
+    farRadiusMeters: ranges.structureFarRadiusMeters,
+    maxPoints: profile.structureLampPoints,
+  };
 }
 
 /** The profile's radii, the far one no further than the settlements stream (`SETTLEMENT_STREAM_WINDOW`). */

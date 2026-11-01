@@ -219,6 +219,7 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["Structure far radius", (p: (typeof PROFILES)[number]) => p.structureFarRadiusMeters],
     ["Buildings drawn open", (p: (typeof PROFILES)[number]) => p.structureOpenBuildings],
     ["Structure texture edge", (p: (typeof PROFILES)[number]) => p.structureTextureEdge],
+    ["Building light points", (p: (typeof PROFILES)[number]) => p.structureLampPoints],
     ["Frame target", (p: (typeof PROFILES)[number]) => p.frameTargetMs],
     ["Rendered stems/ha", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.nearStemsPerHectare],
     ["Impostor floor share", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.impostorFloorShare],

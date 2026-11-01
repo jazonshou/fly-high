@@ -207,6 +207,7 @@ describe("the surface codes on the buildings' vertices", () => {
       structureOpenBuildings: 4,
       structureNearCastsShadows: false,
       structureTextureEdge: 0,
+      structureLampPoints: 1_024,
     }, builder, null);
     const plugins = system.materials.map((m) => m.pluginManager!.getPlugin("structure-surface") as StructureMaterialPlugin);
     expect(plugins).toHaveLength(4);

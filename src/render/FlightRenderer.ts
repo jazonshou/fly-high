@@ -1797,6 +1797,9 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       lightPoints.setColorRange(marinaLampStart, marina.lampColours);
       cleanup.push(() => lightPoints.dispose());
+      // The buildings' lit windows past the near radius and their signal
+      // lights, a group of this one draw.
+      structures?.setLamps(lightPoints);
       // Volcanic phase 5: steam over vents. Built before the whenReadyAsync
       // gate below, like the star field, so its effect compiles at load; its
       // first frame then draws one collapsed instance so the render pipeline

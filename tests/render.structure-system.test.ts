@@ -120,6 +120,7 @@ function rig(builder: StructureMeshBuilder, casts = true, structureTextureEdge: 
     structureOpenBuildings: 4,
     structureNearCastsShadows: casts,
     structureTextureEdge,
+    structureLampPoints: 1_024,
   }, builder, null, upload);
   return { scene, system, dispose: () => { system.dispose(); scene.dispose(); engine.dispose(); } };
 }

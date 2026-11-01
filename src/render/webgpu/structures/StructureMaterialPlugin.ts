@@ -10,6 +10,7 @@ import type { Nullable } from "@babylonjs/core/types";
 import { STRUCTURE_SURFACES } from "@/src/world/structures/structureModel";
 import { structureSurfaceTextureTable } from "@/src/world/structures/kit/kitTextures";
 import {
+  STRUCTURE_GLASS_SHARE,
   STRUCTURE_LAMP_RGB,
   STRUCTURE_LAMP_STEPS,
   STRUCTURE_NIGHT_OFF,
@@ -124,7 +125,7 @@ export const STRUCTURE_BASE_ROUGHNESS = 0.82;
 export const STRUCTURE_GLASS_ROUGHNESS = 0.06;
 
 /** The share of a window quad that glows on Low, which has no window layer (about the layer's mean glass). */
-export const STRUCTURE_UNTEXTURED_GLASS_SHARE = 0.75;
+export const STRUCTURE_UNTEXTURED_GLASS_SHARE = STRUCTURE_GLASS_SHARE;
 
 /** A lit building's doorway (the dark inside, on its shells) at this share of a lamp-lit room's light, on a room of this albedo. */
 export const STRUCTURE_DOORWAY_LAMP_SHARE = 0.5;

@@ -508,6 +508,12 @@ export function buildLightPointGeometry(fixtures: readonly LightPointFixture[]):
   return { positions, indices, corners, params, aims, colors };
 }
 
+/** The light-point group of the airports spawned in flight (`setExtraFixtures`). */
+export const LIGHT_POINT_SPAWNED_AIRFIELDS = "spawned-airfields";
+
+/** The light-point group of the generated buildings' windows and signal lights. */
+export const LIGHT_POINT_STRUCTURES = "structures";
+
 /**
  * The system. ONE mesh, ONE material, ONE draw, however many fixtures.
  */
@@ -525,14 +531,20 @@ export class LightPointSystem {
    */
   private readonly fixtures: readonly LightPointFixture[];
   /**
-   * Lamps of airports spawned in flight, drawn AFTER the home field's in the
-   * same mesh — so a spawned airfield's runway, approach, PAPI, sign and
-   * obstruction lights add vertices and NO draw call, and share the home
+   * Lamps added in flight, drawn AFTER the home field's in the same mesh, in
+   * named groups: the airports spawned in flight (`setExtraFixtures`, the
+   * `LIGHT_POINT_SPAWNED_AIRFIELDS` group) and the generated buildings' lit
+   * windows and signal lights (`LIGHT_POINT_STRUCTURES`). So a spawned
+   * airfield's runway, approach, PAPI, sign and obstruction lights, and a
+   * village's windows, add vertices and NO draw call, and share the home
    * field's material, uniforms and pipeline. Absolute world coordinates, like
-   * `fixtures`. Empty unless `setExtraFixtures` is called, and while empty
-   * every buffer this system uploads is exactly what it was without them.
+   * `fixtures`: every group's, in group order. Empty until a group is set,
+   * and while empty every buffer this system uploads is exactly what it was
+   * without them.
    */
   private extraFixtures: readonly LightPointFixture[] = [];
+  /** The groups in draw order (the order each was first set) and their lamps. */
+  private readonly groups: { readonly key: string; fixtures: readonly LightPointFixture[] }[] = [];
   /**
    * Per-vertex colour for every fixture, home then extra — written in place
    * and uploaded whole, so a PAPI flip allocates nothing.
@@ -694,44 +706,93 @@ export class LightPointSystem {
 
   /** How many spawned-airfield lamps follow the home field's in this draw. */
   get extraFixtureCount(): number {
-    return this.extraFixtures.length;
+    return this.groupFixtureCount(LIGHT_POINT_SPAWNED_AIRFIELDS);
+  }
+
+  /** How many lamps a group has now (0 for a group never set). */
+  groupFixtureCount(key: string): number {
+    return this.groups.find((group) => group.key === key)?.fixtures.length ?? 0;
   }
 
   /**
    * Replace the lamps of every airport spawned in flight. Called when an
    * airport spawns, is retired, or gains its structures — never per frame.
-   *
-   * Rebuilds the vertex buffers at the new length (new GPU buffers, the same
-   * material and pipeline) and KEEPS the home field's current colours, so a
-   * PAPI showing white does not flash red because a field spawned 20 km away.
-   * Extra lamps start at their fixture colour until `setExtraColors`.
+   * The `LIGHT_POINT_SPAWNED_AIRFIELDS` group (`setGroupFixtures`).
    */
   setExtraFixtures(
     fixtures: readonly LightPointFixture[],
     /** Current colour per extra lamp (a PAPI already showing white); defaults to each fixture's. */
     colours?: readonly (readonly [number, number, number])[],
   ): void {
-    if (fixtures.length === 0 && this.extraFixtures.length === 0) return;
+    this.setGroupFixtures(LIGHT_POINT_SPAWNED_AIRFIELDS, fixtures, colours);
+  }
+
+  /** Recolour spawned-airfield lamps `[start, start + colours.length)` (`setGroupColors`). */
+  setExtraColors(
+    start: number,
+    colours: readonly (readonly [number, number, number])[],
+  ): void {
+    this.setGroupColors(LIGHT_POINT_SPAWNED_AIRFIELDS, start, colours);
+  }
+
+  /**
+   * Replace one group's lamps. Called when its set changes, never per frame.
+   *
+   * Rebuilds the vertex buffers at the new length (new GPU buffers, the same
+   * material and pipeline) and KEEPS every other lamp's current colour, home
+   * and other groups alike, so a PAPI showing white does not flash red because
+   * a field spawned 20 km away or a village came into range. The group's own
+   * lamps start at their fixture colour unless `colours` gives their current
+   * ones.
+   */
+  setGroupFixtures(
+    key: string,
+    fixtures: readonly LightPointFixture[],
+    colours?: readonly (readonly [number, number, number])[],
+  ): void {
+    let group = this.groups.find((entry) => entry.key === key);
+    if (fixtures.length === 0 && (group?.fixtures.length ?? 0) === 0) return;
     if (colours && colours.length !== fixtures.length) {
       throw new Error(
-        `light-point extra fixtures have ${colours.length} colours for ${fixtures.length} lamps`,
+        `light-point group ${key} has ${colours.length} colours for ${fixtures.length} lamps`,
       );
     }
-    const homeColours = this.colourBuffer.subarray(0, this.fixtureCount * 4 * 3);
-    this.extraFixtures = fixtures;
-    const all = fixtures.length === 0 ? this.fixtures : [...this.fixtures, ...fixtures];
+    // Every lamp's current colour, by group, before the buffers are rebuilt.
+    const previous = this.colourBuffer;
+    const kept = new Map<string, Float32Array>();
+    let offset = this.fixtureCount;
+    for (const entry of this.groups) {
+      kept.set(entry.key, previous.subarray(offset * 12, (offset + entry.fixtures.length) * 12));
+      offset += entry.fixtures.length;
+    }
+    if (!group) {
+      group = { key, fixtures };
+      this.groups.push(group);
+    }
+    group.fixtures = fixtures;
+    const extra: LightPointFixture[] = [];
+    for (const entry of this.groups) for (const fixture of entry.fixtures) extra.push(fixture);
+    this.extraFixtures = extra;
+    const all = extra.length === 0 ? this.fixtures : [...this.fixtures, ...extra];
     const geometry = buildLightPointGeometry(all);
-    geometry.colors.set(homeColours);
-    if (colours) {
-      for (let index = 0; index < colours.length; index += 1) {
-        const colour = colours[index]!;
-        for (let corner = 0; corner < 4; corner += 1) {
-          const vertex = (this.fixtureCount + index) * 4 + corner;
-          geometry.colors[vertex * 3] = colour[0];
-          geometry.colors[vertex * 3 + 1] = colour[1];
-          geometry.colors[vertex * 3 + 2] = colour[2];
+    geometry.colors.set(previous.subarray(0, this.fixtureCount * 12));
+    offset = this.fixtureCount;
+    for (const entry of this.groups) {
+      if (entry.key !== key) {
+        const current = kept.get(entry.key);
+        if (current) geometry.colors.set(current, offset * 12);
+      } else if (colours) {
+        for (let index = 0; index < colours.length; index += 1) {
+          const colour = colours[index]!;
+          for (let corner = 0; corner < 4; corner += 1) {
+            const vertex = (offset + index) * 4 + corner;
+            geometry.colors[vertex * 3] = colour[0];
+            geometry.colors[vertex * 3 + 1] = colour[1];
+            geometry.colors[vertex * 3 + 2] = colour[2];
+          }
         }
       }
+      offset += entry.fixtures.length;
     }
     this.colourBuffer = geometry.colors;
     this.positionBuffer = geometry.positions;
@@ -751,25 +812,36 @@ export class LightPointSystem {
   }
 
   /**
-   * Recolour spawned lamps `[start, start + colours.length)` — the PAPI of a
-   * spawned field, on a transition. Uploads the whole colour buffer, as
-   * `setColors` does, from the same persistent array.
+   * Recolour a group's lamps `[start, start + colours.length)`: a spawned
+   * field's PAPI on a transition, the buildings' windows as their lights go
+   * on and fade with range. Uploads the whole colour buffer, as `setColors`
+   * does, from the same persistent array.
    */
-  setExtraColors(
+  setGroupColors(
+    key: string,
     start: number,
     colours: readonly (readonly [number, number, number])[],
   ): void {
-    if (start < 0 || start + colours.length > this.extraFixtures.length) {
+    let offset = this.fixtureCount;
+    let count = 0;
+    for (const entry of this.groups) {
+      if (entry.key === key) {
+        count = entry.fixtures.length;
+        break;
+      }
+      offset += entry.fixtures.length;
+    }
+    if (start < 0 || start + colours.length > count) {
       throw new RangeError(
-        `light-point extra colour update [${start}, ${start + colours.length}) is outside `
-        + `the ${this.extraFixtures.length} spawned lamps`,
+        `light-point ${key} colour update [${start}, ${start + colours.length}) is outside `
+        + `its ${count} lamps`,
       );
     }
     if (colours.length === 0) return;
     const buffer = this.colourBuffer;
     for (let index = 0; index < colours.length; index += 1) {
       const colour = colours[index]!;
-      const fixture = this.fixtureCount + start + index;
+      const fixture = offset + start + index;
       for (let corner = 0; corner < 4; corner += 1) {
         const vertex = fixture * 4 + corner;
         buffer[vertex * 3] = colour[0];
