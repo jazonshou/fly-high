@@ -446,6 +446,13 @@ const DEFAULT_PIXELS_PER_METER_AT_UNIT_DISTANCE = 1_080 / (2 * Math.tan((60 * Ma
 const COARSEST_NODE_LEVEL = 9;
 
 /**
+ * PR B part 2 (G5): how far the split threshold moves toward the governor's
+ * per selection, in pixels. Its ×4/3 notch (3 → 4 px at tier 1) arrives in
+ * 20 selections, so morph factors glide instead of popping.
+ */
+const PIXEL_THRESHOLD_SLEW_PER_UPDATE = 0.05;
+
+/**
  * Refreshing pages baked with only part of the landform data (the volcanic
  * site index, `VolcanicSiteIndexStream`).
  *
@@ -692,6 +699,14 @@ export class TerrainClipmapSystem {
   /** Governor B lever 1 (1A-6b): page admissions per pump. */
   private requestBudgetPerPump = Number.POSITIVE_INFINITY;
   private shadowCasterDistanceMeters = Number.POSITIVE_INFINITY;
+  /**
+   * PR B part 2 (G5): the governor's node budget; null is the profile's.
+   * Never above the beauty buffers' capacity, so nothing reallocates.
+   */
+  private governedNodeBudget: number | null = null;
+  /** PR B part 2 (G5): the split threshold in force, and where the governor wants it. */
+  private pixelThreshold: number;
+  private pixelThresholdTarget: number;
   private seasonDayOfYear: number = TERRAIN_REFERENCE_DAY_OF_YEAR;
   private readonly worldRevision: string;
   /**
@@ -741,6 +756,8 @@ export class TerrainClipmapSystem {
     this.airports = (world.airports ?? (world.airport ? [world.airport] : []))
       .slice(0, TERRAIN_AIRPORT_SLOTS);
     this.profile = profile;
+    this.pixelThreshold = profile.cdlodPixelThreshold;
+    this.pixelThresholdTarget = profile.cdlodPixelThreshold;
     this.worldRevision = terrainWorldRevision(world);
     this.landformStream = options.landformIndex ?? null;
     this.material = createTerrainMaterial(scene);
@@ -1087,6 +1104,12 @@ export class TerrainClipmapSystem {
     const cascadesChanged = profile.shadowCascades !== this.profile.shadowCascades;
     const volcanicChanged = profile.volcanicMaterials !== this.profile.volcanicMaterials;
     this.profile = profile;
+    // PR B part 2 (G5): the governor restarts at (0, 0) with a new profile,
+    // and its setter ran against the old one (applyProfile applies the work
+    // levels first), so selection starts exactly on the new profile's values.
+    this.governedNodeBudget = null;
+    this.pixelThreshold = profile.cdlodPixelThreshold;
+    this.pixelThresholdTarget = profile.cdlodPixelThreshold;
     this.surfacePlugin.setSamplingProfile(
       profile.terrainTriplanarMode,
       profile.heightBlendMaxMaterials,
@@ -1190,6 +1213,37 @@ export class TerrainClipmapSystem {
   /** 4-0b: Governor B rung 0 scales the shared compute cap. */
   setComputeBudgetScale(scale: number): void {
     this.computeBudget.setBudgetScale(scale);
+  }
+
+  /**
+   * PR B part 2 (G5, CPU ladder): the governed CDLOD node budget and split
+   * threshold. The budget only ever drops below the profile's and is clamped
+   * to the beauty buffers' capacity, so nothing reallocates; it applies on
+   * the next selection. The threshold glides there (`slewPixelThreshold`).
+   */
+  setGovernedSelection(nodeBudget: number, pixelThreshold: number): void {
+    this.governedNodeBudget = nodeBudget >= this.profile.cdlodNodeBudget
+      ? null
+      : Math.max(1, Math.min(Math.floor(nodeBudget), this.beautyBuffers.capacity));
+    this.pixelThresholdTarget = pixelThreshold;
+  }
+
+  /**
+   * PR B part 2 (G5): one selection's step of the split threshold toward the
+   * governor's. A threshold step moves the morph factor on a large share of
+   * the nodes it keeps, so it eases in over 10 to 27 selections by tier (20
+   * at tier 1), not one.
+   */
+  private slewPixelThreshold(): number {
+    const delta = this.pixelThresholdTarget - this.pixelThreshold;
+    if (delta !== 0) {
+      // The tolerance absorbs the rounding of repeated 0.05 steps, which
+      // would otherwise leave 7e-16 px for one more selection (3 → 4 in 21).
+      this.pixelThreshold = Math.abs(delta) <= PIXEL_THRESHOLD_SLEW_PER_UPDATE + 1e-9
+        ? this.pixelThresholdTarget
+        : this.pixelThreshold + Math.sign(delta) * PIXEL_THRESHOLD_SLEW_PER_UPDATE;
+    }
+    return this.pixelThreshold;
   }
 
   /**
@@ -1472,8 +1526,8 @@ export class TerrainClipmapSystem {
       cameraZ: observer.z,
       pixelsPerMeterAtUnitDistance: observer.pixelsPerMeterAtUnitDistance
         ?? DEFAULT_PIXELS_PER_METER_AT_UNIT_DISTANCE,
-      pixelThreshold: this.profile.cdlodPixelThreshold,
-      nodeBudget: this.options.nodeBudgetOverride ?? this.profile.cdlodNodeBudget,
+      pixelThreshold: this.slewPixelThreshold(),
+      nodeBudget: this.options.nodeBudgetOverride ?? this.governedNodeBudget ?? this.profile.cdlodNodeBudget,
       finestResidentLevel: this.profile.finestResidentLevel,
       coarsestLevel: COARSEST_NODE_LEVEL,
       farPlaneMeters: 45_000,

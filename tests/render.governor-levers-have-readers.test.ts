@@ -111,6 +111,16 @@ describe("every governor lever has a reader outside the governor", () => {
     expect(LEVER_FIELDS).toContain("computeBudgetScale");
     // PR B (G3): the relative levers are read through governedWork.ts.
     expect(LEVER_FIELDS).toContain("shadowCasterDistanceScale");
+    // PR B part 2 (G5): so are the cloud march, refresh and CDLOD levers.
+    for (const name of [
+      "cloudMarchScale",
+      "shadowRefreshExtraFrames",
+      "cloudDepthRefreshExtraFrames",
+      "cdlodNodeBudgetScale",
+      "cdlodPixelThresholdScale",
+    ]) {
+      expect(LEVER_FIELDS).toContain(name);
+    }
   });
 
   it("THE GUARD — no governor lever is attached to nothing", () => {

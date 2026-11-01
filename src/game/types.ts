@@ -335,6 +335,15 @@ export interface RenderDiagnostics {
   lateFraction: number | null;
   /** PR B: the ladder whose recovered step is on trial, if one is. */
   governorTrial: "gpu" | "cpu" | "scale" | null;
+  /**
+   * PR B part 2 (G6): the last judged window's mean interval was over 1.5×
+   * the target (or the display's own interval).
+   */
+  governorUrgent: boolean;
+  /** PR B part 2 (G6): judged windows in a row with nothing left to shed, each over 1.2× that reference. */
+  governorSpentWindows: number;
+  /** PR B part 2 (G6): four spent windows in a row; what Auto will read. */
+  governorExhausted: boolean;
   /** PR B: the frame pacer's cadence as the renderer last heard it; null when nothing paces. */
   presentationCadence: {
     frameCapHz: 60 | 30 | null;
