@@ -217,7 +217,7 @@ import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
 import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
 import { resolveGovernedWork, type GovernedWork } from "./governedWork";
-import { forceRefresh, refreshIntervalAtCadence, syncRefreshInterval } from "./refreshHold";
+import { forceRefresh, refreshIntervalAtCadence, staggerRefresh, syncRefreshInterval } from "./refreshHold";
 import type { FlightRenderingSystem, HudCamera, ScreenPoint, TerrainAuthorityPublisher } from "./types";
 import {
   cadenceDisplayHz,
@@ -3199,18 +3199,23 @@ private texelBytes(type: number | undefined, format: number | undefined): number
    * G5: the CSM and cloud-depth refresh, the profile's rate at the presented
    * cadence plus the governor's whole frames. Every frame, so it also lands
    * on a map `applyProfile` recreated; the setter only writes on a change.
+   * On equal intervals the cloud depth is kept off the CSM's frames, so no
+   * held frame carries both passes.
    */
   private syncRefreshHolds(): void {
     const work = this.governedWork;
     const { tierPresentationTargetMs: tier, presentationTargetMs: shown } = this.governorConfig;
+    const shadowMap = this.atmosphere.shadows.getShadowMap();
+    const sceneDepth = this.atmosphereResources.sceneDepth;
     syncRefreshInterval(
-      this.atmosphere.shadows.getShadowMap(),
+      shadowMap,
       refreshIntervalAtCadence(work.shadowRefreshFrames, tier, shown) + work.shadowRefreshExtraFrames,
     );
     syncRefreshInterval(
-      this.atmosphereResources.sceneDepth,
+      sceneDepth,
       refreshIntervalAtCadence(work.cloudDepthRefreshFrames, tier, shown) + work.cloudDepthRefreshExtraFrames,
     );
+    staggerRefresh(shadowMap, sceneDepth);
   }
 
   private updatePresentation(): void {

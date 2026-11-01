@@ -7,6 +7,7 @@ import { resolveGovernedWork, type GovernedWork } from "../src/render/governedWo
 import {
   forceRefresh,
   refreshIntervalAtCadence,
+  staggerRefresh,
   syncRefreshInterval,
   type RefreshTarget,
 } from "../src/render/refreshHold";
@@ -21,6 +22,10 @@ import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityPr
  *    the counter, so a write every frame renders every frame (verify F3); the
  *    instrument shows the detector sees that.
  *  - A forced refresh (every history invalidation) draws the next frame.
+ *  - Two holds on one interval are kept off each other's frames: both setters
+ *    and every invalidation reset the two counters together, and in step every
+ *    held frame would carry both passes (the instrument shows that), so the
+ *    saving would reach the mean frame but not render()'s p95 or the pacing.
  *  - The profile's interval is a rate, converted to the presented cadence; a
  *    rung's frames are a cost, added after. Driven through the renderer's own
  *    `syncRefreshHolds` on a stand-in carrying the fields it reads, every rung
@@ -50,6 +55,26 @@ function frames(target: RenderTargetTexture, count: number, beforeEach?: () => v
   }
   return rendered;
 }
+
+/** Both targets' `_shouldRender()` per frame, the CSM first as the scene gathers it; `stagger` runs before each. */
+function framePairs(
+  leader: RenderTargetTexture,
+  follower: RenderTargetTexture,
+  count: number,
+  stagger = true,
+): Array<[boolean, boolean]> {
+  const rendered: Array<[boolean, boolean]> = [];
+  for (let frame = 0; frame < count; frame += 1) {
+    if (stagger) staggerRefresh(leader, follower);
+    rendered.push([leader._shouldRender(), follower._shouldRender()]);
+  }
+  return rendered;
+}
+
+const shared = (pairs: Array<[boolean, boolean]>): number[] =>
+  pairs.flatMap(([a, b], frame) => (a && b ? [frame] : []));
+const drawnOn = (pairs: Array<[boolean, boolean]>, side: 0 | 1): number[] =>
+  pairs.flatMap((pair, frame) => (pair[side] ? [frame] : []));
 
 describe("syncRefreshInterval on Babylon's counter", () => {
   it("renders every other frame at an interval of 2", () => {
@@ -88,6 +113,81 @@ describe("syncRefreshInterval on Babylon's counter", () => {
     forceRefresh(target);
     expect(frames(target, 4)).toEqual([true, false, false, true]);
     expect(() => forceRefresh(null)).not.toThrow();
+  });
+});
+
+describe("staggerRefresh on Babylon's counter", () => {
+  it("at 2/2 and 3/3 the two draw together only on the frame that reset both, then alternate", () => {
+    for (const interval of [2, 3]) {
+      const csm = renderTarget();
+      const depth = renderTarget();
+      syncRefreshInterval(csm, interval);
+      syncRefreshInterval(depth, interval);
+      const pairs = framePairs(csm, depth, 12);
+      expect(shared(pairs), `at ${interval}`).toEqual([0]);
+      // The CSM keeps its own rate; the depth draws once more on frame 1,
+      // a frame that carried neither, then keeps its rate a frame behind.
+      expect(drawnOn(pairs, 0)).toEqual(Array.from({ length: 12 / interval }, (_, k) => k * interval));
+      expect(drawnOn(pairs, 1)).toEqual([0, ...Array.from({ length: Math.ceil(11 / interval) }, (_, k) => 1 + k * interval)]);
+    }
+  });
+
+  it("an invalidation draws both, and the next frame moves the depth off again", () => {
+    const csm = renderTarget();
+    const depth = renderTarget();
+    syncRefreshInterval(csm, 2);
+    syncRefreshInterval(depth, 2);
+    framePairs(csm, depth, 7);
+    forceRefresh(csm);
+    forceRefresh(depth);
+    const pairs = framePairs(csm, depth, 9);
+    expect(shared(pairs)).toEqual([0]);
+    expect(drawnOn(pairs, 0)).toEqual([0, 2, 4, 6, 8]);
+    expect(drawnOn(pairs, 1)).toEqual([0, 1, 3, 5, 7]);
+  });
+
+  it("a reset of the CSM alone (a mesh not ready) shares at most that frame, then they alternate", () => {
+    for (const offset of [0, 1]) {
+      const csm = renderTarget();
+      const depth = renderTarget();
+      syncRefreshInterval(csm, 2);
+      syncRefreshInterval(depth, 2);
+      framePairs(csm, depth, 6 + offset);
+      forceRefresh(csm);
+      const pairs = framePairs(csm, depth, 10);
+      expect(shared(pairs).every((frame) => frame === 0), `offset ${offset}`).toBe(true);
+      expect(shared(pairs.slice(1))).toEqual([]);
+      expect(drawnOn(pairs, 0).length + drawnOn(pairs, 1).length).toBeLessThanOrEqual(11);
+    }
+  });
+
+  it("INSTRUMENT: without it the two holds draw on the same frames, every time", () => {
+    const csm = renderTarget();
+    const depth = renderTarget();
+    syncRefreshInterval(csm, 2);
+    syncRefreshInterval(depth, 2);
+    const pairs = framePairs(csm, depth, 12, false);
+    expect(shared(pairs)).toEqual([0, 2, 4, 6, 8, 10]);
+    expect(pairs.filter(([a, b]) => a !== b)).toEqual([]);
+  });
+
+  it("leaves unequal intervals, every-frame targets and missing targets alone", () => {
+    const csm = renderTarget();
+    const depth = renderTarget();
+    syncRefreshInterval(csm, 2);
+    syncRefreshInterval(depth, 3);
+    const forced: boolean[] = [];
+    for (let frame = 0; frame < 12; frame += 1) {
+      forced.push(staggerRefresh(csm, depth));
+      csm._shouldRender();
+      depth._shouldRender();
+    }
+    expect(forced.some(Boolean)).toBe(false);
+    const every = renderTarget();
+    const other = renderTarget();
+    expect(framePairs(every, other, 4).every(([a, b]) => a && b)).toBe(true);
+    expect(staggerRefresh(null, other)).toBe(false);
+    expect(staggerRefresh(every, undefined)).toBe(false);
   });
 });
 
@@ -130,6 +230,8 @@ function countingTarget(): CountingTarget {
   return {
     get refreshRate() { return rate; },
     set refreshRate(value: number) { rate = value; writes.push(value); },
+    // A counter that never stands inside an interval, so the stagger leaves it be.
+    currentRefreshId: -1,
     resetRefreshCounter: () => undefined,
     writes,
   };
@@ -203,6 +305,24 @@ describe("the renderer's refresh holds", () => {
     for (let frame = 0; frame < 5; frame += 1) syncRefreshHolds(receiver);
     expect(shadowMap.writes).toEqual([3]);
     expect(sceneDepth.writes).toEqual([3]);
+  });
+
+  it("keeps tier 0's cloud depth off the CSM's frames, with and without the rungs", () => {
+    for (const [extraFrames, interval] of [[0, 2], [1, 3]] as const) {
+      const csm = renderTarget();
+      const depth = renderTarget();
+      const { receiver } = holdReceiver(2, extraFrames, MS_60);
+      receiver.atmosphere = { shadows: { getShadowMap: () => csm } };
+      receiver.atmosphereResources = { sceneDepth: depth };
+      const pairs: Array<[boolean, boolean]> = [];
+      for (let frame = 0; frame < 12; frame += 1) {
+        syncRefreshHolds(receiver);
+        pairs.push([csm._shouldRender(), depth._shouldRender()]);
+      }
+      expect([csm.refreshRate, depth.refreshRate]).toEqual([interval, interval]);
+      expect(shared(pairs), `+${extraFrames}`).toEqual([0]);
+      expect(drawnOn(pairs, 0).length).toBe(12 / interval);
+    }
   });
 
   it("at level (0, 0) on the capture's profile, with no cadence, writes nothing", () => {
