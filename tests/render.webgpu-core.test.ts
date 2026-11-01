@@ -104,15 +104,22 @@ describe("WebGPU quality profiles", () => {
   });
 
   it("refreshes tier 0's sun shadow and cloud depth every 2nd frame, and every other tier's every frame", () => {
-    // PR B part 2 (T0c), on every quality × mode pair.
+    // PR B part 2 (T0c), on every quality × mode pair. This is the lasting
+    // rule for tiers 1-3 (they keep every frame); part 2b's fallback rate
+    // belongs here too, as a third field.
+    const pairs = { lowTier: 0, above: 0 };
     for (const quality of ["low", "medium", "high"] as const) {
       for (const mode of ["performance", "balanced", "ultra"] as const) {
         const profile = resolveWebGpuQualityProfile(quality, mode);
         const frames = profile.tier === 0 ? 2 : 1;
         expect(profile.shadowRefreshFrames, `${quality} ${mode}`).toBe(frames);
         expect(profile.cloudDepthRefreshFrames, `${quality} ${mode}`).toBe(frames);
+        if (profile.tier === 0) pairs.lowTier += 1;
+        else pairs.above += 1;
       }
     }
+    // Three pairs map to tier 0 and six above it, so neither side passes empty.
+    expect(pairs).toEqual({ lowTier: 3, above: 6 });
   });
 
   it("caps rendered pixels and device pixel ratio per tier (1A-6a)", () => {

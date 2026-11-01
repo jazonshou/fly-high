@@ -1094,15 +1094,14 @@ function realKernelDeviations(seed: string): (address: {
 
 /**
  * PR B part 2 (G5): the CPU ladder's first CDLOD notch, found by its field so
- * a reorder of the ladder cannot move the pin. Until the ladder carries the
- * CDLOD rungs, the ×0.85 notch they ship with.
+ * a reorder of the ladder cannot move the pin.
  */
 function firstCdlodNotch(): WorkLeverSettings {
   for (let level = 1; level <= CPU_WORK_MAX_LEVEL; level += 1) {
     const settings = workLeverSettingsFor(level, 0);
     if (settings.cdlodNodeBudgetScale < 1) return settings;
   }
-  return { ...workLeverSettingsFor(0, 0), cdlodNodeBudgetScale: 0.85 };
+  throw new Error("the CPU ladder has no CDLOD notch");
 }
 
 /** The CPU ladder's second CDLOD notch, found the same way: the first level past the first notch's budget. */

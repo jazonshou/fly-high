@@ -167,9 +167,9 @@ describe("the governed CDLOD split threshold", () => {
 
   it("restarts on the new profile's values when the profile changes", () => {
     const system = createSystem();
-    system.setGovernedSelection(224, 4);
+    system.setGovernedSelection(240, 4);
     for (let index = 0; index < 5; index += 1) select(system);
-    expect(governedBudget(system)).toBe(224);
+    expect(governedBudget(system)).toBe(240);
     expect(Reflect.get(system, "pixelThreshold")).not.toBe(4);
     const low = resolveWebGpuQualityProfile("low", "balanced");
     system.setProfile(low);
