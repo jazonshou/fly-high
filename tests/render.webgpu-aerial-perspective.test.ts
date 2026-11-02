@@ -40,6 +40,9 @@ import {
 import {
   SKY_FRAGMENT_WGSL,
   sunDirectionalHorizonGate,
+  twilightFillIntensity,
+  TWILIGHT_FILL_INTENSITY,
+  TWILIGHT_FILL_TINT,
 } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
 import { readSource } from "./support/sourceText";
 import {
@@ -706,6 +709,34 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     expect(recession(sineAt(0))).toBe(1);
     expect(recession(-0.26)).toBe(1);
     expect(recession(sineAt(20.45))).toBeCloseTo(1 - MOON_TWILIGHT_RECESSION, 6);
+  });
+
+  it("lights the land with the twilight fill only inside the window", () => {
+    // 2026-11-02: Jason's "crazy darks" at Sep 13 19:00 solar. The fill is
+    // art-directed and exactly zero above sunset and at/below the release,
+    // so day and the approved night frames cannot move by shape.
+    for (const sine of [sineAt(12.5), sineAt(19.0), sineAt(0), sineAt(23.75), -0.26, 0, 0.3]) {
+      expect(twilightFillIntensity(sine)).toBe(0);
+    }
+    expect(twilightFillIntensity(-0.0523)).toBeCloseTo(TWILIGHT_FILL_INTENSITY, 9);
+    expect(twilightFillIntensity(-0.1333)).toBeCloseTo(TWILIGHT_FILL_INTENSITY, 9);
+    expect(twilightFillIntensity(sineAt(20.45))).toBeCloseTo(TWILIGHT_FILL_INTENSITY, 9);
+    // Monotone hand-over into night through the release.
+    expect(twilightFillIntensity(-0.2)).toBeGreaterThan(twilightFillIntensity(-0.24));
+    // A cool daylight, not the arch's saturated blue: luminance ~1, B/R < 2.
+    const [r, g, b] = TWILIGHT_FILL_TINT;
+    expect(0.2126 * r + 0.7152 * g + 0.0722 * b).toBeCloseTo(1, 2);
+    expect(b / r).toBeGreaterThan(1);
+    expect(b / r).toBeLessThan(2);
+    expect(b / r).toBeLessThan(TWILIGHT_ARCH_TINT[2] / TWILIGHT_ARCH_TINT[0]);
+    // σ counts the fill as it counts the hemispheric it rides on — raw
+    // intensity, never ×π (measured: ×π handed the fill back to the rod
+    // response's auto-centring and darkened the sky instead) and never zero
+    // (measured: a σ-blind fill lit dusk ground brighter than its sky,
+    // skyGroundRatio 0.87, the round-3 inversion).
+    const atmosphere = readSource("src/render/webgpu/atmosphere/AtmosphereSystem.ts");
+    expect(atmosphere).toMatch(/\n\s*fillKeyIntensity = fillIntensity;\n/);
+    expect(atmosphere).toMatch(/\+ archKeyIntensity\s*\n\s*\+ fillKeyIntensity\)/);
   });
 
   it("gates the leaves' sun glow at the horizon, like the directional sun", () => {
