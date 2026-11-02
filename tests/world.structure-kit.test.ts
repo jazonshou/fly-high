@@ -30,7 +30,8 @@ const SAMPLES = structureKitSamples(2);
 const LEVELS: readonly StructureDrawnLevel[] = ["closed", "block", "open"];
 const WALLED = (r: StructureRecord) => ENTERABLE_STRUCTURE_ARCHETYPES.has(r.archetype)
   && r.archetype !== "watchtower" && r.archetype !== "lookout" && r.archetype !== "lighthouse";
-const TRIANGLE_BUDGET: Readonly<Record<StructureDrawnLevel, number>> = { closed: 1_500, block: 60, open: 4_000 };
+// Open: the shell, its rooms and furniture, and what makes the rooms look lived in (books, rugs, pictures, curtains).
+const TRIANGLE_BUDGET: Readonly<Record<StructureDrawnLevel, number>> = { closed: 1_500, block: 60, open: 4_500 };
 const label = (r: StructureRecord) => `${r.archetype}/${r.style}#${r.seed}`;
 
 function fresh(record: StructureRecord): StructureRecord {

@@ -18,6 +18,7 @@ import {
   FLOOR_STRUCTURE,
   type PlanDoor,
   type PlanRoom,
+  type RoomKind,
   PARTITION_THICKNESS,
   STAIR_LANDING,
   STAIR_TREADS,
@@ -568,12 +569,18 @@ function drawWalls(ctx: DrawContext): void {
   drawBelts(ctx);
 }
 
+const PAINTED_ROOMS: ReadonlySet<RoomKind> = new Set(["living", "kitchen", "dining", "bedroom", "main", "office"]);
+
 function liningOf(look: StructureLook, room: PlanRoom): { surface: StructureSurface; colour: number } {
   if (room.kind === "barn" || room.kind === "workshop" || room.kind === "tack") {
     return { surface: look.wall === "metal" ? "boards" : look.wall === "render" ? "render" : "boards", colour: shade(look.timberColour, 1.3) };
   }
   if (room.kind === "steam" || room.kind === "changing") return { surface: "boards", colour: 0xc8a878 };
   if (room.kind === "store") return { surface: look.lining === "plaster" ? "boards" : look.lining, colour: shade(look.liningColour, 0.9) };
+  // Painted rooms people live in take one of the building's room paints; halls and landings keep the plain lining.
+  if (PAINTED_ROOMS.has(room.kind) && (look.lining === "plaster" || look.lining === "render")) {
+    return { surface: look.lining, colour: look.roomPaints[room.id % look.roomPaints.length]! };
+  }
   return { surface: look.lining, colour: look.liningColour };
 }
 
@@ -1008,7 +1015,7 @@ function drawInterior(ctx: DrawContext): void {
     const anchors = doorAnchors(ctx, room);
     const windows: WallSpan[] = ctx.openings.filter((o) => o.kind === "window" && o.room === room.id).map((o) => {
       const wall = ctx.walls.find((w) => w.side === o.side)!;
-      return { normal: wall.normal, at: wall.inner, s0: o.s0, s1: o.s1 };
+      return { normal: wall.normal, at: wall.inner, s0: o.s0, s1: o.s1, y0: o.y0, y1: o.y1 };
     });
     furnishRoom(b, {
       room,

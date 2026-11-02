@@ -10,6 +10,11 @@ import type { StructureLook } from "./kitStyles";
  * of doors, door leaves, stairs and (if tall) windows, and leaves the room's
  * doors joined by a walkway the walker's capsule fits through. Every piece is
  * solid: one collider box round it.
+ *
+ * Then what makes a room look lived in, all thinner than the walker notices
+ * (no colliders, as the contract's parts under 0.1 m): books and goods on the
+ * shelves, cushions on the sofa, a rug, a picture over a low piece, and
+ * curtains beside the windows of the rooms people live in.
  */
 
 /** The walker's capsule radius: the walkway every room keeps between its doors. */
@@ -30,6 +35,9 @@ export interface WallSpan {
   readonly at: number;
   readonly s0: number;
   readonly s1: number;
+  /** The opening's sill and head, building-frame heights. */
+  readonly y0: number;
+  readonly y1: number;
 }
 
 export interface RoomContext {
@@ -62,7 +70,12 @@ interface LocalBox {
   readonly y1: number;
   readonly surface: StructureSurface;
   readonly colour: number;
+  /** Faces hidden beyond the defaults (`HIDE` bits): a book's back on the shelf's, its bottom on the board. */
+  readonly hide?: number;
 }
+
+/** A box's faces in the piece's own terms: against the wall, underneath, its two ends along the wall, on top. */
+const HIDE = Object.freeze({ back: 1, bottom: 2, ends: 4, top: 8 });
 
 interface Piece {
   readonly name: string;
@@ -78,8 +91,19 @@ interface Piece {
   readonly solids?: readonly LocalBox[];
 }
 
-function box(a0: number, a1: number, d0: number, d1: number, y0: number, y1: number, surface: StructureSurface, colour: number): LocalBox {
-  return { a0, a1, d0, d1, y0, y1, surface, colour };
+function box(a0: number, a1: number, d0: number, d1: number, y0: number, y1: number, surface: StructureSurface, colour: number, hide?: number): LocalBox {
+  return hide ? { a0, a1, d0, d1, y0, y1, surface, colour, hide } : { a0, a1, d0, d1, y0, y1, surface, colour };
+}
+
+/** Book spines: cloth reds, blues, greens, tans, a black and a cream. */
+const BOOK_COLOURS = [0x7a2e26, 0x2e4a5e, 0x4e5e3a, 0x8a6a3a, 0x5a3a4e, 0xc8b88a, 0x30302e, 0x9a8a6a];
+/** A store's or workshop's goods: tins, jars, boxes and sacks. */
+const GOODS_COLOURS = [0x8a7a5a, 0x6a6a62, 0xa89070, 0x5a6a72, 0x7a5a3a, 0xb0a48a];
+
+/** What fills a set of shelves, and its dice (one number per throw). */
+interface ShelfFill {
+  readonly colours: readonly number[];
+  readonly unit: (k: number) => number;
 }
 
 // --- The catalogue -------------------------------------------------------------------------
@@ -138,7 +162,7 @@ function bunk(timber: number, fabric: number, fabric2: number): Piece {
   };
 }
 
-function shelves(w: number, h: number, timber: number): Piece {
+function shelves(w: number, h: number, timber: number, fill?: ShelfFill): Piece {
   const d = 0.38;
   const boxes: LocalBox[] = [
     box(0, 0.04, 0, d, 0, h, "timber", timber),
@@ -150,7 +174,36 @@ function shelves(w: number, h: number, timber: number): Piece {
     const y = (i / n) * (h - 0.03);
     boxes.push(box(0.04, w - 0.04, 0.02, d, y, y + 0.03, "timber", timber));
   }
+  if (fill) fillShelves(boxes, w, d, h, n, fill);
   return { name: "shelves", w, d, h, material: "timber", low: false, boxes };
+}
+
+/**
+ * Up to three runs of books (or goods) on each level, of seeded widths,
+ * heights and colours, with gaps; now and then a level is left bare. A run is
+ * one box showing its front, top and ends: from across a room it reads as a
+ * row of spines.
+ */
+function fillShelves(boxes: LocalBox[], w: number, d: number, h: number, n: number, fill: ShelfFill): void {
+  const { colours, unit } = fill;
+  const pitch = (h - 0.03) / n;
+  const clear = pitch - 0.03;
+  let k = 0;
+  for (let level = 0; level < n; level += 1) {
+    if (unit(k++) < 0.15) continue;
+    const y = level * pitch + 0.03;
+    let a = 0.05 + 0.12 * unit(k++);
+    for (let run = 0; run < 3; run += 1) {
+      const width = 0.14 + 0.3 * unit(k++);
+      const end = Math.min(a + width, w - 0.06);
+      if (end - a < 0.1) break;
+      const height = Math.min(clear - 0.03, 0.19 + 0.12 * unit(k++));
+      const depth = Math.min(d - 0.06, 0.18 + 0.08 * unit(k++));
+      const colour = colours[Math.floor(unit(k++) * colours.length) % colours.length]!;
+      boxes.push(box(a, end, 0.02, 0.02 + depth, y, y + height, "fabric", colour, HIDE.back | HIDE.bottom));
+      a = end + (unit(k++) < 0.4 ? 0.06 + 0.2 * unit(k++) : 0.005);
+    }
+  }
 }
 
 function counter(w: number, timber: number, top: number): Piece {
@@ -174,16 +227,21 @@ function stove(pipe: number, ceiling: number): Piece {
   };
 }
 
-function sofa(w: number, fabric: number): Piece {
-  return {
-    name: "sofa", w, d: 0.85, h: 0.82, material: "timber", low: true,
-    boxes: [
-      box(0, w, 0.18, 0.85, 0, 0.44, "fabric", fabric),
-      box(0, w, 0, 0.2, 0, 0.82, "fabric", shade(fabric, 0.88)),
-      box(0, 0.16, 0.2, 0.85, 0.44, 0.62, "fabric", shade(fabric, 0.94)),
-      box(w - 0.16, w, 0.2, 0.85, 0.44, 0.62, "fabric", shade(fabric, 0.94)),
-    ],
-  };
+function sofa(w: number, fabric: number, cushion: number): Piece {
+  const boxes = [
+    box(0, w, 0.18, 0.85, 0, 0.44, "fabric", fabric),
+    box(0, w, 0, 0.2, 0, 0.82, "fabric", shade(fabric, 0.88)),
+    box(0, 0.16, 0.2, 0.85, 0.44, 0.62, "fabric", shade(fabric, 0.94)),
+    box(w - 0.16, w, 0.2, 0.85, 0.44, 0.62, "fabric", shade(fabric, 0.94)),
+  ];
+  // Two cushions against the back, in the room's other fabric.
+  if (w >= 1.2) {
+    boxes.push(
+      box(0.2, 0.6, 0.2, 0.34, 0.44, 0.8, "fabric", cushion, HIDE.back | HIDE.bottom),
+      box(w - 0.6, w - 0.2, 0.2, 0.34, 0.44, 0.8, "fabric", shade(cushion, 0.92), HIDE.back | HIDE.bottom),
+    );
+  }
+  return { name: "sofa", w, d: 0.85, h: 0.82, material: "timber", low: true, boxes };
 }
 
 function chest(w: number, timber: number): Piece {
@@ -292,13 +350,21 @@ function catalogue(ctx: RoomContext): Piece[] {
   const short = Math.min(w, d);
   const cold = look.style === "boreal" || look.style === "tundra" || look.style === "alpine";
   const ceiling = ctx.ceiling - ctx.floor;
+  // Each set of shelves throws its own dice for what stands on it.
+  let fills = 0;
+  const filled = (colours: readonly number[]): ShelfFill => {
+    const salt = (ctx.index * 8 + fills++) * 512;
+    return { colours, unit: (k) => rng.unit(KitChannel.decor, salt + k) };
+  };
+  const books = () => filled(BOOK_COLOURS);
+  const goods = () => filled(GOODS_COLOURS);
   switch (room.kind) {
     case "living":
       return [
         ...(cold ? [stove(0x222222, ceiling)] : []),
-        sofa(Math.min(2.0, long - 1.6), f[0]!),
+        sofa(Math.min(2.0, long - 1.6), f[0]!, f[2]!),
         ...(short >= 3.2 ? [table(1.0, 0.55, timber)] : []),
-        shelves(1.0, 1.9, timber),
+        shelves(1.0, 1.9, timber, books()),
         chest(0.9, dark),
       ];
     case "kitchen":
@@ -309,7 +375,7 @@ function catalogue(ctx: RoomContext): Piece[] {
         bench(1.2, timber),
       ];
     case "dining":
-      return [table(Math.min(1.6, long - 1.8), 0.9, timber), bench(1.4, timber), shelves(1.1, 1.8, dark)];
+      return [table(Math.min(1.6, long - 1.8), 0.9, timber), bench(1.4, timber), shelves(1.1, 1.8, dark, goods())];
     case "bedroom": {
       const double = short >= 3.0 && rng.chance(KitChannel.furniture, 0.6, ctx.index);
       return [bed(double ? 1.4 : 0.95, timber, f[(ctx.index + 1) % f.length]!), wardrobe(dark), chest(0.8, timber)];
@@ -320,7 +386,7 @@ function catalogue(ctx: RoomContext): Piece[] {
         bed(0.95, timber, f[1]!),
         table(Math.min(1.1, short - 1.5), 0.75, timber),
         bench(1.0, timber),
-        shelves(0.9, 1.7, dark),
+        shelves(0.9, 1.7, dark, books()),
       ];
     case "bunk":
       return [bunk(timber, f[0]!, f[2]!), bunk(timber, f[1]!, f[0]!), chest(0.8, dark)];
@@ -329,21 +395,21 @@ function catalogue(ctx: RoomContext): Piece[] {
     case "changing":
       return [bench(Math.min(1.4, long - 0.4), timber), shelves(0.6, 1.6, timber)];
     case "office":
-      return [desk(timber), shelves(1.2, 1.9, dark), table(1.0, 0.6, timber), chest(0.9, dark)];
+      return [desk(timber), shelves(1.2, 1.9, dark, books()), table(1.0, 0.6, timber), chest(0.9, dark)];
     case "barn": {
       const n = Math.max(2, Math.min(6, Math.floor((long - 3.4) / 1.8)));
       return [stallRow(n, Math.min(2.6, short * 0.32), dark), hay(dark), workbench(1.6, timber)];
     }
     case "tack":
-      return [shelves(1.0, 1.7, dark), bench(1.2, timber), chest(0.9, dark)];
+      return [shelves(1.0, 1.7, dark, goods()), bench(1.2, timber), chest(0.9, dark)];
     case "workshop":
       return ctx.variant === "workshop-store"
-        ? [shelves(1.6, 1.9, dark), workbench(Math.min(2.2, long - 1.2), timber), crates(dark)]
-        : [workbench(Math.min(2.2, long - 1.2), timber), shelves(1.2, 1.9, dark), crates(dark)];
+        ? [shelves(1.6, 1.9, dark, goods()), workbench(Math.min(2.2, long - 1.2), timber), crates(dark)]
+        : [workbench(Math.min(2.2, long - 1.2), timber), shelves(1.2, 1.9, dark, goods()), crates(dark)];
     case "store":
       return ctx.variant === "store-aisle"
-        ? [shelves(Math.min(2.0, long - 1.2), 1.9, dark), shelves(Math.min(2.0, long - 1.2), 1.9, dark), crates(timber)]
-        : [shelves(Math.min(1.6, long - 1.4), 1.9, dark), crates(timber), shelves(1.0, 1.9, dark), crates(shade(timber, 0.9))];
+        ? [shelves(Math.min(2.0, long - 1.2), 1.9, dark, goods()), shelves(Math.min(2.0, long - 1.2), 1.9, dark, goods()), crates(timber)]
+        : [shelves(Math.min(1.6, long - 1.4), 1.9, dark, goods()), crates(timber), shelves(1.0, 1.9, dark, goods()), crates(shade(timber, 0.9))];
     case "hall":
     case "landing":
       return long >= 4 ? [coatRack(timber)] : [];
@@ -434,12 +500,27 @@ function walkable(room: PlanRoom, blocked: readonly PlanRect[], anchors: readonl
   return anchors.every((a) => seen[index(a)] === 1);
 }
 
+/** Rooms people live in: a rug, a picture and curtains. */
+const LIVED_IN: ReadonlySet<PlanRoom["kind"]> = new Set(["living", "dining", "bedroom", "main", "office"]);
+/** Low pieces a picture hangs over. */
+const UNDER_PICTURE: ReadonlySet<string> = new Set(["sofa", "chest", "bed", "desk", "side table", "table"]);
+
+/** Rugs' fields; the border is one of the building's fabrics. */
+const RUG_COLOURS = [0x8a4a3a, 0x6a5a4a, 0x4a5a6a, 0x9a7a4a, 0x7a3a3a, 0x5a6a4a, 0xa89878];
+/** Small landscapes as two bands, sky over land: fields, wheat at evening, the sea, a dark portrait. */
+const PICTURES: readonly (readonly [number, number])[] = [
+  [0x9ab0c0, 0x6a7a4a], [0xc8b090, 0x8a6a3a], [0x8a9aaa, 0x3e5a6a], [0xb8b0a0, 0x5a6a4a], [0x4a3e34, 0x7a5e4e],
+];
+const FRAME_COLOURS = [0x3a2a1e, 0x8a6a3a, 0x2a2826, 0x6e5a44];
+
 /** Place a room's furniture and draw it; returns the footprints placed. */
 export function furnishRoom(b: KitBuilder, ctx: RoomContext): PlanRect[] {
   const room = ctx.room;
   const placed: PlanRect[] = [];
   const walls = roomWalls(room);
   const pieces = catalogue(ctx);
+  const livedIn = LIVED_IN.has(room.kind);
+  let hung = false;
   // Start each piece on a seeded wall and position, so neighbouring rooms differ.
   pieces.forEach((piece, pieceIndex) => {
     if (piece.w <= 0.3 || piece.d <= 0.05) return;
@@ -464,23 +545,115 @@ export function furnishRoom(b: KitBuilder, ctx: RoomContext): PlanRect[] {
         if (!walkable(room, [...placed, rect], ctx.anchors)) continue;
         placed.push(rect);
         drawPiece(b, ctx, wall, s, piece);
+        if (livedIn && !hung && piece.low && UNDER_PICTURE.has(piece.name)) hung = hangPicture(b, ctx, wall, s, piece);
         done = true;
       }
       if (done) break;
     }
   });
+  if (livedIn) {
+    layRug(b, ctx);
+    if (room.kind !== "office") hangCurtains(b, ctx, walls, placed);
+  }
   return placed;
+}
+
+/** The room's own dice for its decoration, `k` a throw within one `kind` of decoration. */
+function decorDice(ctx: RoomContext, kind: number, k: number): number {
+  return ctx.rng.unit(KitChannel.decor, 1_000_000 + (ctx.index * 4 + kind) * 64 + k);
+}
+
+/** A rug in the middle of the floor, clear of door leaves and stairs: a border and a field. */
+function layRug(b: KitBuilder, ctx: RoomContext): void {
+  const room = ctx.room;
+  const w = room.x1 - room.x0;
+  const d = room.z1 - room.z0;
+  const long = Math.min(2.6, Math.max(w, d) - 1.4);
+  const short = Math.min(1.8, Math.min(w, d) - 1.4);
+  if (long < 1.2 || short < 0.8) return;
+  const rw = w >= d ? long : short;
+  const rd = w >= d ? short : long;
+  const cx = (room.x0 + room.x1) * 0.5 + (decorDice(ctx, 0, 0) - 0.5) * Math.min(0.4, w - rw - 1.4);
+  const cz = (room.z0 + room.z1) * 0.5 + (decorDice(ctx, 0, 1) - 0.5) * Math.min(0.4, d - rd - 1.4);
+  const rect: PlanRect = { x0: cx - rw * 0.5, x1: cx + rw * 0.5, z0: cz - rd * 0.5, z1: cz + rd * 0.5 };
+  if (ctx.keepOut.some((k) => overlaps(rect, k))) return;
+  const field = RUG_COLOURS[Math.floor(decorDice(ctx, 0, 2) * RUG_COLOURS.length) % RUG_COLOURS.length]!;
+  const border = shade(ctx.look.fabricColours[(ctx.index + 2) % ctx.look.fabricColours.length]!, 0.85);
+  const y = ctx.floor;
+  b.box(rect.x0, rect.x1, y, y + 0.01, rect.z0, rect.z1, "fabric", border, FACE.py | FACE.sides, ctx.indoor);
+  const inset = 0.12;
+  b.box(rect.x0 + inset, rect.x1 - inset, y + 0.01, y + 0.013, rect.z0 + inset, rect.z1 - inset, "fabric", field, FACE.py, ctx.indoor);
+}
+
+/** A framed picture on the wall over a low piece, unless a window is there; whether one was hung. */
+function hangPicture(b: KitBuilder, ctx: RoomContext, wall: Wall, s: number, piece: Piece): boolean {
+  const pw = Math.min(0.9, piece.w - 0.3, 0.5 + 0.4 * decorDice(ctx, 1, 0));
+  if (pw < 0.35) return false;
+  const ph = 0.38 + 0.22 * decorDice(ctx, 1, 1);
+  const y0 = Math.max(piece.h + 0.3, 1.3);
+  const y1 = y0 + ph;
+  if (y1 > ctx.ceiling - ctx.floor - 0.3) return false;
+  const a0 = s + (piece.w - pw) * 0.5;
+  if (ctx.windows.some((win) => win.normal === wall.normal && Math.abs(win.at - wall.at) < 0.6
+    && a0 < win.s1 + 0.1 && a0 + pw > win.s0 - 0.1)) return false;
+  const { back, front } = wallFaces(wall);
+  const frame = FRAME_COLOURS[Math.floor(decorDice(ctx, 1, 2) * FRAME_COLOURS.length) % FRAME_COLOURS.length]!;
+  const [sky, land] = PICTURES[Math.floor(decorDice(ctx, 1, 3) * PICTURES.length) % PICTURES.length]!;
+  const f = ctx.floor;
+  const r = rectOf(wall, a0, pw, 0, 0.03);
+  b.box(r.x0, r.x1, f + y0, f + y1, r.z0, r.z1, "timber", frame, FACE.all & ~back & ~FACE.ny & ~FACE.py, ctx.indoor);
+  // The canvas: two bands just proud of the frame, the horizon a little below the middle.
+  const m = 0.05;
+  const c = rectOf(wall, a0 + m, pw - 2 * m, 0.03, 0.032);
+  const horizon = f + y0 + m + (ph - 2 * m) * 0.42;
+  b.box(c.x0, c.x1, f + y0 + m, horizon, c.z0, c.z1, "fabric", land, front, ctx.indoor);
+  b.box(c.x0, c.x1, horizon, f + y1 - m, c.z0, c.z1, "fabric", sky, front, ctx.indoor);
+  return true;
+}
+
+/** Curtains drawn back beside each window, where nothing stands in front of the wall. */
+function hangCurtains(b: KitBuilder, ctx: RoomContext, walls: readonly Wall[], placed: readonly PlanRect[]): void {
+  const colour = shade(ctx.look.fabricColours[(ctx.index + 1) % ctx.look.fabricColours.length]!, 1.12);
+  const top = ctx.ceiling - 0.04;
+  for (const win of ctx.windows) {
+    const wall = walls.find((w) => w.normal === win.normal && Math.abs(w.at - win.at) < 0.05);
+    if (!wall) continue;
+    const { front, ends } = wallFaces(wall);
+    const y0 = Math.max(ctx.floor + 0.05, win.y0 - 0.3);
+    const y1 = Math.min(top, win.y1 + 0.18);
+    if (y1 - y0 < 0.5) continue;
+    for (const [a0, a1] of [[win.s0 - 0.26, win.s0 - 0.01], [win.s1 + 0.01, win.s1 + 0.26]] as const) {
+      if (a0 < wall.s0 + 0.02 || a1 > wall.s1 - 0.02) continue;
+      const r = rectOf(wall, a0, a1 - a0, 0, 0.06);
+      if (placed.some((p) => overlaps(r, p)) || ctx.keepOut.some((k) => overlaps(r, k))) continue;
+      b.box(r.x0, r.x1, y0, y1, r.z0, r.z1, "fabric", colour, front | ends, ctx.indoor);
+    }
+  }
+}
+
+/** The world faces of a box standing against this wall: its back (on the wall), its front, and its two ends. */
+function wallFaces(wall: Wall): { back: number; front: number; ends: number } {
+  if (wall.normal === "z") {
+    return { back: wall.inward > 0 ? FACE.nz : FACE.pz, front: wall.inward > 0 ? FACE.pz : FACE.nz, ends: FACE.px | FACE.nx };
+  }
+  return { back: wall.inward > 0 ? FACE.nx : FACE.px, front: wall.inward > 0 ? FACE.px : FACE.nx, ends: FACE.pz | FACE.nz };
 }
 
 function drawPiece(b: KitBuilder, ctx: RoomContext, wall: Wall, s: number, piece: Piece): void {
   const y0 = ctx.floor;
   // The face against the wall and the bottom are hidden.
-  const back = wall.normal === "z" ? (wall.inward > 0 ? FACE.nz : FACE.pz) : (wall.inward > 0 ? FACE.nx : FACE.px);
+  const { back, ends } = wallFaces(wall);
   for (const lb of piece.boxes) {
     const r = rectOf(wall, s + lb.a0, lb.a1 - lb.a0, lb.d0, lb.d1);
     let faces = FACE.all & ~FACE.ny;
     if (lb.d0 <= 1e-6) faces &= ~back;
     if (lb.y0 > 1e-6) faces |= FACE.ny;
+    if (lb.hide) {
+      if (lb.hide & HIDE.back) faces &= ~back;
+      if (lb.hide & HIDE.bottom) faces &= ~FACE.ny;
+      if (lb.hide & HIDE.ends) faces &= ~ends;
+      if (lb.hide & HIDE.top) faces &= ~FACE.py;
+    }
     b.box(r.x0, r.x1, y0 + lb.y0, y0 + lb.y1, r.z0, r.z1, lb.surface, lb.colour, faces, ctx.indoor);
   }
   if (piece.solids) {

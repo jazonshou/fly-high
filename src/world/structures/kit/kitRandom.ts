@@ -55,4 +55,6 @@ export const KitChannel = Object.freeze({
   stone: 24,
   plaster: 25,
   attic: 26,
+  roomPaint: 27,
+  decor: 28,
 });

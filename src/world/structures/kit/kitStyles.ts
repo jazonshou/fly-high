@@ -286,6 +286,8 @@ export interface StructureLook {
   readonly glazingColour: number;
   readonly doorwayColour: number;
   readonly fabricColours: readonly number[];
+  /** The lived-in rooms' wall paints (painted linings only), three per building, picked by room. */
+  readonly roomPaints: readonly number[];
 }
 
 /** The closed shell's glazing: dark, faintly blue glass. */
@@ -294,6 +296,14 @@ export const GLAZING_COLOUR = 0x1f262b;
 export const DOORWAY_COLOUR = 0x17130f;
 
 const FABRICS = [0x7a3a32, 0x3e5a72, 0x6a7a4a, 0xb89a5a, 0x8a6a8a, 0xc8c0b0, 0x4a6a6a];
+
+/**
+ * Wall paints for the rooms people live in: soft, slightly greyed colours
+ * (sage, ochre, dusty blue, faded rose, cream, pale green, light clay), so a
+ * house reads as painted and lived in rather than one plain lining
+ * throughout. The style's own lining stays in the list, so some rooms keep it.
+ */
+const ROOM_PAINTS = [0xc4c8a8, 0xdcc898, 0xb6c2c4, 0xd2b6a6, 0xe2d4b4, 0xc6d2bc, 0xceac90];
 
 function wallSurfaceOf(cladding: WallCladding): WallCladding {
   return cladding;
@@ -394,6 +404,8 @@ export function structureLook(record: Pick<StructureRecord, "archetype" | "style
     : record.style === "desert" ? wallColour : rng.pick(KitChannel.chimney, [0x8a4a3a, 0x8a867e, 0x7a4234], 1);
   const [ww, wh, ws] = accent.window;
   const fabricColours = [0, 1, 2].map((i) => rng.pick(KitChannel.fabric, FABRICS, i));
+  const liningColour = wall === "logs" ? wallColour : rng.pick(KitChannel.plaster, accent.liningColours);
+  const roomPaints = [0, 1, 2].map((i) => rng.pick(KitChannel.roomPaint, [...ROOM_PAINTS, liningColour], i));
   return {
     style: record.style,
     wall,
@@ -417,7 +429,7 @@ export function structureLook(record: Pick<StructureRecord, "archetype" | "style
     shutters: houseLike && rng.chance(KitChannel.shutters, accent.shutters),
     verandah: accent.verandah,
     lining: wall === "logs" ? "logs" : accent.lining,
-    liningColour: wall === "logs" ? wallColour : rng.pick(KitChannel.plaster, accent.liningColours),
+    liningColour,
     ceiling: accent.ceiling,
     ceilingColour: accent.ceilingColour,
     floorColour: rng.pick(KitChannel.floorTone, accent.floorColours),
@@ -425,6 +437,7 @@ export function structureLook(record: Pick<StructureRecord, "archetype" | "style
     glazingColour: GLAZING_COLOUR,
     doorwayColour: DOORWAY_COLOUR,
     fabricColours,
+    roomPaints,
   };
 }
 
