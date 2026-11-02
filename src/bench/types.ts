@@ -1005,7 +1005,9 @@ export type BenchWarningCode =
   | "pacer-period-disagrees"
   | "timer-coarse"
   | "frame-log-overflow"
-  | "focus-lost";
+  | "focus-lost"
+  /** PR B part 2b (G6): one check flight drew frames under the even fallback and the other drew none. */
+  | "fallback-in-one-check";
 
 export interface BenchWarning {
   readonly code: BenchWarningCode;

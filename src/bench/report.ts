@@ -267,9 +267,9 @@ const FINISHED: ReadonlySet<BenchStepStatus> = new Set<BenchStepStatus>(["ok", "
 
 /**
  * Valid, void, incomplete or unchecked. Only the check flights' spread over
- * 10%, the window changing size between them, or the even fallback in one
- * of them but not the other (PR B part 2b, G6) voids a run; data is kept
- * whatever the verdict.
+ * 10%, or the window changing size between them, voids a run; data is kept
+ * whatever the verdict. The even fallback in one check flight and not the
+ * other is a warning (`fallbackInOneCheck`), not a third rule.
  */
 export function computeVerdict(
   run: Pick<BenchRunRecord, "status" | "steps">,
@@ -300,17 +300,36 @@ export function computeVerdict(
   if (repeatability.canvasChange !== null && repeatability.canvasChange > CANVAS_CHANGE_THRESHOLD) {
     reasons.push(`the window changed size by ${(repeatability.canvasChange * 100).toFixed(1)}% between them`);
   }
-  // A check flight that fell back drew at the even fallback's rate and one
-  // that did not drew at 60, so their fps compare two cadences, not the
-  // machine with itself. A run before `/4` has no count: none fell back.
-  const checks = [first, last];
-  const fellBack = checks.filter((step) => (step.result?.pacing.fallbackFrames ?? 0) > 0).length;
-  if (fellBack > 0 && fellBack < checks.length) reasons.push(`fallback in ${fellBack} of ${checks.length} flights`);
   return reasons.length > 0 ? { verdict: "void", voidReasons: reasons } : { verdict: "valid", voidReasons: [] };
 }
 
 function warning(code: BenchWarning["code"], stepIndex: number | null, message: string): BenchWarning {
   return { code, stepIndex, message };
+}
+
+/**
+ * PR B part 2b (G6): the check flight that drew frames under the even
+ * fallback when the other drew none, so its fps mixes two cadences. A
+ * warning, not a void: on Low the fallback can engage in the last second
+ * of a flight, and whether it does can depend only on how long the settle
+ * ran, so the same machine may or may not show it, with the two fps within
+ * 1% either way; "close other programs and run it again" would be the wrong
+ * remedy. A share large enough to move the fps more than 10% voids the run
+ * by the spread rule. Null when the plan does not check itself, when a
+ * check flight has no result, and on a run before `/4`, which has no count.
+ */
+function fallbackInOneCheck(steps: readonly BenchStepRecord[]): BenchWarning | null {
+  const first = steps[0];
+  const last = steps[steps.length - 1];
+  if (!first?.result || !last?.result || steps.length < 2 || first.tierIndex !== last.tierIndex) return null;
+  const fellBack = (step: BenchStepRecord) => (step.result?.pacing.fallbackFrames ?? 0) > 0;
+  if (fellBack(first) === fellBack(last)) return null;
+  const [step, which, other] = fellBack(first) ? [first, "first", "last"] : [last, "last", "first"];
+  const percent = (step.result!.pacing.fallbackShare ?? 0) * 100;
+  const share = percent.toFixed(1) === "0.0" ? "under 0.1%" : `${percent.toFixed(1)}%`;
+  return warning("fallback-in-one-check", step.index,
+    `Flight ${step.index + 1} (${benchTierName(step.tierIndex)}), the ${which} check flight, fell back to an even `
+    + `rate near 30 fps for ${share} of its frames and the ${other} did not, so its fps mixes two cadences.`);
 }
 
 /** Everything worth knowing that does not void the run. */
@@ -389,6 +408,8 @@ export function collectWarnings(run: BenchRunRecord): BenchWarning[] {
         `${name}: the browser's clock steps ${result.timer.granularityMs} ms; render times are coarse.`));
     }
   }
+  const fallback = fallbackInOneCheck(run.steps);
+  if (fallback) warnings.push(fallback);
   return warnings;
 }
 

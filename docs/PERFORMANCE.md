@@ -3703,11 +3703,16 @@ does with it, the cadence at the first and last frames (the divisor, the
 display rate, whether the rate was confirmed on ticks that drew nothing or a
 faster period than any frame could make, and the fallback's rate while it
 holds), and the bench's rAF ticks against the frames the game rendered.
-Each frame is judged against the cadence in force when it was drawn: frames
-drawn under the fallback count against its interval, are neither hitches
-nor missed refreshes, and are reported as `pacing.fallbackFrames` and
-`fallbackShare`. Missed refreshes are counted against that paced cadence,
-and the vsync buckets count its slots. A standard flight is 75 s, and the
+Each interval is judged against the cadence that paced it, the one the
+frame that ends it was drawn under: the pacer skips and draws by a new
+cadence from the tick on which it sets it, so that cadence decided when
+the frame before left the screen. At 60 Hz the first 33.3 ms interval of
+the fallback is therefore the fallback's slot, not a missed refresh; an
+interval the fallback paced is a hitch only past its threshold (60 ms) and
+a missed refresh only past its slot plus half a refresh (41.7 ms), and the
+vsync buckets count each interval in the slots of the cadence that paced
+it. The frames drawn under the fallback are reported as
+`pacing.fallbackFrames` and `fallbackShare`. A standard flight is 75 s, and the
 fallback takes longer than that to engage on the machines it is for, so
 `fallbackShare` usually reads 0; the bench is not the instrument for the
 fallback. At every setting the game waits for its display probe's quiet
@@ -3730,11 +3735,16 @@ Medium first and last, and **valid** means those two flights' mean fps agree
 within 10% and the window kept its size. The two are compared over the air
 window, or, when either stopped early, over the stretch the early check
 reads (3 s to 20 s), which both flew. **Void** means they did not (a
-throttling laptop, another program, a window resized between them). A run
-in which only some check flights fell back carries the reason "fallback in
-k of n flights" and is void too, because their fps compare two cadences,
-not the machine with itself. Those three are the only rules that void a
-run, and every number is still in the report.
+throttling laptop, another program, a window resized between them); those
+two are the only rules that void a run, and every number is still in the
+report. A check flight that fell back to the even rate while the other did
+not is a warning, not a third rule: it names the flight and the share of its
+frames drawn under the fallback, because that flight's fps mixes two
+cadences. On Low the fallback can engage in a flight's last second, and
+whether it does can depend only on how long the settle ran, so the two fps
+can agree within 1% with only one of them fallen back; a fallback long
+enough to move the compared fps by more than 10% voids the run by the first
+rule.
 **Incomplete** is a run that was stopped or whose check flight did not
 finish, and **unchecked** a plan of one flight, or one that does not start
 and end on the same tier. Everything else worth knowing (a display under 50 Hz, a refresh rate

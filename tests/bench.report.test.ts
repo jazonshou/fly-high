@@ -412,25 +412,72 @@ describe("the verdict", () => {
     expect(verdictOf(withSteps(run, [slowFirst, steps[1]!, steps[2]!, slowLast])).verdict).toBe("valid");
   });
 
-  it("voids when the even fallback ran in one check flight and not the other (G6)", () => {
-    // Low first and last, where the governor may fall back to an even 30 fps.
+  it("warns, and does not void, when the even fallback ran in one check flight and not the other (G6)", () => {
+    // Low first and last, where the governor may fall back to an even rate
+    // near 30 fps. Whether the last second of a Low flight fell back can
+    // depend only on how long its settle ran, with the two fps within 1%,
+    // so it is a warning; "close other programs and run it again" would be
+    // the wrong remedy, and a re-run on the same machine could void again.
     const low = benchRunRecord({ steps: [{ tierIndex: 0 }, { tierIndex: 0 }] });
-    const fellBack = (step: BenchStepRecord, fallbackFrames: number): BenchStepRecord => ({
-      ...step,
-      result: { ...step.result!, pacing: { ...step.result!.pacing, fallbackFrames, fallbackShare: fallbackFrames / 4_000 } },
-    });
+    const fellBack = (step: BenchStepRecord, fallbackFrames: number): BenchStepRecord => {
+      const pacing = step.result!.pacing;
+      return {
+        ...step,
+        result: { ...step.result!, pacing: { ...pacing, fallbackFrames, fallbackShare: fallbackFrames / pacing.renderedFrames } },
+      };
+    };
+    const fallbackWarnings = (record: BenchRunRecord) =>
+      collectWarnings(record).filter((entry) => entry.code === "fallback-in-one-check");
     const [lowFirst, lowLast] = low.steps as [BenchStepRecord, BenchStepRecord];
+    const frames = lowLast.result!.pacing.renderedFrames;
     expect(verdictOf(low)).toEqual({ verdict: "valid", voidReasons: [] });
-    const once = withSteps(low, [lowFirst, fellBack(lowLast, 1_200)]);
-    expect(verdictOf(once)).toEqual({ verdict: "void", voidReasons: ["fallback in 1 of 2 flights"] });
-    expect(verdictText(report(once).run)).toBe(
-      "Void: fallback in 1 of 2 flights. Close other programs, let the computer cool, and run it again.",
-    );
+    expect(fallbackWarnings(low)).toEqual([]);
+
+    // The last flight fell back for its last 2% of frames: valid, with the flight and its share named.
+    const tail = withSteps(low, [lowFirst, fellBack(lowLast, Math.round(frames * 0.02))]);
+    expect(verdictOf(tail)).toEqual({ verdict: "valid", voidReasons: [] });
+    const built = report(tail);
+    expect(built.run.verdict).toBe("valid");
+    expect(verdictText(built.run)).toMatch(/^Valid: the first and last Low flights/u);
+    const expected = {
+      code: "fallback-in-one-check",
+      stepIndex: 1,
+      message: "Flight 2 (Low), the last check flight, fell back to an even rate near 30 fps for 2.0% of its "
+        + "frames and the first did not, so its fps mixes two cadences.",
+    };
+    expect(fallbackWarnings(tail)).toEqual([expected]);
+    expect(built.run.warnings).toContainEqual(expected);
+
+    // The first flight, by one frame: named as the first, its share never printed as 0.0%.
+    const first = fallbackWarnings(withSteps(low, [fellBack(lowFirst, 1), lowLast]));
+    expect(first.map((entry) => [entry.stepIndex, entry.message])).toEqual([[
+      0,
+      "Flight 1 (Low), the first check flight, fell back to an even rate near 30 fps for under 0.1% of its "
+        + "frames and the last did not, so its fps mixes two cadences.",
+    ]]);
+
     // Both fell back: the two compare like with like.
-    expect(verdictOf(withSteps(low, [fellBack(lowFirst, 900), fellBack(lowLast, 1_200)])).verdict).toBe("valid");
+    const both = withSteps(low, [fellBack(lowFirst, 900), fellBack(lowLast, 1_200)]);
+    expect(verdictOf(both).verdict).toBe("valid");
+    expect(fallbackWarnings(both)).toEqual([]);
     // A flight between them does not count: only the two the run checks itself with.
-    const between = benchStepRecord(1, { tierIndex: 0 });
-    expect(verdictOf(withSteps(low, [lowFirst, fellBack(between, 600), lowLast])).verdict).toBe("valid");
+    const three = benchRunRecord({ steps: [{ tierIndex: 0 }, { tierIndex: 0 }, { tierIndex: 0 }] });
+    const between = withSteps(three, [three.steps[0]!, fellBack(three.steps[1]!, 600), three.steps[2]!]);
+    expect(verdictOf(between).verdict).toBe("valid");
+    expect(fallbackWarnings(between)).toEqual([]);
+    // A check flight with no result leaves the run incomplete, and the other's fallback unremarked.
+    const failed: BenchStepRecord = { ...lowLast, status: "failed", message: "the WebGPU device was lost", result: null };
+    expect(fallbackWarnings(withSteps(low, [fellBack(lowFirst, 600), failed]))).toEqual([]);
+
+    // A fallback long enough to move the compared fps by more than 10% voids
+    // the run by the spread rule alone, and still carries the warning.
+    const slow = fellBack(withAir(lowLast, lowFirst.result!.windows.air!.fps! * 0.85), Math.round(frames * 0.4));
+    const moved = withSteps(low, [lowFirst, slow]);
+    const verdict = verdictOf(moved);
+    expect(verdict.verdict).toBe("void");
+    expect(verdict.voidReasons).toHaveLength(1);
+    expect(verdict.voidReasons[0]).toMatch(/^the first and last Low flights differ by 17\.6% \(limit 10%\)$/u);
+    expect(fallbackWarnings(moved).map((entry) => entry.stepIndex)).toEqual([1]);
   });
 
   it("is unchecked when the plan does not start and end on the same tier", () => {
