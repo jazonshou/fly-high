@@ -649,6 +649,13 @@ export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Ob
   // cockpit's: after the cockpit's 151 draws went away it still sat 3 higher
   // relative to its old ceiling than the other eleven.
   //
+  // FOURTEEN RE-PINNED 2026-11-02 for PR #41's generated buildings, from three
+  // full macOS captures that agree on all fourteen counts (gpu-tests runs
+  // 41360179301, 41363835761 and 41368280700 at 4cc4ed4, a1a2af8 and 0565615).
+  // The far blocks are one more draw wherever buildings stream; where near
+  // shells and their shadow casters are in range it is four. Fourteen shots
+  // sat exactly at their ceilings after #37, so these moved. See
+  // DRAW_CALL_RAISES, "generated-buildings", for the seven in the snapshot.
   // ALL 32 RE-PINNED +1 2026-10-12 for PR #20's final sharpen, from three full
   // macOS captures that agree on every shot (see DRAW_CALL_RAISES,
   // "final-sharpen"). The twelve shots outside PREVIOUS_DRAW_CALL_CEILINGS
@@ -657,32 +664,32 @@ export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Ob
   "slant-10km":                  [210, 210, 210], // 2026-09-14 tree-lod-residency-lead: 222 -> 223, identical across six runs
   "high-10000ft-down":           [73, 73, 73],
   "reference-viewport":          [249, 249, 249],
-  "cruise-horizon":              [201, 201, 201],
+  "cruise-horizon":              [202, 202, 202],
   "winter-noon":                 [248, 248, 248],
   "night":                       [250, 250, 250],
   "night-moonlit":               [250, 250, 250],
   "dusk-mesopic":                [249, 249, 249],
-  "motion-banked-turn":          [255, 255, 255],
-  "page-thrash-turn":            [254, 254, 254],
+  "motion-banked-turn":          [256, 256, 256],
+  "page-thrash-turn":            [258, 258, 258],
   "cdlod-transition":            [196, 196, 196], // 2026-09-14 tree-lod-residency-lead: 208 -> 209, identical across four runs
   "cruise-sun-30":               [227, 227, 227],
-  "forest-500ft-sunbehind":      [249, 249, 249],
+  "forest-500ft-sunbehind":      [250, 250, 250],
   "coast-10km-lowsun":           [220, 220, 220],
-  "ground-2m-lowsun":            [122, 122, 122],
-  "canopy-1200ft":               [114, 114, 114],
-  "runway-on-approach":          [256, 256, 256],
+  "ground-2m-lowsun":            [123, 123, 123],
+  "canopy-1200ft":               [115, 115, 115],
+  "runway-on-approach":          [257, 257, 257],
   "water-25ft":                  [225, 225, 225],
-  "grove-forest-2m":             [121, 121, 121],
-  "grove-meadow-2m":             [135, 135, 135],
-  "hills-dusk-glint":            [245, 245, 245],
+  "grove-forest-2m":             [122, 122, 122],
+  "grove-meadow-2m":             [139, 139, 139],
+  "hills-dusk-glint":            [246, 246, 246],
   "mountain-close":              [231, 231, 231],
-  "forest-line-highsun":         [245, 245, 245],
+  "forest-line-highsun":         [246, 246, 246],
   "cliff-60m":                   [238, 238, 238],
   "water-3m":                    [91, 91, 91],
-  "veg-seam-1600ft-oblique":     [109, 109, 109],
-  "veg-seam-near-500ft":         [117, 117, 117],
+  "veg-seam-1600ft-oblique":     [110, 110, 110],
+  "veg-seam-near-500ft":         [118, 118, 118],
   "terrain-material-1600ft-down":[88, 88, 88],
-  "horizon-shadow-far-annulus":  [92, 92, 92],
+  "horizon-shadow-far-annulus":  [96, 96, 96],
   "canopy-backlit-lowsun":       [103, 103, 103],
   // W-11, 2026-09-19. FIVE identical readings rather than three, and they span
   // both arms of the W-11 A/B -- two on the branch, two on House-Keeping with
@@ -838,6 +845,32 @@ export const DRAW_CALL_RAISES: readonly DrawCallRaise[] = Object.freeze([
       + "where it was staged at 4ae62d1.",
     delta: 1,
     shots: Object.freeze(Object.keys(PREVIOUS_DRAW_CALL_CEILINGS)),
+  }),
+  Object.freeze({
+    kind: "per-shot",
+    feature: "generated-buildings",
+    commit: "4cc4ed4",
+    reason:
+      "PR #41's generated buildings (`StructureSystem`) draw at most four meshes whatever "
+      + "the number of buildings: the far blocks, the near shells, and the open buildings "
+      + "and their glass next to the camera. The far blocks are one draw wherever the "
+      + "settlements stream; the near shells add one main-pass draw and their shadow-cascade "
+      + "draws on Medium and up. Measured by three full macOS captures that agree on all "
+      + "fourteen counts (gpu-tests runs 41360179301, 41363835761 and 41368280700 at 4cc4ed4, a1a2af8 "
+      + "and 0565615) against the land tip's capture at c438d62 (run 41344730906).",
+    whyNonUniform:
+      "The far blocks cost one draw on every shot with buildings streamed. page-thrash-turn "
+      + "also has near shells in range, so it adds the near set's main-pass draw and its "
+      + "shadow casters: four in all.",
+    deltas: Object.freeze({
+      "cruise-horizon": 1,
+      "motion-banked-turn": 1,
+      "page-thrash-turn": 4,
+      "forest-500ft-sunbehind": 1,
+      "runway-on-approach": 1,
+      "hills-dusk-glint": 1,
+      "forest-line-highsun": 1,
+    }),
   }),
 ]);
 

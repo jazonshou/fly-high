@@ -3843,6 +3843,16 @@ have:
   `hamlet-300ft` (232 draws), `hamlet-eye` (109), `hamlet-night` (234) and
   `farmhouse-inside` (134).
 
+**Draw ceilings re-pinned.** Fourteen shots sat exactly at their ceilings
+after #37, so the buildings' draw breached them. They are re-pinned to the
+measured count from three full macOS captures that agree on all fourteen:
+gpu-tests runs 41360179301 (`4cc4ed4`), 41363835761 (`a1a2af8`) and
+41368280700 (`0565615`). The seven of them in `PREVIOUS_DRAW_CALL_CEILINGS`
+carry a per-shot `DRAW_CALL_RAISES` entry, `generated-buildings`: +1 on six
+and +4 on `page-thrash-turn`. The other seven sit outside the raise
+mechanism and take the measured count. No visual gate failed, so no baseline
+moves.
+
 **A/B** (Performance A/B run 41363835800, head `a1a2af8` against the land
 tip `c438d62`). The macOS runner's GPU (advisory): frame wall time the same
 on all five shots, -0.6% to +0.1%, CPU time -3.1% to +0.0%. SwiftShader GPU
@@ -3858,7 +3868,13 @@ time, the gate, by shot (runner CPU in brackets):
 
 The forest shot is the outlier, and no building is in its frame (the arms
 differ in 0.01% of pixels). Its A/B has scattered widely before: +0.7% to
-+6.7% across the land PR's runs ("Roads and the Land Cruiser" above).
++6.7% across the land PR's runs ("Roads and the Land Cruiser" above). The
+next run (41368280775, head `0565615`) put it at +0.0% (-0.1% to +0.2%) on
+a 7763 runner, so the +4.0% was the 9V45 runner, not the buildings. That
+run's other SwiftShader shots: `approach-500ft` +0.4%, `cruise-horizon`
+-0.4%, `ground-2m-lowsun` -0.3% and `water-25ft` -0.3%. On the macOS
+runner's GPU every shot was again the same, frame wall time +1.0% to +1.7%
+and CPU time +3.2% to +6.1% (the guard is 15%).
 
 ## In-app benchmark (?bench=1)
 
