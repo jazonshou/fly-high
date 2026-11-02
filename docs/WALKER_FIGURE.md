@@ -19,34 +19,74 @@ the ground between the heels (seated: the driver's hip point). The sim's
 - **Proportions** (`figureProportions.ts`): an adult man of
   `PERSON.stature` 1.76 m. Joint heights and segment lengths are Drillis and
   Contini's ratios of the stature (Winter 2009, fig. 4.1): eye 0.936 H, hip
-  0.530, knee 0.285, ankle 0.039, PUBLISHED. Girths and breadths are ANSUR II
-  male medians scaled to H, PUBLISHED summary values. Joint centres inside
-  those landmarks, the clothes' ease and the boots are ESTIMATES.
-- **Meshes** (`figureGeometry.ts`): lofted cross-sections, as the car and boat
-  are built. MEASURED: LOD0 9,082 triangles (4,921 vertices), LOD1 2,906,
-  LOD2 798, against the brief's 9k, 3k and 0.8k. LOD0 holds 0.086 m^3, an
-  adult's 0.07 plus clothes and boots. Every vertex has four bone weights;
-  faces wind into the solid as the repo's other meshes do.
-- **Clothes** (`figureAtlas.ts`): one 256-texel atlas, one PBR material:
-  swatches whose V is baked ambient occlusion, and a painted face. An
-  olive-grey jacket, stone trousers, brown boots.
+  0.530, knee 0.285, ankle 0.039, PUBLISHED. The motion stack reads these;
+  the mesh is fitted to the same joints.
+- **Mesh** (`walkerBody.ts`, baked by `scripts/bake-walker-body.mts`): a
+  real person's anatomy from MakeHuman's base mesh, not a likeness of anyone.
+  MakeHuman's young-male macro targets for African, Asian and European
+  ancestry are averaged a third each, so the face belongs to no group and no
+  one; the result is scaled and fitted joint by joint onto the skeleton above
+  and skinned with MakeHuman's own weights, its 160-odd bones folded onto our
+  27. Its high-poly eyes go in the sockets. Over the body the bake builds the
+  clothes as shells lifted off it (the skin they cover removed): an
+  olive-grey soft-shell jacket with a stand-up collar, zip, hem and cuff
+  bands; stone trousers; brown leather boots with laces; a short dark cut of
+  hair rising off the scalp only where it is thick, its thin edge painted on
+  the skin.
+- **Sources**: MakeHuman's files are fetched at bake time from its GitHub
+  repository at a pinned commit (`MAKEHUMAN_COMMIT` in
+  `scripts/walkerBody/sources.mts`) into `node_modules/.cache/walker-body/`.
+  Every asset bundled with MakeHuman is CC0 1.0 (its `LICENSE.md`, section
+  C); the bake checks that text before using anything. Only the baked files
+  are in the repository.
+- **Levels of detail**: MEASURED 33,112 triangles, then 10,000, 3,000 and
+  996, simplified with meshoptimizer keeping UV seams, normals and UVs
+  (errors 0.14%, 0.62% and 3.1% of the figure's size). The figure switches
+  at 10, 25 and 80 m (`FIGURE_LOD_DISTANCES`, with 1.5 m either side). Low
+  tier starts at the second (`personFigureFinestLod`).
+- **Maps**: one atlas in MakeHuman's UV layout, painted by the bake from
+  measured surface points: albedo (skin tone and mottle, redder cheeks, nose
+  and ears, stubble, lips, brows, lashes, irises; the jacket's fabric, seams
+  and folds; the trousers' twill; leather with toe wear), a normal map from
+  the same painters' heights (pores, creases, weave, grain, laces), and
+  occlusion, roughness and metalness. The occlusion is ray-traced against the
+  whole figure (32 rays a texel at half size) and also darkens the albedo a
+  little. Each is baked at 2,048 texels and halved for 1,024 and 512; the
+  tier picks one (`personFigureTextureSize`: Low 512, Medium 1,024, High and
+  Ultra 2,048). The figure builds the mip chains itself, in linear light,
+  renormalising the normals and widening the roughness where they spread
+  (Toksvig).
+- **Files** (`src/render/webgpu/person/assets/`, 2.8 MB): `walker-body.bin`
+  (742 KB: the shared vertices quantised to 16 bits, four bone indices and
+  weights in bytes, 16-bit triangles per level) and three JPEGs per size
+  (albedo q90, normal q94 and occlusion-roughness-metal q92, 4:4:4 for the
+  last two). The renderer loads only the tier's size, alongside the scene,
+  and only when a car is in the scene (the walker comes with it). GPU memory
+  with mips: 64 MiB at 2,048, 16 at 1,024, 4 at 512.
+- **Frames and winding**: the bake's +X forward, +Y up, +Z right, feet at
+  y = 0; faces wind into the solid as the repo's other meshes do.
 - **Skinning** (`createFigure.ts`): every bone parentless and bound at its
   bind position, so a bone's matrix is its posed transform in the root frame.
   The matrices are computed once a frame in `update`, so the shadow passes
   read this frame's pose, and ride in each draw's uniforms: Babylon's default
   bone texture made a buffer and a submit of its own every frame.
 
-## Draws, LODs and the fade
+## Draws, LODs and shadows
 
-One mesh per LOD draws (25 m and 80 m, with 1.5 m either side before it
-switches back), plus its shadow in the nearest `personShadowCascades`
-cascades. Babylon draws a caster into every cascade, so where the tier asks
-for fewer the figure drops itself from the farther ones' lists
-(`CascadeFilter`). MEASURED (`tests/gpu/person-figure.test.ts`): 2 draws on
-Low, 3 on Medium, High and Ultra. Ultra asks for 3 cascades but every tier
-has 2, so it draws 3, not the plan's 4. The material compiles at 14 of 16
-fragment inputs, with the cascades, cloud shadows and aerial haze, so a
+One mesh per LOD draws, plus its shadow in the nearest
+`personShadowCascades` cascades. Babylon draws a caster into every cascade,
+so where the tier asks for fewer the figure drops itself from the farther
+ones' lists (`FigureShadows`). MEASURED (`tests/gpu/person-figure.test.ts`):
+2 draws on Low, 3 on Medium, High and Ultra. The material compiles at 14 of
+16 fragment inputs, with the cascades, cloud shadows and aerial haze, so a
 clustered light container still fits.
+
+The sun casts from back faces with a 0.035 m normal bias, which moves a back
+face up to that far toward the light. The nose, lips, brow and eyelids are
+thinner than that, so their far sides came out in front of the lit cheek and
+striped the face with shadow. The figure casts with a bias of its own,
+`FIGURE_SHADOW_NORMAL_BIAS` (5 mm), set again on each of its shadow draws;
+the GPU test checks its draws use it while everything else keeps the sun's.
 
 A camera pushed into the walker's space fades it (`setFade`): the solid mesh
 keeps casting, hidden from the cameras, while a twin sharing its geometry
@@ -57,9 +97,9 @@ shadow loses its head too.
 Pipelines: both materials go through the renderer's off-frame compiles and
 are warmed at load by two primes (one degenerate triangle each) once their
 effects are ready. The GPU test checks the first walk, fade, first person and
-LOD switch build no pipeline in their frame. Waiting for the effects matters:
-a prime drawn only in the shadow map, its main effect still compiling, ended
-its warm-up with only the shadow pipeline.
+every LOD switch build no pipeline in their frame. Waiting for the effects
+matters: a prime drawn only in the shadow map, its main effect still
+compiling, ended its warm-up with only the shadow pipeline.
 
 ## The motion
 
@@ -127,8 +167,9 @@ Foot strikes (count, strength, foot) go back to the renderer for the sounds.
 
 ## Tests
 
-- `tests/render.person-figure.test.ts`: the skeleton, the LODs' triangle
-  bands, bounds, winding, volume, skin weights, normals, UVs and the atlas.
+- `tests/render.person-figure.test.ts`: the skeleton; the baked body's
+  levels (triangle bands, bounds, winding, skin weights to the right bones,
+  normals, UVs); the maps' sizes; the mip chains.
 - `tests/render.person-gait.test.ts`: cadence against the published bands,
   slip on flat ground and slopes, the walk-run switch in the feet, knee and
   pelvis ranges.
@@ -137,4 +178,6 @@ Foot strikes (count, strength, foot) go back to the renderer for the sounds.
   with the seat; landings, the roll, the climb; first person and the look.
 - `tests/render.person-motion-budget.test.ts`: the frame budget.
 - `tests/gpu/person-figure.test.ts`: compile and inter-stage audit, draws
-  per tier, the skin following the bones, and the off-frame warm-up.
+  per tier, the skin following the bones, the maps lit the way the bake
+  made them (the image's top at the top, the normal map's X and Y), the
+  figure's own shadow bias, and the off-frame warm-up.

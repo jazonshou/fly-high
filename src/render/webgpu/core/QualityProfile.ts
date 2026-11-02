@@ -1,3 +1,4 @@
+import type { WalkerTextureSize } from "../person/walkerBody";
 import {
   GROUND_COVER_LAWS,
 } from "@/src/render/webgpu/detail/groundCoverLaw";
@@ -491,17 +492,20 @@ export interface WebGpuQualityProfile {
    */
   readonly marinaCastsShadows: boolean;
   /**
-   * The walker's figure (car sessions only): the finest of its three meshes
-   * it draws (0 = 9k triangles within 25 m, 1 = 3k, 2 = 0.8k), and how many
-   * of the nearest shadow cascades it casts into (capped by
-   * `shadowCascades`). Its draws are one plus that: the walking plan's
-   * budget table, 2 on Low and 3 above it while every tier has two
-   * cascades.
+   * The walker's figure (car sessions only): the finest of its four meshes
+   * it draws (0 = 33k triangles within 10 m, 1 = 10k within 25 m, 2 = 3k
+   * within 80 m, 3 = 1k), how many of the nearest shadow cascades it casts
+   * into (capped by `shadowCascades`), and the size of its texture maps
+   * (albedo, normal and occlusion-roughness-metal, each this square with
+   * its mip chain: 2048 is 64 MiB of GPU memory, 1024 16 MiB, 512 4 MiB).
+   * Its draws are one plus the cascades: the walking plan's budget table, 2
+   * on Low and 3 above it while every tier has two cascades.
    *
    * Data, not a `profile.tier` branch, per the tier rule.
    */
-  readonly personFigureFinestLod: 0 | 1 | 2;
+  readonly personFigureFinestLod: 0 | 1 | 2 | 3;
   readonly personShadowCascades: number;
+  readonly personFigureTextureSize: WalkerTextureSize;
   /**
    * Walking plan, "Underwater view": the sea's underside, drawn instead of the
    * sea while the camera is under it. With the window it is shaded with the
@@ -635,6 +639,7 @@ function resolveBaseQualityProfile(
       marinaCastsShadows: false,
       personFigureFinestLod: 1,
       personShadowCascades: 1,
+      personFigureTextureSize: 512,
       underwaterSnellWindow: false,
       underwaterCaustics: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
@@ -753,6 +758,7 @@ function resolveBaseQualityProfile(
       marinaCastsShadows: true,
       personFigureFinestLod: 0,
       personShadowCascades: 2,
+      personFigureTextureSize: 1024,
       underwaterSnellWindow: true,
       underwaterCaustics: false,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
@@ -860,6 +866,7 @@ function resolveBaseQualityProfile(
       marinaCastsShadows: true,
       personFigureFinestLod: 0,
       personShadowCascades: 2,
+      personFigureTextureSize: 2048,
       underwaterSnellWindow: true,
       underwaterCaustics: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
@@ -969,6 +976,7 @@ function resolveBaseQualityProfile(
     marinaCastsShadows: true,
     personFigureFinestLod: 0,
     personShadowCascades: 3,
+    personFigureTextureSize: 2048,
     underwaterSnellWindow: true,
     underwaterCaustics: true,
     spawnedAirfields: {

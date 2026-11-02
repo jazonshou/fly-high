@@ -31,7 +31,7 @@ import { chaseCameraProfile } from "../src/render/FlightRenderer";
 import { createWebGpuAircraft } from "../src/render/webgpu/aircraft";
 import { createWebGpuBoat } from "../src/render/webgpu/boat/createBoat";
 import { createWebGpuCar } from "../src/render/webgpu/ground/createCar";
-import { createPersonVisual } from "../src/render/webgpu/person";
+import { createPersonVisual, loadWalkerBody } from "../src/render/webgpu/person";
 import { PERSON } from "../src/vehicles/person";
 import { AIRCRAFT_KINDS, type AircraftKind } from "../src/sim";
 import { surfaceVehicleSpec } from "../src/vehicles/catalogue";
@@ -663,9 +663,12 @@ describe("the LandCruiser's chase framing, on the built car at 16:9", () => {
  * The walker's figure as built and drawn, standing: its mesh skinned on the
  * CPU by the skeleton's own matrices after a second of standing still.
  */
+// The body's meshes (Node decodes no images, so the figure wears flat maps; the framing reads only its skin).
+const WALKER_BODY = await loadWalkerBody(512);
+
 function builtWalker() {
   const { engine, scene, camera } = framingScene();
-  const figure = createPersonVisual(scene);
+  const figure = createPersonVisual(scene, { asset: WALKER_BODY });
   const input = {
     person: STANDING, velocityX: 0, velocityY: 0, velocityZ: 0, turnRate: 0,
     groundOffset: () => 0, steeringWheel: 0,

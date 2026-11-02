@@ -95,7 +95,7 @@ import { infrastructureChangeTouches, infrastructurePlantExclusionsIn } from "@/
 import { RoadStreamRuntime } from "./roads/RoadStreamRuntime";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
-import { createPersonVisual, type PersonAnimationInput, type PersonVisual } from "./webgpu/person";
+import { createPersonVisual, loadWalkerBody, type PersonAnimationInput, type PersonVisual } from "./webgpu/person";
 import {
   CharacterCamera,
   characterCameraBelowWater,
@@ -1442,6 +1442,13 @@ export class FlightRenderer implements FlightRenderingSystem {
       scene.activeCamera = camera;
 
       const profile = resolveWebGpuQualityProfile(options.quality, options.renderingMode);
+      // The walker's body (car sessions only, the walking plan's D3): its
+      // files load at the tier's texture size while the world builds.
+      const walkerBodyLoad = options.vehicle && isSurfaceVehicleKind(options.vehicle) && vehicleClass(options.vehicle) === "car"
+        ? loadWalkerBody(profile.personFigureTextureSize)
+        : null;
+      // Settled by the await below; a startup abandoned before it must not leave the rejection unhandled.
+      walkerBodyLoad?.catch(() => undefined);
       // W-1a hybrid macro erosion: the engine is already initialized here, so
       // the eroded path may run its one-shot stream-power/talus GPU leg
       // between the worker's two CPU stages. Analytic worlds construct no
@@ -1609,8 +1616,11 @@ export class FlightRenderer implements FlightRenderingSystem {
       }
       // The walker lives in car sessions only (the walking plan, D3): built
       // hidden, it appears once the state carries a walking session.
-      const person = surfaceVehicle && vehicleClass(surfaceVehicle.kind) === "car"
-        ? createPersonVisual(scene, { profile, pipelineCompiles })
+      const walkerBody = walkerBodyLoad && surfaceVehicle
+        ? await awaitRendererStartup(walkerBodyLoad, options.signal, "walker body", SCENE_STARTUP_TIMEOUT_MILLISECONDS)
+        : null;
+      const person = walkerBody
+        ? createPersonVisual(scene, { asset: walkerBody, profile, pipelineCompiles })
         : null;
       if (person) {
         cleanup.push(() => person.dispose());

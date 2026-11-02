@@ -119,8 +119,11 @@ export const BIND_POSITIONS: Float64Array = (() => {
   set(BONE.spine1, -0.02, 0.58 * H, 0);
   set(BONE.spine2, -0.035, 0.65 * H, 0);
   set(BONE.spine3, -0.04, 0.72 * H, 0);
-  set(BONE.neck, -0.035, 0.825 * H, 0);
-  set(BONE.head, -0.012, 0.905 * H, 0);
+  // The neck's pivot on the cervical spine at the neck's base, the head's at
+  // the atlas under the ears: where they sit inside the realistic body (the
+  // fitted MakeHuman mesh's own spine line, `scripts/walkerBody/`).
+  set(BONE.neck, 0, 0.825 * H, 0);
+  set(BONE.head, 0.05, 0.91 * H, 0);
   const abduction = PROPORTIONS.bindArmAbduction;
   // Down the hanging arm, out by the A-pose's angle.
   const down = Math.cos(abduction);

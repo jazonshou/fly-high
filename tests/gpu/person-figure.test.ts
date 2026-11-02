@@ -12,6 +12,8 @@ import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 import { Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
+import { CreateBox } from "@babylonjs/core/Meshes/Builders/boxBuilder";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Logger } from "@babylonjs/core/Misc/logger";
 import { ReflectionProbe } from "@babylonjs/core/Probes/reflectionProbe";
@@ -24,7 +26,10 @@ import { CloudShadowReceiverRegistry } from "../../src/render/webgpu/clouds/Clou
 import { AsyncPipelineCompiles } from "../../src/render/webgpu/core/AsyncPipelineCompiles";
 import { resolveWebGpuQualityProfile, type WebGpuQualityProfile } from "../../src/render/webgpu/core/QualityProfile";
 import { DEFAULT_ENVIRONMENT_STATE } from "../../src/render/webgpu/nature/EnvironmentState";
-import { createPersonVisual, type PersonAnimationInput, type PersonVisual } from "../../src/render/webgpu/person";
+import { createPersonVisual, loadWalkerBody, type PersonAnimationInput, type PersonVisual } from "../../src/render/webgpu/person";
+import { FIGURE_SHADOW_NORMAL_BIAS } from "../../src/render/webgpu/person/createFigure";
+import { BONE } from "../../src/render/webgpu/person/skeleton";
+import type { FigureGeometry, WalkerBodyAsset } from "../../src/render/webgpu/person/walkerBody";
 
 /**
  * The walker's figure on a real adapter (W2 brief), as `FlightRenderer` builds
@@ -172,7 +177,7 @@ describe("the walker's figure on a real adapter", () => {
     try {
       const profile = resolveWebGpuQualityProfile("medium", "balanced");
       const { camera, shadows } = stage(scene, profile);
-      const figure = createPersonVisual(scene, { profile });
+      const figure = createPersonVisual(scene, { asset: await loadWalkerBody(profile.personFigureTextureSize), profile });
       addCasters(figure, shadows);
       const clouds = new CloudShadowReceiverRegistry();
       clouds.registerMeshes(figure.meshes);
@@ -234,7 +239,7 @@ describe("the walker's figure on a real adapter", () => {
     try {
       const { shadows } = stage(scene, profile);
       const empty = await drawn();
-      const figure = createPersonVisual(scene, { profile });
+      const figure = createPersonVisual(scene, { asset: await loadWalkerBody(profile.personFigureTextureSize), profile });
       addCasters(figure, shadows);
       // Standing, then rendered until the pipeline primes have drawn and gone dark.
       for (let step = 0; step < 4 && primes(figure).some((mesh) => mesh.isEnabled()); step += 1) {
@@ -260,7 +265,7 @@ describe("the walker's figure on a real adapter", () => {
     const scene = new Scene(device.engine);
     try {
       stage(scene, profile);
-      const figure = createPersonVisual(scene, { profile });
+      const figure = createPersonVisual(scene, { asset: await loadWalkerBody(profile.personFigureTextureSize), profile });
       // The top of the drawn figure, in rows from the canvas's top: rendered and read in one task.
       const top = async (): Promise<number> => {
         await scene.whenReadyAsync();
@@ -293,6 +298,146 @@ describe("the walker's figure on a real adapter", () => {
       figure.dispose();
     } finally {
       scene.dispose();
+      device.dispose();
+    }
+  }, 120_000);
+
+  it("lights the maps as the bake made them: the image's top at the top, the normal leaning along U and V", async () => {
+    // A 1 m square facing the camera (+X) in the figure's material, U along +Z and V up, as the bake's maps run:
+    // rows from the image's top, the normal's X along U and Y up the image (V_obj). The albedo is red over blue.
+    const device = await ownDevice();
+    try {
+      const square = (): FigureGeometry => ({
+        positions: Float32Array.from([0, 0.5, -0.5, 0, 0.5, 0.5, 0, 1.5, 0.5, 0, 1.5, -0.5]),
+        normals: Float32Array.from([1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0]),
+        // The asset's V runs down the image: the square's top at V = 0.
+        uvs: Float32Array.from([0, 1, 1, 1, 1, 0, 0, 0]),
+        // The repo's winding: cross(p1 - p0, p2 - p0) into the solid.
+        indices: Uint32Array.from([0, 1, 2, 0, 2, 3]),
+        matricesIndices: new Float32Array(16).fill(BONE.root),
+        matricesWeights: Float32Array.from([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+      });
+      const SIZE = 64;
+      const maps = (lean: [number, number]): WalkerBodyAsset["maps"] => {
+        const albedo = new Uint8Array(SIZE * SIZE * 4);
+        const normal = new Uint8Array(SIZE * SIZE * 4);
+        const orm = new Uint8Array(SIZE * SIZE * 4);
+        const z = Math.sqrt(1 - lean[0] ** 2 - lean[1] ** 2);
+        for (let i = 0; i < SIZE * SIZE; i += 1) {
+          albedo.set(i < (SIZE * SIZE) / 2 ? [220, 50, 50, 255] : [50, 50, 220, 255], i * 4);
+          normal.set([Math.round((lean[0] * 0.5 + 0.5) * 255), Math.round((lean[1] * 0.5 + 0.5) * 255), Math.round((z * 0.5 + 0.5) * 255), 255], i * 4);
+          orm.set([255, 200, 0, 255], i * 4);
+        }
+        return { size: SIZE, albedo, normal, orm };
+      };
+      /** The square drawn under a sun travelling along `toward`; the canvas's middle 40 by 40 pixels, top half and bottom half. */
+      const shoot = async (lean: [number, number], toward: Vector3) => {
+        const scene = new Scene(device.engine);
+        try {
+          scene.useRightHandedSystem = true;
+          scene.clearColor = new Color4(0, 0, 0, 1);
+          const camera = new FreeCamera("person-gpu-camera", new Vector3(5, 1, 0), scene);
+          camera.setTarget(new Vector3(0, 1, 0));
+          camera.fov = 0.6;
+          camera.minZ = 0.05;
+          scene.activeCamera = camera;
+          new DirectionalLight("person-gpu-sun", toward.normalize(), scene).intensity = 3;
+          const figure = createPersonVisual(scene, { asset: { lods: [square(), square(), square(), square()], maps: maps(lean) } });
+          for (let step = 0; step < 10; step += 1) figure.update(input(person("stand")), 1 / 60);
+          await scene.whenReadyAsync();
+          frame(scene);
+          frame(scene);
+          frame(scene);
+          const copy = document.createElement("canvas");
+          copy.width = WIDTH;
+          copy.height = HEIGHT;
+          const context = copy.getContext("2d")!;
+          context.drawImage(device.canvas, 0, 0);
+          const pixels = context.getImageData(WIDTH / 2 - 20, HEIGHT / 2 - 20, 40, 40).data;
+          const sum = (rows: [number, number]) => {
+            const out = [0, 0, 0];
+            for (let row = rows[0]; row < rows[1]; row += 1)
+              for (let column = 0; column < 40; column += 1) for (let k = 0; k < 3; k += 1) out[k]! += pixels[(row * 40 + column) * 4 + k]!;
+            return out;
+          };
+          figure.dispose();
+          const top = sum([0, 20]);
+          const bottom = sum([20, 40]);
+          return { top, bottom, light: top[0]! + top[1]! + top[2]! + bottom[0]! + bottom[1]! + bottom[2]! };
+        } finally {
+          scene.dispose();
+        }
+      };
+      // From the front and the right (+Z, along U): a normal leaning toward +U faces it, one toward -U turns away.
+      const fromRight = new Vector3(-1, 0, -1);
+      const towardU = await shoot([0.6, 0], fromRight);
+      const awayU = await shoot([-0.6, 0], fromRight);
+      // From the front and above (+Y, up the image).
+      const fromAbove = new Vector3(-1, -1, 0);
+      const towardV = await shoot([0, 0.6], fromAbove);
+      const awayV = await shoot([0, -0.6], fromAbove);
+      expect(towardU.light, "the square is not in the picture").toBeGreaterThan(40 * 40 * 30);
+      expect(towardU.top[0], "the image's top (red) is not at the square's top").toBeGreaterThan(towardU.top[2]! * 1.5);
+      expect(towardU.bottom[2], "the image's bottom (blue) is not at the square's bottom").toBeGreaterThan(towardU.bottom[0]! * 1.5);
+      expect(towardU.light, `leaning along U: ${towardU.light} toward the light, ${awayU.light} away`).toBeGreaterThan(awayU.light * 1.5);
+      expect(towardV.light, `leaning along V: ${towardV.light} toward the light, ${awayV.light} away`).toBeGreaterThan(awayV.light * 1.5);
+    } finally {
+      device.dispose();
+    }
+  }, 120_000);
+
+  it("casts with a normal bias of its own, under the sun's back-face casting and 3.5 cm bias, so its nose and lips do not stripe its cheeks", async () => {
+    const device = await ownDevice();
+    type SetFloat3 = (this: unknown, name: string, x: number, y: number, z: number) => unknown;
+    let effects: { setFloat3: SetFloat3 } | null = null;
+    let setFloat3: SetFloat3 | null = null;
+    try {
+      const profile = resolveWebGpuQualityProfile("high", "balanced");
+      const scene = new Scene(device.engine);
+      const { shadows } = stage(scene, profile);
+      // The renderer's sun (AtmosphereSystem): depth from the casters' back faces, a 3.5 cm normal bias.
+      shadows.forceBackFacesOnly = true;
+      shadows.normalBias = 0.035;
+      const ground = CreateBox("person-gpu-ground", { width: 6, height: 0.2, depth: 6 }, scene);
+      ground.position.y = -0.1;
+      ground.material = new PBRMaterial("person-gpu-ground", scene);
+      shadows.addShadowCaster(ground, false);
+      const figure = createPersonVisual(scene, { asset: await loadWalkerBody(profile.personFigureTextureSize), profile });
+      addCasters(figure, shadows);
+      // The effects' prototype, from the first shadow draw (the test does not import Babylon's Effect itself).
+      const found = shadows.onBeforeShadowMapRenderObservable.add((effect) => {
+        effects ??= Object.getPrototypeOf(effect) as { setFloat3: SetFloat3 };
+      });
+      await scene.whenReadyAsync();
+      for (let step = 0; step < 3; step += 1) {
+        figure.update(input(person("stand")), 1 / 60);
+        frame(scene);
+      }
+      shadows.onBeforeShadowMapRenderObservable.remove(found);
+      expect(effects, "nothing cast").not.toBeNull();
+      // The bias each caster is drawn with: the last one set before its draw.
+      let bias = Number.NaN;
+      const original = effects!.setFloat3;
+      setFloat3 = original;
+      effects!.setFloat3 = function (name, x, y, z) {
+        if (name === "biasAndScaleSM") bias = y;
+        return original.call(this, name, x, y, z);
+      };
+      const drawn = new Map<string, Set<number>>();
+      shadows.onAfterShadowMapRenderMeshObservable.add((mesh) => {
+        if (!drawn.has(mesh.name)) drawn.set(mesh.name, new Set());
+        drawn.get(mesh.name)!.add(Math.round(bias * 1e6) / 1e6);
+      });
+      for (let step = 0; step < 3; step += 1) {
+        figure.update(input(person("stand")), 1 / 60);
+        frame(scene);
+      }
+      expect(drawn.get("person-gpu-ground"), "the ground never cast").toEqual(new Set([0.035]));
+      expect(drawn.get("person-figure-lod0"), "the figure never cast").toEqual(new Set([FIGURE_SHADOW_NORMAL_BIAS]));
+      figure.dispose();
+      scene.dispose();
+    } finally {
+      if (effects && setFloat3) (effects as { setFloat3: SetFloat3 }).setFloat3 = setFloat3;
       device.dispose();
     }
   }, 120_000);
@@ -339,7 +484,7 @@ describe("the walker's figure on a real adapter", () => {
       const render = (): void => frame(scene);
 
       // Load, as the renderer builds it: hidden in a car session until the walker gets out.
-      const figure = createPersonVisual(scene, { profile, pipelineCompiles: compiles });
+      const figure = createPersonVisual(scene, { asset: await loadWalkerBody(profile.personFigureTextureSize), profile, pipelineCompiles: compiles });
       figure.root.setEnabled(false);
       addCasters(figure, shadows);
       for (let attempt = 0; attempt < 240 && primes(figure).some((mesh) => mesh.isEnabled()); attempt += 1) {
@@ -396,12 +541,12 @@ describe("the walker's figure on a real adapter", () => {
       walk(10);
       figure.setFirstPersonView(false);
       const drawnLods = new Set<string>();
-      for (const distance of [40, 120]) {
+      for (const distance of [15, 40, 120]) {
         camera.position.set(distance, 1.6, 0);
         walk(5);
         for (const mesh of figure.meshes) if (mesh.isVisible && /lod/u.test(mesh.name)) drawnLods.add(mesh.name);
       }
-      expect(drawnLods, "the walk away never switched mesh").toEqual(new Set(["person-figure-lod1", "person-figure-lod2"]));
+      expect(drawnLods, "the walk away never switched mesh").toEqual(new Set(["person-figure-lod1", "person-figure-lod2", "person-figure-lod3"]));
       expect(ours(mark, "sync"), "the walk, the fade or a mesh switch compiled in its frame").toEqual([]);
       expect(ours(mark, "async"), "the walk, the fade or a mesh switch waited for a compile").toEqual([]);
       expect(compiles.statistics.deferredDraws).toBe(deferredBefore);

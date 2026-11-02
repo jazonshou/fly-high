@@ -9,13 +9,17 @@ import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { RenderTargetTexture } from "@babylonjs/core/Materials/Textures/renderTargetTexture";
 import type { Observer } from "@babylonjs/core/Misc/observable";
+import type { Effect } from "@babylonjs/core/Materials/effect";
+import type { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator";
 import type { Nullable } from "@babylonjs/core/types";
 import type { Scene } from "@babylonjs/core/scene";
 import type { PipelineWarmUp } from "../core/AsyncPipelineCompiles";
 import type { WebGpuQualityProfile } from "../core/QualityProfile";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
+import type { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { AircraftBuildContext } from "../aircraft/builders";
-import { createFigureAtlasTextures } from "./figureAtlas";
-import { buildFigureGeometry, FIGURE_LODS, type FigureGeometry } from "./figureGeometry";
+import { createRawTextureFromMipChain } from "../core/MipChainUpload";
+import { buildFigureMipChains, FIGURE_NORMAL_MAP_Y_DOWN, type FigureGeometry, type WalkerBodyAsset, type WalkerBodyMaps } from "./walkerBody";
 import type { GroundOffset } from "./footPlant";
 import { PersonMotion, type MotionInput } from "./motion";
 import { BIND_POSITIONS, BONE, BONE_COUNT, BONE_NAMES } from "./skeleton";
@@ -27,6 +31,8 @@ export interface FigurePipelineCompiles extends PipelineWarmUp {
 }
 
 export interface FigureOptions {
+  /** The body's meshes and maps (`loadWalkerBody`), loaded at the tier's texture size. */
+  readonly asset: WalkerBodyAsset;
   /** The tier's figure fields; absent, the finest mesh and every cascade. */
   readonly profile?: Pick<WebGpuQualityProfile, "personFigureFinestLod" | "personShadowCascades">;
   readonly pipelineCompiles?: FigurePipelineCompiles | null;
@@ -34,11 +40,12 @@ export interface FigureOptions {
 
 /**
  * The camera distances, metres, past which the figure draws its next coarser
- * mesh (the build brief: 9k triangles within 25 m, 3k to 80 m, 0.8k beyond),
- * and the band either side of each it must cross before it switches back, so
- * a camera at the edge does not flicker between two meshes.
+ * mesh (the body's four levels: about 33k triangles within 10 m, 10k to 25 m,
+ * 3k to 80 m, 1k beyond), and the band either side of each it must cross
+ * before it switches back, so a camera at the edge does not flicker between
+ * two meshes.
  */
-export const FIGURE_LOD_DISTANCES = Object.freeze([25, 80]);
+export const FIGURE_LOD_DISTANCES = Object.freeze([10, 25, 80]);
 const LOD_HYSTERESIS = 1.5;
 /** How far the skin stands off the bones' origins at most (the crown over the head bone, the hips' sides), metres. */
 const BOUNDS_MARGIN = 0.22;
@@ -48,8 +55,10 @@ const PRIME_READY_FRAME_LIMIT = 600;
 const SHADOW_ONLY_LAYER_MASK = 0;
 
 /**
- * The walker's figure: the skinned mesh of `figureGeometry.ts` on a flat
- * skeleton of `BONE_COUNT` bones, posed every frame by `PersonMotion`.
+ * The walker's figure: the realistic body of `walkerBody.ts` (a skinned mesh
+ * per level of detail, one atlas of albedo, normal and occlusion-roughness-
+ * metal maps) on a flat skeleton of `BONE_COUNT` bones, posed every frame by
+ * `PersonMotion`.
  *
  * SKINNING. Every bone is parentless and bound at its bind position with no
  * turn, so a bone's matrix is simply its posed transform in the root frame
@@ -62,7 +71,8 @@ const SHADOW_ONLY_LAYER_MASK = 0;
  * DRAWS. One mesh per level of detail, of which one draws, in one material,
  * plus its shadow in the nearest `personShadowCascades` cascades: Babylon
  * draws a caster in every cascade, so where the tier asks for fewer the
- * figure takes itself out of the farther ones' lists (`CascadeFilter`).
+ * figure takes itself out of the farther ones' lists, and its faces move
+ * toward the light by a bias of its own (`FigureShadows`).
  *
  * FADE. A camera pushed inside the walker's personal space fades it. The
  * solid mesh keeps casting, hidden from the cameras, while a twin sharing its
@@ -78,7 +88,7 @@ const SHADOW_ONLY_LAYER_MASK = 0;
  * synchronous compiles decline the warm-up and the primes never draw; with no
  * off-frame compiles they draw one frame, compiling at load.
  */
-export function createFigure(scene: Scene, options: FigureOptions = {}): PersonVisual {
+export function createFigure(scene: Scene, options: FigureOptions): PersonVisual {
   const finestLod = options.profile?.personFigureFinestLod ?? 0;
   const castCascades = options.profile?.personShadowCascades ?? Number.POSITIVE_INFINITY;
   const compiles = options.pipelineCompiles ?? null;
@@ -98,8 +108,8 @@ export function createFigure(scene: Scene, options: FigureOptions = {}): PersonV
     bones.push(new Bone(BONE_NAMES[bone]!, skeleton, null, bind, null, bind, bone));
   }
 
-  const atlas = createFigureAtlasTextures(scene);
-  build.textures.push(atlas.albedo, atlas.metallicRoughness);
+  const atlas = createFigureTextures(scene, options.asset.maps);
+  build.textures.push(atlas.albedo, atlas.normal, atlas.orm);
   const solid = dress(build.material("person-figure", 0xffffff, { roughness: 1, metallic: 1 }), atlas);
   const faded = dress(build.material("person-figure-fade", 0xffffff, { roughness: 1, metallic: 1, alpha: 1 }), atlas);
   // Blended over its own depth pre-pass whatever the alpha, so its pipeline is the one warmed.
@@ -110,8 +120,10 @@ export function createFigure(scene: Scene, options: FigureOptions = {}): PersonV
   compiles?.defer(faded);
 
   const lods: (Mesh | null)[] = [];
-  for (let level = 0; level < FIGURE_LODS.length; level += 1) {
-    lods.push(level < finestLod ? null : skinnedMesh(scene, `person-figure-lod${level}`, buildFigureGeometry(FIGURE_LODS[level]!), skeleton, solid, root, true));
+  const geometries = options.asset.lods;
+  if (geometries.length !== FIGURE_LOD_DISTANCES.length + 1) throw new Error(`walker body: ${geometries.length} levels of detail, the figure switches between ${FIGURE_LOD_DISTANCES.length + 1}`);
+  for (let level = 0; level < geometries.length; level += 1) {
+    lods.push(level < finestLod ? null : skinnedMesh(scene, `person-figure-lod${level}`, geometries[level]!, skeleton, solid, root, true));
   }
   const finest = lods[finestLod]!;
   const fadeTwin = finest.clone("person-figure-fade", root, true, false);
@@ -155,7 +167,7 @@ export function createFigure(scene: Scene, options: FigureOptions = {}): PersonV
     }
   });
 
-  const cascadeFilter = new CascadeFilter(scene, figureMeshes, castCascades, () => root.isEnabled());
+  const shadows = new FigureShadows(scene, figureMeshes, castCascades, () => root.isEnabled());
   const motion = new PersonMotion();
   const matrices = new Float32Array(BONE_COUNT * 16);
   const boundsMin = new Vector3();
@@ -257,7 +269,7 @@ export function createFigure(scene: Scene, options: FigureOptions = {}): PersonV
       fadeTwin.getBoundingInfo().reConstruct(boundsMin, boundsMax);
       chooseLod();
       showMeshes();
-      cascadeFilter.attach();
+      shadows.attach();
       return output;
     },
     setFirstPersonView(enabled: boolean): void {
@@ -278,7 +290,7 @@ export function createFigure(scene: Scene, options: FigureOptions = {}): PersonV
     dispose(): void {
       if (primeObserver) scene.onBeforeRenderObservable.remove(primeObserver);
       primeObserver = null;
-      cascadeFilter.dispose();
+      shadows.dispose();
       for (const mesh of meshes) mesh.dispose(false, false);
       skeleton.dispose();
       root.dispose(false, false);
@@ -292,10 +304,52 @@ type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 const DEFAULT_LAYER_MASK = 0x0fffffff;
 const VELOCITY = new Float64Array(3);
 
-function dress(material: PBRMaterial, atlas: ReturnType<typeof createFigureAtlasTextures>): PBRMaterial {
+interface FigureTextures {
+  readonly albedo: RawTexture;
+  readonly normal: RawTexture;
+  readonly orm: RawTexture;
+}
+
+/** Below this the chain stops: a 8-texel level already holds the whole figure in a few colours. */
+const MIN_MIP_SIZE = 8;
+
+/** The maps on the GPU with their hand-built mip chains (`buildFigureMipChains`); flat neutral ones where none were decoded. */
+function createFigureTextures(scene: Scene, maps: WalkerBodyMaps | null): FigureTextures {
+  const source = maps ?? neutralMaps();
+  const levels = Math.max(1, Math.log2(source.size / MIN_MIP_SIZE) + 1);
+  const chains = buildFigureMipChains(source, levels);
+  const upload = (name: string, chain: readonly Uint8Array[], srgb: boolean): RawTexture => {
+    const texture = createRawTextureFromMipChain(scene, chain, source.size, source.size, { useSrgbBuffer: srgb });
+    texture.name = name;
+    texture.wrapU = Texture.CLAMP_ADDRESSMODE;
+    texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+    texture.anisotropicFilteringLevel = 4;
+    return texture;
+  };
+  return {
+    albedo: upload("person-albedo", chains.albedo, true),
+    normal: upload("person-normal", chains.normal, false),
+    orm: upload("person-orm", chains.orm, false),
+  };
+}
+
+/** A small flat stand-in: mid skin-tone albedo, a flat normal, open occlusion, a matt finish. */
+function neutralMaps(): WalkerBodyMaps {
+  const size = MIN_MIP_SIZE;
+  const fill = (r: number, g: number, b: number) => {
+    const out = new Uint8Array(size * size * 4);
+    for (let i = 0; i < size * size; i += 1) out.set([r, g, b, 255], i * 4);
+    return out;
+  };
+  return { size, albedo: fill(150, 128, 110), normal: fill(128, 128, 255), orm: fill(255, 200, 0) };
+}
+
+function dress(material: PBRMaterial, atlas: FigureTextures): PBRMaterial {
   material.albedoTexture = atlas.albedo;
-  material.metallicTexture = atlas.metallicRoughness;
-  material.useAmbientOcclusionFromMetallicTextureRed = false;
+  material.bumpTexture = atlas.normal;
+  material.invertNormalMapY = FIGURE_NORMAL_MAP_Y_DOWN;
+  material.metallicTexture = atlas.orm;
+  material.useAmbientOcclusionFromMetallicTextureRed = true;
   material.useRoughnessFromMetallicTextureAlpha = false;
   material.useRoughnessFromMetallicTextureGreen = true;
   material.useMetallnessFromMetallicTextureBlue = true;
@@ -362,21 +416,38 @@ function rotateByConjugate(q: Quaternion, x: number, y: number, z: number, out: 
 type CustomRenderList = (pass: number, list: Nullable<readonly AbstractMesh[]>, length: number) => Nullable<AbstractMesh[]>;
 
 /**
- * Keeps the figure out of the shadow cascades past the tier's
- * `personShadowCascades`. Babylon draws a caster into every cascade of the
- * cascaded generator; its per-pass render-list hook (pass = cascade) answers
- * the default list less the figure's meshes for the farther ones, and null
- * (the default list) otherwise and whenever the figure is not drawn at all.
- * It finds the generator by the figure's meshes in its casters, which the
- * renderer adds after the figure is built, so it attaches on the first
- * update and leaves the hook as it found it on dispose.
+ * How far the figure's casting faces move toward the light in the shadow
+ * pass, metres, in place of the generator's `normalBias`. The renderer's sun
+ * casts from back faces with a 0.035 m normal bias, which moves a back face
+ * up to that far toward the light: right for terrain and hulls, but further
+ * than the nose, lips, brow and eyelids are thick, so their far sides came
+ * out in front of the lit cheek and striped it with shadow. The figure's
+ * thinnest casters (the ears, the fingers) are thicker than this.
  */
-class CascadeFilter {
+export const FIGURE_SHADOW_NORMAL_BIAS = 0.005;
+
+/**
+ * The figure's hooks into the shadow generator that draws it, which it finds
+ * by its meshes among the casters (the renderer adds them after the figure
+ * is built, so it attaches on an update and leaves everything as it found it
+ * on dispose):
+ *
+ * - its own normal bias (`FIGURE_SHADOW_NORMAL_BIAS`): the generator sets
+ *   its uniforms for each draw and then announces the mesh and the effect,
+ *   so the figure's draws set the bias again with the figure's value;
+ * - out of the cascades past the tier's `personShadowCascades`: Babylon
+ *   draws a caster into every cascade of the cascaded generator; its
+ *   per-pass render-list hook (pass = cascade) answers the default list less
+ *   the figure's meshes for the farther ones, and null (the default list)
+ *   otherwise and whenever the figure is not drawn at all.
+ */
+class FigureShadows {
   private shadowMap: RenderTargetTexture | null = null;
   private previous: CustomRenderList | null = null;
   private readonly filtered: AbstractMesh[] = [];
-  /** Found the figure's generator (and filtered it if it has more cascades than the tier's). */
-  private resolved = false;
+  private generator: ShadowGenerator | null = null;
+  private observers: Observer<unknown>[] = [];
+  private drawingFigure = false;
   private searchedAt = -Infinity;
   private updates = 0;
 
@@ -389,23 +460,39 @@ class CascadeFilter {
 
   attach(): void {
     this.updates += 1;
-    if (this.resolved || !Number.isFinite(this.cascades) || this.updates - this.searchedAt < 60) return;
+    if (this.generator || this.updates - this.searchedAt < 60) return;
     this.searchedAt = this.updates;
     for (const light of this.scene.lights) {
       const generators = light.getShadowGenerators();
       if (!generators) continue;
       for (const generator of generators.values()) {
         const map = generator.getShadowMap();
-        if (!map?.renderList?.includes(this.figure[0]!)) continue;
-        this.resolved = true;
+        if (!map?.renderList?.includes(this.figure[0]!) || !("onBeforeShadowMapRenderObservable" in generator)) continue;
+        this.generator = generator as ShadowGenerator;
+        this.hookBias(this.generator);
         const total = (generator as { numCascades?: number }).numCascades ?? 1;
-        if (total > this.cascades) this.install(map);
+        if (Number.isFinite(this.cascades) && total > this.cascades) this.filterCascades(map);
         return;
       }
     }
   }
 
-  private install(map: RenderTargetTexture): void {
+  private hookBias(generator: ShadowGenerator): void {
+    const figure = this.figure;
+    this.observers = [
+      generator.onBeforeShadowMapRenderMeshObservable.add((mesh) => {
+        this.drawingFigure = figure.includes(mesh);
+      }),
+      generator.onBeforeShadowMapRenderObservable.add((effect) => {
+        if (this.drawingFigure) effect.setFloat3("biasAndScaleSM", generator.bias, FIGURE_SHADOW_NORMAL_BIAS, generator.depthScale);
+      }),
+      generator.onAfterShadowMapRenderMeshObservable.add(() => {
+        this.drawingFigure = false;
+      }),
+    ] as Observer<unknown>[];
+  }
+
+  private filterCascades(map: RenderTargetTexture): void {
     this.shadowMap = map;
     this.previous = map.getCustomRenderList as CustomRenderList | null;
     const figure = this.figure;
@@ -427,6 +514,15 @@ class CascadeFilter {
 
   dispose(): void {
     if (this.shadowMap) this.shadowMap.getCustomRenderList = this.previous;
+    const generator = this.generator;
+    if (generator) {
+      const [before, effect, after] = this.observers;
+      generator.onBeforeShadowMapRenderMeshObservable.remove(before as Observer<AbstractMesh>);
+      generator.onBeforeShadowMapRenderObservable.remove(effect as Observer<Effect>);
+      generator.onAfterShadowMapRenderMeshObservable.remove(after as Observer<AbstractMesh>);
+    }
+    this.observers = [];
+    this.generator = null;
     this.shadowMap = null;
     this.previous = null;
   }

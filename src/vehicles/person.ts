@@ -177,7 +177,8 @@ export const PERSON: PersonSpec = Object.freeze({
   // aims 1.3 m up whatever it circles, so its radius keeps the boots 10%
   // clear of the frame's foot and the walker fills 53% of its height.
   cinematic: Object.freeze({ radiusMeters: 5.4, heightMeters: 1.2, heightDriftMeters: 0.35 }),
-  topFront: Object.freeze({ centreForward: 0, centreUp: 0.88, topDistanceMeters: 2.4, frontDistanceMeters: 7.4 }),
+  // Centred on the standing body's footprint: the heels 0.11 m behind the feet's point, the toes 0.19 m ahead.
+  topFront: Object.freeze({ centreForward: 0.04, centreUp: 0.88, topDistanceMeters: 2.4, frontDistanceMeters: 7.4 }),
 });
 
 /** Jump take-off speed for `PERSON.jumpHeight`, m/s (2.97 m/s at 0.45 m). */
