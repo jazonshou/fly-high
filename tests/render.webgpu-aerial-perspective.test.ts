@@ -41,6 +41,7 @@ import {
   SKY_FRAGMENT_WGSL,
   sunDirectionalHorizonGate,
 } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
+import { readSource } from "./support/sourceText";
 import {
   DEFAULT_ENVIRONMENT_STATE,
   createEnvironmentState,
@@ -705,6 +706,16 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     expect(recession(sineAt(0))).toBe(1);
     expect(recession(-0.26)).toBe(1);
     expect(recession(sineAt(20.45))).toBeCloseTo(1 - MOON_TWILIGHT_RECESSION, 6);
+  });
+
+  it("gates the leaves' sun glow at the horizon, like the directional sun", () => {
+    // The canopy's wrap transmission is DIRECT sun. Fed the snapshot's
+    // ungated scatter intensity it lit every sunward crown amber with the
+    // sun 7.7 deg down. Source pin: the renderer multiplies by the gate.
+    const renderer = readSource("src/render/FlightRenderer.ts");
+    expect(renderer).toMatch(
+      /detail\.setKeyLight\([^;]*keySnapshot\.sunIlluminanceNormalized\s*\*\s*sunDirectionalHorizonGate\(keySnapshot\.sunDirection\.y\),?\s*\);/,
+    );
   });
 
   it("cuts the ambient floor only inside the window", () => {
