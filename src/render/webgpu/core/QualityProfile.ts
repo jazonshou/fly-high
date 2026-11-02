@@ -96,9 +96,28 @@ export interface WebGpuQualityProfile {
   /**
    * Absolute ceiling on rendered pixels per frame (1A-6a). Applied as a
    * hardware-scaling clamp after DPR and renderScale, so no display or
-   * governor state can push the render target past it.
+   * governor state can push the render target past it. Unpinned, the
+   * governor's resolution step applies on the capped frame (PR B part 2,
+   * G4), never below 0.4 Mpx; pinned captures keep the cap-only rule.
    */
   readonly maxRenderPixels: number;
+  /**
+   * PR B part 2 (G5): frames between sun-shadow (CSM) renders, counted at the
+   * tier's own frame target, so the rate in Hz holds at a slower cadence. The
+   * light matrices are held with the map (Babylon computes them only when it
+   * renders). 1 = every frame. A governed rung adds whole presented frames.
+   */
+  readonly shadowRefreshFrames: number;
+  /**
+   * PR B part 2 (G5): frames between `cloud-scene-depth` renders, counted as
+   * above. Plan 7.2 (analytic cloud depth) deletes this field.
+   */
+  readonly cloudDepthRefreshFrames: number;
+  /**
+   * PR B part 2 (G4): the governor's resolution floor as a share of the
+   * capped pixels; the render-scale floor is renderScale × sqrt(ratio).
+   */
+  readonly governorPixelFloorRatio: number;
   /** Per-tier ceiling on the device pixel ratio entering the scale product (1A-6a). */
   readonly maxDevicePixelRatio: number;
   /**
@@ -149,10 +168,11 @@ export interface WebGpuQualityProfile {
    * Per row: tier 1 sits highest because FXAA is part of what it undoes. The
    * multisampled tiers keep a lighter touch for the canvas stretch alone.
    * Tier 0 is OFF, not for want of need. It was off for memory while the
-   * sharpen was a pass of its own (one LDR target, against tier 0's 259.6 of
-   * 260 MiB at 2560x1440@2); fused into FXAA (`FxaaSharpenPass`) it costs no
-   * target, only RCAS's arithmetic, so turning it on there is now a decision
-   * about the low tier's look, not its budget.
+   * sharpen was a pass of its own (one LDR target, against tier 0's then
+   * 259.6 of 260 MiB at 2560x1440@2, 254.7 since PR B part 2's 0.85 Mpx
+   * cap); fused into FXAA (`FxaaSharpenPass`) it costs no target, only
+   * RCAS's arithmetic, so turning it on there is now a decision about the
+   * low tier's look, not its budget.
    *
    * DATA, not a `profile.tier` branch, per the tier rule.
    */
@@ -562,7 +582,18 @@ function resolveBaseQualityProfile(
       quality,
       mode,
       renderScale: 0.72,
-      maxRenderPixels: 1_000_000,
+      // PR B part 2 (T0a): 1.0 -> 0.85 Mpx. With the DPR ceiling at 1 it
+      // binds only above 1.64 Mpx of CSS pixels (desktop monitors at 100%
+      // scaling), where the memory estimate falls 258.87 -> 254.67 of 260 MiB;
+      // 1366x768 and 1080p laptops at 125-150% render below it, unchanged.
+      maxRenderPixels: 850_000,
+      // PR B part 2 (T0c): the sun-shadow map and the cloud depth every 2nd
+      // presented frame, on alternate frames. A held map lags the aircraft's
+      // own shadow by a frame, about 1 m at 62 m/s and 60 fps; Jason accepted
+      // that for Low (2026-11-01).
+      shadowRefreshFrames: 2,
+      cloudDepthRefreshFrames: 2,
+      governorPixelFloorRatio: 0.6,
       maxDevicePixelRatio: 1,
       bloomEnabled: false,
       msaaSamples: 1,
@@ -666,6 +697,9 @@ function resolveBaseQualityProfile(
       mode,
       renderScale: 0.86,
       maxRenderPixels: 1_500_000,
+      shadowRefreshFrames: 1,
+      cloudDepthRefreshFrames: 1,
+      governorPixelFloorRatio: 0.6,
       maxDevicePixelRatio: 1.5,
       // Tier 1 is the strict playability contract. Closed opaque crowns make
       // early-Z useful, but a 2× multisampled half-float beauty target still
@@ -786,6 +820,10 @@ function resolveBaseQualityProfile(
       mode,
       renderScale: 1,
       maxRenderPixels: 2_400_000,
+      shadowRefreshFrames: 1,
+      cloudDepthRefreshFrames: 1,
+      // 0.75², so tiers 2 and 3 keep the 0.75 render-scale floor they have always had.
+      governorPixelFloorRatio: 0.5625,
       maxDevicePixelRatio: 2,
       // `4-8b` restores 4×, which the `1B-11` decision in ARCHITECTURE.md
       // explicitly deferred to this item: Phase 1's full-distance 4096² CSM
@@ -897,6 +935,9 @@ function resolveBaseQualityProfile(
     mode,
     renderScale: 1,
     maxRenderPixels: 4_000_000,
+    shadowRefreshFrames: 1,
+    cloudDepthRefreshFrames: 1,
+    governorPixelFloorRatio: 0.5625,
     maxDevicePixelRatio: 2,
     bloomEnabled: false,
     msaaSamples: 4,

@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { QualityLevel, RequestedRenderingMode } from "../src/game/types";
+import { FlightRenderer } from "../src/render/FlightRenderer";
 import { resolveGovernedWork } from "../src/render/governedWork";
 import {
   createGovernorState,
   governorConfigForProfile,
+  governorExhausted,
   nextGovernorDecision,
+  rebaseGovernorState,
   workLeverSettingsFor,
   type GovernorConfig,
   type GovernorSignals,
 } from "../src/render/webgpu/core/AdaptiveGovernor";
-import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
+import { resolveWebGpuQualityProfile, type WebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 
 /**
  * PR B must move none of the reference pictures and no perf:ab number
@@ -20,6 +23,13 @@ import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityPr
  * recovery gate only the unfrozen governor reads, a frozen governor never leaves its first state, and at that state,
  * levels (0, 0), the relative levers hand every subsystem what it took
  * before the governor existed.
+ *
+ * PR B part 2 adds to each: the config carries the tier's own presentation
+ * target and the profile's pixel floor ratio, which the unfrozen governor's
+ * scale floor derives from (G4) and a pin overrides, the state starts not urgent,
+ * unlatched and with no spent windows, and the levers at (0, 0) leave the
+ * cloud march, the CSM and cloud-depth refresh and CDLOD selection on the
+ * profile's own values.
  */
 
 /** bench-b1's literals for one tier, plus what only PR B's unfrozen governor reads. */
@@ -28,10 +38,19 @@ function expectedConfig(tier: number, renderScale: number): GovernorConfig {
   return {
     gpuTargetMs: ultra ? 30 : 13.7,
     presentationTargetMs: ultra ? 1_000 / 30 : 1_000 / 60,
+    // PR B part 2: what a profile refresh interval counts frames at. A null
+    // cadence leaves the presentation target on it.
+    tierPresentationTargetMs: ultra ? 1_000 / 30 : 1_000 / 60,
     // 15% over the cadence: 19.17 ms, or 38.33 on Ultra.
     lateIntervalMs: 1.15 * (ultra ? 1_000 / 30 : 1_000 / 60),
     scaleCeiling: renderScale,
-    scaleFloor: Math.min(0.75, renderScale),
+    // PR B part 2 (G4): that share of the capped pixels. Only the unfrozen
+    // governor steps toward it; a pin replaces it (below).
+    scaleFloor: renderScale * Math.sqrt(tier <= 1 ? 0.6 : 0.5625),
+    pixelFloorRatio: tier <= 1 ? 0.6 : 0.5625,
+    // PR B part 2 (G6): no confirmed display period, so urgency and the spent
+    // count judge against the target alone.
+    displayLimitMs: 0,
     windowFrames: 120,
     downCooldownFrames: 90,
     upCooldownFrames: 240,
@@ -64,11 +83,40 @@ describe("the governor without a cadence (captures, perf:ab, perf:flight)", () =
       expect(profile.tier, `${quality} ${mode}`).toBe(tier);
       expect(governorConfigForProfile(profile), `${quality} ${mode}`).toEqual(expectedConfig(tier, renderScale));
       expect(governorConfigForProfile(profile, null), `${quality} ${mode}`).toEqual(governorConfigForProfile(profile));
+      // 9/16 is exact and sqrt rounds correctly: tiers 2-3 keep part 1's 0.75 to the bit.
+      if (tier >= 2) expect(Object.is(governorConfigForProfile(profile).scaleFloor, 0.75), `${quality} ${mode}`).toBe(true);
     }
     expect(governorConfigForProfile(resolveWebGpuQualityProfile("medium", "balanced")).lateIntervalMs)
       .toBeCloseTo(19.167, 3);
     expect(governorConfigForProfile(resolveWebGpuQualityProfile("high", "ultra")).lateIntervalMs)
       .toBeCloseTo(38.333, 3);
+    // PR B part 2 (G6): a confirmed period sets the display limit, at the paced divisor.
+    const thirtyHz = { frameCapHz: 60, divisor: 1, displayPeriodMs: 1_000 / 30, periodConfirmed: true } as const;
+    expect(governorConfigForProfile(resolveWebGpuQualityProfile("medium", "balanced"), thirtyHz).displayLimitMs)
+      .toBeCloseTo(33.333, 3);
+  });
+
+  it("pins both scale bounds for a capture, whatever the pixel floor ratio", () => {
+    // FlightRenderer.resolveGovernorConfig, on a receiver with only what it reads.
+    const resolve = (profile: WebGpuQualityProfile, pinnedRenderScale: number | null): GovernorConfig => {
+      const target = Object.assign(Object.create(FlightRenderer.prototype) as object, {
+        profile,
+        presentationCadence: null,
+        pinnedRenderScale,
+      });
+      return (target as unknown as { resolveGovernorConfig(): GovernorConfig }).resolveGovernorConfig();
+    };
+    for (const [quality, mode] of PAIRS) {
+      for (const governorPixelFloorRatio of [0.5, 0.6, 0.9]) {
+        const profile = { ...resolveWebGpuQualityProfile(quality, mode), governorPixelFloorRatio };
+        const base = governorConfigForProfile(profile);
+        const label = `${quality} ${mode} at ${governorPixelFloorRatio}`;
+        expect(resolve(profile, null), label).toEqual(base);
+        for (const pin of [profile.renderScale, 0.5]) {
+          expect(resolve(profile, pin), label).toEqual({ ...base, frozen: true, scaleCeiling: pin, scaleFloor: pin });
+        }
+      }
+    }
   });
 
   it("is frozen while pinned, and returns the very state it was given", () => {
@@ -81,6 +129,8 @@ describe("the governor without a cadence (captures, perf:ab, perf:flight)", () =
         { gpuP95Ms: 40, cpuP95Ms: 40, intervalP95Ms: 45 },
         { gpuP95Ms: null, cpuP95Ms: 14, intervalP95Ms: 33.3, intervalMeanMs: 25, lateFraction: 0.5, streamingBacklog: 40 },
         { gpuP95Ms: null, cpuP95Ms: 4, intervalP95Ms: 16.67, intervalMeanMs: 16.67, lateFraction: 0 },
+        // PR B part 2 (G6): every frame a refresh late, a mean twice the target.
+        { gpuP95Ms: null, cpuP95Ms: 30, intervalP95Ms: 33.33, intervalMeanMs: 33.33, lateFraction: 1 },
       ];
       const initial = createGovernorState(frozen);
       let state = initial;
@@ -89,6 +139,23 @@ describe("the governor without a cadence (captures, perf:ab, perf:flight)", () =
       }
       expect(state, `${quality} ${mode}`).toBe(initial);
     }
+  });
+
+  it("starts not urgent, unlatched and with no spent windows, and a rebase clears urgency and the count", () => {
+    for (const [quality, mode] of PAIRS) {
+      const initial = createGovernorState(governorConfigForProfile(resolveWebGpuQualityProfile(quality, mode)));
+      expect(initial, `${quality} ${mode}`).toMatchObject({ urgent: false, latchedAtGpuLevel: null, spentWindows: 0 });
+      expect(governorExhausted(initial), `${quality} ${mode}`).toBe(false);
+    }
+    const spent = Object.freeze({
+      ...createGovernorState(governorConfigForProfile(resolveWebGpuQualityProfile("low", "balanced"))),
+      urgent: true,
+      latchedAtGpuLevel: 4,
+      spentWindows: 4,
+    });
+    expect(governorExhausted(spent)).toBe(true);
+    // The cadence moving is a new judgement; the latch it was set at stays.
+    expect(rebaseGovernorState(spent)).toMatchObject({ urgent: false, latchedAtGpuLevel: 4, spentWindows: 0 });
   });
 });
 
@@ -105,6 +172,13 @@ describe("the work levers at levels (0, 0)", () => {
         shadowCasterDistanceMeters: Number.POSITIVE_INFINITY,
         vegetationDistance: profile.vegetationDistance,
         groundCoverGateScale: 1,
+        cloudMarchScale: 1,
+        shadowRefreshFrames: profile.shadowRefreshFrames,
+        shadowRefreshExtraFrames: 0,
+        cloudDepthRefreshFrames: profile.cloudDepthRefreshFrames,
+        cloudDepthRefreshExtraFrames: 0,
+        cdlodNodeBudget: profile.cdlodNodeBudget,
+        cdlodPixelThreshold: profile.cdlodPixelThreshold,
       });
     }
   });

@@ -1,7 +1,12 @@
-import { resolveHardwareScalingLevel } from "@/src/render/renderScaleLevel";
+import {
+  GOVERNED_MIN_RENDER_PIXELS,
+  resolveGovernedHardwareScalingLevel,
+  resolveHardwareScalingLevel,
+} from "@/src/render/renderScaleLevel";
 import {
   CPU_WORK_MAX_LEVEL,
   GPU_WORK_MAX_LEVEL,
+  governorExhausted,
   resolveSignals,
   type GovernorConfig,
   type GovernorSignals,
@@ -26,10 +31,11 @@ import type {
  * `resolveSignals`, so the report says why it moved, not just that it did.
  *
  * Shares are frame-weighted and come from the pixels the engine actually
- * rendered, not the governor's target scale: when the tier's pixel cap
+ * rendered, not the governor's target scale: when the 0.4 Mpx minimum (G4)
  * absorbs a step the renderer still records the new scale as applied though
  * nothing changed, and a scale-based "at the floor" would read 100% on a
- * large display (critique S2). Allocates only on a decision.
+ * display where no step moved a pixel (critique S2). Allocates only on a
+ * decision.
  */
 
 /** The probe fields the trace reads; `RendererBenchProbe` satisfies it. */
@@ -54,9 +60,21 @@ export interface ScaleContext {
   readonly maxRenderPixels: number;
 }
 
-/** Pixels the renderer rasterises at `scale` (renderScaleLevel.ts's rule). */
-export function pixelsAtScale(scale: number, context: ScaleContext): number {
-  const level = resolveHardwareScalingLevel({ ...context, renderScale: scale });
+/**
+ * Pixels the renderer rasterises at `scale`, by renderScaleLevel.ts's rules.
+ * Unpinned, `ceilingScale` is the governor's ceiling: the pixel cap is judged
+ * there and the step applies to the capped frame, never below the 0.4 Mpx
+ * minimum (G4). Pinned (null), the cap clamps the scale product (1A-6a).
+ */
+export function pixelsAtScale(scale: number, context: ScaleContext, ceilingScale: number | null): number {
+  const level = ceilingScale === null
+    ? resolveHardwareScalingLevel({ ...context, renderScale: scale })
+    : resolveGovernedHardwareScalingLevel({
+      ...context,
+      renderScale: scale,
+      ceilingScale,
+      minRenderPixels: GOVERNED_MIN_RENDER_PIXELS,
+    });
   return (Math.max(1, context.cssWidth * context.cssHeight)) / (level * level);
 }
 
@@ -84,6 +102,8 @@ interface MutableEvents {
   gpuShed: number;
   gpuRecover: number;
   insensitiveLatched: number;
+  urgentSheds: number;
+  exhaustedWindows: number;
 }
 
 interface Bucket {
@@ -121,7 +141,17 @@ function bucket(startS: number, endS: number): Bucket {
     endS,
     frames: 0,
     decisions: 0,
-    events: { scaleDown: 0, scaleUp: 0, cpuShed: 0, cpuRecover: 0, gpuShed: 0, gpuRecover: 0, insensitiveLatched: 0 },
+    events: {
+      scaleDown: 0,
+      scaleUp: 0,
+      cpuShed: 0,
+      cpuRecover: 0,
+      gpuShed: 0,
+      gpuRecover: 0,
+      insensitiveLatched: 0,
+      urgentSheds: 0,
+      exhaustedWindows: 0,
+    },
     atFloor: 0,
     belowCeiling: 0,
     cpuShed: 0,
@@ -271,10 +301,11 @@ export class GovernorTrace {
     const config = probe.governorConfig;
     this.config = config;
     this.pinned = probe.pinned;
-    this.floorPixels = pixelsAtScale(config.scaleFloor, this.options.scale);
-    this.ceilingPixels = pixelsAtScale(config.scaleCeiling, this.options.scale);
-    // Tier 0 (floor = ceiling), a pixel cap that binds at the floor already,
-    // and a pinned renderer all leave the resolution lever nothing to move.
+    const ceiling = probe.pinned ? null : config.scaleCeiling;
+    this.floorPixels = pixelsAtScale(config.scaleFloor, this.options.scale, ceiling);
+    this.ceilingPixels = pixelsAtScale(config.scaleCeiling, this.options.scale, ceiling);
+    // A floor at the ceiling, the 0.4 Mpx minimum, or a pinned renderer all
+    // leave the resolution lever nothing to move.
     this.leverAvailable = !probe.pinned
       && this.ceilingPixels > this.floorPixels * (1 + 2 * PIXEL_TOLERANCE);
   }
@@ -302,6 +333,9 @@ export class GovernorTrace {
         signals.cpuP95Ms,
         signals.intervalP95Ms,
         signals.lateFraction ?? null,
+        state.urgent,
+        state.spentWindows,
+        governorExhausted(state),
       ] as const));
     } else {
       this.decisionsTruncated = true;
@@ -324,6 +358,10 @@ export class GovernorTrace {
       if (state.gpuWorkLevel > previous.gpuWorkLevel) events.gpuShed += 1;
       if (state.gpuWorkLevel < previous.gpuWorkLevel) events.gpuRecover += 1;
       if (state.resolutionInsensitive && !previous.resolutionInsensitive) events.insensitiveLatched += 1;
+      // Urgency speeds up the ladders only; the scale steps every off-cadence window as it is.
+      const shedRung = state.cpuWorkLevel > previous.cpuWorkLevel || state.gpuWorkLevel > previous.gpuWorkLevel;
+      if (state.urgent && shedRung) events.urgentSheds += 1;
+      if (governorExhausted(state)) events.exhaustedWindows += 1;
     }
   }
 

@@ -10,8 +10,10 @@
  * At level (0, 0) every value is exactly what the subsystems took before
  * the governor existed: no request budget, compute scale 1, no detail cap,
  * no cloud-shadow floor, unbounded casters, the profile's own animals and
- * vegetation reach. A frozen (pinned-capture) governor never leaves (0, 0),
- * which is what keeps the reference pictures byte-identical.
+ * vegetation reach, and (PR B part 2) the profile's own cloud march, CSM and
+ * cloud-depth refresh intervals with no frames added, and CDLOD budget and
+ * threshold. A frozen (pinned-capture) governor never leaves (0, 0), which
+ * is what keeps the reference pictures byte-identical.
  */
 import type { WorkLeverSettings } from "./webgpu/core/AdaptiveGovernor";
 import type { WebGpuQualityProfile } from "./webgpu/core/QualityProfile";
@@ -33,11 +35,37 @@ export interface GovernedWork {
   readonly shadowCasterDistanceMeters: number;
   readonly vegetationDistance: number;
   readonly groundCoverGateScale: number;
+  /** 1 leaves the cloud view march on the profile's own steps and step lengths. */
+  readonly cloudMarchScale: number;
+  /**
+   * The profile's frames between CSM renders, at the tier's own frame target
+   * (a rate). It travels apart from the governor's frames below (a cost):
+   * the rate is converted to the presented cadence, rounding, and the frames
+   * are added after it. Summed first, a rung would vanish at the 30 fps
+   * setting: round((1 + 1) × 16.67 / 33.33) = 1 = round(1 × 0.5).
+   */
+  readonly shadowRefreshFrames: number;
+  /** Presented frames the governor adds once that rate is converted to the cadence (a cost). */
+  readonly shadowRefreshExtraFrames: number;
+  /** As above, for cloud-scene-depth. */
+  readonly cloudDepthRefreshFrames: number;
+  readonly cloudDepthRefreshExtraFrames: number;
+  /** Never above the profile's; the terrain clamps it to its buffer capacity. */
+  readonly cdlodNodeBudget: number;
+  readonly cdlodPixelThreshold: number;
 }
 
 export type GovernedProfileInputs = Pick<
   WebGpuQualityProfile,
-  "activeAnimalBudget" | "cloudResolutionScale" | "shadowDistance" | "vegetationDensity" | "vegetationDistance"
+  | "activeAnimalBudget"
+  | "cloudResolutionScale"
+  | "shadowDistance"
+  | "vegetationDensity"
+  | "vegetationDistance"
+  | "cdlodNodeBudget"
+  | "cdlodPixelThreshold"
+  | "shadowRefreshFrames"
+  | "cloudDepthRefreshFrames"
 >;
 
 export function resolveGovernedWork(profile: GovernedProfileInputs, levers: WorkLeverSettings): GovernedWork {
@@ -64,5 +92,17 @@ export function resolveGovernedWork(profile: GovernedProfileInputs, levers: Work
       : profile.shadowDistance * levers.shadowCasterDistanceScale,
     vegetationDistance: profile.vegetationDistance * levers.vegetationDistanceScale,
     groundCoverGateScale: levers.groundCoverGateScale,
+    cloudMarchScale: levers.cloudMarchScale,
+    shadowRefreshFrames: profile.shadowRefreshFrames,
+    shadowRefreshExtraFrames: levers.shadowRefreshExtraFrames,
+    cloudDepthRefreshFrames: profile.cloudDepthRefreshFrames,
+    cloudDepthRefreshExtraFrames: levers.cloudDepthRefreshExtraFrames,
+    // Floored, never below one node: exact at the profile value.
+    cdlodNodeBudget: levers.cdlodNodeBudgetScale >= 1
+      ? profile.cdlodNodeBudget
+      : Math.max(1, Math.floor(profile.cdlodNodeBudget * levers.cdlodNodeBudgetScale)),
+    cdlodPixelThreshold: levers.cdlodPixelThresholdScale === 1
+      ? profile.cdlodPixelThreshold
+      : profile.cdlodPixelThreshold * levers.cdlodPixelThresholdScale,
   });
 }
