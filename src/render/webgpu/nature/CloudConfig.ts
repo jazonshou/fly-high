@@ -97,6 +97,27 @@ export function resolveVolumetricCloudConfig(
   return config;
 }
 
+/**
+ * PR B part 2 (G5): a governed view march. Fewer steps, each longer by the
+ * same ratio, so a ray keeps its reach: truncating at the cap would drop
+ * distant and grazing cloud, since the loop has no remainder integration.
+ * The stretch is the realized step ratio, so reach holds where rounding
+ * moves the count (96 × 0.6 = 57.6 → 58). Returns `config` itself at scale 1
+ * or above, so the packed uniforms are the profile's own.
+ */
+export function scaleCloudMarch(config: VolumetricCloudConfig, scale: number): VolumetricCloudConfig {
+  if (!(scale < 1)) return config;
+  const steps = Math.max(8, Math.round(config.maximumViewSteps * scale));
+  if (steps >= config.maximumViewSteps) return config;
+  const stretch = config.maximumViewSteps / steps;
+  return resolveVolumetricCloudConfig({
+    ...config,
+    maximumViewSteps: steps,
+    minimumStepMeters: config.minimumStepMeters * stretch,
+    maximumStepMeters: config.maximumStepMeters * stretch,
+  });
+}
+
 export function assertVolumetricCloudConfig(config: VolumetricCloudConfig): void {
   assertFiniteNumber(config.baseAltitudeMeters, "cloud.baseAltitudeMeters");
   assertPositive(config.topAltitudeMeters, "cloud.topAltitudeMeters");

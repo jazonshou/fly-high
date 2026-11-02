@@ -8,7 +8,7 @@ import {
 } from "../src/bench/controller";
 import { createHeapSampler, readHttpCache, type CreationCounts, type FrameClock } from "../src/bench/instruments";
 import { createBenchPath, createBenchVisualState, writeSettleState } from "../src/bench/path";
-import { BENCH_SEED, benchProfile, benchTimings, expectedPathFingerprint } from "../src/bench/plan";
+import { BENCH_SEED, benchProfile, benchTimings, expectedPathFingerprint, pinnedRenderScaleFor } from "../src/bench/plan";
 import { BenchRenderer, type BenchProbedRenderer } from "../src/bench/recorder";
 import { timerReport } from "../src/bench/stats";
 import type { BenchFirstLoad, BenchStepResult, BenchTimings } from "../src/bench/types";
@@ -99,6 +99,10 @@ interface HarnessOptions {
   readonly duringRender?: (phase: StepPhase, timestamp: number) => void;
   readonly load?: () => BenchFirstLoad;
   readonly frameRate?: FrameRateSetting;
+  /** The canvas's CSS size at a device pixel ratio of 1; 1280x720 by default. */
+  readonly canvas?: { readonly cssWidth: number; readonly cssHeight: number };
+  /** Pinned mode at this scale, with the governor config the renderer would hold. */
+  readonly pinnedRenderScale?: number;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -114,17 +118,22 @@ function harness(options: HarnessOptions = {}) {
   const diagnosticsReads: { atMs: number; frame: number; phase: StepPhase }[] = [];
   let framesRendered = 0;
 
-  const config = governorConfigForProfile(benchProfile(tierIndex));
+  const pin = options.pinnedRenderScale ?? null;
+  const shipped = governorConfigForProfile(benchProfile(tierIndex));
+  // FlightRenderer.resolveGovernorConfig: a pin freezes the governor at it.
+  const config = pin === null
+    ? shipped
+    : Object.freeze({ ...shipped, frozen: true, scaleCeiling: pin, scaleFloor: pin });
   const probe: RendererBenchProbe = {
     frameIndex: 0,
     governorState: createGovernorState(config),
     governorSignals: { gpuP95Ms: null, cpuP95Ms: null, intervalP95Ms: null },
     governorConfig: config,
     workLevers: workLeverSettingsFor(0, 0),
-    appliedRenderScale: 0.86,
+    appliedRenderScale: pin ?? 0.86,
     renderWidth: 1_101,
     renderHeight: 619,
-    pinned: false,
+    pinned: pin !== null,
     gpuFrameMs: null,
     presentationCadence: null,
   };
@@ -179,7 +188,7 @@ function harness(options: HarnessOptions = {}) {
   };
   const setup: StepSetup = {
     tierIndex,
-    mode: "shipped",
+    mode: pin === null ? "shipped" : "pinned",
     frameRate: options.frameRate ?? "60",
     timings,
     expectedFingerprint: expectedPathFingerprint(timings.quick),
@@ -187,10 +196,10 @@ function harness(options: HarnessOptions = {}) {
     refresh: { rafHz: 60, periodMs: 1_000 / 60, medianMs: 1_000 / 60, p10Ms: 16.5, p90Ms: 16.9, samples: 59, outliers: 0 },
     timer: timerReport(0.1),
     load: options.load ?? (() => ({ navigationType: "navigate", httpCache: null })),
-    cssWidth: 1_280,
-    cssHeight: 720,
+    cssWidth: options.canvas?.cssWidth ?? 1_280,
+    cssHeight: options.canvas?.cssHeight ?? 720,
     devicePixelRatio: 1,
-    pinnedRenderScale: null,
+    pinnedRenderScale: pin,
     gpuTimingFailed: false,
     attachedAtMs: 1_500,
     pathPrecomputeMs: 3,
@@ -564,6 +573,32 @@ describe("the step controller's flight", () => {
     expect(h.controller.log.length).toBe(100);
     expect(result.environment.overflowed).toBe(true);
     expect(result.flight.seconds).toBeGreaterThanOrEqual(quick.flightS);
+  });
+});
+
+describe("the step controller's canvas", () => {
+  it("judges the pixel cap at the governor's ceiling, not at the scale it stepped to (G4)", () => {
+    // Medium's 1.5 Mpx cap binds at 1920x1080 from a scale of 0.85, under
+    // its 0.86 ceiling. The governor's steps shrink the capped frame, so the
+    // cap binds whatever scale the settle ended at, 0.81 here.
+    const wide = harness({ canvas: { cssWidth: 1_920, cssHeight: 1_080 } });
+    wide.probe.appliedRenderScale = 0.81;
+    wide.run(1_000, 1_000 / 60, () => wide.finished.length > 0);
+    expect(wide.finished[0]!.result.canvas.pixelCapBinds).toBe(true);
+    // At 1280x720 it would bind only from a scale of 1.28.
+    const small = harness();
+    small.run(1_000, 1_000 / 60, () => small.finished.length > 0);
+    expect(small.finished[0]!.result.canvas.pixelCapBinds).toBe(false);
+  });
+
+  it("judges a pinned flight's cap at the pin, which pinned mode sets past it", () => {
+    const pinned = pinnedRenderScaleFor(benchProfile(1), 1_280, 720, 1);
+    expect(pinned.pixelCapBinds).toBe(true);
+    const h = harness({ pinnedRenderScale: pinned.scale });
+    h.run(1_000, 1_000 / 60, () => h.finished.length > 0);
+    const { canvas } = h.finished[0]!.result;
+    expect(canvas.pinnedRenderScale).toBe(pinned.scale);
+    expect(canvas.pixelCapBinds).toBe(true);
   });
 });
 

@@ -583,6 +583,9 @@ async function installStateSampler(): Promise<boolean> {
         // PR B's cadence-aware governor: null on builds that predate it.
         target: d.presentationTargetMs ?? null, late: d.lateFraction ?? null,
         trial: d.governorTrial ?? null, cadence: d.presentationCadence ?? null,
+        // PR B part 2 (G6a): urgency, the spent count and exhaustion; null before it.
+        urgent: d.governorUrgent ?? null, spent: d.governorSpentWindows ?? null,
+        exhausted: d.governorExhausted ?? null,
         pendingTerrainPages: d.pendingTerrainPages, pendingDetailWork: d.pendingDetailWork,
         residentTerrainPages: d.residentTerrainPages, drawCalls: d.drawCalls,
         hydrology: h ? {
