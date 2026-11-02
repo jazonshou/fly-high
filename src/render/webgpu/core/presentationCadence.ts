@@ -131,9 +131,15 @@ const FALLBACK_FIT_REFRESHES = 0.05;
  * (the mean interval the host showed when it fell back, to within
  * `FALLBACK_FIT_REFRESHES`), else the slowest. So a 75 Hz host averaging
  * 22 ms, or every frame on 26.67 ms, draws every 2nd refresh (37.5 fps), and
- * one averaging 30 ms every 3rd (25 fps).
+ * one averaging 30 ms every 3rd (25 fps). The governor passes a smaller
+ * `fitRefreshes` to ask whether a mean fits a divisor calmly.
  */
-export function fallbackDivisorFor(range: readonly [number, number], periodMs: number, minIntervalMs: number): number {
+export function fallbackDivisorFor(
+  range: readonly [number, number],
+  periodMs: number,
+  minIntervalMs: number,
+  fitRefreshes: number = FALLBACK_FIT_REFRESHES,
+): number {
   // 1e-6 more keeps the 5% itself (6 of 120 frames) inside, past float noise.
-  return Math.min(range[1], Math.max(range[0], Math.ceil(minIntervalMs / periodMs - FALLBACK_FIT_REFRESHES - 1e-6)));
+  return Math.min(range[1], Math.max(range[0], Math.ceil(minIntervalMs / periodMs - fitRefreshes - 1e-6)));
 }

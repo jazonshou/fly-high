@@ -575,6 +575,54 @@ describe("G6 even fallback: the machine (PR B part 2b, K4)", () => {
     expect(back.fallback.minIntervalMs).toBeCloseTo(narrow.intervalMeanMs!, 9);
   });
 
+  it("a failed trial moves to a faster divisor only if it shows the host calm there; the same or a slower one takes its mean", () => {
+    // The setting's cadence carries what the pacer chooses from: the period and [2, 3] at 75 Hz.
+    expect(at75.fallbackPeriodMs).toBeCloseTo(VSYNC_75, 9);
+    expect(at75.fallbackDivisors).toEqual([2, 3]);
+    const range = at75.fallbackDivisors!;
+    // A trial from divisor 3 (25 fps), where an engage or a raise left 2.4 refreshes.
+    const fromThree = withFallback(
+      Object.freeze({ ...createGovernorState(at75), gpuWorkLevel: GPU_WORK_MAX_LEVEL }),
+      { phase: "trial", trialFrom: "engaged", minIntervalMs: 2.4 * VSYNC_75 },
+    );
+    // 120 frames at the setting's cadence: `ones` of one refresh, then `threes` of three, the rest two.
+    const window = (ones: number, threes: number, governorConfig: GovernorConfig = at75): GovernorSignals => windowOf(
+      Array.from({ length: 120 }, (_, frame) => (frame < ones ? 1 : frame < ones + threes ? 3 : 2) * VSYNC_75),
+      5,
+      governorConfig,
+    );
+    const after = (trial: GovernorState, signals: GovernorSignals, governorConfig: GovernorConfig = at75): number => {
+      const failed = nextGovernorDecision(trial, signals, governorConfig);
+      expect(failed.fallback.phase).toBe("settled");
+      return failed.fallback.minIntervalMs;
+    };
+    const divisorOf = (minIntervalMs: number): number => fallbackDivisorFor(range, VSYNC_75, minIntervalMs);
+    // Every frame two refreshes: calm at 2, which the mean chooses.
+    expect(after(fromThree, window(0, 0))).toBeCloseTo(2 * VSYNC_75, 9);
+    // 5 of 120 three refreshes (a mean of 2.042): it fits 2 (within 0.05 of a
+    // refresh), but not calmly (0.025), so the interval stays on 3.
+    expect(divisorOf(window(0, 5).intervalMeanMs!)).toBe(2);
+    expect(after(fromThree, window(0, 5))).toBe(2.4 * VSYNC_75);
+    // 3 of 120 (2.025) is calm.
+    expect(after(fromThree, window(0, 3))).toBeCloseTo(2.025 * VSYNC_75, 9);
+    // 12 frames of one refresh pull the mean under 2 (1.958) while 7 of 120
+    // still take three: its p95 is late at 2, so the interval stays on 3.
+    // With 6 of 120 (5%), the p95 is two refreshes, and it moves to 2.
+    expect(window(12, 7).intervalMeanMs! / VSYNC_75).toBeCloseTo(1.958, 3);
+    expect(window(12, 7).intervalP95Ms).toBeCloseTo(3 * VSYNC_75, 9);
+    expect(after(fromThree, window(12, 7))).toBe(2.4 * VSYNC_75);
+    expect(window(12, 6).intervalP95Ms).toBeCloseTo(2 * VSYNC_75, 9);
+    expect(after(fromThree, window(12, 6))).toBeCloseTo(1.95 * VSYNC_75, 9);
+    // The same divisor takes the mean: 72 of 120 three refreshes (2.6) from 2.4.
+    expect(after(fromThree, window(0, 72))).toBeCloseTo(2.6 * VSYNC_75, 9);
+    // A slower one too, at once: 48 of 120 (2.4) from divisor 2's two refreshes.
+    const fromTwo = withFallback(fromThree, { minIntervalMs: 2 * VSYNC_75 });
+    expect(divisorOf(after(fromTwo, window(0, 48)))).toBe(3);
+    // Without the divisors to choose from, the mean replaces it.
+    const blind = Object.freeze({ ...at75, fallbackDivisors: null });
+    expect(after(fromThree, window(0, 5, blind), blind)).toBeCloseTo(window(0, 5).intervalMeanMs!, 9);
+  });
+
   it("passes a trial whose four judged windows were all on cadence, though never calm in a pair", () => {
     // 5 of 120 frames late (4.2%) every window, or 4 and 5 in turn: on cadence, never a calm pool.
     for (const [label, lates] of [["4.2% each", [5, 5, 5, 5]], ["3.3% and 4.2%", [4, 5, 4, 5]]] as const) {
@@ -1099,6 +1147,44 @@ describe("G6 even fallback: closed loop through the real FramePacer (PR B part 2
     expect(after.length).toBeGreaterThan(10);
     expect(after.every((window) => window.cadence?.divisor === 2 && window.signals.lateFraction! <= 0.05)).toBe(true);
     expectRebasesKeepTheFallback(loop);
+  });
+
+  it("75 and 165 Hz, hosts that only just fit the faster divisor: at most two cadence switches in any 120 s from the first trial on (review)", () => {
+    // Each fits the faster divisor by its 60-class mean, but draws more than
+    // 5% of its frames late there. Before the failed trial's hysteresis, a
+    // failed trial moved each to the faster divisor and a raise moved it back
+    // 7 to 100 s later: three switches in 120 s.
+    const hosts: readonly [string, Machine, number][] = [
+      ["UHD 620-shaped at 75 Hz", uhd620, 75],
+      ["27 ms a frame (8% noise) at 165 Hz", { ...fixed(27), jitter: 0.08 }, 165],
+    ];
+    for (const [name, machine, hz] of hosts) {
+      let kept = 0;
+      for (const seed of [1, 7, 42]) {
+        const loop = fly(machine, { seconds: 900, hz, seed });
+        const label = `${name}, seed ${seed}`;
+        const firstTrial = entered(loop, "trial");
+        const times = loop.switches.map(({ tS }) => tS).filter((tS) => tS >= firstTrial);
+        expect(times.length, label).toBeGreaterThanOrEqual(2);
+        for (const from of times) {
+          expect(times.filter((tS) => tS >= from && tS < from + 120).length, `${label}, from ${from.toFixed(0)} s`)
+            .toBeLessThanOrEqual(2);
+        }
+        // Count the failed trials whose mean chose the faster divisor and that kept the slower one.
+        loop.windows.forEach((window, index) => {
+          const was = loop.windows[index - 1]?.state.fallback.phase;
+          const now = window.state.fallback.phase;
+          if (was !== "trial" || now === "trial" || now === "off") return;
+          const range = window.config.fallbackDivisors!;
+          const period = window.config.fallbackPeriodMs!;
+          const chosen = fallbackDivisorFor(range, period, window.signals.intervalMeanMs!);
+          if (chosen < fallbackDivisorFor(range, period, window.state.fallback.minIntervalMs)) kept += 1;
+        });
+        expectRebasesKeepTheFallback(loop);
+      }
+      // Not vacuous: the rule held the slower divisor at least once for each host.
+      expect(kept, name).toBeGreaterThan(0);
+    }
   });
 
   it("a pause delays the trial by the pause's length and keeps the phase", () => {

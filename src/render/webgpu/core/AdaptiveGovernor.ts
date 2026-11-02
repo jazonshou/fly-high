@@ -40,6 +40,7 @@ import {
   PRESENTATION_HEADROOM_MS,
   SLOWEST_TRUSTED_DISPLAY_PERIOD_MS,
   cadenceFloorMs,
+  fallbackDivisorFor,
   fallbackDivisorRange,
   type PresentationCadence,
 } from "./presentationCadence";
@@ -163,6 +164,21 @@ export interface GovernorConfig {
    * and at every tier whose rate is 0.
    */
   readonly cadenceFallbackHz: number | null;
+  /**
+   * PR B part 2b (G6): the trusted, confirmed display period the fallback's
+   * divisors count refreshes of, wherever `cadenceFallbackHz` is set; else
+   * null.
+   */
+  readonly fallbackPeriodMs: number | null;
+  /**
+   * PR B part 2b (G6): the divisors the pacer chooses the fallback's from
+   * (`fallbackDivisorRange`) at the setting's cadence: [2, 3] at 75 Hz,
+   * [4, 5] at 144, [5, 6] at 165. A failed trial reads them, and a trial is
+   * judged at the setting's cadence. Null under the fallback's own cadence,
+   * whose divisor is not the setting's, and wherever `fallbackPeriodMs` is
+   * null.
+   */
+  readonly fallbackDivisors: readonly [number, number] | null;
   /** PR B part 2b (G6): a window's nominal length in ms at the paced interval; the fallback's clocks count in it. */
   readonly windowMs: number;
 }
@@ -195,6 +211,12 @@ export function governorConfigForProfile(
   const pacedMs = period === null ? presentationTargetMs : Math.min(presentationTargetMs, cadence!.divisor * period);
   const windowMs = windowFrames * pacedMs;
   const windowsFor = (seconds: number): number => Math.max(1, Math.round((seconds * 1_000) / windowMs + 1e-9));
+  const fallbackHz = fallbackAllowed(profile.cadenceFallbackHz, cadence) ? profile.cadenceFallbackHz : null;
+  const fallbackPeriodMs = fallbackHz === null ? null : trustedDisplayPeriodMs(cadence);
+  // Computed here, once per cadence, so a failed trial reads it without allocating.
+  const fallbackDivisors = fallbackHz === null || fallbackPeriodMs === null || cadence === null || cadence.fallbackHz !== undefined
+    ? null
+    : fallbackDivisorRange(1_000 / fallbackPeriodMs, fallbackHz, cadence.divisor);
   return Object.freeze({
     gpuTargetMs: slower
       ? Math.max(tierGpuMs, Math.round((floorMs - PRESENTATION_HEADROOM_MS) * 1_000) / 1_000)
@@ -218,7 +240,9 @@ export function governorConfigForProfile(
     lateFailureWindows: windowsFor(LATE_FAILURE_SECONDS),
     cpuRecoveryCeilingMs: CPU_RECOVERY_RATIO
       * Math.min(presentationTargetMs, onTimeIntervalFor(presentationTargetMs, lateIntervalMs, cadence)),
-    cadenceFallbackHz: fallbackAllowed(profile.cadenceFallbackHz, cadence) ? profile.cadenceFallbackHz : null,
+    cadenceFallbackHz: fallbackHz,
+    fallbackPeriodMs,
+    fallbackDivisors,
     windowMs,
   });
 }
@@ -657,8 +681,8 @@ export interface CadenceFallbackState {
   /**
    * The shortest interval the pacer may draw at under the fallback: the mean
    * interval of the window that engaged it, raised when the host cannot hold
-   * the divisor it chose, and set to the failing window's mean when a trial
-   * fails. 0 while off.
+   * the divisor it chose, and chosen again from the failing window's mean
+   * when a trial fails (`failedTrialMinIntervalMs`). 0 while off.
    */
   readonly minIntervalMs: number;
 }
@@ -1190,6 +1214,51 @@ function startFallbackTrial(state: GovernorState): GovernorState {
 }
 
 /**
+ * PR B part 2b (G6): a failed trial's mean fits a faster divisor than the
+ * current shortest interval only if it fits it within this share of a
+ * refresh: a mean N + 0.025 refreshes is 2.5% of frames a refresh longer,
+ * the calm late share, where `fallbackDivisorFor` allows 5%.
+ */
+const FALLBACK_CALM_FIT_REFRESHES = CALM_LATE_FRACTION;
+
+/**
+ * PR B part 2b (G6): the shortest interval after a failed trial. The failing
+ * window's mean is the freshest measure of what the host draws at the
+ * setting's cadence, and it replaces the current interval, as at the
+ * engage, so a stall that raised the interval earlier no longer holds the
+ * slower divisor for the session.
+ *
+ * Where that mean would choose a faster divisor N than the current interval
+ * does, the trial must also show the host calm at N, or the current
+ * interval stays:
+ * - its mean fits N within `FALLBACK_CALM_FIT_REFRESHES`, and
+ * - its p95 is not late at N (at most half a refresh past N refreshes), so
+ *   at most 5% of its frames took longer than N refreshes. The trial draws
+ *   at the setting's finer cadence, where frames shorter than N refreshes
+ *   pull the mean down while the frames longer than N are still there: at
+ *   165 Hz, trial means of 4.96 and 4.98 refreshes came with 7-13% of
+ *   frames late in the first windows drawn at 5.
+ * Without this, a host whose 60-class mean only just fits N went there only
+ * to be raised back to the slower divisor 7 to 100 s later: three cadence
+ * switches in two minutes, where D5 allows one pair. Without the divisors
+ * to choose from (`fallbackDivisors` null), the mean replaces the interval;
+ * without a p95, the mean alone decides. Numbers only: nothing is allocated.
+ */
+function failedTrialMinIntervalMs(currentMs: number, signals: GovernorSignals, config: GovernorConfig): number {
+  const mean = signals.intervalMeanMs ?? null;
+  if (mean === null) return currentMs;
+  const range = config.fallbackDivisors;
+  const period = config.fallbackPeriodMs;
+  if (range === null || period === null) return mean;
+  const divisor = fallbackDivisorFor(range, period, mean);
+  if (divisor >= fallbackDivisorFor(range, period, currentMs)) return mean;
+  const p95 = signals.intervalP95Ms;
+  const calm = fallbackDivisorFor(range, period, mean, FALLBACK_CALM_FIT_REFRESHES) === divisor
+    && (p95 === null || p95 <= (divisor + 0.5) * period);
+  return calm ? mean : currentMs;
+}
+
+/**
  * PR B part 2b (G6): a window of the trial at the setting's cadence, judged
  * against its 60-class target and never acted on.
  * - Off cadence and clearly so (a mean over `SPENT_MEAN_RATIO` × the
@@ -1197,10 +1266,9 @@ function startFallbackTrial(state: GovernorState): GovernorState {
  *   The machine has just shown, fully shed, that it cannot hold 60.
  * - Off cadence otherwise: back to the phase the trial came from, or
  *   settled at the second failed trial.
- * - Either way, the shortest interval becomes the failing window's mean:
- *   the freshest measure of what the host draws at the setting's cadence,
- *   so the fallback's divisor is chosen again, as at the engage, and a
- *   stall that raised it earlier no longer holds it for the session.
+ * - Either way, the failing window's mean chooses the fallback's divisor
+ *   again (`failedTrialMinIntervalMs`), so a stall that raised it earlier
+ *   no longer holds it for the session.
  * - On cadence: `FALLBACK_TRIAL_WINDOWS` windows whose pooled late share is
  *   calm pass. Then the fallback is off, its exit clock starts, and the
  *   spent count and the calm streak start over. On cadence but not calm,
@@ -1225,7 +1293,7 @@ function judgeFallbackTrial(
       calmStreak: Object.freeze([]),
       fallback: Object.freeze({
         ...fallbackAfterFailures(fallback, failedTrials, settled),
-        minIntervalMs: signals.intervalMeanMs ?? fallback.minIntervalMs,
+        minIntervalMs: failedTrialMinIntervalMs(fallback.minIntervalMs, signals, config),
       }),
     });
   }

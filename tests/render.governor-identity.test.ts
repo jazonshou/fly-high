@@ -69,8 +69,11 @@ function expectedConfig(tier: number, renderScale: number): GovernorConfig {
     strikeForgivenAfterWindows: ultra ? 30 : 60,
     lateFailureWindows: ultra ? 8 : 15,
     cpuRecoveryCeilingMs: 0.9 * (ultra ? 1_000 / 30 : 1_000 / 60),
-    // PR B part 2b (G6): no cadence, so no fallback; and 120 frames at the target.
+    // PR B part 2b (G6): no cadence, so no fallback, no period or divisors
+    // for it; and 120 frames at the target.
     cadenceFallbackHz: null,
+    fallbackPeriodMs: null,
+    fallbackDivisors: null,
     windowMs: 120 * (ultra ? 1_000 / 30 : 1_000 / 60),
   };
 }
@@ -220,6 +223,34 @@ describe("the fallback gate (PR B part 2b, G6)", () => {
       expect(governorConfigForProfile(lowAt0, cadence).cadenceFallbackHz).toBeNull();
     });
   }
+
+  it("carries the trusted period and, at the setting's cadence, the divisors the pacer chooses from", () => {
+    // [case, cadence, the divisors] wherever the config allows a fallback.
+    const allowed: readonly [string, PresentationCadence, readonly [number, number] | null][] = [
+      ["60 Hz", cadenceOf(60, 1, 60, true), [2, 2]],
+      ["75 Hz", cadenceOf(60, 1, 75, true), [2, 3]],
+      ["120 Hz", cadenceOf(60, 2, 120, true), [4, 4]],
+      ["144 Hz", cadenceOf(60, 2, 144, true), [4, 5]],
+      ["165 Hz", cadenceOf(60, 2, 165, true), [5, 6]],
+      // Under the fallback's own cadence the divisor is the fallback's, not the setting's.
+      ["60 Hz, falling back", cadenceOf(60, 2, 60, true, 30), null],
+      ["75 Hz, falling back", cadenceOf(60, 3, 75, true, 25), null],
+    ];
+    for (const [name, cadence, divisors] of allowed) {
+      const config = governorConfigForProfile(lowAt30, cadence);
+      expect(config.cadenceFallbackHz, name).toBe(30);
+      expect(config.fallbackPeriodMs, name).toBe(cadence.displayPeriodMs);
+      expect(config.fallbackDivisors, name).toEqual(divisors);
+    }
+    // None wherever the config allows no fallback, and none for a profile of 0.
+    for (const [name, cadence, hz] of cases) {
+      for (const profile of hz === null ? [lowAt30, lowAt0] : [lowAt0]) {
+        const config = governorConfigForProfile(profile, cadence);
+        expect(config.fallbackPeriodMs, `${name}, ${profile.cadenceFallbackHz}`).toBeNull();
+        expect(config.fallbackDivisors, `${name}, ${profile.cadenceFallbackHz}`).toBeNull();
+      }
+    }
+  });
 
   it("allows none without a cadence, for every quality and mode at any rate", () => {
     for (const [quality, mode] of PAIRS) {
