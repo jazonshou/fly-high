@@ -1400,6 +1400,24 @@ first compile of that pipeline is that slow, and `recenter`,
 same call; the ocean, bathymetry and macro-erosion paths already use bounded
 replacements.
 
+**A poll that never gives up.** A browser each was not enough on a slower
+4-CPU runner, where the two browsers still compile their pipelines at the same
+time. On CI's EPYC 7763 runners the base arm of `approach-500ft` and
+`forest-500ft-sunbehind` lost the race on the splat bake
+(`terrain-page-splat`): it drew the shot without its baked ground cover (no
+lake beaches, other ground and mountain material), about 5% cheaper, so the
+head read SLOWER by that much. The frames repeated bit for bit run to run, and
+the work counts and draws matched a normal base exactly. On a host held to two
+CPUs, both arms latched on the splat bake and the horizon pyramid; main's arm
+settled anyway, because its settle check does not count a channel page
+waiting on its splat, while the land PR's head waited for it and never
+settled. So the agent replaces `ComputeShader.dispatchWhenReady` in both arms
+with a poll that keeps trying until `dispatch()` succeeds: a slow first
+compile now delays a bake instead of losing it. On the same two-CPU host both
+arms then settled in 360 frames, with no bake left waiting, and the base drew
+its beaches again. Nothing else about the dispatch changes, and the
+renderer's own latch is still there for a fix of its own.
+
 **What fails the run** (exit 1):
 
 - a GPU-time or CPU-time verdict of SLOWER on any shot;
