@@ -230,6 +230,7 @@ import {
   type TerrainPagePublication,
 } from "@/src/workers/terrainAuthority";
 import { attributePresentFrame } from "./frameAttribution";
+import { HitchWindow } from "./hitchWindow";
 import {
   cameraBankFollow,
   cameraPresentationResponse,
@@ -792,6 +793,12 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly gpuFrameDurations: number[] = [];
   /** Z-2: rolling rings the governor never resets (see DIAGNOSTIC_WINDOW_FRAMES). */
   private readonly diagnosticIntervalDurations: number[] = [];
+  /**
+   * PR B part 2b: whether each interval in diagnosticIntervalDurations was a
+   * hitch against the threshold in force when it was drawn, pushed and
+   * cleared with it, so a cadence switch never judges the window again.
+   */
+  private readonly diagnosticHitches = new HitchWindow(DIAGNOSTIC_WINDOW_FRAMES);
   private readonly diagnosticCpuDurations: number[] = [];
   private readonly diagnosticGpuDurations: number[] = [];
   /** B-0: residuals computed only from three measurements of the same frame. */
@@ -896,6 +903,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private presentationCadence: PresentationCadence | null = null;
   /** A cadence change already restarted the governor's window in flight (at most once per window). */
   private governorRebasedThisWindow = false;
+  /** G6: the fallback request last handed to the frame loop, handed again while it holds. */
+  private lastCadenceFallbackRequest: CadenceFallbackRequest | null = null;
   /** G5: the sun-shadow map's refresh count at the last hold sync, so the stagger sees whether it moved. */
   private shadowRefreshCountSeen = Number.NaN;
   /** The flight is paused: the static scene's frames are no measure of flight, so no window is judged. */
@@ -2209,10 +2218,17 @@ export class FlightRenderer implements FlightRenderingSystem {
    * PR B part 2b (G6): the even fallback the governor asks the pacer for.
    * A pinned capture never asks; nor does any config that allows none,
    * which is every tier without a fallback rate and every harness (no
-   * cadence).
+   * cadence). The frame loop asks after every drawn frame, so the same
+   * request comes back until its rate or interval moves.
    */
   cadenceFallbackRequest(): CadenceFallbackRequest | null {
-    return this.pinnedRenderScale === null ? cadenceFallbackRequest(this.governorState, this.governorConfig) : null;
+    if (this.pinnedRenderScale !== null) return null;
+    this.lastCadenceFallbackRequest = cadenceFallbackRequest(
+      this.governorState,
+      this.governorConfig,
+      this.lastCadenceFallbackRequest,
+    );
+    return this.lastCadenceFallbackRequest;
   }
 
   /**
@@ -2886,9 +2902,15 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // The threshold is a product contract, not something a slower workload
     // may redefine until its own misses disappear. A tier-1 frame above
     // 27.4 ms is a visible missed delivery and must remain visible here. PR
-    // B: only the player's own 30 fps choice raises it (to 60 ms where 30
-    // divides the refresh rate, as on Ultra, and a little more where it does
-    // not); a cadence measured from slow frames never does.
+    // B: only a cadence slower than the tier's target raises it. That is
+    // either the player's own 30 fps setting (60 ms where 30 divides the
+    // refresh rate, as on Ultra, and a little more where it does not) or the
+    // governor's even fallback (60 ms at 60 Hz), which an exhausted tier 0
+    // asks for and the pacer applies only on a trusted, confirmed period. A
+    // period measured from slow frames never raises it. `hitchThresholdMs`
+    // is the threshold now; each interval in the window was judged against
+    // the one in force when it was drawn (`diagnosticHitches`), so a switch
+    // of cadence never judges the window again.
     const inventoryLanes = this.inventoryGpuMemoryBreakdown();
     // One viewport for both estimates. Two reads of `clientWidth` could differ
     // across a resize and make the restricted figure incomparable to the one
@@ -2899,10 +2921,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       devicePixelRatio: window.devicePixelRatio || 1,
     };
     const hitchThresholdMs = hitchThresholdMilliseconds(this.profile, this.presentationCadence);
-    let hitchCount = 0;
+    const hitchCount = this.diagnosticHitches.count;
     let maxFrameMs: number | null = null;
     for (const interval of this.diagnosticIntervalDurations) {
-      if (interval > hitchThresholdMs) hitchCount += 1;
       if (maxFrameMs === null || interval > maxFrameMs) maxFrameMs = interval;
     }
     const p999FrameMs = frameTimingPercentile(this.diagnosticIntervalDurations, 0.999);
@@ -4520,8 +4541,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     // Z-2: the diagnostics ring keeps every finite interval — including the
     // >250 ms stalls the governor's p95 deliberately excludes. Dropping them
     // made the metric blind to the single most user-visible failure mode.
+    // The interval ends at this frame's start, which the pacer drew under the
+    // cadence set before this render(), so it is judged against that one.
     if (Number.isFinite(interval) && interval > 0) {
       this.pushDiagnosticSample(this.diagnosticIntervalDurations, interval);
+      this.diagnosticHitches.push(interval, hitchThresholdMilliseconds(this.profile, this.presentationCadence));
     }
     if (!isUsableFrameTiming(interval)) {
       // A suspended/background tab must not poison a later active-window p95.
@@ -4597,6 +4621,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.timingWindowEpoch += 1;
     this.resetTimingSamples();
     this.diagnosticIntervalDurations.length = 0;
+    this.diagnosticHitches.clear();
     this.diagnosticCpuDurations.length = 0;
     this.diagnosticGpuDurations.length = 0;
     this.diagnosticPresentWaitDurations.length = 0;

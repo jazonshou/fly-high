@@ -169,12 +169,15 @@ export interface GovernorConfig {
 
 /**
  * The tier's targets, moved only by a cadence slower than them: the 30 fps
- * setting, which raises Medium's 16.67 ms to 33.3 ms. A null cadence, which
- * captures, perf:ab and perf:flight always have, gives exactly the tier's
- * own numbers. The GPU target keeps Ultra's present/compositor headroom and
- * is rounded to whole microseconds so Ultra's stays exactly 30. The
- * recovery spans follow the paced interval, which a cadence moves either
- * way (72 fps at 144 Hz, 30 at the 30 fps setting).
+ * setting, which raises Medium's 16.67 ms to 33.3 ms, or the governor's own
+ * even fallback (G6), which raises Low's to 33.3 ms at 60 Hz; the pacer
+ * applies it only on a trusted, confirmed period, and a period measured from
+ * slow frames never moves them. A null cadence, which captures, perf:ab and
+ * perf:flight always have, gives exactly the tier's own numbers. The GPU
+ * target keeps Ultra's present/compositor headroom and is rounded to whole
+ * microseconds so Ultra's stays exactly 30. The recovery spans follow the
+ * paced interval, which a cadence moves either way (72 fps at 144 Hz, 30 at
+ * the 30 fps setting).
  */
 export function governorConfigForProfile(
   profile: Pick<WebGpuQualityProfile, "tier" | "renderScale" | "governorPixelFloorRatio" | "cadenceFallbackHz">,
@@ -681,12 +684,23 @@ export interface CadenceFallbackRequest {
  * PR B part 2b (G6): the fallback the pacer should apply now, or null for
  * the setting's own cadence. Null whenever the config allows none or is
  * frozen; otherwise a request while the fallback is engaged or settled.
+ * `previous` is the request this returned last: it comes back itself while
+ * its rate and interval hold, because the frame loop asks after every drawn
+ * frame and a fallback holds for minutes, and a new object each frame would
+ * be garbage at the frame rate.
  */
-export function cadenceFallbackRequest(state: GovernorState, config: GovernorConfig): CadenceFallbackRequest | null {
+export function cadenceFallbackRequest(
+  state: GovernorState,
+  config: GovernorConfig,
+  previous: CadenceFallbackRequest | null = null,
+): CadenceFallbackRequest | null {
   if (config.cadenceFallbackHz === null || config.frozen) return null;
   const phase = state.fallback.phase;
   if (phase !== "engaged" && phase !== "settled") return null;
-  return Object.freeze({ hz: config.cadenceFallbackHz, minIntervalMs: state.fallback.minIntervalMs });
+  const hz = config.cadenceFallbackHz;
+  const minIntervalMs = state.fallback.minIntervalMs;
+  if (previous !== null && previous.hz === hz && previous.minIntervalMs === minIntervalMs) return previous;
+  return Object.freeze({ hz, minIntervalMs });
 }
 
 const FRESH_LADDER: LadderRecovery = Object.freeze({

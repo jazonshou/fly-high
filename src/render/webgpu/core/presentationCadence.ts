@@ -4,15 +4,16 @@
  * the renderer derives from it. The pacer writes it, the renderer and the
  * governor read it, and the `?bench=1` benchmark records it.
  *
- * INVARIANT THIS FILE OWNS: a slow machine can never relax its own target.
- * Only an explicit 30 fps choice, or a confirmed display period, may raise
- * the slowest interval the cadence allows. The pacer confirms a period only
- * on evidence render cost cannot stretch: ticks that drew nothing, or drawn
- * ticks faster than the period held before, which no frame's cost can make.
- * A period merely observed from rendered frames never raises it. The
- * governor's even fallback (PR B part 2b, G6) keeps to the same rule: the
- * governor asks for one only on a confirmed period the floor trusts, and the
- * floor it gives is that period times the fallback's divisor.
+ * INVARIANT THIS FILE OWNS: a slow machine can never relax its own target by
+ * the period its slow frames measure. Only an explicit 30 fps choice, or a
+ * confirmed display period, may raise the slowest interval the cadence
+ * allows. The pacer confirms a period only on evidence render cost cannot
+ * stretch: ticks that drew nothing, or drawn ticks faster than the period
+ * held before, which no frame's cost can make. A period merely observed from
+ * rendered frames never raises it. The governor's even fallback (PR B part
+ * 2b, G6) keeps to the same rule: the governor asks for one only on a
+ * confirmed period the floor trusts, and the floor it gives is that period
+ * times the fallback's divisor.
  *
  * Class P: pure types and numbers. No Babylon import, Node-testable. The
  * fallback's divisor rules live here, so that the frame pacer (`src/game`,

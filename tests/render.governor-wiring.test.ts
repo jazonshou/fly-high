@@ -2,16 +2,18 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { FlightRenderer } from "../src/render/FlightRenderer";
+import { HitchWindow } from "../src/render/hitchWindow";
 import { resolveHardwareScalingLevel } from "../src/render/renderScaleLevel";
 import {
   createGovernorState,
   FALLBACK_OFF,
   governorConfigForProfile,
+  type CadenceFallbackPhase,
   type GovernorConfig,
   type GovernorState,
 } from "../src/render/webgpu/core/AdaptiveGovernor";
 import type { PresentationCadence } from "../src/render/webgpu/core/presentationCadence";
-import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
+import { hitchThresholdMilliseconds, resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import { readSource } from "./support/sourceText";
 
 /**
@@ -361,7 +363,7 @@ describe("cadenceFallbackRequest (PR B part 2b, G6)", () => {
   const lowAt30 = { ...resolveWebGpuQualityProfile("low", "balanced"), cadenceFallbackHz: 30 };
 
   /** FlightRenderer's receiver, on the fields it reads; the config as resolveGovernorConfig gives it. */
-  function asked(pinnedRenderScale: number | null, phase: "off" | "engaged" | "settled") {
+  function fallbackReceiver(pinnedRenderScale: number | null, phase: CadenceFallbackPhase) {
     const fields = { profile: lowAt30, presentationCadence: sixty, pinnedRenderScale };
     const target = Object.assign(Object.create(FlightRenderer.prototype) as object, fields) as typeof fields & {
       governorConfig: GovernorConfig;
@@ -369,11 +371,27 @@ describe("cadenceFallbackRequest (PR B part 2b, G6)", () => {
     };
     target.governorConfig = (Reflect.get(FlightRenderer.prototype, "resolveGovernorConfig") as (this: typeof target) => GovernorConfig)
       .call(target);
+    setFallback(target, phase, 22);
+    return target;
+  }
+
+  function setFallback(
+    target: { governorConfig: GovernorConfig; governorState: GovernorState },
+    phase: CadenceFallbackPhase,
+    minIntervalMs: number,
+  ): void {
     target.governorState = Object.freeze({
       ...createGovernorState(target.governorConfig),
-      fallback: Object.freeze({ ...FALLBACK_OFF, phase, minIntervalMs: 22 }),
+      fallback: Object.freeze({ ...FALLBACK_OFF, phase, minIntervalMs }),
     });
+  }
+
+  function ask(target: ReturnType<typeof fallbackReceiver>) {
     return FlightRenderer.prototype.cadenceFallbackRequest.call(target as unknown as FlightRenderer);
+  }
+
+  function asked(pinnedRenderScale: number | null, phase: CadenceFallbackPhase) {
+    return ask(fallbackReceiver(pinnedRenderScale, phase));
   }
 
   it("is null for a fresh governor, and asks while the fallback is engaged", () => {
@@ -387,6 +405,39 @@ describe("cadenceFallbackRequest (PR B part 2b, G6)", () => {
     expect(asked(0.72, "settled")).toBeNull();
   });
 
+  it("hands the frame loop the same request while it holds, and a new one when it moves", () => {
+    // The frame loop asks after every drawn frame, and a fallback holds for
+    // minutes: a new object each time was garbage at the frame rate.
+    const target = fallbackReceiver(null, "engaged");
+    const first = ask(target);
+    expect(first).toEqual({ hz: 30, minIntervalMs: 22 });
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(ask(target)).toBe(first);
+    // Settled at the same interval: the same request.
+    setFallback(target, "settled", 22);
+    expect(ask(target)).toBe(first);
+    // The divisor moved, and with it the interval: a new request, then that one again.
+    setFallback(target, "settled", 2_000 / 75);
+    const moved = ask(target);
+    expect(moved).not.toBe(first);
+    expect(moved).toEqual({ hz: 30, minIntervalMs: 2_000 / 75 });
+    expect(Object.isFrozen(moved)).toBe(true);
+    expect(ask(target)).toBe(moved);
+    // A new rate is a new request too.
+    target.governorConfig = Object.freeze({ ...target.governorConfig, cadenceFallbackHz: 36 });
+    const faster = ask(target);
+    expect(faster).not.toBe(moved);
+    expect(faster).toEqual({ hz: 36, minIntervalMs: 2_000 / 75 });
+    expect(ask(target)).toBe(faster);
+    // A trial asks for nothing, nor does a pinned capture, whatever was asked before.
+    setFallback(target, "trial", 2_000 / 75);
+    expect(ask(target)).toBeNull();
+    setFallback(target, "engaged", 2_000 / 75);
+    expect(ask(target)).toEqual({ hz: 36, minIntervalMs: 2_000 / 75 });
+    target.pinnedRenderScale = 0.72;
+    expect(ask(target)).toBeNull();
+  });
+
   it("reports the phase in diagnostics only where the config allows a fallback, and the cadence's rate", () => {
     expect(renderer).toMatch(
       /cadenceFallback: this\.pinnedRenderScale !== null \|\| this\.governorConfig\.cadenceFallbackHz === null \? null : \{/u,
@@ -395,21 +446,91 @@ describe("cadenceFallbackRequest (PR B part 2b, G6)", () => {
   });
 });
 
+const DIAGNOSTIC_WINDOW_FRAMES = Number(/const DIAGNOSTIC_WINDOW_FRAMES = (\d+);/u.exec(renderer)?.[1]);
+
+/** A receiver with the fields captureFrameInterval writes. */
+function capturing(base: Receiver) {
+  return Object.assign(base, {
+    previousFrameStartedAt: null as number | null,
+    diagnosticIntervalDurations: [] as number[],
+    diagnosticHitches: new HitchWindow(DIAGNOSTIC_WINDOW_FRAMES),
+    diagnosticPresentWaitDurations: [] as number[],
+    lastFrameIntervalMilliseconds: 0,
+    lastPresentWaitMilliseconds: null as number | null,
+    lastCpuFrameMilliseconds: 5,
+  });
+}
+
+const capture = Reflect.get(FlightRenderer.prototype, "captureFrameInterval") as (
+  this: ReturnType<typeof capturing>,
+  started: number,
+  deltaSeconds: number,
+) => void;
+
+describe("the diagnostics' hitch count (PR B part 2b)", () => {
+  // Low under "60 fps" on a 60 Hz display: 27.4 ms at 60, 60 ms while the even fallback holds.
+  const lowAt30 = { ...resolveWebGpuQualityProfile("low", "balanced"), cadenceFallbackHz: 30 };
+  const sixty: PresentationCadence = { frameCapHz: 60, divisor: 1, displayPeriodMs: 1_000 / 60, periodConfirmed: true };
+  const fallback: PresentationCadence = { ...sixty, divisor: 2, fallbackHz: 30 };
+
+  it("judges each interval against the cadence it was drawn at, so a switch never judges the window again", () => {
+    expect(DIAGNOSTIC_WINDOW_FRAMES).toBe(600);
+    expect(hitchThresholdMilliseconds(lowAt30, sixty)).toBeCloseTo(27.4, 9);
+    expect(hitchThresholdMilliseconds(lowAt30, fallback)).toBeCloseTo(60, 9);
+    const target = capturing(receiver({ profile: lowAt30, presentationCadence: fallback, frameIntervalDurations: [] }));
+    const thirty = 1_000 / 30;
+    let now = 1_000;
+    capture.call(target, now, 1 / 30);
+    const draw = (frames: number) => {
+      for (let frame = 0; frame < frames; frame += 1) {
+        now += thirty;
+        capture.call(target, now, 1 / 30);
+      }
+    };
+    // Engaged: a full window of 33.3 ms frames, none a hitch against 60 ms.
+    draw(600);
+    expect(target.diagnosticIntervalDurations).toHaveLength(600);
+    expect(target.diagnosticHitches.count).toBe(0);
+    // A 60 fps trial starts. Judged again against 27.4 ms, the window read 600 hitches.
+    setCadence(target, sixty);
+    expect(target.diagnosticHitches.count).toBe(0);
+    // The machine cannot hold 60: each 33.3 ms frame it draws now is a hitch.
+    draw(120);
+    expect(target.diagnosticHitches.count).toBe(120);
+    // The trial fails and the fallback engages again. Judged again against
+    // 60 ms, the trial's hitches vanished.
+    setCadence(target, fallback);
+    expect(target.diagnosticHitches.count).toBe(120);
+    // They leave the window with their intervals: first the 480 engaged
+    // frames before them, then one hitch a frame.
+    draw(480);
+    expect(target.diagnosticHitches.count).toBe(120);
+    draw(20);
+    expect(target.diagnosticHitches.count).toBe(100);
+    draw(100);
+    expect(target.diagnosticHitches.count).toBe(0);
+    expect(target.diagnosticIntervalDurations).toHaveLength(600);
+  });
+
+  it("is the count getDiagnostics reports, cleared with the window, beside the threshold of the moment", () => {
+    expect(renderer).toContain("private readonly diagnosticHitches = new HitchWindow(DIAGNOSTIC_WINDOW_FRAMES);");
+    expect(renderer).toMatch(
+      /this\.pushDiagnosticSample\(this\.diagnosticIntervalDurations, interval\);\s*this\.diagnosticHitches\.push\(interval, hitchThresholdMilliseconds\(this\.profile, this\.presentationCadence\)\);/u,
+    );
+    expect(count(renderer, "this.diagnosticHitches.push(")).toBe(1);
+    expect(renderer).toContain("const hitchCount = this.diagnosticHitches.count;");
+    expect(renderer).toMatch(/this\.diagnosticIntervalDurations\.length = 0;\s*this\.diagnosticHitches\.clear\(\);/u);
+    expect(renderer).toContain(
+      "const hitchThresholdMs = hitchThresholdMilliseconds(this.profile, this.presentationCadence);",
+    );
+    // Nothing counts the window against the threshold of the moment any more.
+    expect(renderer).not.toMatch(/> hitchThresholdMs\b/u);
+  });
+});
+
 describe("discardNextFrameInterval", () => {
   it("keeps the gap a re-probe leaves out of diagnostics and the governor's window", () => {
-    const target = Object.assign(receiver({ frameIntervalDurations: [] }), {
-      previousFrameStartedAt: null as number | null,
-      diagnosticIntervalDurations: [] as number[],
-      diagnosticPresentWaitDurations: [] as number[],
-      lastFrameIntervalMilliseconds: 0,
-      lastPresentWaitMilliseconds: null as number | null,
-      lastCpuFrameMilliseconds: 5,
-    });
-    const capture = Reflect.get(FlightRenderer.prototype, "captureFrameInterval") as (
-      this: typeof target,
-      started: number,
-      deltaSeconds: number,
-    ) => void;
+    const target = capturing(receiver({ frameIntervalDurations: [] }));
     capture.call(target, 1_000, 1 / 60);
     capture.call(target, 1_016.7, 1 / 60);
     expect(target.diagnosticIntervalDurations).toEqual([expect.closeTo(16.7, 6)]);
@@ -419,6 +540,7 @@ describe("discardNextFrameInterval", () => {
     FlightRenderer.prototype.discardNextFrameInterval.call(target as unknown as FlightRenderer);
     capture.call(target, 1_216.7, 0.1);
     expect(target.diagnosticIntervalDurations).toHaveLength(1);
+    expect(target.diagnosticHitches.count).toBe(0);
     expect(target.frameIntervalDurations).toHaveLength(1);
     // Only that one: the frame after it counts again.
     capture.call(target, 1_233.4, 1 / 60);

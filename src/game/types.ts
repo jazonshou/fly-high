@@ -312,13 +312,20 @@ export interface RenderDiagnostics {
    */
   maxFrameMs: number | null;
   p999FrameMs: number | null;
-  /** Frames in the rolling window slower than 2× the tier's frame target. */
+  /**
+   * Frames in the rolling window slower than the hitch threshold, each
+   * judged against the threshold in force when it was drawn, so a change of
+   * cadence never counts the window again.
+   */
   hitchCount: number;
   /**
-   * PR B: what `hitchCount` counts against: 27.4 ms, 60 ms on Ultra. Only
-   * the 30 fps setting raises it, to twice its GPU target (the paced
-   * interval less 3.33 ms: 60 ms where 30 divides the refresh rate, 62.8 ms
-   * at 144 Hz), never frames being slow.
+   * PR B: the hitch threshold now: 27.4 ms, 60 ms on Ultra. Only a cadence
+   * slower than the tier's target raises it, to twice its GPU target (the
+   * paced interval less 3.33 ms): the 30 fps setting (60 ms where 30 divides
+   * the refresh rate, 62.8 ms at 144 Hz) or the governor's even fallback (60
+   * ms at 60 Hz), which an exhausted tier 0 asks for and the pacer applies
+   * only on a trusted, confirmed period. A period measured from slow frames
+   * never raises it.
    */
   hitchThresholdMs: number;
   /** Governor B ladder index and the lever that moved most recently. */

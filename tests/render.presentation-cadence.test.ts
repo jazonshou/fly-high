@@ -16,9 +16,12 @@ import {
 
 /**
  * The presentation cadence is the contract between the frame pacer and the
- * renderer (PR B). Its one rule: a slow machine can never relax its own
- * target. Only the 30 fps setting, or a divisor of 2 or more on a period
- * measured on idle ticks, raises the floor and the hitch threshold.
+ * renderer (PR B). Its one rule: a period measured from slow frames can never
+ * relax the target. Only a cadence slower than the tier's target raises the
+ * floor and the hitch threshold: the 30 fps setting, or a divisor of 2 or
+ * more on a period measured on idle ticks. Under "60 fps" only the
+ * governor's even fallback draws that slowly (part 2b): an exhausted tier 0
+ * asks for it, and the pacer applies it only on a trusted, confirmed period.
  */
 
 function cadence(

@@ -993,8 +993,11 @@ export function standaloneSharpen(
  * A hitch is a frame slower than twice the tier's controllable target: 27.4
  * ms, or 60 ms on Ultra. The presentation cadence raises it only where the
  * cadence itself is slower than that target, which is the 30 fps setting or
- * a divisor of 2 or more on a confirmed display period (presentationCadence.ts);
- * a slow workload never moves it. Captures and perf:ab pass no cadence.
+ * a divisor of 2 or more on a confirmed display period (presentationCadence.ts).
+ * Under "60 fps" only the governor's even fallback draws that slowly (60 ms
+ * at 60 Hz): an exhausted tier 0 asks for it, and the pacer applies it only
+ * on a trusted, confirmed period. A period measured from slow frames never
+ * moves it. Captures and perf:ab pass no cadence.
  */
 export function hitchThresholdMilliseconds(
   profile: Pick<WebGpuQualityProfile, "frameTargetMs">,
