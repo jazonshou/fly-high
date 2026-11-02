@@ -325,11 +325,18 @@ describe("water shader extraction (2-8a)", () => {
     // the text with the two blocks taken out hashes to the previous pin
     // (0fe7b0f4...), and tests/gpu/boat-effects-compile.test.ts compares the
     // compiled module on a real adapter.
+    //
+    // Re-pinned, FRAGMENT ONLY, by the dusk afterglow (2026-11-02): the
+    // fragment carries the shared skyRadiance for the sea's reflected sky, and
+    // its twilight warm lobe now folds per channel (warmHug, a vec3 in place
+    // of the scalar horizonHug). Exactly zero above sunset and below the
+    // twilight release (twilightArchStrength gates the lobe), so only a sea
+    // under a twilight sky moves, and it moves with the sky it reflects.
     expect(sha256(WATER_VERTEX_WGSL)).toBe(
       "acc8d499e85806a3ff438bcefad28de5d84ed4146bd548db3ba5080df2fdc760",
     );
     expect(sha256(WATER_FRAGMENT_WGSL)).toBe(
-      "57b8f69c5847fdf6d60752dbce42ed0e8199857d5da086daa981e8f44731a01b",
+      "1fd4a4e8e5dc28a42a52b27e507e9f99a9020eb49002196b0d9d2674c5085722",
     );
   });
 
