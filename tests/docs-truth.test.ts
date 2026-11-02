@@ -7,6 +7,19 @@ import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityPr
 import type { QualityLevel } from "../src/game/types";
 import type { RenderingMode } from "../src/settings";
 import { VEGETATION_DRAW_CEILING } from "../src/render/webgpu/detail/renderedDensity";
+import {
+  FALLBACK_FORGIVE_MS,
+  FALLBACK_RETRY_HOLD_MS,
+  FALLBACK_RETRY_TRIAL_GAP_MS,
+  FALLBACK_SETTLE_AFTER_FAILED_TRIALS,
+  FALLBACK_SETTLED_RETRY_AFTER_MS,
+  FALLBACK_SETTLED_TRIAL_AFTER_MS,
+  FALLBACK_TRIAL_AFTER_MS,
+  FALLBACK_TRIAL_MAX_WINDOWS,
+  FALLBACK_TRIAL_WINDOWS,
+  FALLBACK_UNHELD_WINDOWS,
+  governorConfigForProfile,
+} from "../src/render/webgpu/core/AdaptiveGovernor";
 import { PERF_CAPTURE_SHOTS } from "../scripts/perf-capture.mts";
 import { readSource } from "./support/sourceText";
 
@@ -609,5 +622,62 @@ describe("6-12 documentation truth: the committed capture baseline", () => {
       .map((name) => name.replace(/\.png$/u, ""))
       .filter((name) => !table.includes(`\`${name}\``));
     expect(missing, "baseline shots absent from the documented table").toEqual([]);
+  });
+});
+
+/**
+ * PR B part 2b (G6): the even fallback's sub-bullet quotes the machine's
+ * clocks and counts in prose. Each phrase below is built from the exported
+ * constant it quotes, formatted as the bullet writes it, so a constant that
+ * moves turns this red until the bullet moves with it.
+ */
+describe("PR B part 2b documentation truth: the even fallback's sub-bullet", () => {
+  const BULLET_START = "  - Under the 60 fps setting, tier 0 (`cadenceFallbackHz` 30) answers exhaustion with an even fallback";
+  const bullet = PERFORMANCE_MD.split("\n").find((line) => line.startsWith(BULLET_START));
+  const WORDS = ["zero", "one", "two", "three", "four", "five", "six"];
+  const word = (count: number): string => {
+    const spelled = WORDS[count];
+    if (spelled === undefined) throw new Error(`docs-truth: no word for ${count}`);
+    return spelled;
+  };
+  const seconds = (ms: number): string => `${ms / 1_000} s`;
+  // A judged window at 60 Hz: 120 frames at the 60 fps setting's interval.
+  const windowAt60Ms = governorConfigForProfile(resolveWebGpuQualityProfile("low", "balanced"), {
+    frameCapHz: 60,
+    divisor: 1,
+    displayPeriodMs: 1_000 / 60,
+    periodConfirmed: true,
+  }).windowMs;
+  const [firstRetryMs, secondRetryMs, lastRetryMs] = FALLBACK_SETTLED_RETRY_AFTER_MS;
+
+  it("is there to check", () => {
+    expect(bullet, "docs/PERFORMANCE.md lost the fallback sub-bullet; update this test WITH the doc.").toBeDefined();
+  });
+
+  it.each([
+    ["the first trial's wait", `follows after ${seconds(FALLBACK_TRIAL_AFTER_MS[0]!)}`],
+    ["every later trial's wait", `then after ${seconds(FALLBACK_TRIAL_AFTER_MS[1]!)} once one has failed`],
+    ["the calm pair that passes a trial", `${word(FALLBACK_TRIAL_WINDOWS)} on-cadence windows whose pooled late share is calm`],
+    ["the trial's window cap", `${word(FALLBACK_TRIAL_MAX_WINDOWS)} on-cadence windows that never pool calm`],
+    ["the trial's length at 60 Hz", `at most ${word(FALLBACK_TRIAL_MAX_WINDOWS)} windows (${Math.round((FALLBACK_TRIAL_MAX_WINDOWS * windowAt60Ms) / 1_000)} s at 60 Hz)`],
+    ["the failed trials that settle", `so do ${word(FALLBACK_SETTLE_AFTER_FAILED_TRIALS)} failed trials`],
+    ["the failed trials an engage counts and still engages", `makes ${word(FALLBACK_SETTLE_AFTER_FAILED_TRIALS)} failed trials or fewer, it engages`],
+    ["the failed trials that settle an engage", `an early re-entry that makes ${word(FALLBACK_SETTLE_AFTER_FAILED_TRIALS + 1)} failed trials or more`],
+    ["the settled trial's wait", `at most every ${seconds(FALLBACK_SETTLED_TRIAL_AFTER_MS)}`],
+    ["the unheld windows that raise", `for ${word(FALLBACK_UNHELD_WINDOWS)} windows in a row`],
+    ["the first retry wait", `${seconds(firstRetryMs!)} after it, on the first on-cadence window`],
+    ["the floor's retry wait", `a settled machine retries it ${seconds(firstRetryMs!)} later`],
+    ["the retry backoff", `to ${seconds(secondRetryMs!)} and then ${seconds(lastRetryMs!)} at most`],
+    ["the retry backoff in minutes", `${firstRetryMs! / 60_000}, ${secondRetryMs! / 60_000} and then ${lastRetryMs! / 60_000} minutes after each raise`],
+    ["the retry's hold", `a retry that lasts ${seconds(FALLBACK_RETRY_HOLD_MS)} without a raise`],
+    ["the trial's gap after a retry", `the trial then waits at least ${seconds(FALLBACK_RETRY_TRIAL_GAP_MS)}`],
+    ["the forgiveness", `until ${seconds(FALLBACK_FORGIVE_MS)} off after the passed trial`],
+  ])("quotes %s as the code has it", (_label, phrase) => {
+    expect(bullet, `docs/PERFORMANCE.md's fallback sub-bullet must say ${JSON.stringify(phrase)}.`).toContain(phrase);
+  });
+
+  it("quotes a backoff of three steps", () => {
+    expect(FALLBACK_SETTLED_RETRY_AFTER_MS).toHaveLength(3);
+    expect(FALLBACK_TRIAL_AFTER_MS).toHaveLength(2);
   });
 });

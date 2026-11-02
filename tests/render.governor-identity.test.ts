@@ -224,7 +224,7 @@ describe("the fallback gate (PR B part 2b, G6)", () => {
     });
   }
 
-  it("carries the trusted period and, at the setting's cadence, the divisors the pacer chooses from", () => {
+  it("carries the trusted period and the divisors the pacer chooses from, under the fallback's own cadence too", () => {
     // [case, cadence, the divisors] wherever the config allows a fallback.
     const allowed: readonly [string, PresentationCadence, readonly [number, number] | null][] = [
       ["60 Hz", cadenceOf(60, 1, 60, true), [2, 2]],
@@ -232,9 +232,13 @@ describe("the fallback gate (PR B part 2b, G6)", () => {
       ["120 Hz", cadenceOf(60, 2, 120, true), [4, 4]],
       ["144 Hz", cadenceOf(60, 2, 144, true), [4, 5]],
       ["165 Hz", cadenceOf(60, 2, 165, true), [5, 6]],
-      // Under the fallback's own cadence the divisor is the fallback's, not the setting's.
-      ["60 Hz, falling back", cadenceOf(60, 2, 60, true, 30), null],
-      ["75 Hz, falling back", cadenceOf(60, 3, 75, true, 25), null],
+      // Under the fallback's own cadence the divisor is the fallback's, not
+      // the setting's, and the range is the same: a raise there asks whether
+      // it moves the divisor (round 4).
+      ["60 Hz, falling back", cadenceOf(60, 2, 60, true, 30), [2, 2]],
+      ["75 Hz, falling back", cadenceOf(60, 3, 75, true, 25), [2, 3]],
+      ["144 Hz, falling back", cadenceOf(60, 4, 144, true, 36), [4, 5]],
+      ["165 Hz, falling back", cadenceOf(60, 6, 165, true, 27.5), [5, 6]],
     ];
     for (const [name, cadence, divisors] of allowed) {
       const config = governorConfigForProfile(lowAt30, cadence);

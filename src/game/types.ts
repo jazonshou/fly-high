@@ -365,7 +365,7 @@ export interface RenderDiagnostics {
     phase: "off" | "engaged" | "trial" | "settled";
     /** Failed trials not yet forgiven. */
     failedTrials: number;
-    /** Seconds of judged windows before the next trial may start (engaged or settled). */
+    /** Seconds of judged windows before the next trial at the setting's cadence may start (engaged or settled); a settled retry of the faster divisor keeps its own clock. */
     trialDueInS: number;
     /** The shortest interval the pacer may draw at under the fallback; 0 while off. */
     minIntervalMs: number;

@@ -465,6 +465,12 @@ describe("the verdict", () => {
     const between = withSteps(three, [three.steps[0]!, fellBack(three.steps[1]!, 600), three.steps[2]!]);
     expect(verdictOf(between).verdict).toBe("valid");
     expect(fallbackWarnings(between)).toEqual([]);
+    // A plan that does not start and end on the same tier has no check
+    // flights, so a fallback in its first flight is no check flight's.
+    const uneven = benchRunRecord({ steps: [{ tierIndex: 0 }, { tierIndex: 1 }] });
+    const unevenFirst = withSteps(uneven, [fellBack(uneven.steps[0]!, 600), uneven.steps[1]!]);
+    expect(verdictOf(unevenFirst).verdict).toBe("unchecked");
+    expect(fallbackWarnings(unevenFirst)).toEqual([]);
     // A check flight with no result leaves the run incomplete, and the other's fallback unremarked.
     const failed: BenchStepRecord = { ...lowLast, status: "failed", message: "the WebGPU device was lost", result: null };
     expect(fallbackWarnings(withSteps(low, [fellBack(lowFirst, 600), failed]))).toEqual([]);

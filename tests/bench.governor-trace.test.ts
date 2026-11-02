@@ -295,14 +295,20 @@ describe("governor trace", () => {
       // A second trial that fails: settled.
       { mode: "fallback-trial", fallback: fallback({ phase: "trial", failedTrials: 1, minIntervalMs: 22 }) },
       { fallback: fallback({ phase: "settled", trialFrom: "settled", trialDueInMs: 300_000, failedTrials: 2, minIntervalMs: 22 }) },
-      // Settled, from full quality: a trial that passes ends the fallback and starts the exit clock.
+      // Settled, from full quality: a trial that passes ends the fallback,
+      // starts the exit clock and keeps its window's mean.
       { mode: "fallback-trial", fallback: fallback({ phase: "trial", trialFrom: "settled", failedTrials: 2, minIntervalMs: 22 }) },
-      { mode: "balanced", fallback: fallback({ failedTrials: 2, msSinceExit: 0 }) },
-      { fallback: fallback({ failedTrials: 2, msSinceExit: 4_000 }) },
-      // Exhausted again within 60 s of the exit: a failed trial, and at three, straight to settled.
-      { fallback: fallback({ phase: "settled", trialFrom: "settled", trialDueInMs: 300_000, failedTrials: 3, minIntervalMs: 24 }) },
+      { mode: "balanced", fallback: fallback({ failedTrials: 2, msSinceExit: 0, exitIntervalMs: 16.8 }) },
+      { fallback: fallback({ failedTrials: 2, msSinceExit: 4_000, exitIntervalMs: 16.8 }) },
+      // Exhausted again before 240 s forgive the exit: the governor counts the
+      // re-entry as a third failed trial, which settles at the engage. At 60 Hz
+      // (one divisor) the passed trial's interval is not kept to retry.
+      { fallback: fallback({ phase: "settled", trialFrom: "settled", trialDueInMs: 300_000, failedTrials: 3, minIntervalMs: 24, engageIntervalMs: 24 }) },
+      // A settled trial, 300 s on from full quality, fails: still settled.
+      { mode: "fallback-trial", fallback: fallback({ phase: "trial", trialFrom: "settled", failedTrials: 3, minIntervalMs: 24, engageIntervalMs: 24 }) },
+      { fallback: fallback({ phase: "settled", trialFrom: "settled", trialDueInMs: 300_000, failedTrials: 4, minIntervalMs: 24, engageIntervalMs: 24 }) },
       // The setting moved away from 60 fps: off, the failures kept, and no exit.
-      { fallback: fallback({ failedTrials: 3 }) },
+      { fallback: fallback({ failedTrials: 4 }) },
     ];
     step(31);
     script.forEach((change, index) => {
@@ -313,20 +319,21 @@ describe("governor trace", () => {
 
     const { decisions, windows } = trace.summary();
     expect(decisions.map((decision) => decision[18])).toEqual([
-      "off", "engaged", "engaged", "trial", "engaged", "trial", "settled", "trial", "off", "off", "settled", "off",
+      "off", "engaged", "engaged", "trial", "engaged", "trial", "settled", "trial", "off", "off", "settled", "trial", "settled", "off",
     ]);
     // Exhausted while the spent count says so, and whenever the fallback is not off.
     expect(decisions.map((decision) => decision[17])).toEqual([
-      true, true, true, true, true, true, true, true, false, false, true, false,
+      true, true, true, true, true, true, true, true, false, false, true, true, true, false,
     ]);
     expect(windows.air.events).toMatchObject({
       fallbackEngaged: 2,
-      fallbackTrials: 3,
-      // Two failed trials, and the quick re-entry the governor counts as a third.
-      fallbackTrialsFailed: 3,
+      fallbackTrials: 4,
+      // Three failed trials, and the quick re-entry the governor counts as one more.
+      fallbackTrialsFailed: 4,
       fallbackExits: 1,
-      fallbackSettled: 2,
-      exhaustedWindows: 9,
+      // The trial that failed second, the re-entry, and the settled trial that failed.
+      fallbackSettled: 3,
+      exhaustedWindows: 11,
     });
     expect(windows.ground.events).toMatchObject({
       fallbackEngaged: 0, fallbackTrials: 0, fallbackTrialsFailed: 0, fallbackExits: 0, fallbackSettled: 0,
