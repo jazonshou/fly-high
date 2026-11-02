@@ -629,11 +629,14 @@ function hangCurtains(b: KitBuilder, ctx: RoomContext, walls: readonly Wall[], p
       if (a0 < wall.s0 + 0.02 || a1 > wall.s1 - 0.02) continue;
       const r = rectOf(wall, a0, a1 - a0, 0, 0.07);
       if (placed.some((p) => overlaps(r, p)) || ctx.keepOut.some((k) => overlaps(r, k))) continue;
-      // Three folds, deep and shallow, light and shaded, so the cloth reads as hanging fabric, not a board.
-      const fold = (a1 - a0) / 3;
-      for (let k = 0; k < 3; k += 1) {
-        const f = rectOf(wall, a0 + k * fold, fold, 0, k === 1 ? 0.04 : 0.07);
-        b.box(f.x0, f.x1, y0, y1, f.z0, f.z1, "fabric", k === 1 ? shade(colour, 0.86) : colour, front | ends, ctx.indoor);
+      // Six narrow folds, standing out and set back, lit and shaded, so the
+      // cloth reads as gathered fabric, not a board. Only the standing folds
+      // have sides: they show the step down to the folds between them.
+      const fold = (a1 - a0) / 6;
+      for (let k = 0; k < 6; k += 1) {
+        const out = k % 2 === 0;
+        const f = rectOf(wall, a0 + k * fold, fold, 0, out ? 0.08 : 0.035);
+        b.box(f.x0, f.x1, y0, y1, f.z0, f.z1, "fabric", out ? colour : shade(colour, 0.78), out ? front | ends : front, ctx.indoor);
       }
     }
   }
