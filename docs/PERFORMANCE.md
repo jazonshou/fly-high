@@ -3805,7 +3805,7 @@ buildings, all on one material (`StructureSystem`):
 The lit windows past the near radius, and the mast and lighthouse lights,
 are points in the existing light-point draw (256 to 2,048 by tier). Chimney
 smoke on High and Ultra is wisps of the volcanic steam's existing draw: the
-24 nearest smoking chimneys within 1.5 km, eight wisps each, inside the
+16 nearest smoking chimneys within 1.5 km, twelve wisps each, inside the
 steam's own cap with the vents first. Both add vertices to a draw that is
 already there, and no draw of their own.
 

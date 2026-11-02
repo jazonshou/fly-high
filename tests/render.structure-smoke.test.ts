@@ -17,6 +17,7 @@ import {
   sampleSteamWisp,
   STEAM_FLOATS_PER_WISP,
   STEAM_SMOKE_ALBEDO,
+  STEAM_SMOKE_AMBIENT_STRENGTH,
   STEAM_SMOKE_SEED_OFFSET,
   VOLCANIC_STEAM_VERTEX_WGSL,
   VolcanicSteamSystem,
@@ -150,11 +151,12 @@ describe("chimney smoke", () => {
       const time = ((0.5 - calm[at + 5]! + 1) % 1) * lifetime;
       sampleSteamWisp(calm, wisp, time, 1, 0, 0, sample);
       expect(sample.age).toBeCloseTo(0.5, 3);
-      expect(sample.y - 42).toBeGreaterThan(5);
+      expect(sample.y - 42).toBeGreaterThan(3);
       expect(sample.sizeMeters).toBeGreaterThan(0.5);
       expect(sample.sizeMeters).toBeLessThan(3.5);
       // With wind it is carried off downwind.
-      sampleSteamWisp(windy, wisp, time, 1, 0, 8, sample);
+      const windyTime = ((0.5 - windy[at + 5]! + 1) % 1) * (960 / windy[at + 4]!);
+      sampleSteamWisp(windy, wisp, windyTime, 1, 0, 8, sample);
       expect(sample.x - 1_000).toBeGreaterThan(5);
       // It leaves the flue at once, so the plume stays joined to the chimney:
       // a few per cent into its life a puff is already at full strength.
@@ -166,7 +168,51 @@ describe("chimney smoke", () => {
     // The shader greys a smoke wisp (its seed flag) and only those.
     expect(VOLCANIC_STEAM_VERTEX_WGSL).toContain(`let smoke = recordC.x >= ${STEAM_SMOKE_SEED_OFFSET}.0;`);
     expect(VOLCANIC_STEAM_VERTEX_WGSL).toContain("select(vec3f(1.0), STEAM_SMOKE_ALBEDO, smoke)");
-    expect(Math.max(...STEAM_SMOKE_ALBEDO)).toBeLessThan(0.7);
+    // Thin smoke is lit through by the sky; the steam keeps the clouds' share.
+    expect(VOLCANIC_STEAM_VERTEX_WGSL).toContain("select(STEAM_AMBIENT_STRENGTH, STEAM_SMOKE_AMBIENT_STRENGTH, smoke)");
+    expect(STEAM_SMOKE_AMBIENT_STRENGTH).toBeGreaterThan(0.4);
+    // Pale grey: below steam's white, but light, as thin wood smoke is.
+    expect(Math.max(...STEAM_SMOKE_ALBEDO)).toBeLessThan(0.95);
+    expect(Math.min(...STEAM_SMOKE_ALBEDO)).toBeGreaterThan(0.75);
+  });
+
+  it("puffs one lifetime per chimney, evenly spaced, slow and wide enough at the flue to overlap", () => {
+    for (const seed of [1, 77, 1234, 98_765]) {
+      for (const wind of [0, 4, 8, 11]) {
+        const flue = { x: 0, y: 10, z: 0, strength: 0.5 + (seed % 5) / 10, seed };
+        const out = new Float32Array(STRUCTURE_SMOKE_WISPS * STEAM_FLOATS_PER_WISP);
+        writeStructureSmokeWisps(flue, 0, 0, wind, STRUCTURE_SMOKE_WISPS, out, 0);
+        const cycles = out[4]!;
+        const lifetime = 960 / cycles;
+        expect(lifetime).toBeGreaterThan(7.5 / (1 + wind / 5));
+        expect(lifetime).toBeLessThan(12.5 / (1 + wind / 5));
+        const phases: number[] = [];
+        for (let wisp = 0; wisp < STRUCTURE_SMOKE_WISPS; wisp += 1) {
+          const at = wisp * STEAM_FLOATS_PER_WISP;
+          // One lifetime, so the ages never drift apart into clumps and gaps.
+          expect(out[at + 4]).toBe(cycles);
+          phases.push(out[at + 5]!);
+        }
+        phases.sort((a, b) => a - b);
+        let gap = 1 - phases.at(-1)! + phases[0]!;
+        for (let k = 1; k < phases.length; k += 1) gap = Math.max(gap, phases[k]! - phases[k - 1]!);
+        expect(gap).toBeLessThan(1.3 / STRUCTURE_SMOKE_WISPS);
+        // Between one puff leaving the flue and the next, the first moves less
+        // than the two puffs' radii, so they overlap into one plume.
+        const sample = createSteamWispSample();
+        const step = gap * lifetime;
+        for (let wisp = 0; wisp < STRUCTURE_SMOKE_WISPS; wisp += 1) {
+          const at = wisp * STEAM_FLOATS_PER_WISP;
+          const birth = ((1 - out[at + 5]!) % 1) * lifetime;
+          sampleSteamWisp(out, wisp, birth + 1e-3, 1, 0, wind, sample);
+          const x0 = sample.x;
+          const y0 = sample.y;
+          const young = sample.sizeMeters;
+          sampleSteamWisp(out, wisp, birth + step, 1, 0, wind, sample);
+          expect(Math.hypot(sample.x - x0, sample.y - y0)).toBeLessThan(young + sample.sizeMeters);
+        }
+      }
+    }
   });
 
   it("rides the steam's draw after the vents', within its cap, with no vent near", () => {
@@ -188,7 +234,7 @@ describe("chimney smoke", () => {
       for (let i = 0; i < 4; i += 1) writeStructureSmokeWisps(flue, ax, az, wind, STRUCTURE_SMOKE_WISPS, out, offset + i * STRUCTURE_SMOKE_WISPS * STEAM_FLOATS_PER_WISP);
     };
     steam.setExtraWisps(4 * STRUCTURE_SMOKE_WISPS, writer);
-    // 24 asked for, 20 allowed.
+    // 48 asked for, 20 allowed.
     expect(steam.extraWispCount).toBe(20);
     steam.update(0, 0, 5);
     expect(steam.drawing).toBe(true);

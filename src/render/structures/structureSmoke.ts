@@ -37,10 +37,12 @@ export const STRUCTURE_SMOKE_ARCHETYPES: ReadonlySet<StructureArchetype> = new S
 ]);
 
 /**
- * Wisps a smoking chimney emits: enough, at their short lives, that each
- * puff overlaps the next and the plume reads as one, not as specks.
+ * Wisps a smoking chimney emits. A chimney's wisps share one lifetime and
+ * are spaced evenly through it, so a puff leaves the flue every 0.7-1 s and,
+ * at the plume's slow start, overlaps the one before: the plume reads as one,
+ * not as specks.
  */
-export const STRUCTURE_SMOKE_WISPS = 8;
+export const STRUCTURE_SMOKE_WISPS = 12;
 
 /** Chimneys smoke within this of the camera, metres: past it a plume is a pixel or two. */
 export const STRUCTURE_SMOKE_RANGE_METERS = 1_500;
@@ -73,10 +75,14 @@ function unit(seed: number, wisp: number, lane: number): number {
 
 /**
  * A flue's `count` wisp records (`writeSteamWisps`' layout), x and z relative
- * to the anchor: puffs half a metre across at the flue, spreading to 1.5-3 m
- * as they climb 8-14 m (less in wind, which bends the plume over and carries
- * it off downwind), each living 4-6 s, flagged as smoke in the noise seed.
- * The short lives keep the puffs close enough to overlap into one plume.
+ * to the anchor, flagged as smoke in the noise seed. A stove's plume leaves
+ * the flue slowly, a metre or two a second, as puffs a metre or two across;
+ * it climbs 3-7 m in calm air and spreads to 5-8 m as it thins out. Wind
+ * bends it over, carries it off downwind and breaks it up sooner, so it
+ * rises less and lives shorter, which keeps the puffs overlapping however
+ * fast they leave. All of a flue's wisps live the same time (8-12 s in calm
+ * air) and are spaced evenly through it: lifetimes that differed would
+ * drift their ages apart into clumps and gaps.
  */
 export function writeStructureSmokeWisps(
   flue: StructureSmokeFlue,
@@ -88,23 +94,25 @@ export function writeStructureSmokeWisps(
   offset: number,
 ): void {
   const s = flue.strength;
-  const rise = (8 + 6 * s) / (1 + Math.max(0, windSpeed) / 6);
+  const wind = Math.max(0, windSpeed);
+  const rise = (4 + 2.5 * s) / (1 + wind / 5);
+  const lifetime = (8 + 4 * unit(flue.seed, 0, 1)) / (1 + wind / 5);
+  const cycles = Math.max(1, Math.round(STEAM_CYCLE_PERIOD_SECONDS / lifetime));
   for (let wisp = 0; wisp < count; wisp += 1) {
     const at = offset + wisp * STEAM_FLOATS_PER_WISP;
-    const size = (1.1 + 0.6 * unit(flue.seed, wisp, 0)) * (0.7 + 0.3 * s);
-    const lifetime = 4 + 2 * unit(flue.seed, wisp, 1);
+    const size = (1.8 + 0.5 * unit(flue.seed, wisp, 0)) * (0.8 + 0.2 * s);
     out[at] = flue.x - anchorX;
     out[at + 1] = flue.y;
     out[at + 2] = flue.z - anchorZ;
     out[at + 3] = size;
-    out[at + 4] = Math.max(1, Math.round(STEAM_CYCLE_PERIOD_SECONDS / lifetime));
-    out[at + 5] = (wisp + unit(flue.seed, wisp, 2) * 0.5) / count;
-    out[at + 6] = (0.22 + 0.12 * unit(flue.seed, wisp, 3)) * s;
-    out[at + 7] = rise * (0.8 + 0.4 * unit(flue.seed, wisp, 4));
+    out[at + 4] = cycles;
+    out[at + 5] = (wisp + unit(flue.seed, wisp, 2) * 0.25) / count;
+    out[at + 6] = (0.32 + 0.12 * unit(flue.seed, wisp, 3)) * (0.6 + 0.4 * s);
+    out[at + 7] = rise * (0.85 + 0.3 * unit(flue.seed, wisp, 4));
     out[at + 8] = STEAM_SMOKE_SEED_OFFSET + unit(flue.seed, wisp, 5);
-    out[at + 9] = (unit(flue.seed, wisp, 6) - 0.5) * 3;
-    out[at + 10] = size * (0.2 + 0.3 * unit(flue.seed, wisp, 7));
-    out[at + 11] = 0.8 + 0.4 * unit(flue.seed, wisp, 8);
+    out[at + 9] = (unit(flue.seed, wisp, 6) - 0.5) * 1.5;
+    out[at + 10] = size * (0.1 + 0.15 * unit(flue.seed, wisp, 7));
+    out[at + 11] = 0.6 + 0.3 * unit(flue.seed, wisp, 8);
   }
 }
 

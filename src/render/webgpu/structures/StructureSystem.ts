@@ -95,8 +95,8 @@ export interface StructureSmokeSink {
 /** The camera moves this far before the smoking chimneys are chosen again. */
 export const STRUCTURE_SMOKE_RESELECT_METERS = 100;
 
-/** The most chimneys smoking at once: High's whole steam cap (192 wisps) at eight a chimney. The cap, vents first, may allow fewer. */
-export const STRUCTURE_SMOKE_MAX_FLUES = 24;
+/** The most chimneys smoking at once: High's whole steam cap (192 wisps) at twelve a chimney. The cap, vents first, may allow fewer. */
+export const STRUCTURE_SMOKE_MAX_FLUES = 16;
 
 /** Which set a build is for. */
 export type StructureSetName = "far" | "near" | "open";

@@ -105,8 +105,23 @@ export const STEAM_CYCLE_PERIOD_SECONDS = 960;
  * it), so the flag costs no attribute.
  */
 export const STEAM_SMOKE_SEED_OFFSET = 2;
-/** Wood smoke's single-scattering albedo, linear: a light blue-grey. */
-export const STEAM_SMOKE_ALBEDO: readonly [number, number, number] = Object.freeze([0.56, 0.58, 0.62] as const);
+/**
+ * Wood smoke's single-scattering albedo, linear: a light blue-grey. A stove
+ * burning well gives thin smoke whose fine particles scatter most of what
+ * they intercept (biomass smoke's albedo is about 0.85-0.95, a little higher
+ * in the blue), so it reads pale grey against the sky, not dark.
+ */
+export const STEAM_SMOKE_ALBEDO: readonly [number, number, number] = Object.freeze([0.82, 0.84, 0.88] as const);
+
+/**
+ * The sky light a chimney's smoke scatters, as a share of the sky's radiance
+ * behind it. The steam takes the clouds' 0.22, made for a thick medium that
+ * shades its own inside; a stove's plume is thin, lit right through by the
+ * whole sky above it and the darker ground below, about 0.6 of the sky. At
+ * the clouds' share the plume came out darker than the sky behind it, a
+ * dirty smudge, where thin smoke reads pale.
+ */
+export const STEAM_SMOKE_AMBIENT_STRENGTH = 0.6;
 
 /**
  * Writes `count` wisp records (`writeSteamWisps`' layout) at float `offset`
@@ -320,6 +335,7 @@ const STEAM_BACKWARD_BLEND: f32 = ${wgslFloat(CLOUD.backwardPhaseBlend)};
 const STEAM_MULTIPLE_SCATTERING: f32 = ${wgslFloat(CLOUD.multipleScatteringFactor)};
 const STEAM_AMBIENT_STRENGTH: f32 = ${wgslFloat(CLOUD.ambientStrength)};
 const STEAM_SMOKE_ALBEDO: vec3f = vec3f(${STEAM_SMOKE_ALBEDO.map(wgslFloat).join(", ")});
+const STEAM_SMOKE_AMBIENT_STRENGTH: f32 = ${wgslFloat(STEAM_SMOKE_AMBIENT_STRENGTH)};
 
 // cloudLighting's phase: forward and backward lobes, mixed, at an octave's g scale.
 fn steamPhase(mu: f32, gScale: f32) -> f32 {
@@ -375,7 +391,8 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let upOnScreen = uniforms.view[1].xy;
   let upLength = length(upOnScreen);
   let upAxis = select(vec2f(0.0, 1.0), upOnScreen / max(upLength, 1e-4), upLength > 1e-4);
-  let stretch = 0.6 * (1.0 - age) * upLength;
+  // Smoke leaves a flue slowly, as a puff rather than a jet: barely stretched.
+  let stretch = select(0.6, 0.15, smoke) * (1.0 - age) * upLength;
   let square = corner * size;
   let offset = square + upAxis * (dot(square, upAxis) * stretch);
   let viewCentre = uniforms.view * vec4f(centre, 1.0);
@@ -408,7 +425,8 @@ fn main(input: VertexInputs) -> FragmentInputs {
   // Chimney smoke (a noise seed of 2 or more, \`STEAM_SMOKE_SEED_OFFSET\`) is
   // the same medium greyed: wood smoke scatters less of what it is lit by.
   let albedo = select(vec3f(1.0), STEAM_SMOKE_ALBEDO, smoke);
-  let radiance = (sunAtWisp * phase + skyRadiance(rayDirection) * STEAM_AMBIENT_STRENGTH) * albedo;
+  let ambient = select(STEAM_AMBIENT_STRENGTH, STEAM_SMOKE_AMBIENT_STRENGTH, smoke);
+  let radiance = (sunAtWisp * phase + skyRadiance(rayDirection) * ambient) * albedo;
   let haze = aerialPerspective(centre.y, distanceMeters, mu);
 
   vertexOutputs.position = clip;
@@ -479,10 +497,14 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     + 0.2 * steamValueNoise(q * 4.13 + vec2f(1.7, 9.2));
   // fbm of three octaves clusters around 0.5; stretch it before thresholding.
   let contrast = clamp((noise - 0.5) * 2.4 + 0.5, 0.0, 1.0);
-  // Smoke is a softer, fuller puff than steam's ragged wisps: overlapping
-  // puffs read as one plume, where ragged ones break into specks.
-  let threshold = select(0.2 + 0.7 * radiusSquared, 0.05 + 0.5 * radiusSquared, seed >= ${wgslFloat(STEAM_SMOKE_SEED_OFFSET)});
-  let density = smoothstep(threshold, threshold + 0.35, contrast) * (1.0 - radiusSquared);
+  let threshold = 0.2 + 0.7 * radiusSquared;
+  let steamDensity = smoothstep(threshold, threshold + 0.35, contrast) * (1.0 - radiusSquared);
+  // Smoke is a soft, full puff the noise only mottles, not steam's ragged
+  // wisps: overlapping puffs read as one plume, where ragged ones break into
+  // torn specks.
+  let rim = 1.0 - radiusSquared;
+  let smokeDensity = rim * rim * (0.5 + 0.5 * contrast);
+  let density = select(steamDensity, smokeDensity, seed >= ${wgslFloat(STEAM_SMOKE_SEED_OFFSET)});
 
   // Soft against terrain: fade with the gap between the wisp and the ground
   // behind it. A zero depth is sky, where nothing is behind the wisp.
