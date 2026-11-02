@@ -3493,6 +3493,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       () => this.bathymetry.dispose(),
       () => this.wildlife.dispose(),
       () => this.detail.dispose(),
+      // Its blade lanes and counter ring are storage buffers it registers
+      // with the process-wide inventory (Gate 0-c). Left out of this list,
+      // every renderer swap left about 3.3 MiB registered that no renderer
+      // held, which a capture's next renderer then read as its own.
+      () => this.groundCover.dispose(),
       () => this.pipelineCompiles?.dispose(),
       () => this.airport?.dispose(),
       () => this.marina.dispose(),
