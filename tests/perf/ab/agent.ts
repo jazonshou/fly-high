@@ -248,6 +248,34 @@ function installRendererPassNames(): void {
 }
 
 /**
+ * Babylon's `ComputeShader.dispatchWhenReady` polls `dispatch()` every 10 ms
+ * and gives up after 3,000 polls (its `_RetryWithInterval` budget, about 30 s)
+ * WITHOUT settling its promise. A bake that awaits it then stays in flight for
+ * good: the splat bake (`terrain-page-splat`) and the horizon pyramid
+ * (`terrain-global-horizon-pyramid`) never run again in that page. On a CPU
+ * adapter a first pipeline compile can outlast the budget while the other arm
+ * compiles too, and the arm that loses the race renders the shot without its
+ * baked ground cover: lake beaches gone, other ground and mountain material,
+ * and a cheaper frame. Seen on CI's EPYC 7763 runners and reproduced on a
+ * 2-CPU host, where both arms latched (docs/PERFORMANCE.md, "Cloud A/B": a
+ * poll that never gives up). So both arms poll until the pipeline is ready,
+ * as the renderer assumes; nothing else about the dispatch changes.
+ */
+function installUnboundedComputeReadiness(): void {
+  const shader = ComputeShader.prototype as unknown as Record<string, unknown>;
+  if (typeof shader["dispatchWhenReady"] !== "function") return;
+  shader["dispatchWhenReady"] = function (this: ComputeShader, x: number, y?: number, z?: number, delay = 10) {
+    return new Promise<void>((resolve) => {
+      const attempt = (): void => {
+        if (this.dispatch(x, y, z)) resolve();
+        else setTimeout(attempt, delay);
+      };
+      attempt();
+    });
+  };
+}
+
+/**
  * Names the mesh (and its material) whose draw is being encoded, for every
  * pass that draws meshes: the scene's own render, shadow maps and render
  * targets all go through `Mesh._processRendering`. A pipeline created inside
@@ -833,6 +861,7 @@ const agent: PerfAgent = {
     installGpuWorkCounters();
     installGpuPassTiming();
     installGpuDrawGate();
+    installUnboundedComputeReadiness();
     installRendererPassNames();
     installRenderingMeshNames();
     installCreationCounts();
