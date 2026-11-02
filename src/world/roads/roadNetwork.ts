@@ -693,6 +693,7 @@ export class RoadNetwork {
   private readonly geometries = new Map<number, RoadGeometry | null>();
   private readonly failures = new Map<number, RoadEdgeFailure>();
   private airportEdgeMemo: RoadEdge | null | undefined;
+  private airportCandidatesMemo: readonly RoadEdge[] | null = null;
   /** The sealed road `airportEdge` is trying, while it builds it (its pads read it as the node's). */
   private airportTrial: RoadEdge | null = null;
   private readonly building = new Set<number>();
@@ -703,25 +704,40 @@ export class RoadNetwork {
     this.nodes = new RoadNodeCache(world);
   }
 
+  /**
+   * The sealed road's candidates, unrouted: an edge from the airport's road
+   * head to each of the nearest gravel nodes in reach, nearest first.
+   * `airportEdge` is the first a route reaches.
+   */
+  airportEdgeCandidates(): readonly RoadEdge[] {
+    if (this.airportCandidatesMemo) return this.airportCandidatesMemo;
+    const edges: RoadEdge[] = [];
+    const head = airportRoadHead(this.world);
+    const start = airportRoadNode(this.world);
+    if (head && start) {
+      const reach = 2 * roadClass(ROAD_CLASS.gravel).nodeSpacing;
+      const candidates = this.nodes.nodesInBox(ROAD_CLASS.gravel, {
+        minX: head.exitX - reach,
+        minZ: head.exitZ - reach,
+        maxX: head.exitX + reach,
+        maxZ: head.exitZ + reach,
+      });
+      const distance = (node: RoadNode) => Math.hypot(node.x - head.exitX, node.z - head.exitZ);
+      candidates.sort((left, right) => distance(left) - distance(right) || (left.key < right.key ? -1 : 1));
+      for (const node of candidates.slice(0, 6)) {
+        if (distance(node) > roadClass(ROAD_CLASS.airport).maxEdgeLength) break;
+        edges.push(makeRoadEdge(ROAD_CLASS.airport, start, node));
+      }
+    }
+    this.airportCandidatesMemo = Object.freeze(edges);
+    return this.airportCandidatesMemo;
+  }
+
   /** The sealed road: from the airport's road head to the nearest gravel node a route reaches. */
   airportEdge(): RoadEdge | null {
     if (this.airportEdgeMemo !== undefined) return this.airportEdgeMemo;
     this.airportEdgeMemo = null;
-    const head = airportRoadHead(this.world);
-    const start = airportRoadNode(this.world);
-    if (!head || !start) return null;
-    const reach = 2 * roadClass(ROAD_CLASS.gravel).nodeSpacing;
-    const candidates = this.nodes.nodesInBox(ROAD_CLASS.gravel, {
-      minX: head.exitX - reach,
-      minZ: head.exitZ - reach,
-      maxX: head.exitX + reach,
-      maxZ: head.exitZ + reach,
-    });
-    const distance = (node: RoadNode) => Math.hypot(node.x - head.exitX, node.z - head.exitZ);
-    candidates.sort((left, right) => distance(left) - distance(right) || (left.key < right.key ? -1 : 1));
-    for (const node of candidates.slice(0, 6)) {
-      if (distance(node) > roadClass(ROAD_CLASS.airport).maxEdgeLength) break;
-      const edge = makeRoadEdge(ROAD_CLASS.airport, start, node);
+    for (const edge of this.airportEdgeCandidates()) {
       this.airportTrial = edge;
       try {
         if (this.geometry(edge)) {

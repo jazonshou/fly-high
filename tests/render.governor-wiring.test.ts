@@ -1,6 +1,8 @@
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FlightRenderer } from "../src/render/FlightRenderer";
+import { resolveHardwareScalingLevel } from "../src/render/renderScaleLevel";
 import {
   createGovernorState,
   governorConfigForProfile,
@@ -47,7 +49,115 @@ describe("the renderer's governor wiring", () => {
   });
 });
 
+/** Every `.ts` under `dir`, as a path relative to the repository. */
+function sourceFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+    if (statSync(path).isDirectory()) sourceFiles(path, out);
+    else if (path.endsWith(".ts") && !path.endsWith(".d.ts")) out.push(path);
+  }
+  return out;
+}
+
+describe("the CSM and cloud-depth refresh holds (PR B part 2, G5)", () => {
+  it("syncs both intervals immediately before the scene renders, every frame", () => {
+    expect(count(renderer, "this.syncRefreshHolds();")).toBe(1);
+    expect(renderer).toMatch(
+      /name: "hdr-present",[^}]*?execute: \(\) => \{\s*this\.syncRefreshHolds\(\);\s*this\.scene\.render\(false, false\);\s*\}/u,
+    );
+  });
+
+  it("forces both fresh on every history invalidation, from the pass that renders them", () => {
+    expect(renderer).toMatch(
+      /this\.scene\.render\(false, false\);\s*\},\s*invalidateHistory: \(\) => \{\s*forceRefresh\(this\.atmosphere\.shadows\.getShadowMap\(\)\);\s*forceRefresh\(this\.atmosphereResources\.sceneDepth\);\s*\}/u,
+    );
+  });
+
+  it("keeps the two holds off each other's frames, after both intervals are synced", () => {
+    expect(count(renderer, "staggerRefresh(")).toBe(1);
+    expect(renderer).toMatch(
+      /work\.cloudDepthRefreshExtraFrames,\s*\);\s*const shadowCountBefore = this\.shadowRefreshCountSeen;\s*this\.shadowRefreshCountSeen = shadowMap\?\.currentRefreshId \?\? Number\.NaN;\s*staggerRefresh\(shadowMap, sceneDepth, shadowCountBefore\);\s*\}/u,
+    );
+  });
+
+  it("adds the governor's frames after the profile's rate is converted to the cadence", () => {
+    expect(renderer).toContain(
+      "refreshIntervalAtCadence(work.shadowRefreshFrames, tier, shown) + work.shadowRefreshExtraFrames",
+    );
+    expect(renderer).toContain(
+      "refreshIntervalAtCadence(work.cloudDepthRefreshFrames, tier, shown) + work.cloudDepthRefreshExtraFrames",
+    );
+  });
+
+  it("writes refreshRate nowhere in src but the hold and the two render-once targets", () => {
+    // A per-frame write resets Babylon's counter and renders every frame
+    // (verify F3), so every interval goes through syncRefreshInterval.
+    const allowed = new Set([
+      join("src", "render", "refreshHold.ts"),
+      join("src", "render", "webgpu", "atmosphere", "SkyEnvironmentProbe.ts"),
+      join("src", "render", "webgpu", "atmosphere", "AtmosphereGpuResources.ts"),
+    ]);
+    const writes = /\.refreshRate\s*=(?!=)/u;
+    const writers = sourceFiles("src").filter((path) => writes.test(readSource(path)));
+    expect(writers.sort()).toEqual([...allowed].sort());
+    // The one write in AtmosphereGpuResources is the sky LUT's render-once.
+    expect(count(readSource(join("src", "render", "webgpu", "atmosphere", "AtmosphereGpuResources.ts")), ".refreshRate =")).toBe(1);
+  });
+});
+
 const medium = resolveWebGpuQualityProfile("medium", "balanced");
+
+describe("the render-scale level (PR B part 2, G4)", () => {
+  it("keeps the pinned path on the 1A-6a resolver and steps the capped frame otherwise", () => {
+    expect(renderer).toMatch(new RegExp(
+      String.raw`private resolveRenderScaleLevel\(\): number \{\s*const inputs = \{[^}]*\};\s*`
+      + String.raw`if \(this\.pinnedRenderScale !== null\) return resolveHardwareScalingLevel\(inputs\);\s*`
+      + String.raw`return resolveGovernedHardwareScalingLevel\(\{\s*\.\.\.inputs,\s*`
+      + String.raw`ceilingScale: this\.governorConfig\.scaleCeiling,\s*minRenderPixels: GOVERNED_MIN_RENDER_PIXELS,\s*\}\);\s*\}`,
+      "u",
+    ));
+  });
+
+  it("is the 1A-6a level at the ceiling, and applies an unpinned step after the cap", () => {
+    // Medium at 1080p: 0.86 asks for 1.53 Mpx and the 1.5 Mpx cap binds.
+    const display = { clientWidth: 1_920, clientHeight: 1_080 };
+    const cssPixels = display.clientWidth * display.clientHeight;
+    const inputs = (renderScale: number) => ({
+      maxDevicePixelRatio: medium.maxDevicePixelRatio,
+      devicePixelRatio: 1,
+      renderScale,
+      cssWidth: display.clientWidth,
+      cssHeight: display.clientHeight,
+      maxRenderPixels: medium.maxRenderPixels,
+    });
+    const level = (renderScale: number, pinnedRenderScale: number | null): number => {
+      const target = {
+        profile: medium,
+        domElement: display,
+        renderScale,
+        pinnedRenderScale,
+        governorConfig: governorConfigForProfile(medium),
+      };
+      return (Reflect.get(FlightRenderer.prototype, "resolveRenderScaleLevel") as (this: typeof target) => number)
+        .call(target);
+    };
+    vi.stubGlobal("window", { devicePixelRatio: 1 });
+    try {
+      const ceiling = medium.renderScale;
+      expect(Object.is(level(ceiling, null), resolveHardwareScalingLevel(inputs(ceiling)))).toBe(true);
+      expect(cssPixels / level(ceiling, null) ** 2).toBeCloseTo(medium.maxRenderPixels, 3);
+      // Pinned (a capture at a lower scale): the cap-only rule, as before.
+      expect(Object.is(level(0.81, 0.81), resolveHardwareScalingLevel(inputs(0.81)))).toBe(true);
+      // Unpinned, the same step lands on the capped frame: 1.5 × (0.81 / 0.86)² Mpx,
+      // where the cap-only rule gives 1.36.
+      const governed = level(0.81, null);
+      expect(cssPixels / governed ** 2).toBeCloseTo(medium.maxRenderPixels * (0.81 / ceiling) ** 2, 3);
+      expect(governed).toBeGreaterThan(resolveHardwareScalingLevel(inputs(0.81)));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 /** A governor mid-window: a probe out, a calm streak, and levels to keep. */
 function busyState(config: GovernorConfig): GovernorState {

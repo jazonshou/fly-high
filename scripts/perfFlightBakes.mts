@@ -73,7 +73,7 @@ const LISTED_RELIGHTS = 6;
  */
 const SKY_RELIGHT_HOW = "A climb re-lights the sky every 500 m and the agent climbs at most 25 m/s, so a "
   + "re-light needs about 1200 frames of climb: e.g. --clearance 1500 --speed 250 --legs 2 --leg-frames 720.";
-const GROUND_COVER_HOW = "The ground cover bakes only below its fade height (55 to 110 m above the ground, by "
+const GROUND_COVER_HOW = "The ground cover bakes only below its fade height (40 to 110 m above the ground, by "
   + "quality tier), and the agent descends at most 10 m/s from the shot's altitude; --start x,z begins the "
   + "legs at --clearance above the ground: e.g. --clearance 30 --speed 70 --start <x,z>.";
 

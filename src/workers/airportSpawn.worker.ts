@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { findSpawnedAirport } from "@/src/world";
+import { roadsVetoAirport } from "@/src/world/roads/roadAirports";
 import type { AirportSpawnRequest, AirportSpawnResult } from "./airportSpawnProtocol";
 
 const workerScope = self as unknown as DedicatedWorkerGlobalScope;
@@ -10,7 +11,7 @@ workerScope.addEventListener("message", (event: MessageEvent<AirportSpawnRequest
   let airport: AirportSpawnResult["airport"] = null;
   try {
     for (let attempt = 0; ; attempt += 1) {
-      const result = findSpawnedAirport(world, x, z, headingRadians, attempt);
+      const result = findSpawnedAirport(world, x, z, headingRadians, attempt, roadsVetoAirport);
       if (result === "exhausted") break;
       if (result) {
         airport = result;

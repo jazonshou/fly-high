@@ -138,6 +138,7 @@ import { assertStartupInvariants } from "./webgpu/core/RenderInvariants";
 import {
   createGovernorState,
   governorConfigForProfile,
+  governorExhausted,
   nextGovernorDecision,
   observeRenderScaleApplication,
   rebaseGovernorState,
@@ -151,8 +152,10 @@ import {
 } from "./webgpu/core/AdaptiveGovernor";
 import {
   DISPLAY_RESIZE_REQUEST,
+  GOVERNED_MIN_RENDER_PIXELS,
   GOVERNED_SCALE_REQUEST,
   RenderScaleQueue,
+  resolveGovernedHardwareScalingLevel,
   resolveHardwareScalingLevel,
 } from "./renderScaleLevel";
 import {
@@ -239,6 +242,7 @@ import { WaterEnvironmentField } from "./webgpu/water/WaterEnvironmentField";
 import { hydrologyClimateSamplerFor } from "./webgpu/water/hydrologyClimate";
 import { volcanicHydrologyInputs } from "./webgpu/water/hydrologyVolcanism";
 import { resolveGovernedWork, type GovernedWork } from "./governedWork";
+import { forceRefresh, refreshIntervalAtCadence, staggerRefresh, syncRefreshInterval } from "./refreshHold";
 import type { FlightRenderingSystem, FootstepEvents, HudCamera, ScreenPoint, TerrainAuthorityPublisher } from "./types";
 import {
   cadenceDisplayHz,
@@ -1095,6 +1099,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private presentationCadence: PresentationCadence | null = null;
   /** A cadence change already restarted the governor's window in flight (at most once per window). */
   private governorRebasedThisWindow = false;
+  /** G5: the sun-shadow map's refresh count at the last hold sync, so the stagger sees whether it moved. */
+  private shadowRefreshCountSeen = Number.NaN;
   /** The flight is paused: the static scene's frames are no measure of flight, so no window is judged. */
   private governorHeld = false;
   private budgetProbe: FrameGraphBudgetProbe | null = null;
@@ -3347,7 +3353,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       renderTechnique: "forward-spectral-volumetric",
       renderScale: this.appliedRenderScale,
       cloudResolutionScale: this.profile.cloudResolutionScale,
-      cloudRaySteps: this.profile.cloudPrimarySteps,
+      cloudRaySteps: this.clouds.viewSteps,
       oceanFftCascades: this.ocean.cascadeCount,
       oceanFftResolution: this.ocean.fftResolution,
       adapter: this.adapterLabel,
@@ -3370,6 +3376,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       presentationTargetMs: this.governorConfig.presentationTargetMs,
       lateFraction: this.lastSignals.lateFraction ?? null,
       governorTrial: this.governorState.trial?.ladder ?? null,
+      governorUrgent: this.governorState.urgent,
+      governorSpentWindows: this.governorState.spentWindows,
+      governorExhausted: governorExhausted(this.governorState),
       presentationCadence: this.presentationCadence === null ? null : {
         frameCapHz: this.presentationCadence.frameCapHz,
         divisor: this.presentationCadence.divisor,
@@ -3633,8 +3642,43 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       name: "hdr-present",
       phase: "post",
       after: ["volumetric-cloud-integration"],
-      execute: () => this.scene.render(false, false),
+      execute: () => {
+        this.syncRefreshHolds();
+        this.scene.render(false, false);
+      },
+      // G5: every history invalidation also invalidates a held shadow map or
+      // scene depth (origin shift, camera cut or mode change, profile,
+      // atmosphere, resize, capture scale): the next frame draws them fresh.
+      invalidateHistory: () => {
+        forceRefresh(this.atmosphere.shadows.getShadowMap());
+        forceRefresh(this.atmosphereResources.sceneDepth);
+      },
     });
+  }
+
+  /**
+   * G5: the CSM and cloud-depth refresh, the profile's rate at the presented
+   * cadence plus the governor's whole frames. Every frame, so it also lands
+   * on a map `applyProfile` recreated; the setter only writes on a change.
+   * On equal intervals the cloud depth is kept off the CSM's frames: only a
+   * frame a reset forces carries both passes, and the next moves the depth off.
+   */
+  private syncRefreshHolds(): void {
+    const work = this.governedWork;
+    const { tierPresentationTargetMs: tier, presentationTargetMs: shown } = this.governorConfig;
+    const shadowMap = this.atmosphere.shadows.getShadowMap();
+    const sceneDepth = this.atmosphereResources.sceneDepth;
+    syncRefreshInterval(
+      shadowMap,
+      refreshIntervalAtCadence(work.shadowRefreshFrames, tier, shown) + work.shadowRefreshExtraFrames,
+    );
+    syncRefreshInterval(
+      sceneDepth,
+      refreshIntervalAtCadence(work.cloudDepthRefreshFrames, tier, shown) + work.cloudDepthRefreshExtraFrames,
+    );
+    const shadowCountBefore = this.shadowRefreshCountSeen;
+    this.shadowRefreshCountSeen = shadowMap?.currentRefreshId ?? Number.NaN;
+    staggerRefresh(shadowMap, sceneDepth, shadowCountBefore);
   }
 
   private updatePresentation(): void {
@@ -5106,15 +5150,28 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.graph.invalidateHistory("quality profile changed");
   }
 
-  /** The capped scale product as a hardware scaling level (1A-6a). */
+  /**
+   * The capped scale product as a hardware scaling level (1A-6a). Unpinned,
+   * PR B part 2 (G4): the cap is judged at the governor's ceiling and its
+   * step applies to the capped frame, never below 0.4 Mpx, so a step the cap
+   * used to swallow is a real one.
+   */
   private resolveRenderScaleLevel(): number {
-    return resolveHardwareScalingLevel({
+    const inputs = {
       maxDevicePixelRatio: this.profile.maxDevicePixelRatio,
       devicePixelRatio: window.devicePixelRatio,
       renderScale: this.renderScale,
       cssWidth: this.domElement.clientWidth,
       cssHeight: this.domElement.clientHeight,
       maxRenderPixels: this.profile.maxRenderPixels,
+    };
+    // Captures, perf:ab and perf:flight pin the scale: the 1A-6a resolver,
+    // untouched (G4 is unpinned only).
+    if (this.pinnedRenderScale !== null) return resolveHardwareScalingLevel(inputs);
+    return resolveGovernedHardwareScalingLevel({
+      ...inputs,
+      ceilingScale: this.governorConfig.scaleCeiling,
+      minRenderPixels: GOVERNED_MIN_RENDER_PIXELS,
     });
   }
 
@@ -5141,7 +5198,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
   /**
    * B1: queues a governor step for the next frame's start and returns whether
    * it moves the level, which the anti-ratchet latch needs now. A step the
-   * pixel cap absorbs leaves the level as it is, so it counts as applied.
+   * 0.4 Mpx minimum absorbs (G4; the pixel cap did before) leaves the level
+   * as it is, so it counts as applied.
    */
   private deferGovernedRenderScale(): boolean {
     const changed = this.renderScaleQueue.levelWouldChange();
@@ -5191,11 +5249,11 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     if (Math.abs(state.renderScale - this.renderScale) > 1e-6) {
       const lowered = state.renderScale < this.renderScale;
       this.renderScale = state.renderScale;
-      // When the absolute pixel cap is the binding constraint, a governor
-      // step leaves the effective scale unchanged — no resize, no history
-      // reset, and the anti-ratchet latch learns about it immediately. B1: a
-      // step that does change it resizes at the next frame's start, never
-      // here, after this frame has drawn.
+      // When the 0.4 Mpx minimum binds (G4; the absolute pixel cap did
+      // before), a governor step leaves the effective scale unchanged — no
+      // resize, no history reset, and the anti-ratchet latch learns about it
+      // immediately. B1: a step that does change it resizes at the next
+      // frame's start, never here, after this frame has drawn.
       const changed = this.deferGovernedRenderScale();
       if (lowered) {
         state = observeRenderScaleApplication(state, changed, this.governorConfig);
@@ -5237,8 +5295,12 @@ private texelBytes(type: number | undefined, format: number | undefined): number
     this.terrain.setRequestBudgetPerUpdate(work.terrainPageRequestsPerUpdate);
     // 4-0b rung 0: the shared compute cap moves before any visible lever.
     this.terrain.setComputeBudgetScale(work.computeBudgetScale);
+    // PR B part 2 (G5): a smaller CDLOD selection, its threshold easing in.
+    this.terrain.setGovernedSelection(work.cdlodNodeBudget, work.cdlodPixelThreshold);
     this.detail.setGenerationBudgetCap(work.detailGenerationCap);
     this.clouds.setShadowIntervalFloor(work.cloudShadowIntervalFloor);
+    // PR B part 2 (G5): fewer, longer view-march steps; 1 is the profile's march.
+    this.clouds.setGovernedMarchScale(work.cloudMarchScale);
     this.governedProfileCache = this.resolveGovernedProfile();
   }
 

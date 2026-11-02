@@ -44,6 +44,50 @@ export function resolveHardwareScalingLevel(inputs: HardwareScalingInputs): numb
   return 1 / Math.min(requestedScale, pixelCapScale);
 }
 
+/** PR B part 2 (G4): the unpinned governor never shrinks the frame below this many pixels. */
+export const GOVERNED_MIN_RENDER_PIXELS = 400_000;
+/**
+ * PR B part 2 (G4): a governed frame within this share of the minimum lands
+ * on it, and a minimum within it of the capped frame leaves no lever at all.
+ * A step onto the minimum from under 4% above it would cost a resize, a
+ * target reallocation and a history reset for a change no step test can
+ * see; as "unchanged" it is absorbed by the anti-ratchet latch instead (red
+ * team). From further above, a step onto the minimum is a real one and moves
+ * the pixels by 1 - 1/1.04 (3.85%) or more: the snap is measured from the
+ * minimum, so it does not promise the 8% of a full step.
+ */
+export const GOVERNED_MIN_SNAP_PIXEL_RATIO = 1.04;
+
+export interface GovernedScalingInputs extends HardwareScalingInputs {
+  /** The governor's ceiling, the profile's render scale: the pixel cap is judged there. */
+  readonly ceilingScale: number;
+  readonly minRenderPixels: number;
+}
+
+/**
+ * PR B part 2 (G4, unpinned only): the governor's scale as a factor on the
+ * CAPPED frame, renderScale / ceilingScale, never below minRenderPixels and
+ * snapped onto it within 4%. At the ceiling it is
+ * `resolveHardwareScalingLevel`'s own expression, bit for bit. The floor on
+ * the factor is the governor's (`scaleFloor`), not this function's.
+ */
+export function resolveGovernedHardwareScalingLevel(inputs: GovernedScalingInputs): number {
+  const pixelRatio = Math.min(inputs.maxDevicePixelRatio, inputs.devicePixelRatio || 1);
+  const requestedScale = Math.max(0.1, pixelRatio * inputs.ceilingScale);
+  const cssPixels = Math.max(1, inputs.cssWidth * inputs.cssHeight);
+  const pixelCapScale = Math.sqrt(inputs.maxRenderPixels / cssPixels);
+  const capped = Math.min(requestedScale, pixelCapScale);
+  const factor = inputs.renderScale / inputs.ceilingScale;
+  if (!(factor < 1)) return 1 / capped;
+  // The minimum as a share of the capped frame's pixels. A capped frame
+  // under the minimum, or within 4% of it, never shrinks.
+  const minShare = inputs.minRenderPixels / (cssPixels * capped * capped);
+  if (minShare * GOVERNED_MIN_SNAP_PIXEL_RATIO >= 1) return 1 / capped;
+  const minFactor = Math.sqrt(minShare);
+  const snapped = factor * factor < minShare * GOVERNED_MIN_SNAP_PIXEL_RATIO ? minFactor : factor;
+  return 1 / (capped * Math.max(minFactor, snapped));
+}
+
 export function scalingLevelChanged(level: number, current: number): boolean {
   return Math.abs(level - current) > HARDWARE_SCALING_LEVEL_EPSILON;
 }

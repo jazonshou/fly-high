@@ -218,6 +218,11 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["Walker's finest figure mesh", (p: (typeof PROFILES)[number]) => p.personFigureFinestLod],
     ["Walker's shadow cascades", (p: (typeof PROFILES)[number]) => p.personShadowCascades],
     ["Walker's texture maps", (p: (typeof PROFILES)[number]) => p.personFigureTextureSize],
+    // PR B part 2. No label here contains an older key or is contained by one
+    // ("frame rate" is not "Frame target"): labels match by substring.
+    ["CSM refresh interval", (p: (typeof PROFILES)[number]) => p.shadowRefreshFrames],
+    ["Cloud-depth refresh interval", (p: (typeof PROFILES)[number]) => p.cloudDepthRefreshFrames],
+    ["Governor pixel floor", (p: (typeof PROFILES)[number]) => p.governorPixelFloorRatio],
     ["Frame target", (p: (typeof PROFILES)[number]) => p.frameTargetMs],
     ["Rendered stems/ha", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.nearStemsPerHectare],
     ["Impostor floor share", (p: (typeof PROFILES)[number]) => p.renderedDensityLaw.impostorFloorShare],
@@ -349,12 +354,14 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     // comparing two empty lists — the exact false pass this family exists to
     // make impossible. And an upper bound too: the first attempt ran past the
     // table's end into the next one and collected 32 labels. The table has
-    // grown to 45 rows since (volcanic land added two, boats two, the car
-    // three, the roads two, the walker three, the underwater view two), so the
-    // end is pinned by its last row as well as by the count.
+    // grown to 48 rows since (volcanic land added two, boats two, the car
+    // four, the roads two, the walker three, the underwater view two, PR B
+    // part 2 three), so the end is pinned by its last row as well as by the
+    // count.
     const rows = tierTableRowLabels();
     expect(rows.length).toBeGreaterThan(20);
-    expect(rows.length, "the walk ran past the end of the tier table").toBeLessThan(48);
+    // The next row-adding change raises this again, deliberately.
+    expect(rows.length, "the walk ran past the end of the tier table").toBeLessThan(52);
     expect(rows.at(-1), "the walk ran past the end of the tier table").toContain("Frame target");
     expect(TIER_ROW_CHECKS.length + DECLARED_UNVERIFIABLE.length).toBeGreaterThan(20);
   });

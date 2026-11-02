@@ -277,7 +277,8 @@ export const SPAWNED_AIRPORT_VOLCANIC_COVER_MAX = 0.05;
  * quay, and the infrastructure stage, which runs before the airports, never
  * has its work flattened. Streamed regions (the roads) are not asked: which
  * of them were installed when a site was surveyed depends on where the
- * aircraft flew, so the roads keep airports off their own corridors instead.
+ * aircraft flew, so the roads keep airports off their own corridors instead
+ * (`roadsVetoAirport`, the spawn search's `veto`).
  */
 export const SPAWNED_AIRPORT_INFRASTRUCTURE_CLEARANCE_METERS = 1_500;
 
@@ -389,7 +390,12 @@ function spawnSurvey(
  * site assessment to the `n`-th batch of the best-ranked surveyed centres;
  * the first runway that passes is returned. `"exhausted"` means no surveyed
  * centre passed, and the caller should re-anchor where the aircraft is now.
- * Deterministic in (world, anchor, attempt).
+ * Deterministic in (world, anchor, attempt, veto).
+ *
+ * `veto` refuses a runway that passed everything else. The spawn worker
+ * passes the roads' (`roadsVetoAirport`): the road network is a layer this
+ * module does not import, and a caller that leaves it out (a test building a
+ * two-airport world) gets the sites it always got.
  */
 export function findSpawnedAirport(
   world: WorldDefinition,
@@ -397,6 +403,7 @@ export function findSpawnedAirport(
   z: number,
   headingRadians: number,
   attempt: number,
+  veto?: (world: WorldDefinition, airport: Readonly<AirportDefinition>) => boolean,
 ): Readonly<AirportDefinition> | null | "exhausted" {
   const home = world.airport;
   if (!home) return "exhausted";
@@ -427,6 +434,7 @@ export function findSpawnedAirport(
     if (!getRunwayEnds(airport).every(({ threshold }) => spawnedAirportGroundAllowed(world, threshold.x, threshold.z))) {
       continue;
     }
+    if (veto?.(world, airport)) continue;
     return airport;
   }
   return null;

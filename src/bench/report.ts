@@ -30,7 +30,7 @@ import type {
 } from "./types";
 
 /**
- * The `fly-high.bench/2` report: built from the run store, then written as
+ * The `fly-high.bench/3` report: built from the run store, then written as
  * the downloadable JSON, a compact clipboard copy, a short summary for chat,
  * a prefilled GitHub issue link and the table the report page shows. Pure:
  * the page does the copying, downloading and opening.
@@ -754,7 +754,8 @@ export function decimalText(value: number | null | undefined, digits = 1): strin
 /**
  * The air window's share of frames at the scale floor: a dash, as the other
  * air cells, for a flight that never reached the window, and "n/a" where the
- * resolution lever cannot move (tier 0, a binding pixel cap, pinned).
+ * resolution lever cannot move (a floor at the ceiling, the 0.4 Mpx
+ * minimum, pinned).
  */
 function floorShareText(result: BenchStepResult | null): string {
   const window = result?.governor.windows.air;

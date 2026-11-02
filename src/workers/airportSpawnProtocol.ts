@@ -1,10 +1,12 @@
 import type { AirportDefinition, WorldDefinition } from "@/src/world";
 
 /**
- * One anchored spawn search (`findSpawnedAirport`), run off the main thread:
- * a passing site's certified assessment samples the terrain kernel tens of
- * thousands of times (60-300 ms), which would be a visible hitch on the
- * render thread and a stalled step on the simulation's.
+ * One anchored spawn search (`findSpawnedAirport`, with the roads' veto,
+ * `roadsVetoAirport`), run off the main thread: a passing site's certified
+ * assessment samples the terrain kernel tens of thousands of times
+ * (60-300 ms), and the veto lays out the road network round it, a few
+ * seconds the first time it asks in an area. Either would be a visible hitch
+ * on the render thread and a stalled step on the simulation's.
  */
 export interface AirportSpawnRequest {
   readonly requestId: number;
