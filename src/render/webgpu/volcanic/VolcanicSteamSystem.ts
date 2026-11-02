@@ -263,7 +263,11 @@ export function sampleSteamWisp(
   out.z = records[at + 2]! + flowZ * travel - flowX * wobble;
   out.age = age;
   out.sizeMeters = records[at + 3]! * (0.45 + 1.35 * age);
-  out.alpha = records[at + 6]! * smoothstep(0, 0.12, age) * (1 - smoothstep(0.45, 1, age));
+  // Smoke leaves the flue at once and thins over most of its life, so the plume stays joined to the chimney.
+  const smoke = records[at + 8]! >= STEAM_SMOKE_SEED_OFFSET;
+  out.alpha = records[at + 6]! * (smoke
+    ? smoothstep(0, 0.04, age) * (1 - smoothstep(0.3, 1, age))
+    : smoothstep(0, 0.12, age) * (1 - smoothstep(0.45, 1, age)));
   return out;
 }
 
@@ -351,7 +355,14 @@ fn main(input: VertexInputs) -> FragmentInputs {
   // A wisp the camera is about to fly through fades out before it fills the
   // screen: overdraw is the one way this effect could get expensive.
   let nearFade = smoothstep(size * 0.6, size * 2.0, distanceMeters);
-  let lifeFade = smoothstep(0.0, 0.12, age) * (1.0 - smoothstep(0.45, 1.0, age));
+  // Chimney smoke (a noise seed of 2 or more) leaves the flue at once and
+  // thins over most of its life, so the plume stays joined to the chimney.
+  let smoke = recordC.x >= ${wgslFloat(STEAM_SMOKE_SEED_OFFSET)};
+  let lifeFade = select(
+    smoothstep(0.0, 0.12, age) * (1.0 - smoothstep(0.45, 1.0, age)),
+    smoothstep(0.0, 0.04, age) * (1.0 - smoothstep(0.3, 1.0, age)),
+    smoke,
+  );
   let alpha = recordB.z * lifeFade * rangeFade * nearFade;
 
   // Camera-facing: the corner is added in view space. World up seen from
@@ -396,7 +407,7 @@ fn main(input: VertexInputs) -> FragmentInputs {
   }
   // Chimney smoke (a noise seed of 2 or more, \`STEAM_SMOKE_SEED_OFFSET\`) is
   // the same medium greyed: wood smoke scatters less of what it is lit by.
-  let albedo = select(vec3f(1.0), STEAM_SMOKE_ALBEDO, recordC.x >= ${wgslFloat(STEAM_SMOKE_SEED_OFFSET)});
+  let albedo = select(vec3f(1.0), STEAM_SMOKE_ALBEDO, smoke);
   let radiance = (sunAtWisp * phase + skyRadiance(rayDirection) * STEAM_AMBIENT_STRENGTH) * albedo;
   let haze = aerialPerspective(centre.y, distanceMeters, mu);
 
@@ -468,7 +479,9 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
     + 0.2 * steamValueNoise(q * 4.13 + vec2f(1.7, 9.2));
   // fbm of three octaves clusters around 0.5; stretch it before thresholding.
   let contrast = clamp((noise - 0.5) * 2.4 + 0.5, 0.0, 1.0);
-  let threshold = 0.2 + 0.7 * radiusSquared;
+  // Smoke is a softer, fuller puff than steam's ragged wisps: overlapping
+  // puffs read as one plume, where ragged ones break into specks.
+  let threshold = select(0.2 + 0.7 * radiusSquared, 0.05 + 0.5 * radiusSquared, seed >= ${wgslFloat(STEAM_SMOKE_SEED_OFFSET)});
   let density = smoothstep(threshold, threshold + 0.35, contrast) * (1.0 - radiusSquared);
 
   // Soft against terrain: fade with the gap between the wisp and the ground

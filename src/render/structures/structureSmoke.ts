@@ -36,8 +36,11 @@ export const STRUCTURE_SMOKE_ARCHETYPES: ReadonlySet<StructureArchetype> = new S
   "sauna",
 ]);
 
-/** Wisps a smoking chimney emits. */
-export const STRUCTURE_SMOKE_WISPS = 6;
+/**
+ * Wisps a smoking chimney emits: enough, at their short lives, that each
+ * puff overlaps the next and the plume reads as one, not as specks.
+ */
+export const STRUCTURE_SMOKE_WISPS = 8;
 
 /** Chimneys smoke within this of the camera, metres: past it a plume is a pixel or two. */
 export const STRUCTURE_SMOKE_RANGE_METERS = 1_500;
@@ -70,9 +73,10 @@ function unit(seed: number, wisp: number, lane: number): number {
 
 /**
  * A flue's `count` wisp records (`writeSteamWisps`' layout), x and z relative
- * to the anchor: puffs about a metre across at the flue, growing as they
- * climb 10-20 m (less in wind, which bends the plume over and carries it off
- * downwind), each living 7-11 s, flagged as smoke in the noise seed.
+ * to the anchor: puffs half a metre across at the flue, spreading to 1.5-3 m
+ * as they climb 8-14 m (less in wind, which bends the plume over and carries
+ * it off downwind), each living 4-6 s, flagged as smoke in the noise seed.
+ * The short lives keep the puffs close enough to overlap into one plume.
  */
 export function writeStructureSmokeWisps(
   flue: StructureSmokeFlue,
@@ -84,22 +88,22 @@ export function writeStructureSmokeWisps(
   offset: number,
 ): void {
   const s = flue.strength;
-  const rise = (10 + 10 * s) / (1 + Math.max(0, windSpeed) / 6);
+  const rise = (8 + 6 * s) / (1 + Math.max(0, windSpeed) / 6);
   for (let wisp = 0; wisp < count; wisp += 1) {
     const at = offset + wisp * STEAM_FLOATS_PER_WISP;
-    const size = (0.8 + 0.6 * unit(flue.seed, wisp, 0)) * (0.7 + 0.3 * s);
-    const lifetime = 7 + 4 * unit(flue.seed, wisp, 1);
+    const size = (1.1 + 0.6 * unit(flue.seed, wisp, 0)) * (0.7 + 0.3 * s);
+    const lifetime = 4 + 2 * unit(flue.seed, wisp, 1);
     out[at] = flue.x - anchorX;
     out[at + 1] = flue.y;
     out[at + 2] = flue.z - anchorZ;
     out[at + 3] = size;
     out[at + 4] = Math.max(1, Math.round(STEAM_CYCLE_PERIOD_SECONDS / lifetime));
     out[at + 5] = (wisp + unit(flue.seed, wisp, 2) * 0.5) / count;
-    out[at + 6] = (0.25 + 0.2 * unit(flue.seed, wisp, 3)) * s;
+    out[at + 6] = (0.22 + 0.12 * unit(flue.seed, wisp, 3)) * s;
     out[at + 7] = rise * (0.8 + 0.4 * unit(flue.seed, wisp, 4));
     out[at + 8] = STEAM_SMOKE_SEED_OFFSET + unit(flue.seed, wisp, 5);
     out[at + 9] = (unit(flue.seed, wisp, 6) - 0.5) * 3;
-    out[at + 10] = size * (0.3 + 0.5 * unit(flue.seed, wisp, 7));
+    out[at + 10] = size * (0.2 + 0.3 * unit(flue.seed, wisp, 7));
     out[at + 11] = 0.8 + 0.4 * unit(flue.seed, wisp, 8);
   }
 }

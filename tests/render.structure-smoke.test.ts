@@ -155,10 +155,17 @@ describe("chimney smoke", () => {
       expect(sample.sizeMeters).toBeLessThan(3.5);
       // With wind it is carried off downwind.
       sampleSteamWisp(windy, wisp, time, 1, 0, 8, sample);
-      expect(sample.x - 1_000).toBeGreaterThan(10);
+      expect(sample.x - 1_000).toBeGreaterThan(5);
+      // It leaves the flue at once, so the plume stays joined to the chimney:
+      // a few per cent into its life a puff is already at full strength.
+      const early = ((0.05 - calm[at + 5]! + 1) % 1) * lifetime;
+      sampleSteamWisp(calm, wisp, early, 1, 0, 0, sample);
+      expect(sample.alpha).toBeGreaterThan(0.9 * calm[at + 6]!);
+      expect(sample.y - 42).toBeLessThan(2);
     }
     // The shader greys a smoke wisp (its seed flag) and only those.
-    expect(VOLCANIC_STEAM_VERTEX_WGSL).toContain(`select(vec3f(1.0), STEAM_SMOKE_ALBEDO, recordC.x >= ${STEAM_SMOKE_SEED_OFFSET}.0)`);
+    expect(VOLCANIC_STEAM_VERTEX_WGSL).toContain(`let smoke = recordC.x >= ${STEAM_SMOKE_SEED_OFFSET}.0;`);
+    expect(VOLCANIC_STEAM_VERTEX_WGSL).toContain("select(vec3f(1.0), STEAM_SMOKE_ALBEDO, smoke)");
     expect(Math.max(...STEAM_SMOKE_ALBEDO)).toBeLessThan(0.7);
   });
 
