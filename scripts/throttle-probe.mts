@@ -596,7 +596,9 @@ async function installStateSampler(): Promise<boolean> {
         // drawn frames. fps is Babylon's mean over the last 30 drawn frames
         // (about 1 s at 30 fps); intervalP95 is the start-to-start p95 over
         // the 600-frame diagnostics window (10 s at 60 fps, 20 s at 30), so
-        // it holds one cadence's frames only that long after a switch.
+        // it holds one cadence's frames only that long after a switch. Like
+        // the governor's own, it leaves out intervals over 250 ms, so on a
+        // host that slow it reads far below its max frame.
         fps: d.fps ?? null, intervalP95: d.frameIntervalP95Ms ?? null,
         pendingTerrainPages: d.pendingTerrainPages, pendingDetailWork: d.pendingDetailWork,
         residentTerrainPages: d.residentTerrainPages, drawCalls: d.drawCalls,
