@@ -611,9 +611,12 @@ function hangPicture(b: KitBuilder, ctx: RoomContext, wall: Wall, s: number, pie
   return true;
 }
 
+/** Curtain cloth: linen, oatmeal, pale sea, faded rose, sage and straw. */
+const CURTAIN_COLOURS = [0xd8cfc0, 0xc9b79a, 0xb8c4c0, 0xc8a8a0, 0xa8b49a, 0xd4c49a];
+
 /** Curtains drawn back beside each window, where nothing stands in front of the wall. */
 function hangCurtains(b: KitBuilder, ctx: RoomContext, walls: readonly Wall[], placed: readonly PlanRect[]): void {
-  const colour = shade(ctx.look.fabricColours[(ctx.index + 1) % ctx.look.fabricColours.length]!, 1.12);
+  const colour = CURTAIN_COLOURS[Math.floor(decorDice(ctx, 2, 0) * CURTAIN_COLOURS.length) % CURTAIN_COLOURS.length]!;
   const top = ctx.ceiling - 0.04;
   for (const win of ctx.windows) {
     const wall = walls.find((w) => w.normal === win.normal && Math.abs(w.at - win.at) < 0.05);
@@ -624,9 +627,14 @@ function hangCurtains(b: KitBuilder, ctx: RoomContext, walls: readonly Wall[], p
     if (y1 - y0 < 0.5) continue;
     for (const [a0, a1] of [[win.s0 - 0.26, win.s0 - 0.01], [win.s1 + 0.01, win.s1 + 0.26]] as const) {
       if (a0 < wall.s0 + 0.02 || a1 > wall.s1 - 0.02) continue;
-      const r = rectOf(wall, a0, a1 - a0, 0, 0.06);
+      const r = rectOf(wall, a0, a1 - a0, 0, 0.07);
       if (placed.some((p) => overlaps(r, p)) || ctx.keepOut.some((k) => overlaps(r, k))) continue;
-      b.box(r.x0, r.x1, y0, y1, r.z0, r.z1, "fabric", colour, front | ends, ctx.indoor);
+      // Three folds, deep and shallow, light and shaded, so the cloth reads as hanging fabric, not a board.
+      const fold = (a1 - a0) / 3;
+      for (let k = 0; k < 3; k += 1) {
+        const f = rectOf(wall, a0 + k * fold, fold, 0, k === 1 ? 0.04 : 0.07);
+        b.box(f.x0, f.x1, y0, y1, f.z0, f.z1, "fabric", k === 1 ? shade(colour, 0.86) : colour, front | ends, ctx.indoor);
+      }
     }
   }
 }

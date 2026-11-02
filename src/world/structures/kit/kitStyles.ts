@@ -298,12 +298,14 @@ export const DOORWAY_COLOUR = 0x17130f;
 const FABRICS = [0x7a3a32, 0x3e5a72, 0x6a7a4a, 0xb89a5a, 0x8a6a8a, 0xc8c0b0, 0x4a6a6a];
 
 /**
- * Wall paints for the rooms people live in: soft, slightly greyed colours
- * (sage, ochre, dusty blue, faded rose, cream, pale green, light clay), so a
- * house reads as painted and lived in rather than one plain lining
- * throughout. The style's own lining stays in the list, so some rooms keep it.
+ * Wall paints for the rooms people live in: pale, slightly greyed tints
+ * (sage, ochre, blue, rose, cream, green, clay), so a house reads as painted
+ * and lived in rather than one plain lining throughout. They stay as light as
+ * the plain linings: a room is lit by its windows alone, and a darker paint
+ * makes the whole room dim and muddy. The style's own lining stays in the
+ * list, so some rooms keep it.
  */
-const ROOM_PAINTS = [0xc4c8a8, 0xdcc898, 0xb6c2c4, 0xd2b6a6, 0xe2d4b4, 0xc6d2bc, 0xceac90];
+const ROOM_PAINTS = [0xdadcc6, 0xeadcb6, 0xd2dce0, 0xe8d4c8, 0xeee4cc, 0xd8e2ce, 0xe6d0bc];
 
 function wallSurfaceOf(cladding: WallCladding): WallCladding {
   return cladding;
