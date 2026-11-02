@@ -171,7 +171,7 @@ export interface WebGpuQualityProfile {
    * Tier 0 is OFF, not for want of need. It was off for memory while the
    * sharpen was a pass of its own (one LDR target, against tier 0's then
    * 259.6 of 260 MiB at 2560x1440@2, 254.7 since PR B part 2's 0.85 Mpx
-   * cap); fused into FXAA (`FxaaSharpenPass`) it costs no target, only
+   * cap, 259.3 with the walker's maps); fused into FXAA (`FxaaSharpenPass`) it costs no target, only
    * RCAS's arithmetic, so turning it on there is now a decision about the
    * low tier's look, not its budget.
    *
@@ -517,7 +517,8 @@ export interface WebGpuQualityProfile {
    * within 80 m, 3 = 1k), how many of the nearest shadow cascades it casts
    * into (capped by `shadowCascades`), and the size of its texture maps
    * (albedo, normal and occlusion-roughness-metal, each this square with
-   * its mip chain: 2048 is 64 MiB of GPU memory, 1024 16 MiB, 512 4 MiB).
+   * its mip chain: 2048 is 64 MiB of GPU memory, 1024 16 MiB, 512 4 MiB;
+   * `estimateGpuMemoryBreakdown` counts them as `personFigureMiB`).
    * Its draws are one plus the cascades: the walking plan's budget table, 2
    * on Low and 3 above it while every tier has two cascades.
    *
@@ -904,7 +905,11 @@ function resolveBaseQualityProfile(
       marinaCastsShadows: true,
       personFigureFinestLod: 0,
       personShadowCascades: 2,
-      personFigureTextureSize: 2048,
+      // 1024, not 2048: the 2048 maps' 64 MiB put this tier's estimate at
+      // 753 of its 700 MiB (`MEMORY_CEILING_MIB`); 1024 leaves it at 698. The
+      // chase camera sits 3.2 m back, where 1024 already exceeds the pixels
+      // the figure covers.
+      personFigureTextureSize: 1024,
       underwaterSnellWindow: true,
       underwaterCaustics: true,
       // Full: the home field's 6 km structure reach, shadows, floods.

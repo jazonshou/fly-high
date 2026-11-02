@@ -46,6 +46,14 @@ export interface FigureGeometry {
   readonly matricesWeights: Float32Array;
 }
 
+/**
+ * The maps a tier loads, each `personFigureTextureSize` square, RGBA8 with its
+ * full mip chain on the GPU: albedo, normal and occlusion-roughness-metal.
+ * `estimateGpuMemoryBreakdown` sizes the walker's row from this.
+ */
+export const WALKER_MAP_COUNT = 3;
+export const WALKER_MAP_BYTES_PER_TEXEL = 4;
+
 export interface WalkerBodyMaps {
   readonly size: number;
   /** RGBA, rows from the image's top (V = 0 as the mesh's UVs run). */

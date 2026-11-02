@@ -52,8 +52,9 @@ the ground between the heels (seated: the driver's hip point). The sim's
   occlusion, roughness and metalness. The occlusion is ray-traced against the
   whole figure (32 rays a texel at half size) and also darkens the albedo a
   little. Each is baked at 2,048 texels and halved for 1,024 and 512; the
-  tier picks one (`personFigureTextureSize`: Low 512, Medium 1,024, High and
-  Ultra 2,048). The figure builds the mip chains itself, in linear light,
+  tier picks one (`personFigureTextureSize`: Low 512, Medium and High 1,024,
+  Ultra 2,048; High's memory budget has no room for the 2,048 maps' 64 MiB,
+  docs/PERFORMANCE.md "The realistic walker"). The figure builds the mip chains itself, in linear light,
   renormalising the normals and widening the roughness where they spread
   (Toksvig).
 - **Files** (`src/render/webgpu/person/assets/`, 2.8 MB): `walker-body.bin`

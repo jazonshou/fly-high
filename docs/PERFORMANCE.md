@@ -144,7 +144,7 @@ audit is why it now carries all four tiers):
 | Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
 | Walker's finest figure mesh (`personFigureFinestLod`; car sessions only; 0 = 33k triangles within 10 m, 1 = 10k within 25 m, 2 = 3k within 80 m, 3 = 1k) | 1 | 0 | 0 | 0 |
 | Walker's shadow cascades (`personShadowCascades`; the nearest ones, capped by the tier's cascades) | 1 | 2 | 2 | 3 |
-| Walker's texture maps (`personFigureTextureSize`; albedo, normal and occlusion-roughness-metal, each this square; 64, 16 or 4 MiB with mips) | 512 | 1,024 | 2,048 | 2,048 |
+| Walker's texture maps (`personFigureTextureSize`; albedo, normal and occlusion-roughness-metal, each this square; 64, 16 or 4 MiB with mips) | 512 | 1,024 | 1,024 | 2,048 |
 | Underwater Snell's window (`underwaterSnellWindow`; car sessions, camera submerged; off = a flat underside) | no | yes | yes | yes |
 | Underwater caustics (`underwaterCaustics`; car sessions, camera submerged) | no | no | yes | yes |
 | CSM refresh interval (frames at the tier's frame rate; G5) | 2 | 1 | 1 | 1 |
@@ -3856,12 +3856,21 @@ unchanged, one mesh plus the tier's cascades: MEASURED again in
 `tests/gpu/person-figure.test.ts`, 2 on Low, 3 on Medium, High and Ultra.
 
 - Load: the tier's files only, fetched with the scene in car sessions:
-  742 KB of mesh and 123 KB (Low), 399 KB (Medium) or 1.5 MB (High, Ultra)
+  742 KB of mesh and 123 KB (Low), 399 KB (Medium, High) or 1.5 MB (Ultra)
   of JPEG maps.
-- GPU memory, maps with their mips: 4 MiB on Low, 16 on Medium, 64 on High
-  and Ultra. Vertex and index buffers: 2.4 MB with all four levels built
+- GPU memory, maps with their mips: 4 MiB on Low, 16 on Medium and High, 64
+  on Ultra. They are a row of the memory estimate, `personFigureMiB`, since
+  every car session holds them. With it the estimate reads 259.3 of Low's
+  260 MiB, 421.3 of Medium's 480, 697.8 of High's 700 and 948.1 of Ultra's
+  1,000 (the largest of the three budget viewports). High first had the
+  2,048 maps, which put it at 753 of 700, so it takes 1,024. The macOS
+  capture (529c041, tier 1) measured the maps: every car and walk shot's
+  texture lane read 16.0 MiB over the land branch's. Its six walker shots
+  failed the estimate-against-inventory check (15.3-15.5% of 15%) until the
+  row went in. Vertex and index buffers: 2.4 MB with all four levels built
   (19,128 / 6,545 / 2,353 / 1,059 vertices at 64 bytes, 32-bit indices),
-  0.8 MB on Low, which skips the finest.
+  0.8 MB on Low, which skips the finest; they are scene geometry, inside
+  `miscMiB`.
 - Triangles drawn: within 10 m the 33k mesh, which only the close views (the
   chase camera at 3.2 m, the front view) see; the shadow passes draw the
   same level.
