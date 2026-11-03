@@ -1,17 +1,20 @@
 import type { WorldDefinition } from "@/src/world";
 import type { InfrastructureRegion } from "@/src/world/infrastructure";
-import type { RoadLayer, RoadPad, RoadPiece } from "@/src/world/roads/roadNetwork";
+import type { RoadPad, RoadPiece } from "@/src/world/roads/roadNetwork";
+import type { RoadStreamLayer } from "@/src/world/roads/roadStreaming";
 
 /**
  * The roads worker (`roads.worker.ts`): the road network generated off the
  * main thread, one region at a time, nearest the observer first
  * (`RoadStreamController` keeps the list). Each region comes back as the
  * stage's streamed region and the pieces and pads it was laid out from (for
- * the ribbons and the guardrails).
+ * the ribbons and the guardrails). A settlements region comes back the same
+ * way, its buildings in the stage region's `structures` and no pieces or
+ * pads of its own.
  */
 
 export interface RoadRegionAddress {
-  readonly layer: RoadLayer;
+  readonly layer: RoadStreamLayer;
   readonly rx: number;
   readonly rz: number;
 }

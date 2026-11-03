@@ -75,6 +75,37 @@ fn terrainInfra_platform(
 }
 `;
 
+/**
+ * `clearing`: no earthworks at all (weight 0 everywhere). A segment that only
+ * paints (its `surface`) and keeps plants off (its `plantClearance`): a farm
+ * yard, a driveway, the ground round a building on posts. The settlements'
+ * (`src/world/settlements/`).
+ */
+function clearingHeight(
+  _along: number,
+  _across: number,
+  _length: number,
+  _segment: InfrastructureSegment,
+  ground: number,
+  _seaLevel: number,
+  out: InfrastructureProfileSample,
+): void {
+  out.target = ground;
+  out.weight = 0;
+}
+
+const CLEARING_WGSL = /* wgsl */ `
+fn terrainInfra_clearing(
+  along: f32,
+  across: f32,
+  seg: TerrainInfrastructureSegment,
+  ground: f32,
+  seaLevel: f32,
+) -> vec2f {
+  return vec2f(ground, 0.0);
+}
+`;
+
 export const INFRASTRUCTURE_PROFILE = Object.freeze({
   platform: 0,
   // The home marina's (marinaEarthworkProfiles.ts).
@@ -85,6 +116,8 @@ export const INFRASTRUCTURE_PROFILE = Object.freeze({
   // The roads' (roadEarthworkProfiles.ts).
   carriageway: 5,
   junctionPad: 6,
+  // The settlements' (building pads use `platform`).
+  clearing: 7,
 });
 
 export const INFRASTRUCTURE_PROFILES: readonly InfrastructureProfile[] = Object.freeze([
@@ -110,4 +143,5 @@ export const INFRASTRUCTURE_PROFILES: readonly InfrastructureProfile[] = Object.
   Object.freeze({
     id: INFRASTRUCTURE_PROFILE.junctionPad, name: "junctionPad", height: roadJunctionPadHeight, wgsl: ROAD_PROFILE_WGSL.junctionPad,
   }),
+  Object.freeze({ id: INFRASTRUCTURE_PROFILE.clearing, name: "clearing", height: clearingHeight, wgsl: CLEARING_WGSL }),
 ]);

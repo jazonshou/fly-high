@@ -5,8 +5,10 @@ import {
   type InfrastructureChange,
 } from "@/src/world/infrastructure";
 import { clipRoadRegionForAirports } from "@/src/world/roads/roadAirports";
-import { roadRegionKey } from "@/src/world/roads/roadInfrastructure";
+import { clipSettlementRegionForAirports } from "@/src/world/settlements/settlementAirports";
+import { isSettlementRegionKey } from "@/src/world/settlements/settlementStreaming";
 import {
+  roadStreamRegionKey,
   roadStreamRegions,
   ROAD_STREAM_KEEP_MARGIN,
   type RoadStreamObserver,
@@ -99,11 +101,12 @@ export interface RoadStreamChange {
  * first pages bake with their roads rather than rebuilding under the car.
  *
  * Every region goes in clipped round the live world's spawned airports
- * (`clipRoadRegionForAirports`: what reaches a field's earthworks is taken
- * out, under a key of its own), and when the airports change (`setWorld`)
+ * (`clipRoadRegionForAirports`, a settlements region by
+ * `clipSettlementRegionForAirports`: what reaches a field's earthworks is
+ * taken out, under a key of its own), and when the airports change (`setWorld`)
  * each installed region whose clip changes is swapped for the new one, a
  * flush's share at a time, its removal and install in one change. The
- * bookkeeping is by region address (`roadRegionKey`); the stage, the
+ * bookkeeping is by region address (`roadStreamRegionKey`); the stage, the
  * listeners and the change's `removed` see the installed regions' own keys.
  */
 export class RoadStreamController {
@@ -155,7 +158,7 @@ export class RoadStreamController {
   }
 
   /**
-   * Regions installed now, as installed, by address key (`roadRegionKey`;
+   * Regions installed now, as installed, by address key (`roadStreamRegionKey`;
    * a clipped region's own key is its `infrastructure.key`). Observation only.
    */
   get installedRegions(): ReadonlyMap<string, RoadsWorkerRegionEvent> {
@@ -213,7 +216,7 @@ export class RoadStreamController {
     this.scans += 1;
     const kept = new Set<string>();
     for (const region of roadStreamRegions(observer, ROAD_STREAM_KEEP_MARGIN)) {
-      kept.add(roadRegionKey(region.layer, region.rx, region.rz));
+      kept.add(roadStreamRegionKey(region.layer, region.rx, region.rz));
     }
     this.keep = kept;
     for (const key of this.leaving) {
@@ -229,7 +232,7 @@ export class RoadStreamController {
     const window = this.failures.size > 0 ? new Set<string>() : null;
     let retryDue = false;
     for (const region of roadStreamRegions(observer)) {
-      const key = roadRegionKey(region.layer, region.rx, region.rz);
+      const key = roadStreamRegionKey(region.layer, region.rx, region.rz);
       window?.add(key);
       if (this.installed.has(key) || this.arrived.some((event) => event.infrastructure.key === key)) continue;
       const cached = this.dropped.get(key);
@@ -374,7 +377,7 @@ export class RoadStreamController {
     if (!this.worker) return Promise.resolve();
     const keys = roadStreamRegions({ ...observer, velocityX: 0, velocityZ: 0 })
       .filter((region) => region.distance <= radiusMeters)
-      .map((region) => roadRegionKey(region.layer, region.rx, region.rz));
+      .map((region) => roadStreamRegionKey(region.layer, region.rx, region.rz));
     return new Promise<void>((resolve) => {
       const waiter = { keys, resolve };
       this.primeWaiters.push(waiter);
@@ -398,7 +401,11 @@ export class RoadStreamController {
   /** A region as the live world's spawned airports leave it (the home field never clips). */
   private clip(source: RoadsWorkerRegionEvent): RoadsWorkerRegionEvent {
     const airports = this.world.airports ?? [];
-    return airports.length > 1 ? clipRoadRegionForAirports(source, airports.slice(1)) : source;
+    if (airports.length <= 1) return source;
+    // A settlements region has no pieces or pads, and its buildings go with the ground they stand on.
+    return isSettlementRegionKey(source.infrastructure.key)
+      ? clipSettlementRegionForAirports(source, airports.slice(1))
+      : clipRoadRegionForAirports(source, airports.slice(1));
   }
 
   private cacheDropped(key: string, event: RoadsWorkerRegionEvent): void {
@@ -468,7 +475,7 @@ export class RoadStreamController {
     this.stateVersion += 1;
     if (event.type === "error") {
       if (event.address) {
-        this.fail(roadRegionKey(event.address.layer, event.address.rx, event.address.rz), event.message);
+        this.fail(roadStreamRegionKey(event.address.layer, event.address.rx, event.address.rz), event.message);
       } else {
         console.error("Road region failed", event.message);
       }

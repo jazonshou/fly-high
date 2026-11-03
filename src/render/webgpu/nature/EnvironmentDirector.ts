@@ -385,6 +385,21 @@ export function twilightExposureDipFactor(sunElevationSine: number): number {
   return 1 - TWILIGHT_EXPOSURE_DIP * rise * fall;
 }
 
+/**
+ * Indoors by day (a generated building's rooms): the light is a few per cent
+ * of the daylight outside, and the eye adapts to it by the same weak law it
+ * adapts to dusk by (k above), so a room is dim but readable and its windows
+ * glare. A canonical room's daylight factor, not a measured one: the camera
+ * does not meter the scene (the `1A-4` rule). `indoors` is 0 outside, 1 well
+ * inside, and between in a doorway.
+ */
+export const INDOOR_DAYLIGHT_FACTOR = 0.03;
+
+export function indoorExposureGain(indoors: number): number {
+  const share = Math.min(1, Math.max(0, indoors));
+  return Math.pow(INDOOR_DAYLIGHT_FACTOR, -ADAPTATION_STRENGTH * share);
+}
+
 export function exposureForState(state: EnvironmentState, moonIlluminanceLux = 0): number {
   const overcast = 1 - state.weather.cloudCoverage * 0.42;
   const illuminance = Math.max(
