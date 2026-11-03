@@ -7,9 +7,16 @@ import {
 } from "@/src/render/webgpu/core/GpuBufferInventory";
 import {
   INFRASTRUCTURE_BIN_METERS,
+  INFRASTRUCTURE_SURFACE_BOX_HALF_METERS,
   INFRASTRUCTURE_SURFACE_FEATHER_METERS,
-  infrastructureBinKey,
+  infrastructureBin,
+  infrastructureBinKeyX,
+  infrastructureBinKeyZ,
   infrastructureIndex,
+  infrastructureIndexChanges,
+  infrastructureIndexStreamed,
+  infrastructureTerrainKey,
+  type PackedInfrastructureSegment,
   type InfrastructureIndex,
   type InfrastructureSurface,
 } from "@/src/world/infrastructure";
@@ -46,16 +53,36 @@ import { TERRAIN_LANDFORM_CELL_METERS, terrainLandformCell } from "./TerrainKern
  *
  * LAYOUT, in vec4u:
  *
- *   [0] segment count, bins x, bins z, first bin vec4
+ *   [0] segment count, bin table mask, first bin-table vec4, longest probe
  *   [1] first list vec4, first segment vec4, sea level (f32), bin size (f32)
- *   [2] bin grid corner: cells (i32 x, z), remainder (f32 x, z)
- *   bins:     two per vec4, (first list entry, count) each
- *   lists:    four segment indices per vec4
- *   segments: five vec4s each: (a cell i32 x, z, a remainder f32 x, z),
- *             (dir x, dir z, length, halfWidth + reach) f32,
+ *   [2] the anchor bin's corner: cells (i32 x, z), remainder (f32 x, z)
+ *   segments: five vec4s each, by slot: (a cell i32 x, z, a remainder f32
+ *             x, z), (dir x, dir z, length, halfWidth + reach) f32,
  *             (length, halfWidth, reach f32,
- *              profile | mode << 16 | (surface material + 1) << 20),
+ *              profile | mode << 16 | (surface material + 1) << 20
+ *              | paint << 28: 0 static, 1 a road, 2 a track),
  *             params 0-3, params 4-7 (f32)
+ *   bin table: one vec4 a slot, (bin x, bin z (i32, from the anchor bin),
+ *             first list entry, count + 1); 0 in the last lane is a slot
+ *             never used, and a bin emptied since keeps its key with count 0
+ *   lists:    four segment slots per vec4
+ *
+ * IN PLACE. Streamed regions come and go a few times a second while flying,
+ * so the GPU's copy (`TerrainInfrastructureData`) is packed with room to
+ * spare (`TerrainInfrastructurePack`) and then kept by ranged writes: a
+ * change rewrites the segment slots it changed (the CPU index keeps every
+ * segment in a stable slot), the table entries of the bins it re-merged,
+ * those bins' new lists, written past the last list, and the header. It
+ * packs afresh only when the slots, the table or the list space run out.
+ *
+ * WHY A HASHED BIN TABLE. Streamed regions (the roads) follow the observer
+ * while the static sources stay at home, so the occupied bins can sit a
+ * hundred kilometres apart: a dense grid over their rectangle would grow
+ * without bound. The table holds only occupied bins, open-addressed at a
+ * load of at most one half, keyed by the bin's offset from the anchor bin
+ * (the one holding the landform core centre); `terrainInfraBinHash` is the
+ * CPU's `infrastructureGpuBinHash` to the bit, and the header carries the
+ * longest probe the CPU needed, so a lookup is bounded.
  *
  * CONTAINMENT. With no segments (no sources, an eroded world, the
  * placeholder) the header's count is 0 and `terrainInfrastructure` returns
@@ -64,8 +91,16 @@ import { TERRAIN_LANDFORM_CELL_METERS, terrainLandformCell } from "./TerrainKern
 
 export const INFRASTRUCTURE_HEADER_VEC4S = 3;
 export const INFRASTRUCTURE_SEGMENT_VEC4S = 5;
-/** The GPU grid is dense over the index's bins; past this it would be a different design. */
-export const INFRASTRUCTURE_MAX_GPU_BINS = 128 * 128;
+
+/**
+ * The bin table's hash of a bin's offset from the anchor bin: a multiply-xor
+ * on the two's-complement bits, so WGSL's wrapping u32 arithmetic
+ * (`terrainInfraBinHash`) gives the same 32 bits.
+ */
+export function infrastructureGpuBinHash(binX: number, binZ: number): number {
+  const h = (Math.imul(binX, 0x9e37_79b1) ^ Math.imul(binZ, 0x85eb_ca77)) >>> 0;
+  return (h ^ (h >>> 15)) >>> 0;
+}
 
 const MODE_CODE = { set: 0, cut: 1, fill: 2 } as const;
 
@@ -75,78 +110,208 @@ export const INFRASTRUCTURE_SURFACE_MATERIAL: Readonly<Record<InfrastructureSurf
     concrete: SurfaceMaterial.Concrete,
     asphalt: SurfaceMaterial.Asphalt,
     gravel: SurfaceMaterial.Gravel,
+    // Worn stony earth: the gravel, browned by INFRASTRUCTURE_TRACK_EARTH_TINT
+    // wherever it is a track's paint (the terrain fragment and the ruts). Not
+    // the sand layer: that is a dune, wind ripples and all.
+    track: SurfaceMaterial.Gravel,
   });
+
+/**
+ * Where a texel's material is a road's paint, the splat bake stores its id
+ * this much above the material's (LandCoverClassifier); a track's paint,
+ * INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET above. Every reader rounds the id, so
+ * each still reads the material; the terrain fragment also reads the
+ * fraction, and blends paint by its coverage rather than through the height
+ * blend, which cut a road narrower than the texel into blotches. The two sit
+ * 0.125 apart and 0.125 from each rounding edge, over five times the 8-bit
+ * channel's half step (11 / 510 of an id).
+ */
+export const INFRASTRUCTURE_PAINT_ID_OFFSET = 0.25;
+export const INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET = 0.375;
+
+/**
+ * A track's earth: the gravel's albedo times this, about (0.23, 0.18, 0.12),
+ * the brown of dry worn soil rather than a road's grey stone.
+ */
+export const INFRASTRUCTURE_TRACK_EARTH_TINT: readonly [number, number, number] = Object.freeze([1.15, 0.95, 0.68]);
 
 /** The placeholder: three header vec4s of zeros, so no segment is listed. */
 export const TERRAIN_INFRASTRUCTURE_PLACEHOLDER_BYTES = INFRASTRUCTURE_HEADER_VEC4S * 16;
 
 /**
- * Pack an index for the GPU, relative to `origin` (the landform core centre).
- * Allocates; done once per world, not per frame.
+ * The room a pack for the GPU's own copy leaves (`TerrainInfrastructurePack`
+ * with headroom): segment slots for half as many again and 64 more, a bin
+ * table at a load of a quarter that takes new bins up to a half, and list
+ * space for three times the entries and 4,096 more.
  */
-export function packTerrainInfrastructure(
-  index: InfrastructureIndex,
-  seaLevel: number,
-  origin: { readonly x: number; readonly z: number },
-): Uint32Array {
-  const segments = index.segments;
-  const empty = segments.length === 0;
-  const binsX = empty ? 0 : index.binMaxX - index.binMinX + 1;
-  const binsZ = empty ? 0 : index.binMaxZ - index.binMinZ + 1;
-  const binCount = binsX * binsZ;
-  if (binCount > INFRASTRUCTURE_MAX_GPU_BINS) {
-    throw new RangeError(`Infrastructure spans ${binsX} x ${binsZ} bins, more than the GPU grid holds`);
-  }
-  let entries = 0;
-  for (const list of index.bins.values()) entries += list.length;
-  const binBase = INFRASTRUCTURE_HEADER_VEC4S;
-  const listBase = binBase + Math.ceil(binCount / 2);
-  const segmentBase = listBase + Math.ceil(entries / 4);
-  const vec4s = segmentBase + segments.length * INFRASTRUCTURE_SEGMENT_VEC4S;
-  const words = new Uint32Array(vec4s * 4);
-  const floats = new Float32Array(words.buffer);
-  const ints = new Int32Array(words.buffer);
+const SEGMENT_HEADROOM = 1.5;
+const SEGMENT_SLACK = 64;
+const LIST_HEADROOM = 3;
+const LIST_SLACK = 4_096;
 
-  words[0] = segments.length;
-  words[1] = binsX;
-  words[2] = binsZ;
-  words[3] = binBase;
-  words[4] = listBase;
-  words[5] = segmentBase;
-  floats[6] = seaLevel;
-  floats[7] = INFRASTRUCTURE_BIN_METERS;
-  const writeSplit = (word: number, x: number, z: number) => {
-    const relX = x - origin.x;
-    const relZ = z - origin.z;
+/**
+ * At least this much once streamed regions are in, so the roads' whole
+ * window round a jet streams in after the first pack, made while priming
+ * round the spawn, without another, and its table is rarely rehashed:
+ * about 2.7 MB. Measured on a 300 s leg at 250 m/s from the home field
+ * (7271, -37795, heading 135): the window grows to 13,941 segments in 4,125
+ * bins, which the old 16,384 segments and 8,192 slots (a table full at
+ * 4,096 bins) took with one fresh pack (18 ms) and a rehash every 20 s
+ * (2 to 9 ms each, 13 of them) as dropped bins filled the table.
+ */
+const STREAMED_MIN_SEGMENTS = 24_576;
+const STREAMED_MIN_TABLE_SLOTS = 16_384;
+const STREAMED_MIN_LIST_ENTRIES = 131_072;
+
+/** Dirty vec4 ranges closer than this are written as one. */
+const DIRTY_MERGE_VEC4S = 16;
+
+/** A bin as the pack holds it: its table slot, and the block of list space it writes its list into. */
+interface PackedBin {
+  readonly slot: number;
+  first: number;
+  capacity: number;
+  /** Segments listed now; 0 for a bin emptied since it was packed. */
+  count: number;
+}
+
+/**
+ * An index packed for the GPU (the LAYOUT above), and what it takes to keep
+ * it current in place: `update` applies a change to `words` and returns the
+ * vec4 ranges it wrote.
+ *
+ * With headroom, each bin owns a block of list space a power of two long, so
+ * a re-merged list that still fits is rewritten where it is, and a longer one
+ * takes a fresh block past the last. When the list space runs out the blocks
+ * are laid out again, packed, and when the table fills with bins the observer
+ * has left it is rehashed with the bins still listed; only running out of
+ * segment slots takes a fresh pack.
+ */
+export class TerrainInfrastructurePack {
+  readonly words: Uint32Array;
+  private readonly floats: Float32Array;
+  private readonly ints: Int32Array;
+  private readonly segmentCapacity: number;
+  private readonly tableSlots: number;
+  private readonly tableBase: number;
+  private readonly listBase: number;
+  /** List entries the space holds. */
+  private readonly listCapacity: number;
+  private listCursor = 0;
+  private longestProbe = 0;
+  /** Bin key -> how it is packed, emptied bins' included until the table is rehashed. */
+  private bins = new Map<number, PackedBin>();
+  private readonly anchorX: number;
+  private readonly anchorZ: number;
+  private dirty: number[] = [];
+  /** Layouts of the list space and rehashes of the table since the pack, for tests and probes. */
+  readonly relayouts = { lists: 0, table: 0 };
+
+  /**
+   * Pack `index` relative to `origin` (the landform core centre). With
+   * `headroom`, leave the room above for ranged updates, and with
+   * `streamedMinimum` too, at least the streamed minimum for an index with
+   * regions in; without, the smallest pack.
+   */
+  constructor(
+    index: InfrastructureIndex,
+    seaLevel: number,
+    private readonly origin: { readonly x: number; readonly z: number },
+    private readonly headroom: boolean,
+    streamedMinimum = headroom,
+  ) {
+    const count = index.segments.length;
+    // The occupied bins, in key order, so a pack is a function of the index alone.
+    const keys = [...index.bins.keys()].sort((left, right) => left - right);
+    let entries = 0;
+    for (const key of keys) entries += this.blockSize(index.bins.get(key)!.length);
+    const streamed = headroom && streamedMinimum && infrastructureIndexStreamed(index);
+    this.segmentCapacity = headroom
+      ? Math.max(Math.ceil(count * SEGMENT_HEADROOM) + SEGMENT_SLACK, streamed ? STREAMED_MIN_SEGMENTS : 0)
+      : count;
+    let slots = streamed ? STREAMED_MIN_TABLE_SLOTS : 1;
+    while (slots < (headroom ? 4 : 2) * keys.length) slots *= 2;
+    this.tableSlots = slots;
+    const listEntries = headroom
+      ? Math.max(entries * LIST_HEADROOM + LIST_SLACK, streamed ? STREAMED_MIN_LIST_ENTRIES : 0)
+      : entries;
+    this.listCapacity = 4 * Math.ceil(listEntries / 4);
+    this.tableBase = INFRASTRUCTURE_HEADER_VEC4S + this.segmentCapacity * INFRASTRUCTURE_SEGMENT_VEC4S;
+    this.listBase = this.tableBase + slots;
+    this.words = new Uint32Array((this.listBase + this.listCapacity / 4) * 4);
+    this.floats = new Float32Array(this.words.buffer);
+    this.ints = new Int32Array(this.words.buffer);
+    this.anchorX = infrastructureBin(origin.x);
+    this.anchorZ = infrastructureBin(origin.z);
+
+    const words = this.words;
+    words[1] = slots - 1;
+    words[2] = this.tableBase;
+    words[4] = this.listBase;
+    words[5] = INFRASTRUCTURE_HEADER_VEC4S;
+    this.floats[6] = seaLevel;
+    this.floats[7] = INFRASTRUCTURE_BIN_METERS;
+    this.writeSplit(8, this.anchorX * INFRASTRUCTURE_BIN_METERS, this.anchorZ * INFRASTRUCTURE_BIN_METERS);
+    for (let slot = 0; slot < count; slot += 1) this.writeSegment(slot, index.segments[slot]!);
+    for (const key of keys) this.writeBin(index, key);
+    this.writeCount(count);
+    this.dirty = [];
+  }
+
+  /**
+   * Rewrite what changed between the index this holds and `index`
+   * (`infrastructureIndexChanges`). Returns the vec4 ranges written, as
+   * [start, end) pairs, or null when the change does not fit (pack afresh);
+   * `words` is then part-written and no longer to be used.
+   */
+  update(
+    index: InfrastructureIndex,
+    changes: { readonly slots: ArrayLike<number>; readonly bins: ArrayLike<number> },
+  ): number[] | null {
+    const count = index.segments.length;
+    if (count > this.segmentCapacity) return null;
+    for (let i = 0; i < changes.slots.length; i += 1) {
+      const slot = changes.slots[i]!;
+      if (slot < count) this.writeSegment(slot, index.segments[slot]!);
+    }
+    for (let i = 0; i < changes.bins.length; i += 1) {
+      if (!this.writeBin(index, changes.bins[i]!)) return null;
+    }
+    this.writeCount(count);
+    return this.takeDirty();
+  }
+
+  /** List space a bin of `count` segments takes: a power of two with headroom, else exactly. */
+  private blockSize(count: number): number {
+    if (!this.headroom) return count;
+    let size = 4;
+    while (size < count) size *= 2;
+    return size;
+  }
+
+  private writeCount(count: number): void {
+    this.words[0] = count;
+    this.words[3] = this.longestProbe;
+    this.markDirty(0, 1);
+  }
+
+  private writeSplit(word: number, x: number, z: number): void {
+    const relX = x - this.origin.x;
+    const relZ = z - this.origin.z;
     const cellX = terrainLandformCell(relX);
     const cellZ = terrainLandformCell(relZ);
-    ints[word] = cellX;
-    ints[word + 1] = cellZ;
-    floats[word + 2] = relX - cellX * TERRAIN_LANDFORM_CELL_METERS;
-    floats[word + 3] = relZ - cellZ * TERRAIN_LANDFORM_CELL_METERS;
-  };
-  if (!empty) {
-    writeSplit(8, index.binMinX * INFRASTRUCTURE_BIN_METERS, index.binMinZ * INFRASTRUCTURE_BIN_METERS);
+    this.ints[word] = cellX;
+    this.ints[word + 1] = cellZ;
+    this.floats[word + 2] = relX - cellX * TERRAIN_LANDFORM_CELL_METERS;
+    this.floats[word + 3] = relZ - cellZ * TERRAIN_LANDFORM_CELL_METERS;
   }
 
-  let cursor = 0;
-  for (let binZ = 0; binZ < binsZ; binZ += 1) {
-    for (let binX = 0; binX < binsX; binX += 1) {
-      const list = index.bins.get(infrastructureBinKey(index.binMinX + binX, index.binMinZ + binZ));
-      const bin = binZ * binsX + binX;
-      const word = binBase * 4 + bin * 2;
-      words[word] = cursor;
-      words[word + 1] = list?.length ?? 0;
-      if (!list) continue;
-      for (let i = 0; i < list.length; i += 1) words[listBase * 4 + cursor + i] = list[i]!;
-      cursor += list.length;
-    }
-  }
-
-  segments.forEach((packed, i) => {
-    const word = (segmentBase + i * INFRASTRUCTURE_SEGMENT_VEC4S) * 4;
+  private writeSegment(slot: number, packed: PackedInfrastructureSegment): void {
+    const first = INFRASTRUCTURE_HEADER_VEC4S + slot * INFRASTRUCTURE_SEGMENT_VEC4S;
+    const word = first * 4;
+    const floats = this.floats;
     const { segment } = packed;
-    writeSplit(word, packed.ax, packed.az);
+    this.writeSplit(word, packed.ax, packed.az);
     floats[word + 4] = packed.dirX;
     floats[word + 5] = packed.dirZ;
     floats[word + 6] = packed.length;
@@ -155,13 +320,146 @@ export function packTerrainInfrastructure(
     floats[word + 9] = segment.halfWidth;
     floats[word + 10] = segment.reach;
     const surface = segment.surface === undefined ? 0 : INFRASTRUCTURE_SURFACE_MATERIAL[segment.surface] + 1;
-    words[word + 11] = ((segment.profile & 0xffff) | (MODE_CODE[segment.mode] << 16) | (surface << 20)) >>> 0;
+    // A streamed segment (a road or a track: only regions carry keys) paints
+    // by its coverage; a static source's paint (the marina's) keeps its edges.
+    const paint = segment.key === undefined ? 0 : segment.surface === "track" ? 2 : 1;
+    this.words[word + 11] = ((segment.profile & 0xffff) | (MODE_CODE[segment.mode] << 16) | (surface << 20)
+      | (paint << 28)) >>> 0;
     for (let p = 0; p < 8; p += 1) floats[word + 12 + p] = segment.params[p] ?? 0;
-  });
-  return words;
+    this.markDirty(first, first + INFRASTRUCTURE_SEGMENT_VEC4S);
+  }
+
+  /** A bin's list as `index` has it now; false when the table or the list space cannot hold it. */
+  private writeBin(index: InfrastructureIndex, key: number): boolean {
+    const list = index.bins.get(key);
+    let bin = this.bins.get(key);
+    if (!bin) {
+      if (!list) return true;
+      if ((this.bins.size + 1) * 2 > this.tableSlots && !this.rehashTable()) return false;
+      bin = { slot: this.insertKey(key), first: 0, capacity: 0, count: 0 };
+      this.bins.set(key, bin);
+    }
+    const count = list?.length ?? 0;
+    if (count > bin.capacity) {
+      const size = this.blockSize(count);
+      if (this.listCursor + size > this.listCapacity) return this.layOutLists(index);
+      bin.first = this.listCursor;
+      bin.capacity = size;
+      this.listCursor += size;
+    }
+    bin.count = count;
+    this.writeEntry(bin);
+    if (list) {
+      this.words.set(list, this.listBase * 4 + bin.first);
+      this.markDirty(this.listBase + Math.floor(bin.first / 4), this.listBase + Math.ceil((bin.first + count) / 4));
+    }
+    return true;
+  }
+
+  /** A new key's table slot, probed from its hash. */
+  private insertKey(key: number): number {
+    const words = this.words;
+    const keyX = infrastructureBinKeyX(key) - this.anchorX;
+    const keyZ = infrastructureBinKeyZ(key) - this.anchorZ;
+    const mask = this.tableSlots - 1;
+    let slot = infrastructureGpuBinHash(keyX, keyZ) & mask;
+    let probe = 1;
+    while (words[(this.tableBase + slot) * 4 + 3] !== 0) {
+      slot = (slot + 1) & mask;
+      probe += 1;
+    }
+    this.longestProbe = Math.max(this.longestProbe, probe);
+    this.ints[(this.tableBase + slot) * 4] = keyX;
+    this.ints[(this.tableBase + slot) * 4 + 1] = keyZ;
+    return slot;
+  }
+
+  /**
+   * A bin's table entry; an emptied bin keeps its key, so the probes that
+   * pass it still find what lies beyond. A caller rewriting every entry
+   * marks the whole table once instead (`mark` false).
+   */
+  private writeEntry(bin: PackedBin, mark = true): void {
+    const word = (this.tableBase + bin.slot) * 4;
+    this.words[word + 2] = bin.count > 0 ? bin.first : 0;
+    this.words[word + 3] = bin.count + 1;
+    if (mark) this.markDirty(this.tableBase + bin.slot, this.tableBase + bin.slot + 1);
+  }
+
+  /** The table again with only the bins listing something: emptied bins' keys go. */
+  private rehashTable(): boolean {
+    const live = [...this.bins].filter(([, bin]) => bin.count > 0);
+    if ((live.length + 1) * 2 > this.tableSlots) return false;
+    this.words.fill(0, this.tableBase * 4, this.listBase * 4);
+    this.longestProbe = 0;
+    this.bins = new Map();
+    // Key order, so the table is a function of the bins held.
+    live.sort(([left], [right]) => left - right);
+    for (const [key, bin] of live) {
+      const moved: PackedBin = { slot: this.insertKey(key), first: bin.first, capacity: bin.capacity, count: bin.count };
+      this.bins.set(key, moved);
+      this.writeEntry(moved, false);
+    }
+    this.markDirty(this.tableBase, this.listBase);
+    this.relayouts.table += 1;
+    return true;
+  }
+
+  /** Every bin's list into a fresh block, packed from the start of the list space, as `index` has them. */
+  private layOutLists(index: InfrastructureIndex): boolean {
+    let cursor = 0;
+    for (const [key, bin] of this.bins) {
+      const list = index.bins.get(key);
+      bin.count = list?.length ?? 0;
+      bin.capacity = bin.count > 0 ? this.blockSize(bin.count) : 0;
+      bin.first = cursor;
+      cursor += bin.capacity;
+    }
+    if (cursor > this.listCapacity) return false;
+    this.listCursor = cursor;
+    for (const [key, bin] of this.bins) {
+      this.writeEntry(bin, false);
+      const list = index.bins.get(key);
+      if (list) this.words.set(list, this.listBase * 4 + bin.first);
+    }
+    this.markDirty(this.tableBase, this.listBase + Math.ceil(cursor / 4));
+    this.relayouts.lists += 1;
+    return true;
+  }
+
+  private markDirty(start: number, end: number): void {
+    this.dirty.push(start, end);
+  }
+
+  /** The dirty ranges, sorted and merged, and a clean slate. */
+  private takeDirty(): number[] {
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < this.dirty.length; i += 2) pairs.push([this.dirty[i]!, this.dirty[i + 1]!]);
+    this.dirty = [];
+    pairs.sort((left, right) => left[0] - right[0]);
+    const merged: number[] = [];
+    for (const [start, end] of pairs) {
+      const last = merged.length - 1;
+      if (last > 0 && start <= merged[last]! + DIRTY_MERGE_VEC4S) merged[last] = Math.max(merged[last]!, end);
+      else merged.push(start, end);
+    }
+    return merged;
+  }
 }
 
-/** The index a world's consumers bind, packed. */
+/**
+ * Pack an index for the GPU, relative to `origin` (the landform core centre),
+ * in the smallest layout. Allocates.
+ */
+export function packTerrainInfrastructure(
+  index: InfrastructureIndex,
+  seaLevel: number,
+  origin: { readonly x: number; readonly z: number },
+): Uint32Array {
+  return new TerrainInfrastructurePack(index, seaLevel, origin, false).words;
+}
+
+/** A world's index packed in the smallest layout (tests and tools; the GPU keeps its own, `TerrainInfrastructureData`). */
 export function packWorldTerrainInfrastructure(world: WorldDefinition): Uint32Array {
   return packTerrainInfrastructure(infrastructureIndex(world), world.seaLevel, landformCoreCenter(world));
 }
@@ -207,6 +505,7 @@ export const TERRAIN_INFRASTRUCTURE_WGSL = /* wgsl */ `
 
 const K_INFRA_CELL: f32 = ${TERRAIN_LANDFORM_CELL_METERS}.0;
 const K_INFRA_SURFACE_FEATHER: f32 = ${INFRASTRUCTURE_SURFACE_FEATHER_METERS}.0;
+const K_INFRA_SURFACE_BOX_HALF: f32 = ${INFRASTRUCTURE_SURFACE_BOX_HALF_METERS}.0;
 
 /** What a profile reads of a segment (frame, shape, params). */
 struct TerrainInfrastructureSegment {
@@ -237,22 +536,39 @@ fn terrainInfraOffset(cell: vec2<i32>, within: vec2f, base: vec4f, local: vec2f)
   return vec2f(vec2<i32>(base.xy) - cell) * K_INFRA_CELL + ((base.zw - within) + local);
 }
 
-/** The bin a split point falls in: (first list entry, count), (0, 0) outside the grid. */
-fn terrainInfraBin(base: vec4f, local: vec2f) -> vec2u {
-  let header = terrainInfrastructureData[0u];
-  let header1 = terrainInfrastructureData[1u];
+/** infrastructureGpuBinHash: the bin table's hash of a bin's offset from the anchor bin. */
+fn terrainInfraBinHash(binX: i32, binZ: i32) -> u32 {
+  let h = (bitcast<u32>(binX) * 0x9e3779b1u) ^ (bitcast<u32>(binZ) * 0x85ebca77u);
+  return h ^ (h >> 15u);
+}
+
+/** A split point's offset from the anchor bin's corner. */
+fn terrainInfraFromCorner(base: vec4f, local: vec2f) -> vec2f {
   let corner = terrainInfrastructureData[2u];
-  let binSize = bitcast<f32>(header1.w);
-  let fromCorner = terrainInfraOffset(
-    bitcast<vec2<i32>>(corner.xy), bitcast<vec2f>(corner.zw), base, local);
-  let binXZ = floor(fromCorner / binSize);
-  if (binXZ.x < 0.0 || binXZ.y < 0.0 || binXZ.x >= f32(header.y) || binXZ.y >= f32(header.z)) {
-    return vec2u(0u, 0u);
+  return terrainInfraOffset(bitcast<vec2<i32>>(corner.xy), bitcast<vec2f>(corner.zw), base, local);
+}
+
+/** The bin an offset from the anchor bin's corner falls in, as an offset from the anchor bin. */
+fn terrainInfraBinOf(fromCorner: vec2f) -> vec2<i32> {
+  return vec2<i32>(floor(fromCorner / bitcast<f32>(terrainInfrastructureData[1u].w)));
+}
+
+/** The bin a split point falls in: (first list entry, count), (0, 0) where no segment is listed. */
+fn terrainInfraBin(base: vec4f, local: vec2f) -> vec2u {
+  return terrainInfraBinList(terrainInfraBinOf(terrainInfraFromCorner(base, local)));
+}
+
+/** A bin's list (an offset from the anchor bin): (first list entry, count), (0, 0) where no segment is listed. */
+fn terrainInfraBinList(bin: vec2<i32>) -> vec2u {
+  let header = terrainInfrastructureData[0u];
+  var slot = terrainInfraBinHash(bin.x, bin.y) & header.y;
+  for (var probe = 0u; probe < header.w; probe = probe + 1u) {
+    let entry = terrainInfrastructureData[header.z + slot];
+    if (entry.w == 0u) { break; }
+    if (bitcast<i32>(entry.x) == bin.x && bitcast<i32>(entry.y) == bin.y) { return vec2u(entry.z, entry.w - 1u); }
+    slot = (slot + 1u) & header.y;
   }
-  let bin = u32(binXZ.y) * header.y + u32(binXZ.x);
-  let packed = terrainInfrastructureData[header.w + bin / 2u];
-  if ((bin & 1u) == 1u) { return packed.zw; }
-  return packed.xy;
+  return vec2u(0u, 0u);
 }
 
 /** The first vec4 of the segment a bin list entry names. */
@@ -318,59 +634,140 @@ fn terrainInfrastructure(localX: f32, localZ: f32, height: f32) -> f32 {
 }
 
 /**
- * sampleInfrastructureSurface at a point LOCAL to the bound kernel page:
- * (splat material id, coverage), or (-1, 0) where nothing is painted. The
- * most coverage wins, the later segment on a tie.
+ * sampleInfrastructureSurface at a point LOCAL to the bound kernel page, for
+ * a ground \`texelMeters\` wide (0: the point; the splat bake's texel): (splat
+ * material id, coverage), or (-1, 0) where nothing is painted. A streamed
+ * segment's id comes INFRASTRUCTURE_PAINT_ID_OFFSET up (a track's,
+ * INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET), so the bake can mark its paint for
+ * the fragment's coverage blend. The most
+ * coverage wins, the later segment on a tie. A segment narrower than the
+ * texel paints the share of a box the texel's width (at most a bin) it
+ * covers; the box's other bins add their narrow segments, winning only on
+ * more coverage.
  */
-fn terrainInfrastructureSurface(localX: f32, localZ: f32) -> vec2f {
+fn terrainInfrastructureSurfaceOver(localX: f32, localZ: f32, texelMeters: f32) -> vec2f {
   var best = vec2f(-1.0, 0.0);
   if (terrainInfrastructureData[0u].x == 0u) { return best; }
   let base = terrainKernelPages[kPageIndex].landformBase;
   let local = vec2f(localX, localZ);
-  let entry = terrainInfraBin(base, local);
+  let half = min(0.5 * texelMeters, K_INFRA_SURFACE_BOX_HALF);
+  let fromCorner = terrainInfraFromCorner(base, local);
+  let own = terrainInfraBinOf(fromCorner);
+  best = terrainInfraSurfaceBin(terrainInfraBinList(own), base, local, texelMeters, half, true, best);
+  if (half > 0.0) {
+    let low = terrainInfraBinOf(fromCorner - vec2f(half));
+    let high = terrainInfraBinOf(fromCorner + vec2f(half));
+    for (var boxX = low.x; boxX <= high.x; boxX = boxX + 1) {
+      for (var boxZ = low.y; boxZ <= high.y; boxZ = boxZ + 1) {
+        if (boxX == own.x && boxZ == own.y) { continue; }
+        best = terrainInfraSurfaceBin(
+          terrainInfraBinList(vec2<i32>(boxX, boxZ)), base, local, texelMeters, half, false, best);
+      }
+    }
+  }
+  return best;
+}
+
+/** sampleInfrastructureSurface's surfaceInBin: every painted segment of the point's \`own\` bin, the narrow ones elsewhere. */
+fn terrainInfraSurfaceBin(
+  entry: vec2u, base: vec4f, local: vec2f, texelMeters: f32, half: f32, own: bool, best: vec2f,
+) -> vec2f {
+  var result = best;
   for (var i = 0u; i < entry.y; i = i + 1u) {
     let first = terrainInfraSegmentFirst(entry.x + i);
     let surface = (terrainInfrastructureData[first + 2u].w >> 20u) & 0xffu;
     if (surface == 0u) { continue; }
-    let position = terrainInfraLocal(first, base, local);
     let shape = terrainInfraFloats(first + 2u);
+    let narrow = 2.0 * shape.y < texelMeters;
+    if (!own && !narrow) { continue; }
+    let position = terrainInfraLocal(first, base, local);
     let distance = terrainInfraCapsuleDistance(position.x, position.y, shape.x);
-    let coverage = kSaturate(0.5 + (shape.y - distance) / K_INFRA_SURFACE_FEATHER);
-    if (coverage > 0.0 && coverage >= best.y) { best = vec2f(f32(surface - 1u), coverage); }
+    var coverage: f32;
+    if (narrow) {
+      coverage = max(0.0, min(shape.y, distance + half) - max(-shape.y, distance - half)) / (2.0 * half);
+    } else {
+      coverage = kSaturate(0.5 + (shape.y - distance) / K_INFRA_SURFACE_FEATHER);
+    }
+    let wins = select(coverage > result.y, coverage >= result.y, own);
+    // A streamed segment's material comes INFRASTRUCTURE_PAINT_ID_OFFSET up,
+    // a track's INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET.
+    let paint = (terrainInfrastructureData[first + 2u].w >> 28u) & 3u;
+    let offset = select(select(0.0, ${INFRASTRUCTURE_PAINT_ID_OFFSET.toFixed(3)}, paint == 1u),
+      ${INFRASTRUCTURE_TRACK_PAINT_ID_OFFSET.toFixed(3)}, paint == 2u);
+    if (coverage > 0.0 && wins) { result = vec2f(f32(surface - 1u) + offset, coverage); }
   }
-  return best;
+  return result;
+}
+
+/** terrainInfrastructureSurfaceOver at the point itself. */
+fn terrainInfrastructureSurface(localX: f32, localZ: f32) -> vec2f {
+  return terrainInfrastructureSurfaceOver(localX, localZ, 0.0);
 }
 `;
 
 /**
- * A world's packed index on the GPU. `setWorld` repacks only when the world's
- * index object changes (a spawned airport makes a new world, and its index is
- * rebuilt from the same sources), so steady state is one identity check.
+ * A terrain's packed index on the GPU, shared by every consumer on one engine
+ * (`TerrainInfrastructureData.acquire`): page generation, the bathymetry bake
+ * and the splat bake bind the same buffer. `setWorld` brings it to the
+ * world's current index: nothing when the index object is the one it holds
+ * (steady state is one identity check), ranged writes of what changed when
+ * it can (`TerrainInfrastructurePack.update`), a fresh pack otherwise, into
+ * a new buffer only when the old one is too small.
  */
 export class TerrainInfrastructureData {
   private storage: StorageBuffer;
   private capacityBytes: number;
   private version = 0;
   private index: InfrastructureIndex | null;
+  private pack: TerrainInfrastructurePack | null;
+  private seaLevel: number;
+  private originX: number;
+  private originZ: number;
+  private users = 0;
   private disposed = false;
+  /** Writes so far, for tests and probes: fresh packs and ranged updates, and the bytes they sent. */
+  readonly writes = { packs: 0, updates: 0, bytes: 0 };
+
+  /**
+   * The engine's shared copy for the world's terrain, made on first use;
+   * `release` it when done. Without a world, a header that lists nothing.
+   */
+  static acquire(engine: WebGPUEngine, world: WorldDefinition | null): TerrainInfrastructureData {
+    let byTerrain = sharedData.get(engine);
+    if (!byTerrain) sharedData.set(engine, (byTerrain = new Map()));
+    const key = world ? infrastructureTerrainKey(world) : "";
+    let data = byTerrain.get(key);
+    if (!data || data.disposed) {
+      data = new TerrainInfrastructureData(engine, world);
+      byTerrain.set(key, data);
+    }
+    data.users += 1;
+    if (world) data.setWorld(world);
+    return data;
+  }
 
   /** Without a world, the empty index: a header that lists nothing. */
   constructor(private readonly engine: WebGPUEngine, world: WorldDefinition | null) {
-    const words = world
-      ? packWorldTerrainInfrastructure(world)
-      : new Uint32Array(INFRASTRUCTURE_HEADER_VEC4S * 4);
+    const origin = world ? landformCoreCenter(world) : { x: 0, z: 0 };
+    this.seaLevel = world?.seaLevel ?? 0;
+    this.originX = origin.x;
+    this.originZ = origin.z;
+    this.index = world ? infrastructureIndex(world) : null;
+    this.pack = this.index ? new TerrainInfrastructurePack(this.index, this.seaLevel, origin, true) : null;
+    const words = this.pack?.words ?? new Uint32Array(INFRASTRUCTURE_HEADER_VEC4S * 4);
     this.capacityBytes = Math.max(words.byteLength, TERRAIN_INFRASTRUCTURE_PLACEHOLDER_BYTES);
     this.storage = new StorageBuffer(engine, this.capacityBytes, undefined, "terrain-infrastructure");
     registerGpuBufferBytes(this.capacityBytes);
     this.storage.update(words);
-    this.index = world ? infrastructureIndex(world) : null;
+    this.writes.packs += 1;
+    this.writes.bytes += words.byteLength;
   }
 
   get buffer(): StorageBuffer {
     return this.storage;
   }
 
-  /** Bumped whenever `buffer` is replaced or rewritten. */
+  /** Bumped whenever `buffer` is replaced (ranged writes keep it, and its bindings). */
   get bufferVersion(): number {
     return this.version;
   }
@@ -379,17 +776,45 @@ export class TerrainInfrastructureData {
     if (this.disposed) return;
     const index = infrastructureIndex(world);
     if (index === this.index) return;
+    const origin = landformCoreCenter(world);
+    const samePlace = world.seaLevel === this.seaLevel && origin.x === this.originX && origin.z === this.originZ;
+    const previous = this.index;
     this.index = index;
-    const words = packWorldTerrainInfrastructure(world);
+    const changes = samePlace && previous && this.pack ? infrastructureIndexChanges(previous, index) : null;
+    const ranges = changes ? this.pack!.update(index, changes) : null;
+    if (ranges) {
+      const words = this.pack!.words;
+      for (let i = 0; i < ranges.length; i += 2) {
+        const start = ranges[i]! * 4;
+        const end = ranges[i + 1]! * 4;
+        this.storage.update(words.subarray(start, end), start * 4, (end - start) * 4);
+        this.writes.bytes += (end - start) * 4;
+      }
+      this.writes.updates += 1;
+      return;
+    }
+    this.seaLevel = world.seaLevel;
+    this.originX = origin.x;
+    this.originZ = origin.z;
+    this.pack = new TerrainInfrastructurePack(index, world.seaLevel, origin, true);
+    const words = this.pack.words;
     if (words.byteLength > this.capacityBytes) {
       this.storage.dispose();
       releaseGpuBufferBytes(this.capacityBytes);
       this.capacityBytes = words.byteLength;
       this.storage = new StorageBuffer(this.engine, this.capacityBytes, undefined, "terrain-infrastructure");
       registerGpuBufferBytes(this.capacityBytes);
+      this.version += 1;
     }
     this.storage.update(words);
-    this.version += 1;
+    this.writes.packs += 1;
+    this.writes.bytes += words.byteLength;
+  }
+
+  /** Give back a reference from `acquire`; the last one frees the buffer. */
+  release(): void {
+    this.users -= 1;
+    if (this.users <= 0) this.dispose();
   }
 
   dispose(): void {
@@ -400,32 +825,45 @@ export class TerrainInfrastructureData {
   }
 }
 
+/** Engine -> terrain key ("" for none) -> its shared copy. */
+const sharedData = new WeakMap<WebGPUEngine, Map<string, TerrainInfrastructureData>>();
+
 /**
- * One consumer's `terrainInfrastructureData` binding. It packs the world it
- * is given on its first bind (the consumer's constructor runs before the
- * engine is known to be WebGPU, and in Node tests with no engine at all) and
- * owns that buffer; without a world it binds an empty index. Rebinding
- * compares a buffer and a number, as `TerrainLandformDataBinding` does.
- *
- * Each consumer packs its own copy: a few kilobytes, once, against threading
- * one more source through the renderer.
+ * One consumer's `terrainInfrastructureData` binding. It takes the engine's
+ * shared copy for its world on its first bind (the consumer's constructor
+ * runs before the engine is known to be WebGPU, and in Node tests with no
+ * engine at all); without a world it binds an empty index. Every bind first
+ * brings that copy to the world's current index, so a bake dispatched after
+ * streamed regions changed reads them; rebinding then compares a buffer and
+ * a number, as `TerrainLandformDataBinding` does.
  */
 export class TerrainInfrastructureDataBinding {
   private data: TerrainInfrastructureData | null = null;
+  private dataTerrain = "";
   private boundShader: ComputeShader | null = null;
   private boundBuffer: StorageBuffer | null = null;
   private boundVersion = -1;
 
   constructor(private world: WorldDefinition | null) {}
 
-  /** The world the stage reads (a spawned airport's new world repacks only if its index changed). */
+  /** The world the stage reads: a spawned airport's new world shares its terrain, so its copy. */
   setWorld(world: WorldDefinition | null): void {
     this.world = world;
-    if (world && this.data) this.data.setWorld(world);
+  }
+
+  /**
+   * Bring the shared copy to the world's index now, where a change is
+   * installed (`RoadStreamRuntime`), rather than in the next bake's `bind`:
+   * the same ranged writes, timed with the change. Nothing before the first
+   * bind, which packs afresh anyway.
+   */
+  sync(): void {
+    if (this.data && this.world) this.data.setWorld(this.world);
   }
 
   bind(engine: WebGPUEngine, shader: ComputeShader): void {
     const data = this.ensureData(engine);
+    if (this.world) data.setWorld(this.world);
     if (
       shader === this.boundShader
       && data.buffer === this.boundBuffer
@@ -438,7 +876,7 @@ export class TerrainInfrastructureDataBinding {
   }
 
   dispose(): void {
-    this.data?.dispose();
+    this.data?.release();
     this.data = null;
     this.boundShader = null;
     this.boundBuffer = null;
@@ -446,7 +884,15 @@ export class TerrainInfrastructureDataBinding {
   }
 
   private ensureData(engine: WebGPUEngine): TerrainInfrastructureData {
-    this.data ??= new TerrainInfrastructureData(engine, this.world);
+    const terrain = this.world ? infrastructureTerrainKey(this.world) : "";
+    if (this.data && this.dataTerrain !== terrain) {
+      this.data.release();
+      this.data = null;
+    }
+    if (!this.data) {
+      this.data = TerrainInfrastructureData.acquire(engine, this.world);
+      this.dataTerrain = terrain;
+    }
     return this.data;
   }
 }

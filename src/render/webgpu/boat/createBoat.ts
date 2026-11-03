@@ -87,6 +87,9 @@ export function surfaceVehicleWashLights(kind: SurfaceVehicleKind): readonly Boa
   switch (kind) {
     case "speedboat":
       return RUNABOUT_21_WASHES;
+    case "landcruiser":
+      // The car's lamps are its own (`setLightState` on its visual); it has no sidelight washes.
+      return [];
   }
 }
 

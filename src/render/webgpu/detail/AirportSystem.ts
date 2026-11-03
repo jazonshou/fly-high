@@ -13,6 +13,7 @@ import {
   buildPerimeterFenceGeometry,
   buildFuelFarmGeometry,
   buildSignageGeometry,
+  type FenceOpening,
 } from "./AirfieldFurniture";
 import {
   buildTowerGeometry,
@@ -101,6 +102,8 @@ export class AirportSystem {
      * airport search so the two differ.
      */
     seedHash: number,
+    /** Where roads pass through the perimeter fence (the home field's access road). */
+    fenceOpenings: readonly FenceOpening[] = [],
   ) {
     this.windsockSamplePoint = windsockWorldPosition(definition);
     this.root = new TransformNode("airport", scene);
@@ -262,7 +265,7 @@ export class AirportSystem {
     // elevation floats over falling ground and sinks into rising ground.
     const fenceMesh = new Mesh("airport-fence", scene);
     {
-      const geometry = buildPerimeterFenceGeometry(definition, localHeight);
+      const geometry = buildPerimeterFenceGeometry(definition, localHeight, fenceOpenings);
       const data = new VertexData();
       data.positions = Array.from(geometry.positions);
       data.normals = Array.from(geometry.normals);

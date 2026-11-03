@@ -4,12 +4,14 @@ import type { WorldDefinition } from "../../src/world/types";
 import { sampleTerrain, sampleTerrainHeight } from "../../src/world";
 import { sunDirectionForClock } from "../../src/render/webgpu/nature/EnvironmentDirector";
 import { densityField } from "../../src/render/webgpu/detail/densityField";
+import { buildCarShotState } from "./carShotState";
 import {
   PERF_CAPTURE_DEFAULT_CLOCK,
   headingVectorFromYaw,
   locateShotOffset,
   yawForSunBearing,
   type PerfCaptureBoatRun,
+  type PerfCaptureCarRun,
   type PerfCaptureShotDefinition,
   type ShotPlacement,
 } from "../../scripts/perf-capture.mts";
@@ -197,4 +199,19 @@ export function boatShotState(
   const build = BOAT_SHOT_BUILDERS["./boatShotState.ts"]?.buildBoatShotState;
   if (!build) throw new Error("perf-capture: this build has no boats, so it cannot render a boat shot");
   return build(world, run, at, simulationTime);
+}
+
+/**
+ * A car shot's state (`PerfCaptureShotDefinition.car`). Unlike the boat's,
+ * by import: the pose is pinned geometry rather than the car's simulator,
+ * and `./carShotState.ts` imports nothing the car added, so it is part of
+ * the instrument (`HARNESS_PATHS`) and both arms photograph the same car.
+ */
+export function carShotState(
+  world: WorldDefinition,
+  run: PerfCaptureCarRun,
+  at: { readonly x: number; readonly z: number; readonly yawDegrees: number },
+  simulationTime: number,
+): FlightVisualState {
+  return buildCarShotState(world, run, at, simulationTime);
 }

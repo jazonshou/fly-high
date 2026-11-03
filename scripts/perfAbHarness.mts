@@ -25,6 +25,7 @@ import { PERF_AB_PROTOCOL, type PerfAgent } from "../tests/perf/ab/protocol.ts";
  */
 export const HARNESS_PATHS: readonly string[] = [
   "tests/perf/ab",
+  "tests/perf/carShotState.ts",
   "tests/perf/gpuDrawGate.ts",
   "tests/perf/gpuPassLabels.ts",
   "tests/perf/gpuPassTiming.ts",

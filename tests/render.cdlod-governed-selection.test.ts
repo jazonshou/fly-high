@@ -48,6 +48,13 @@ vi.mock("../src/render/webgpu/terrain/TerrainQuadtree", async (importOriginal) =
       recorded.inputs.push(replaced);
       return actual.selectTerrainNodes(replaced);
     },
+    // The clipmap selects through the node-set form (the beauty set and the
+    // casters' set, which differ only round a car), so it is recorded too.
+    selectTerrainNodeSets: (input: TerrainNodeSelectionInput) => {
+      const replaced = recorded.world ? { ...input, ...recorded.world } : input;
+      recorded.inputs.push(replaced);
+      return actual.selectTerrainNodeSets(replaced);
+    },
   };
 });
 
