@@ -334,6 +334,14 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     "car-dune-cockpit",
     "car-ford-chase",
     "car-dust-chase",
+    // The generated buildings, after the cars and for the same reason: two of
+    // them hold a whole settlement's meshes, kit textures and interiors on top
+    // of the scenery, and the third stands inside a building. Nobody has
+    // measured them.
+    "hamlet-300ft",
+    "hamlet-eye",
+    "hamlet-night",
+    "farmhouse-inside",
   ] as readonly string[]),
   tier: 1,
   quality: "medium",
@@ -821,7 +829,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.4 },
-    drawCallCeiling: 201,
+    drawCallCeiling: 202,
   },
   {
     // R-15: midwinter noon at 45°N — ~21.6° solar elevation, the longest
@@ -1080,7 +1088,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 20, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.4 },
-    drawCallCeiling: 255,
+    drawCallCeiling: 256,
   },
   {
     // 4-10: the PAGE-THRASH scene. A sustained 60° turn at 500 ft forces the
@@ -1159,7 +1167,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 19, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 254,
+    drawCallCeiling: 258,
   },
   {
     // 4-10: the CDLOD-TRANSITION scene. Straight and level outbound from the
@@ -1243,7 +1251,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 249,
+    drawCallCeiling: 250,
   },
   {
     // Phase 2 §10.2 scene 3: sun glitter path, foam, aerial perspective
@@ -1312,7 +1320,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 11.2 },
-    drawCallCeiling: 122,
+    drawCallCeiling: 123,
   },
   {
     // Phase 2 §10.2 scene 5: the 1–3 km band where a forest reads as a
@@ -1331,7 +1339,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 18, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12 },
-    drawCallCeiling: 114,
+    drawCallCeiling: 115,
   },
   {
     // Phase 3 §10: the scene 3-9 is judged in. Short final over the threshold,
@@ -1358,7 +1366,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 12.4 },
-    drawCallCeiling: 256,
+    drawCallCeiling: 257,
     // `7-9`: 60 measured with the daylight attenuation term, against 56 in the
     // pre-lamp baseline and **10,019 without it**. 400 is ~6.7x the measured
     // value and still 25x below the defect — wide enough that ordinary
@@ -1410,7 +1418,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 102, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 121,
+    drawCallCeiling: 122,
   },
   {
     // Wave G's own gate: open grassland at eye height with the compute blade
@@ -1431,7 +1439,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 102, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
-    drawCallCeiling: 135,
+    drawCallCeiling: 139,
   },
   {
     // Wave Q gate 1: the dusk terrain-glint + tree-band-handoff scene. A low
@@ -1454,7 +1462,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 11.8 },
-    drawCallCeiling: 245,
+    drawCallCeiling: 246,
   },
   {
     // Wave Q gate 2: the close-mountainside scene — the frame that showed
@@ -1498,7 +1506,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 16, hitchCount: 3, minFps: 103, minWallClockFps: 102, maxFrameIntervalMsP95: 12.2 },
-    drawCallCeiling: 245,
+    drawCallCeiling: 246,
   },
   {
     // Wave R gate 2: the very-close mountainside — the range where the rock
@@ -1658,7 +1666,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     locate: "forest",
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 102, minWallClockFps: 102 },
-    drawCallCeiling: 109,
+    drawCallCeiling: 110,
   },
   {
     // The secondary seam, and a coverage hole every other shot shares. T1 - the
@@ -1687,7 +1695,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     locate: "forest",
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 103, minWallClockFps: 102 },
-    drawCallCeiling: 117,
+    drawCallCeiling: 118,
   },
   {
     // The ground-material shot. Terrain fills the frame - its top edge is 23
@@ -1829,7 +1837,7 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     relativeSunBearingDegrees: 161,
     comparesToBaseline: true,
     ceilings: { maxFrameMs: 50, hitchCount: 3, minFps: 103, minWallClockFps: 101 },
-    drawCallCeiling: 92,
+    drawCallCeiling: 96,
   },
   {
     /**
@@ -2216,6 +2224,84 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
      */
     ceilings: null,
     drawCallCeiling: 88,
+  },
+  // The generated buildings (structures S4). Fixed poses worked out for this
+  // seed from the settlements' own layout, so both perf:ab arms photograph
+  // the same place; the base arm, without buildings, shows the bare ground.
+  // Unbaselined probes. The first three are the seven-building hamlet 9.9 km
+  // west of home (six houses and a cottage, temperate, open grass with no
+  // forest round it, by the water); the fourth is inside the farmhouse of the
+  // farmstead 3.8 km north-west.
+  {
+    name: "hamlet-300ft",
+    description:
+      "300 ft over the grass 340 m out from a hamlet by the water, the afternoon "
+      + "sun over the right shoulder: the buildings' shells, roofs and weathering at range",
+    cameraMode: "chase",
+    altitudeAglMeters: 91,
+    altitudeMslMeters: null,
+    offsetXMeters: -10_072.9,
+    offsetZMeters: 913.9,
+    pitchDownDegrees: 3,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 16 },
+    relativeSunBearingDegrees: 140,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "hamlet-eye",
+    description:
+      "Standing on the grass 90 m from the same hamlet's nearest house at eye "
+      + "height, the sun over the left shoulder: the kit's shells, their materials and wear",
+    cameraMode: "cockpit",
+    altitudeAglMeters: 0.6,
+    altitudeMslMeters: null,
+    offsetXMeters: -9_920.3,
+    offsetZMeters: 1_248.3,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 16 },
+    relativeSunBearingDegrees: -130,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "hamlet-night",
+    description:
+      "The 300 ft hamlet pose at 22:00, the sun 16 degrees down: the near "
+      + "houses' lit windows, the far ones' light points past the near radius",
+    cameraMode: "chase",
+    altitudeAglMeters: 91,
+    altitudeMslMeters: null,
+    offsetXMeters: -10_072.9,
+    offsetZMeters: 913.9,
+    pitchDownDegrees: 3,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 22 },
+    // The sun has moved round: this keeps the 300 ft shot's heading.
+    relativeSunBearingDegrees: 75.45,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "farmhouse-inside",
+    description:
+      "Inside the farmhouse at noon, at eye height in the living room, looking "
+      + "along it: the open building, its furniture and the light from its windows",
+    cameraMode: "cockpit",
+    // The cockpit eye sits 1.15 m ahead of and 1.12 m above this point: the
+    // eye is 1.0 m in from the room's end wall, 1.6 m over its floor.
+    altitudeAglMeters: 0.58,
+    altitudeMslMeters: null,
+    offsetXMeters: -3_328.96,
+    offsetZMeters: 1_909.84,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    clock: { dayOfYear: 171, solarTimeHours: 12.5 },
+    relativeSunBearingDegrees: -153,
+    comparesToBaseline: false,
+    ceilings: null,
   },
   /**
    * BOATS. Four shots of the Runabout 21 (`boat` has how the pose is made),

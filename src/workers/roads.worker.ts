@@ -3,6 +3,7 @@
 import type { WorldDefinition } from "@/src/world";
 import { roadRegionInfrastructure } from "@/src/world/roads/roadInfrastructure";
 import { roadNetworkFor } from "@/src/world/roads/roadNetwork";
+import { settlementRegion } from "@/src/world/settlements/settlementRegion";
 import {
   roadRegionAddressKey,
   type RoadRegionAddress,
@@ -58,16 +59,28 @@ function step(): void {
   }
   try {
     const network = roadNetworkFor(current);
-    const region = network.region(address.layer, address.rx, address.rz);
-    const infrastructure = roadRegionInfrastructure(network, region);
-    const event: RoadsWorkerEvent = {
-      type: "region",
-      address,
-      infrastructure,
-      pieces: region.pieces,
-      pads: region.pads,
-      milliseconds: performance.now() - started,
-    };
+    let event: RoadsWorkerEvent;
+    if (address.layer === "settlements") {
+      const settlements = settlementRegion(network, address.rx, address.rz);
+      event = {
+        type: "region",
+        address,
+        infrastructure: settlements.infrastructure,
+        pieces: [],
+        pads: [],
+        milliseconds: performance.now() - started,
+      };
+    } else {
+      const region = network.region(address.layer, address.rx, address.rz);
+      event = {
+        type: "region",
+        address,
+        infrastructure: roadRegionInfrastructure(network, region),
+        pieces: region.pieces,
+        pads: region.pads,
+        milliseconds: performance.now() - started,
+      };
+    }
     post(event);
     recent.set(key, { at: performance.now(), event });
     for (const [other, { at }] of recent) {

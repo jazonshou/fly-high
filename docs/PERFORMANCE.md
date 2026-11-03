@@ -142,6 +142,13 @@ audit is why it now carries all four tiers):
 | Road ribbon range (`roadRibbonRangeMeters`; the 128 m chunks in reach drawn as one, a slot each) | 150 m | 500 m | 800 m | 1,200 m |
 | Guardrail draw range (`barrierDrawRangeMeters`; the 128 m chunks in reach drawn as one, a slot each) | 300 m | 600 m | 900 m | 1,200 m |
 | Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
+| Structure near radius (`structureNearRadiusMeters`; the kit's closed shells, dithered over 40 m into the blocks) | 250 m | 400 m | 600 m | 800 m |
+| Structure far radius (`structureFarRadiusMeters`; the blocks, drawn no further than the 3.9 km the settlements stream) | 2,500 m | 4,000 m | 6,000 m | 8,000 m |
+| Buildings drawn open (`structureOpenBuildings`; rooms and glass, within 40 m of the camera) | 2 | 4 | 6 | 6 |
+| Structure shells cast shadows (`structureNearCastsShadows`; the near set, one caster) | no | yes | yes | yes |
+| Structure texture edge (`structureTextureEdge`; the kit's 13 material layers, texels; 0 = part colours alone) | 0 | 256 | 256 | 512 |
+| Building light points (`structureLampPoints`; lit windows past the near radius, mast and lighthouse lights, in the one light-point draw) | 256 | 1,024 | 2,048 | 2,048 |
+| Chimney smoke (`structureChimneySmoke`; homes' stoves within 1.5 km, wisps of the steam's one draw) | no | no | yes | yes |
 | CSM refresh interval (frames at the tier's frame rate; G5) | 2 | 1 | 1 | 1 |
 | Cloud-depth refresh interval (frames at the tier's frame rate; G5) | 2 | 1 | 1 | 1 |
 | Governor pixel floor (share of the capped pixels; G4) | 0.6 | 0.6 | 0.5625 | 0.5625 |
@@ -438,7 +445,7 @@ Cloud cost is primarily fill rate multiplied by ray steps and density-light samp
 
 ## Detail and wildlife
 
-World detail is deterministic and page-owned rather than attached to transient terrain meshes (villages and buildings were deleted in 1B-5; the airfield is the only settlement content):
+World detail is deterministic and page-owned rather than attached to transient terrain meshes (the old villages and buildings were deleted in 1B-5; the generated settlements of 2026-11 stream with the roads instead, see "Generated buildings" below):
 
 - Default detail cells are 512 m. Terrain biome, climate temperature, slope, moisture, height, and deterministic hashes choose tree and shrub species and rock variants.
 - Near and mid LODs use deterministic far thinning. Velocity-ahead selection reduces pop-in during fast travel.
@@ -3801,6 +3808,97 @@ painted far out and drawn as a surface near the camera. `mountain-close` and
 
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
 delivery.
+
+## Generated buildings (2026-11, PR #41)
+
+The settlements that stream with the roads now carry buildings: about 100
+per 100 km², styled by climate, weathered per building, and every one of
+them enterable. They cost at most four draws, whatever the number of
+buildings, all on one material (`StructureSystem`):
+
+- **far**: every visible building as a block, out to the far radius
+  (2.5 km on Low to 8 km on Ultra). Rebuilt only when a region installs or
+  leaves.
+- **near**: the kit's closed shells within the near radius (250 m to 800 m),
+  dithered against the blocks over a 40 m band. On Medium and up these
+  shells cast sun shadows; nothing else of the buildings does.
+- **open**: the few buildings next to the camera (2 on Low, 4 on Medium,
+  6 on High and Ultra, within 40 m), drawn with their rooms.
+- **glass**: those buildings' window glass, blended.
+
+The lit windows past the near radius, and the mast and lighthouse lights,
+are points in the existing light-point draw (256 to 2,048 by tier). Chimney
+smoke on High and Ultra is wisps of the volcanic steam's existing draw: the
+16 nearest smoking chimneys within 1.5 km, twelve wisps each, inside the
+steam's own cap with the vents first. Both add vertices to a draw that is
+already there, and no draw of their own.
+
+**Triangles.** A closed shell stays under 1,500 triangles, a block under 60.
+An open building, rooms and furniture included, stays under 4,500 (the
+worst house in the kit's samples has 4,104). The budget rose from 4,000
+when the rooms got books, cushions, rugs, pictures and curtains. Only the
+2 to 6 open buildings pay it.
+
+**Memory.** The kit's 13 material layers are two texture arrays, synthesised
+and mipped in a worker: 8.7 MiB at 256² texels (Medium, High), 34.7 MiB at
+512² (Ultra), none on Low, which paints part colours. On the macOS capture,
+inventoried GPU memory is +6.7 to +9.1 MiB on every shot and the estimate is
++13.4 MiB.
+
+**Indoors.** A room by day is lit by the sky through its windows and by the
+sunlit ground's bounce through them (`StructureMaterialPlugin`, a warm
+ground albedo at half share, inside the rooms only). The eye adapts by up to
+1.52 times while the camera is inside an open building's walls
+(`indoorExposureGain`, the outdoor exposure's own adaptation strength
+applied to a 3% daylight factor). It fades in over the first metre inside
+the walls and is exactly 1 outdoors, so no outdoor frame moves. This is
+what took `farmhouse-inside`'s structured tile fraction from 0.474 to 0.747
+on SwiftShader (gate: 0.5).
+
+**Cost on the capture**, the land tip's macOS capture at `c438d62` (run
+41344730906) → this PR's at `4cc4ed4` (run 41360179301), the 47 shots both
+have:
+
+- Draw calls: +1 on 43 shots (the far blocks); +4 on `page-thrash-turn`,
+  `grove-meadow-2m` and `horizon-shadow-far-annulus`, which also have near
+  shells and their shadow casters in range; -1 on `car-clearing-chase`.
+- Triangles: +538 to +6,714, and -4,128 on `car-clearing-chase`.
+- The four new probes, which frame a coastal hamlet 10 km west of home:
+  `hamlet-300ft` (232 draws), `hamlet-eye` (109), `hamlet-night` (234) and
+  `farmhouse-inside` (134).
+
+**Draw ceilings re-pinned.** Fourteen shots sat exactly at their ceilings
+after #37, so the buildings' draw breached them. They are re-pinned to the
+measured count from three full macOS captures that agree on all fourteen:
+gpu-tests runs 41360179301 (`4cc4ed4`), 41363835761 (`a1a2af8`) and
+41368280700 (`0565615`). The seven of them in `PREVIOUS_DRAW_CALL_CEILINGS`
+carry a per-shot `DRAW_CALL_RAISES` entry, `generated-buildings`: +1 on six
+and +4 on `page-thrash-turn`. The other seven sit outside the raise
+mechanism and take the measured count. No visual gate failed, so no baseline
+moves.
+
+**A/B** (Performance A/B run 41363835800, head `a1a2af8` against the land
+tip `c438d62`). The macOS runner's GPU (advisory): frame wall time the same
+on all five shots, -0.6% to +0.1%, CPU time -3.1% to +0.0%. SwiftShader GPU
+time, the gate, by shot (runner CPU in brackets):
+
+| shot | GPU time | draw calls | pixels |
+| --- | --- | --- | --- |
+| `approach-500ft` (7763) | same +0.7% (+0.6% to +0.9%) | 247 → 248 | 0.04% differ |
+| `cruise-horizon` | same -0.1% (-0.3% to +0.1%) | 201 → 202 | identical |
+| `forest-500ft-sunbehind` (9V45) | same +4.0% (+3.6% to +4.4%) | 249 → 250 | 0.01% differ |
+| `ground-2m-lowsun` (7763) | same +0.2% (+0.0% to +0.5%) | 122 → 123 | identical |
+| `water-25ft` (9V74) | same +0.0% (-0.1% to +0.2%) | 224 → 225 | identical |
+
+The forest shot is the outlier, and no building is in its frame (the arms
+differ in 0.01% of pixels). Its A/B has scattered widely before: +0.7% to
++6.7% across the land PR's runs ("Roads and the Land Cruiser" above). The
+next run (41368280775, head `0565615`) put it at +0.0% (-0.1% to +0.2%) on
+a 7763 runner, so the +4.0% was the 9V45 runner, not the buildings. That
+run's other SwiftShader shots: `approach-500ft` +0.4%, `cruise-horizon`
+-0.4%, `ground-2m-lowsun` -0.3% and `water-25ft` -0.3%. On the macOS
+runner's GPU every shot was again the same, frame wall time +1.0% to +1.7%
+and CPU time +3.2% to +6.1% (the guard is 15%).
 
 ## Dusk lighting: amber afterglow and the twilight fill (2026-11-02): no draw ceiling moves
 

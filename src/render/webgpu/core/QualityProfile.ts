@@ -502,6 +502,50 @@ export interface WebGpuQualityProfile {
    * Data, not a `profile.tier` branch, per the tier rule.
    */
   readonly marinaCastsShadows: boolean;
+  /**
+   * The generated buildings (`StructureSystem`, the structures plan's tier
+   * rows): the kit's full-detail closed shells are drawn within this of the
+   * camera, metres, horizontally to a building's centre, and the blocks past
+   * it, the two dithered across a 40 m band. World content (the pads, the
+   * clearings, the colliders) is the same on every tier; only the drawing
+   * changes.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly structureNearRadiusMeters: number;
+  /**
+   * The blocks out to this, metres; 0 draws none. The settlements stream
+   * only `SETTLEMENT_STREAM_WINDOW` (3.9 km) round the observer, so the
+   * system draws no further than that whatever this says: the plan's 6 and
+   * 8 km on High and Ultra wait for a longer stream, where a 10 m house is
+   * a pixel or two tall anyway.
+   */
+  readonly structureFarRadiusMeters: number;
+  /** How many buildings next to the camera are drawn open (rooms, glass); 0 opens none. */
+  readonly structureOpenBuildings: number;
+  /** The near shells cast the sun's shadows (one caster, drawn once per cascade). */
+  readonly structureNearCastsShadows: boolean;
+  /**
+   * The building kit's material arrays (`kitTextures.ts`: boards, stone,
+   * shingle, windows...), texels on an edge; 0 draws the parts' colours
+   * alone. 256 is 8.7 MiB with full chains, 512 34.7 MiB — which High's
+   * 700 MiB ceiling has no room for at 2560×1440@2, so only Ultra takes it.
+   */
+  readonly structureTextureEdge: 0 | 256 | 512;
+  /**
+   * The most light points the buildings' lights take (`StructureLampPool`):
+   * four a building for its lit windows past the near radius, two a weather
+   * mast, four a lighthouse. In the home field's one light-point draw, so
+   * they add vertices and no draw; signal lights first, then the windows
+   * nearest the near radius.
+   */
+  readonly structureLampPoints: number;
+  /**
+   * The homes' chimneys smoke (`structureSmoke.ts`): wisps of the volcanic
+   * steam's one draw, within its wisp cap (vents first), so the draw is
+   * submitted wherever a smoking chimney is within 1.5 km.
+   */
+  readonly structureChimneySmoke: boolean;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -627,6 +671,13 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 150,
       barrierDrawRangeMeters: 300,
       marinaCastsShadows: false,
+      structureNearRadiusMeters: 250,
+      structureFarRadiusMeters: 2_500,
+      structureOpenBuildings: 2,
+      structureNearCastsShadows: false,
+      structureTextureEdge: 0,
+      structureLampPoints: 256,
+      structureChimneySmoke: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -743,6 +794,13 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 500,
       barrierDrawRangeMeters: 600,
       marinaCastsShadows: true,
+      structureNearRadiusMeters: 400,
+      structureFarRadiusMeters: 4_000,
+      structureOpenBuildings: 4,
+      structureNearCastsShadows: true,
+      structureTextureEdge: 256,
+      structureLampPoints: 1_024,
+      structureChimneySmoke: false,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -849,6 +907,13 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 800,
       barrierDrawRangeMeters: 900,
       marinaCastsShadows: true,
+      structureNearRadiusMeters: 600,
+      structureFarRadiusMeters: 6_000,
+      structureOpenBuildings: 6,
+      structureNearCastsShadows: true,
+      structureTextureEdge: 256,
+      structureLampPoints: 2_048,
+      structureChimneySmoke: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -956,6 +1021,13 @@ function resolveBaseQualityProfile(
     roadRibbonRangeMeters: 1_200,
     barrierDrawRangeMeters: 1_200,
     marinaCastsShadows: true,
+    structureNearRadiusMeters: 800,
+    structureFarRadiusMeters: 8_000,
+    structureOpenBuildings: 6,
+    structureNearCastsShadows: true,
+    structureTextureEdge: 512,
+    structureLampPoints: 2_048,
+    structureChimneySmoke: true,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,

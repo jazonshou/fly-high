@@ -344,6 +344,8 @@ function stepSurface(active: SurfaceVehicleSimulator): void {
   surfaceWind.z = wind.z * windScale;
   surfaceEnvironment.water.setTime(active.state.time);
   hydrologyWater.setVehiclePosition(position.x, position.z);
+  // The buildings near the car as the kit lays them out, the rest as boxes.
+  carColliders?.setFocus(position.x, position.z);
   surfaceControls.assist = mode;
   surfaceControls.boat = controls.boat ?? NEUTRAL_BOAT_CONTROLS;
   surfaceControls.car = controls.car ?? NEUTRAL_CAR_CONTROLS;

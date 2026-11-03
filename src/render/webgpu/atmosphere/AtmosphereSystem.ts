@@ -22,6 +22,7 @@ import {
   adaptedLuminanceCdM2,
   exposureForState,
   horizontalIlluminanceLux,
+  MAX_EXPOSURE,
   REFERENCE_ILLUMINANCE_LUX,
   SCENE_UNIT_TO_NITS,
   twilightExposureDipFactor,
@@ -677,6 +678,10 @@ export class AtmosphereSystem {
    * uses, so a scene without terrain lights exactly as it did.
    */
   private surfaceAlbedo = new Color3(0.18, 0.18, 0.18);
+  /** The one exposure curve with its twilight dip, as last applied; NaN until the first environment. */
+  private outdoorExposure = Number.NaN;
+  /** The eye's gain indoors (`setIndoorExposure`), 1 outside. */
+  private indoorExposure = 1;
   readonly shadows: CascadedShadowGenerator;
   private readonly sky: Mesh;
   private readonly skyMaterial: ShaderMaterial;
@@ -974,9 +979,9 @@ export class AtmosphereSystem {
     // sine below its release). Applied HERE, on the CPU, at the one exposure
     // site — assertion 29 still holds and exposureForState's own pins are
     // untouched (the dip is the consumer's, not the curve's).
-    this.scene.imageProcessingConfiguration.exposure =
-      exposureForState(state, moonLux)
+    this.outdoorExposure = exposureForState(state, moonLux)
       * twilightExposureDipFactor(state.sun.direction[1]);
+    this.applyExposure();
     // 1C-6: IBL now carries the skylight. The hemispheric light survives
     // only as a small ground-bounce approximation, so skylight is not
     // double-counted; the snapshot's ambientColor keeps the old scale — it
@@ -1175,6 +1180,25 @@ export class AtmosphereSystem {
 
   update(cameraLocalPosition: Vector3): void {
     this.sky.position.copyFrom(cameraLocalPosition);
+  }
+
+  /**
+   * The eye's gain indoors (`indoorExposureGain`; 1 outside), on top of the
+   * one exposure curve and its twilight dip, never past the curve's own
+   * ceiling: at night the curve is there already, and a lamp-lit room needs
+   * no more.
+   */
+  setIndoorExposure(gain: number): void {
+    if (gain === this.indoorExposure) return;
+    this.indoorExposure = gain;
+    this.applyExposure();
+  }
+
+  private applyExposure(): void {
+    if (!Number.isFinite(this.outdoorExposure)) return;
+    this.scene.imageProcessingConfiguration.exposure = this.indoorExposure === 1
+      ? this.outdoorExposure
+      : Math.max(this.outdoorExposure, Math.min(MAX_EXPOSURE, this.outdoorExposure * this.indoorExposure));
   }
 
   dispose(): void {

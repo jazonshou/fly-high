@@ -68,6 +68,40 @@ export function roadRegionInfrastructure(network: RoadNetwork, region: RoadRegio
 
 function pieceSegment(world: WorldDefinition, piece: RoadPiece): InfrastructureSegment {
   const spec = roadClass(piece.classId);
+  return Object.freeze({
+    profile: INFRASTRUCTURE_PROFILE.carriageway,
+    mode: "set",
+    priority: spec.priority,
+    ax: piece.ax,
+    az: piece.az,
+    bx: piece.bx,
+    bz: piece.bz,
+    halfWidth: roadFormationHalfWidth(spec),
+    reach: roadPieceReach(world, piece),
+    params: Object.freeze([
+      piece.ha - world.seaLevel,
+      piece.hb - world.seaLevel,
+      piece.ca,
+      piece.cb,
+      piece.ka,
+      spec.ditchDepth,
+      spec.ditchWidth,
+      piece.kb - piece.ka,
+    ]),
+    surface: spec.surface,
+    plantClearance: spec.plantClearance,
+    key: roadPieceKey(piece),
+  });
+}
+
+/**
+ * How far a piece's batters (its ditches, cuttings and embankments) reach
+ * past its formation's edge, metres: its stage segment's `reach`. A
+ * settlement keeps its buildings on posts out of it, as they stand on the
+ * ground the roads leave.
+ */
+export function roadPieceReach(world: WorldDefinition, piece: RoadPiece): number {
+  const spec = roadClass(piece.classId);
   const half = roadFormationHalfWidth(spec);
   const dx = piece.bx - piece.ax;
   const dz = piece.bz - piece.az;
@@ -91,30 +125,7 @@ function pieceSegment(world: WorldDefinition, piece: RoadPiece): InfrastructureS
       meets = Math.max(meets, batterMeets(world, cx + outX * half, cz + outZ * half, outX, outZ, edge, spec));
     }
   }
-  return Object.freeze({
-    profile: INFRASTRUCTURE_PROFILE.carriageway,
-    mode: "set",
-    priority: spec.priority,
-    ax: piece.ax,
-    az: piece.az,
-    bx: piece.bx,
-    bz: piece.bz,
-    halfWidth: half,
-    reach: reachFor(meets, spec),
-    params: Object.freeze([
-      piece.ha - world.seaLevel,
-      piece.hb - world.seaLevel,
-      piece.ca,
-      piece.cb,
-      piece.ka,
-      spec.ditchDepth,
-      spec.ditchWidth,
-      piece.kb - piece.ka,
-    ]),
-    surface: spec.surface,
-    plantClearance: spec.plantClearance,
-    key: roadPieceKey(piece),
-  });
+  return reachFor(meets, spec);
 }
 
 /** A patch's batters reach this far, into the ditch it fills beside the road, metres. */
