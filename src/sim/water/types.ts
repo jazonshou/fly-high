@@ -48,6 +48,21 @@ export function createWaterSurfaceSample(): WaterSurfaceSample {
 export interface WaterSurfaceAuthority {
   setTime(time: number): void;
   sample(x: number, z: number, out: WaterSurfaceSample): WaterSurfaceSample;
+  /**
+   * Optional, for a caller that already knows the bed under a point: true
+   * only where `sample` would certainly answer `"none"` at (`at.x`, `at.z`)
+   * over a bed at `at.height` (the authority's own bed there, to within a
+   * few decimetres), so the caller can skip it. False means ask `sample`.
+   * No number crosses the call, so V8 boxes none.
+   */
+  isDry?(at: Readonly<WaterBedPoint>): boolean;
+}
+
+/** A point and the bed's height under it, for `WaterSurfaceAuthority.isDry`. */
+export interface WaterBedPoint {
+  x: number;
+  z: number;
+  height: number;
 }
 
 /**

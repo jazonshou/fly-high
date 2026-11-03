@@ -50,6 +50,12 @@ function source(...segments: InfrastructureSegment[]): InfrastructureSource {
   return () => ({ segments });
 }
 
+/** The segments bin (15, 31) lists. */
+function index15x31(index: InfrastructureIndex): number[] | undefined {
+  const list = index.bins.get(infrastructureBinKey(15, 31));
+  return list && Array.from(list);
+}
+
 /** The stage over a flat ground at `ground`. */
 function flat(index: InfrastructureIndex, ground: number, x: number, z: number): number {
   return applyInfrastructure(index, world.seaLevel, ground, x, z);
@@ -66,6 +72,8 @@ const PROFILE_EXAMPLES: Record<string, readonly number[]> = {
   marinaPad: [1.5, 1.5, 2, 0.15],
   marinaSlipway: [1.5, -1.5, 1.5],
   marinaBreakwater: [2, 2.5, 1.5],
+  carriageway: [1.2, 3.4, 0.03, -0.02, 0.04, 0.5, 1.5],
+  junctionPad: [1.2, 6, 0.08],
 };
 
 describe("infrastructure stage containment", () => {
@@ -164,7 +172,7 @@ describe("infrastructure index", () => {
     const bounds = Math.ceil(8_040 / INFRASTRUCTURE_BIN_METERS);
     // A bounding-box binning would list the road in ~bounds^2 bins.
     let roadBins = 0;
-    for (const list of index.bins.values()) if (list.includes(index.segments.findIndex((s) => s.segment === road))) roadBins += 1;
+    for (const list of index.bins.values()) if (Array.from(list).includes(index.segments.findIndex((s) => s.segment === road))) roadBins += 1;
     expect(roadBins).toBeLessThan(4 * bounds);
     // Every point equals the stage evaluated over all segments with no bins.
     const brute = (ground: number, x: number, z: number) => {
@@ -245,6 +253,73 @@ describe("infrastructure surfaces and plants", () => {
     expect(sampleInfrastructureSurface(index, 1_050, 2_020, out).coverage).toBeCloseTo(0.5, 12);
     expect(sampleInfrastructureSurface(index, 1_050, 2_020.5, out)).toEqual({ surface: null, coverage: 0 });
     expect(sampleInfrastructureSurface(index, 1_050, 2_045, out).surface).toBeNull();
+  });
+
+  it("samples a segment as wide as the texel or wider at the point, whatever the texel", () => {
+    const index = buildInfrastructureIndex(world, [source(pad({ surface: "concrete" }))]);
+    const point: InfrastructureSurfaceSample = { surface: null, coverage: 0 };
+    const over: InfrastructureSurfaceSample = { surface: null, coverage: 0 };
+    for (const texel of [0, 4, 16, 40]) {
+      for (const z of [2_000, 2_013.7, 2_019.6, 2_020, 2_020.3, 2_031]) {
+        sampleInfrastructureSurface(index, 1_041.3, z, point);
+        expect(sampleInfrastructureSurface(index, 1_041.3, z, over, texel)).toEqual(point);
+      }
+    }
+  });
+
+  it("paints a road narrower than the texel by the share of each texel it covers", () => {
+    // A 5 m gravel road at sub-texel offsets: a column of texels across it
+    // paints its width's worth, wherever it falls in them, where a point
+    // sample would paint a whole texel or none.
+    const out: InfrastructureSurfaceSample = { surface: null, coverage: 0 };
+    for (const texel of [8, 16, 32, 64]) {
+      for (const offset of [0, 0.3, 0.5, 0.77]) {
+        const z = 2_048 + offset * texel;
+        const road = pad({ ax: 0, az: z, bx: 4_000, bz: z, halfWidth: 2.5, reach: 4, surface: "gravel" });
+        const index = buildInfrastructureIndex(world, [source(road)]);
+        let painted = 0;
+        let most = 0;
+        for (let row = -6; row < 6; row += 1) {
+          const sample = sampleInfrastructureSurface(index, 1_500.5, 2_048 + (row + 0.5) * texel, out, texel);
+          if (sample.coverage > 0) expect(sample.surface).toBe("gravel");
+          painted += sample.coverage * texel;
+          most = Math.max(most, sample.coverage);
+        }
+        expect(painted).toBeCloseTo(5, 9);
+        expect(most).toBeLessThanOrEqual(5 / texel + 1e-12);
+      }
+    }
+  });
+
+  it("finds a narrow segment in the texel's other bins when its own bin does not list it", () => {
+    // A 2 m pad just over the corner of bin (15, 31), too far from that bin
+    // to be listed in it; a texel near the corner covers some of it.
+    const corner = pad({ ax: 1_027, az: 2_051, bx: 1_027, bz: 2_051, halfWidth: 1, reach: 1, surface: "asphalt" });
+    const index = buildInfrastructureIndex(world, [source(corner)]);
+    expect([infrastructureBin(1_020), infrastructureBin(2_044)]).toEqual([15, 31]);
+    expect(index15x31(index)).toBeUndefined();
+    const out: InfrastructureSurfaceSample = { surface: null, coverage: 0 };
+    expect(sampleInfrastructureSurface(index, 1_020, 2_044, out)).toEqual({ surface: null, coverage: 0 });
+    // 9.9 m from the centre of a 32 m texel: the 2 m band lies inside its box.
+    expect(sampleInfrastructureSurface(index, 1_020, 2_044, out, 32)).toEqual({ surface: "asphalt", coverage: 2 / 32 });
+    // A box never reaches past half a bin: at 256 m texels, the same 64 m box.
+    expect(sampleInfrastructureSurface(index, 1_020, 2_044, out, 256)).toEqual({ surface: "asphalt", coverage: 2 / 64 });
+  });
+
+  it("lets a segment from the texel's other bins win only on more coverage", () => {
+    // One pad in the texel's own bin, a later one only in the next bin over,
+    // each 9.9 m from the texel's centre: a tie keeps the own bin's pad.
+    const own = pad({ ax: 1_013, az: 2_037, bx: 1_013, bz: 2_037, halfWidth: 1, reach: 1, surface: "gravel" });
+    const next = (halfWidth: number) => pad({
+      ax: 1_027, az: 2_051, bx: 1_027, bz: 2_051, halfWidth, reach: 1, surface: "asphalt",
+    });
+    const out: InfrastructureSurfaceSample = { surface: null, coverage: 0 };
+    const tie = buildInfrastructureIndex(world, [source(own, next(1))]);
+    expect(index15x31(tie)).toEqual([0]);
+    expect(sampleInfrastructureSurface(tie, 1_020, 2_044, out, 32)).toEqual({ surface: "gravel", coverage: 2 / 32 });
+    const more = buildInfrastructureIndex(world, [source(own, next(1.5))]);
+    expect(index15x31(more)).toEqual([0]);
+    expect(sampleInfrastructureSurface(more, 1_020, 2_044, out, 32)).toEqual({ surface: "asphalt", coverage: 3 / 32 });
   });
 
   it("keeps plants off segments that ask, and lets them back in over a short band", () => {

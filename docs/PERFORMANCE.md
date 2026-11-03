@@ -135,6 +135,12 @@ audit is why it now carries all four tiers):
 | Volcanic steam wisp cap (`volcanicSteamMaxWisps`; 0 = no mesh) | 0 | 128 | 192 | 256 |
 | Boat spray particle cap (`boatSprayParticleCap`; boat sessions only) | 256 | 1,024 | 4,096 | 4,096 |
 | Boat wake trail seconds (`boatWakeTrailSeconds`; boat sessions only) | 12 | 24 | 40 | 40 |
+| Vehicle particle budget (`vehicleParticleBudget`; car sessions only) | 32 | 128 | 256 | 384 |
+| Tyre track segments (`tyreTrackSegments`; car sessions only) | 0 | 256 | 512 | 1,024 |
+| L0 terrain round a car (`vehicleNearTerrainL0RadiusMeters`; car sessions only; 0 = the floor is already L0) | 160 m | 0 | 0 | 0 |
+| L0 terrain geomorph band (`vehicleNearTerrainL0BandMeters`; the outer part of that disc) | 64 m | 0 | 0 | 0 |
+| Road ribbon range (`roadRibbonRangeMeters`; the 128 m chunks in reach drawn as one, a slot each) | 150 m | 500 m | 800 m | 1,200 m |
+| Guardrail draw range (`barrierDrawRangeMeters`; the 128 m chunks in reach drawn as one, a slot each) | 300 m | 600 m | 900 m | 1,200 m |
 | Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
 | CSM refresh interval (frames at the tier's frame rate; G5) | 2 | 1 | 1 | 1 |
 | Cloud-depth refresh interval (frames at the tier's frame rate; G5) | 2 | 1 | 1 | 1 |
@@ -149,6 +155,21 @@ if synthesis moves to GPU compute. Both arrays together are 6.7 MiB at tier 0
 (the ten base materials) and 34.7 MiB above it (those ten, the volcanic pair
 and the ground grain), derived from the tier's edge and layer data rather than
 declared, so the memory row cannot disagree with the knobs.
+
+Low's L0 terrain round a car draws the ground within 160 m of the wheels on
+the 2 m lattice the car's physics drives on, not Low's 4 m one. The selector
+splits it after the tier's own nodes and outside `cdlodNodeBudget`, so it
+never trades nodes with the far field: at most 183 more nodes
+(`terrainNearFloorNodeAllowance`), measured 96-120 on rough ground, in the
+same single terrain draw. It geomorphs to L1 over its outer 64 m, so it
+follows the car without a pop. The shadow casters draw the tier's own
+selection from under the patch (its relief is centimetres against L1), so
+the patch costs the beauty and cloud-depth passes only. Timed on Low (A/A
+with the radius at 0 in the base arm, 16 rounds): GPU +4.3% clearing, +4.3%
+dune, +2.2% ford, with about 80 / 60 / 30 more nodes drawn. A 96 m disc with
+a 32 m band measured no cheaper (+4.7 / +5.7 / +4.6%, triangles within 3%),
+so in these scenes the radius is not what the cost follows. Aircraft and
+boat sessions never build it.
 
 These are profile values, not claims that each row owns a separate framebuffer. The spectral configuration defines all five requested cascades, so the active allocation is 3/4/5/5. Terrain tiers retain the inexpensive far levels needed to reach the 45 km far plane (guaranteed coverage is 512·2^rings meters; tier 0 stops at 32.8 km behind ~89% haze opacity); quality changes near-page vertex density rather than exposing a finite terrain edge. Tier 3 is a 30 fps tier that spends its frame on pixels.
 
@@ -1371,6 +1392,24 @@ first compile of that pipeline is that slow, and `recenter`,
 `PageOcclusionBake`, `TerrainPageAtlas` and `TerrainPageErosionGpu` await the
 same call; the ocean, bathymetry and macro-erosion paths already use bounded
 replacements.
+
+**A poll that never gives up.** A browser each was not enough on a slower
+4-CPU runner, where the two browsers still compile their pipelines at the same
+time. On CI's EPYC 7763 runners the base arm of `approach-500ft` and
+`forest-500ft-sunbehind` lost the race on the splat bake
+(`terrain-page-splat`): it drew the shot without its baked ground cover (no
+lake beaches, other ground and mountain material), about 5% cheaper, so the
+head read SLOWER by that much. The frames repeated bit for bit run to run, and
+the work counts and draws matched a normal base exactly. On a host held to two
+CPUs, both arms latched on the splat bake and the horizon pyramid; main's arm
+settled anyway, because its settle check does not count a channel page
+waiting on its splat, while the land PR's head waited for it and never
+settled. So the agent replaces `ComputeShader.dispatchWhenReady` in both arms
+with a poll that keeps trying until `dispatch()` succeeds: a slow first
+compile now delays a bake instead of losing it. On the same two-CPU host both
+arms then settled in 360 frames, with no bake left waiting, and the base drew
+its beaches again. Nothing else about the dispatch changes, and the
+renderer's own latch is still there for a fix of its own.
 
 **What fails the run** (exit 1):
 
@@ -2618,6 +2657,73 @@ both pipelines above the fade). Of the choppiness section's open list
 the far east the granite rock, a detail material (perhaps that list's
 "plain PBR"). The far east's hydrology water is not covered.
 
+## Roads at jet speed: coarse pages and the road index (2026-10-28)
+
+The land PR's roads stream round the observer: the gravel window reaches
+12 km, tracks 5 km, both leaning 20 s ahead along the velocity, in 2 km
+regions. A 250 m/s leg at 3,000 ft over road country (from 7271, -37795,
+heading 135) cost about 3 ms more per frame with roads streaming than
+without (the same build with road streaming switched off). On the SwiftShader host,
+with draws off, the GPU compute fell from 3.0-3.8 frames/s to 0.7-1.1, and
+the vegetation's build latency p95 rose from 1.5 s to 14 s. The road code
+itself was 0.6 ms of the 3. The rest was what each change asks of the
+terrain pages.
+
+**The coarse pages.** Each road change rebuilds in place every resident
+page whose domain it touches (`TerrainClipmapSystem.infrastructureChanged`).
+A page of level 5 or more spans 16 km or more, so nearly every region
+installed or dropped lies inside one. Flown on fake producers (every
+rebuild finishing at once), a 90 s leg rebuilt pages 480 times for roads
+against 209 fresh pages, and 405 of those rebuilds were levels 5-9. Those
+are pages where a 7 m gravel road covers under 5% of a 128 m texel. While
+the observer moves faster than `ROAD_DEFERRED_MIN_SPEED` (50 m/s), those
+rebuilds are pooled into one change. They go ahead once it slows or stops,
+or has travelled `ROAD_DEFERRED_MAX_TRAVEL` (8 km). A capture holds its
+aircraft still at the pose's speed, so it still waits for every page. On
+the same leg the road rebuilds fall to 99 (23 of them levels 5-9), and the
+page work overall from 689 to 308 pages.
+
+**The road index.** The jet's window grows to 13,941 segments in 4,125
+bins. That overflowed the streamed pack minimum (8,192 table slots take
+4,096 bins): a fresh 18 ms pack early in the leg, then a table rehash every
+20 s as dropped bins filled it. The minimums are now 24,576 segments,
+16,384 slots and 131,072 list entries, about 2.7 MB on the GPU. A rehash
+marks the table dirty once, instead of each entry and then the table. On a
+300 s leg of the real road changes (Node), that's 1 rehash and no fresh
+pack, against 13 rehashes of 2-9 ms and one fresh pack before. The update
+p99 is 0.8 ms, against 2.6 ms before.
+
+**Measured** with `npm run perf:flight -- --base b0875d0 --legs 4
+--leg-frames 360 --speed 250 --clearance 914 --start 7271,-37795,135`
+(SwiftShader, draws off; the head had the deferral and the single dirty
+mark, not yet the larger minimums). The three legs after the first:
+
+| | b0875d0 | deferred |
+| --- | --- | --- |
+| render() ms p50 / p95 / p99 / max | 12.5 / 24.6 / 31.1 / 51.2 | 11.0 / 21.6 / 26.9 / 42.8 |
+| frame CPU ms mean / p95 | 14.35 / 25.3 | 12.77 / 22.2 |
+| long tasks (over 50 ms) | 1 | 0 |
+| GPU compute, frames/s a leg | 0.9-1.1 | 2.6-2.8 |
+| vegetation build latency p95 | 14.3-15.3 s | 3.8-7.7 s |
+| world-page-visibility pass, mean ms | 5.96 | 5.00 |
+
+The report's "JS heap allocated per frame" reads 919 KiB in the base and
+1,533 KiB in the head. It is net of collections, and the base collected
+more than twice as often (187 falls of over 1 MiB against 83), while it
+waited about a second a frame on the GPU fence. Frames with no collection
+allocate the same in both arms: a median of 1,733 KiB and 1,761 KiB.
+
+Pinned by `tests/render.webgpu-terrain-roads-rebuild.test.ts` (fast and
+moving: only levels under 5 rebuild; slowed: each coarse page once for both
+changes; held still at speed: no wait; 8 km on: the wait ends) and
+`tests/render.infrastructure-gpu-bins.test.ts` (a copy kept only by the
+ranges each update returns matches the pack after every relayout and
+rehash).
+
+Still open: the rest of the gap to roads off (the vegetation's build
+latency p95 is 3.8-7.7 s against 1.5-1.8 s; a road change marks its cells
+stale and rebuilds them), and taking a large change over two frames.
+
 ## Capture harness
 
 `npm run perf:capture` renders the authoritative `PERF_CAPTURE_SHOTS` list. Entries whose
@@ -3614,6 +3720,84 @@ texture, and no tiling shows at 1,600 or 10,000 ft. No shot gains blown-out
 pixels. One gains near-black ones: in `sunset-sunward`, ground in the lowest
 quarter of the frame that faces the sun and sat at 4-10/255 drops to 3/255 or
 below, 0.24% of the frame.
+
+**Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
+delivery.
+
+## Roads and the Land Cruiser: all thirty-nine promoted (2026-11-01, PR #37)
+
+The land PR adds streamed roads and the Land Cruiser 76. The car is in none of
+the thirty-nine baseline shots; the roads are in many. A road's 3D surface
+draws within `roadRibbonRangeMeters` of the camera (150 m on Low to 1,200 m on
+Ultra). Further out the terrain paints the road into its splat, and trees are
+cleared along each corridor.
+
+**All thirty-nine baselines promoted 2026-11-01 from the hosted macOS runner's
+2026-10-29 capture**, the same way as 2026-10-29. Jason approved the road look
+from the PR's before/after chase frames on #32's textured ground. Source: the
+PR's capture at `16dce46`, after main (#32, #36, #38) was merged in at
+`6df1197` (gpu-tests run 40928082863, artifact `perf-capture-40928082863-1`,
+zip sha256 `f3d5093758b5b0e1…9c26`). Before promotion it failed 6 visual gates
+on 4 of its 47 shots, every one a divergence from the committed baselines:
+`lake-island-piercing` 0.9814 (worst tile 0.5676), `veg-seam-1600ft-oblique`
+0.9788 (tile 0.6821), `apron-hangar-variety` 0.9791 and the
+`reference-viewport` tile 0.7106. No draw, triangle or memory gate failed.
+The four `boat-*` and four `car-*` shots still have no committed baseline.
+Main's own capture at `3d20f39` (gpu-tests run 40917976407) sits within
+0.03/255 of the committed baselines on every shot, so all of the change below
+is this PR's.
+
+**Cost on the capture**, main's `3d20f39` capture → this capture:
+
+- Draw calls: +1 on sixteen shots (a road surface layer in view), equal on the
+  other twenty-three. No draw ceiling moves, but main pins each ceiling one
+  above its own count, so fourteen of the sixteen now sit exactly at their
+  ceiling (`cruise-horizon` 201, `forest-500ft-sunbehind` 249,
+  `ground-2m-lowsun` 122, ...). The next draw on those shots needs a re-pin.
+- Triangles: −200 on twenty-two shots, +88 on seven, and +1,132 to +4,672 on
+  eight with road surfaces near the camera. `apron-hangar-variety` gains
+  102,304.
+- Inventoried GPU memory: +4.5 to +4.6 MiB on every shot. Buffers grow
+  +2.6 MiB (the road index, "Roads at jet speed" above), geometry
+  +1.8-1.9 MiB and textures +0.1 MiB. Estimated GPU memory is equal on every
+  shot.
+
+**A/B**: Performance A/B run 40928082926, head `16dce46` against main
+`3d20f39` (SwiftShader GPU time, Hodges-Lehmann estimate and its 95% interval;
+CPU time is the guard; each part's runner CPU in brackets):
+
+| shot | GPU time | CPU time (guard) | draw calls | GPU work |
+| --- | --- | --- | --- | --- |
+| `approach-500ft` (9V74) | same +0.9% (+0.8% to +1.0%) | same -3.8% | 247 → 247 | identical |
+| `cruise-horizon` (9V45) | same +1.2% (+0.7% to +1.7%) | same +7.2% | 200 → 201 | +1 bundle, +3.5k upload bytes |
+| `forest-500ft-sunbehind` (9V45) | same +3.8% (+3.5% to +4.1%) | same +1.1% | 248 → 249 | +1 bundle, +3.5k upload bytes |
+| `ground-2m-lowsun` (7763) | same +3.9% (+3.7% to +4.1%) | same -0.5% | 121 → 122 | +1 bundle |
+| `water-25ft` (9V74) | same +0.9% (+0.7% to +1.1%) | same +1.8% | 224 → 224 | identical |
+
+The forest and ground calls sit higher than on `6df1197` (run 40921550342,
+the same roads without the ribbon's crunch): forest +1.2% and ground -0.6%
+there. Forest ran on a 9V45 both times, and its head held still (median
+8,313 → 8,276 ms a frame) while main's base moved (8,198 → 7,961 ms), so the
+difference is the base arm's run-to-run spread. Ground ran on a 9V45, then a
+7763, which weigh the work differently ("Compare CI parts on one CPU model"
+above). The macOS runner's advisory run reads same on four shots (frame wall
+time +0.9% to +2.9%) and inconclusive on `approach-500ft` (+3.5%, +1.4% to
++5.7%).
+
+By shot, main's capture → this capture (mean absolute difference per channel,
+/255; pixels with any channel past 4/255; mean sRGB level change, /255):
+
+| shots | mean abs diff /255 | pixels past 4/255 | mean level |
+| --- | --- | --- | --- |
+| `lake-island-piercing` (a track across the meadow at 300 ft) | 0.80 | 5.0% | +0.32 |
+| `veg-seam-1600ft-oblique`, `apron-hangar-variety`, `approach-lights-outboard` | 0.45-0.56 | 2.9-3.6% | -0.01 to +0.28 |
+| `approach-500ft`, `reference-viewport`, `motion-banked-turn`, `runway-on-approach`, and twelve more with forest in view, at golden hour, dusk and night among them | 0.09-0.26 | 0.6-1.4% | -0.02 to +0.05 |
+| the other nineteen: sky, water and coast, high and straight-down views, `ground-2m-lowsun`, `grove-forest-2m`, cliff and mountain | 0.00-0.05 | 0-0.4% | -0.003 to +0.016 |
+
+Where each shot differs most, it is mostly trees: the corridors cleared
+along roads open short gaps in the forest. The rest is the roads themselves,
+painted far out and drawn as a surface near the camera. `mountain-close` and
+`terrain-material-1600ft-down` are byte-identical to their baselines.
 
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
 delivery.

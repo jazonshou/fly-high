@@ -1229,6 +1229,85 @@ function findSpillPoint(
   return null;
 }
 
+/**
+ * A source's trace window. Tracing is owned by the global source, not the
+ * requesting page, so the same source has the same complete path in every
+ * overlap.
+ */
+function sourceTraceBounds(candidate: SourceCandidate, config: HydrologyGenerationConfig): HydrologyBounds {
+  const traceRadius = config.traceStepMeters * (config.maximumTraceSteps + 2);
+  return {
+    minX: candidate.x - traceRadius,
+    maxX: candidate.x + traceRadius,
+    minZ: candidate.z - traceRadius,
+    maxZ: candidate.z + traceRadius,
+  };
+}
+
+/** A source's FIRST trace: a river's start, and the only trace a basin lake is read from. */
+function traceFromSource(
+  worldSeed: string | number,
+  candidate: SourceCandidate,
+  config: HydrologyGenerationConfig,
+  terrainSample: HydrologyTerrainSampler,
+): DownhillTrace {
+  return traceDownhillPath({
+    worldSeed: `${String(worldSeed)}/river/${candidate.key}`,
+    terrainSample,
+    startX: candidate.x,
+    startZ: candidate.z,
+    bounds: sourceTraceBounds(candidate, config),
+    seaLevel: config.seaLevel,
+    stepMeters: config.traceStepMeters,
+    angularSamples: config.traceAngularSamples,
+    maximumSteps: config.maximumTraceSteps,
+    minimumDropMeters: config.minimumDownhillDropMeters,
+    directionInertia: config.directionInertia,
+  });
+}
+
+/**
+ * The lake a lake-eligible source's first trace ends in, or null: a function
+ * of the source cell, its trace and the authored rims round it alone, so
+ * every region that keeps it keeps the same lake.
+ */
+function sourceBasinLake(
+  candidate: SourceCandidate,
+  trace: DownhillTrace,
+  authoredBasins: readonly HydrologyAuthoredBasin[],
+  config: HydrologyGenerationConfig,
+  terrainSample: HydrologyTerrainSampler,
+  hash: number,
+): HydrologyLake | null {
+  if (!candidate.lakeEligible || trace.termination !== "basin") return null;
+  const basin = trace.points.at(-1);
+  if (
+    !basin || !(basin.terrainHeight > config.seaLevel + 0.5)
+    || insideAuthoredBasin(authoredBasins, basin.x, basin.z)
+  ) return null;
+  return buildBasinLake(
+    `${hash.toString(16)}:lake:${candidate.cellX}:${candidate.cellZ}`,
+    basin,
+    config,
+    terrainSample,
+    hash,
+  );
+}
+
+function authoredLakeId(hash: number, basin: HydrologyAuthoredBasin): string {
+  return `${hash.toString(16)}:lake:${basin.id}`;
+}
+
+/** The sampler as generation reads it: moisture and erg weight defaulted, every value checked. */
+function normalizedTerrainSample(
+  terrainSample: HydrologyTerrainSampler,
+  x: number,
+  z: number,
+): HydrologyTerrainSample {
+  const point = readTerrainSample(terrainSample, x, z);
+  return { height: point.terrainHeight, moisture: point.moisture, ergWeight: point.ergWeight };
+}
+
 export function generateHydrology(options: HydrologyGenerationOptions): HydrologyGenerationResult {
   // `5-12a`: rivers are traced FROM the heightfield and carving MODIFIES it, so
   // tracing over carved ground makes the generator consume its own output. The
@@ -1270,8 +1349,7 @@ export function generateHydrology(options: HydrologyGenerationOptions): Hydrolog
   let terrainSampleCount = 0;
   const terrainSample: HydrologyTerrainSampler = (x, z) => {
     terrainSampleCount += 1;
-    const point = readTerrainSample(sourceTerrainSample, x, z);
-    return { height: point.terrainHeight, moisture: point.moisture, ergWeight: point.ergWeight };
+    return normalizedTerrainSample(sourceTerrainSample, x, z);
   };
   const sourceBuild = buildSourceCandidates(
     config,
@@ -1296,40 +1374,14 @@ export function generateHydrology(options: HydrologyGenerationOptions): Hydrolog
       basin.centerX + rim < bounds.minX || basin.centerX - rim > bounds.maxX
       || basin.centerZ + rim < bounds.minZ || basin.centerZ - rim > bounds.maxZ
     ) continue;
-    const lake = buildAuthoredLake(
-      `${hash.toString(16)}:lake:${basin.id}`,
-      basin,
-      config,
-      terrainSample,
-      hash,
-    );
+    const lake = buildAuthoredLake(authoredLakeId(hash, basin), basin, config, terrainSample, hash);
     if (lake && lakeIntersectsBounds(lake, bounds)) lakes.push(lake);
   }
 
   for (const candidate of candidates) {
     tracedSourceCount += 1;
-    const traceRadius = config.traceStepMeters * (config.maximumTraceSteps + 2);
-    const traceBounds: HydrologyBounds = {
-      minX: candidate.x - traceRadius,
-      maxX: candidate.x + traceRadius,
-      minZ: candidate.z - traceRadius,
-      maxZ: candidate.z + traceRadius,
-    };
-    const trace = traceDownhillPath({
-      worldSeed: `${String(worldSeed)}/river/${candidate.key}`,
-      terrainSample,
-      startX: candidate.x,
-      startZ: candidate.z,
-      // Tracing is owned by the global source, not the requesting page. The
-      // same source therefore has the same complete path in every overlap.
-      bounds: traceBounds,
-      seaLevel: config.seaLevel,
-      stepMeters: config.traceStepMeters,
-      angularSamples: config.traceAngularSamples,
-      maximumSteps: config.maximumTraceSteps,
-      minimumDropMeters: config.minimumDownhillDropMeters,
-      directionInertia: config.directionInertia,
-    });
+    const traceBounds = sourceTraceBounds(candidate, config);
+    const trace = traceFromSource(worldSeed, candidate, config, terrainSample);
     // `R-24b`: step over noise hollows. The LAKE test below deliberately runs
     // on the FIRST trace, exactly as before, so this cannot remove a lake.
     const escapedPoints: DownhillTracePoint[] = [...trace.points];
@@ -1359,22 +1411,8 @@ export function generateHydrology(options: HydrologyGenerationOptions): Hydrolog
       }
     }
 
-    if (candidate.lakeEligible && trace.termination === "basin") {
-      const basin = trace.points.at(-1);
-      if (
-        basin && basin.terrainHeight > config.seaLevel + 0.5
-        && !insideAuthoredBasin(authoredBasins, basin.x, basin.z)
-      ) {
-        const lake = buildBasinLake(
-          `${hash.toString(16)}:lake:${candidate.cellX}:${candidate.cellZ}`,
-          basin,
-          config,
-          terrainSample,
-          hash,
-        );
-        if (lake && lakeIntersectsBounds(lake, bounds)) lakes.push(lake);
-      }
-    }
+    const lake = sourceBasinLake(candidate, trace, authoredBasins, config, terrainSample, hash);
+    if (lake && lakeIntersectsBounds(lake, bounds)) lakes.push(lake);
 
     if (escapedPoints.length < config.minimumRiverPoints) continue;
     const completeRiver = buildRiver(
@@ -1413,4 +1451,97 @@ export function generateHydrology(options: HydrologyGenerationOptions): Hydrolog
     lakes: Object.freeze(lakes),
     statistics,
   });
+}
+
+/** Does the lake's shore polygon's box meet `bounds`? */
+function lakeShoreMeetsBounds(lake: HydrologyLake, bounds: HydrologyBounds): boolean {
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (const point of lake.boundary) {
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minZ = Math.min(minZ, point.z);
+    maxZ = Math.max(maxZ, point.z);
+  }
+  return maxX >= bounds.minX && minX <= bounds.maxX && maxZ >= bounds.minZ && minZ <= bounds.maxZ;
+}
+
+/**
+ * Every lake `generateHydrology` could keep, for ANY region, whose shore
+ * reaches `bounds`: a question about the ground, not about which regions are
+ * paged in. A basin lake belongs to its source cell on the world-anchored
+ * lattice and an authored one to its basin, and either is built from those
+ * alone, so each lake here is, field for field, the lake every region that
+ * keeps it keeps (`tests/render.webgpu-hydrology-lakes-near.test.ts`).
+ *
+ * It is a superset of what is drawn: a region keeps a lake when its
+ * mean-radius box meets the region, this keeps one when its shore polygon's
+ * box meets `bounds`, and it reads every source whose trace could end within
+ * a lake radius of them, where a region reads the sources within its trace
+ * halo. The world inputs follow `generateHydrology`'s contract for the box
+ * `bounds` grown by `maximumLakeRadiusMeters`: every authored basin whose rim
+ * comes within `maximumLakeRadiusMeters` of it, and the porous ground.
+ *
+ * Only the lake work runs: no river is traced past a source's first trace,
+ * and a basin lake is shored only when its trace ends near `bounds`. The
+ * source halo is bounded as a region's is (it throws past
+ * `MAX_HYDROLOGY_HALO_SOURCE_CELLS`), so `bounds` stays a few tens of km.
+ */
+export function generateHydrologyLakesNear(
+  options: HydrologyGenerationOptions,
+  bounds: HydrologyBounds,
+): readonly HydrologyLake[] {
+  if (samplerReadsCarvedGround(options.terrainSample)) {
+    throw new Error("generateHydrologyLakesNear was given a CARVED terrain sampler; lakes lie on uncarved ground.");
+  }
+  const {
+    worldSeed,
+    terrainSample: sourceTerrainSample,
+    authoredBasins = NO_AUTHORED_BASINS,
+    sourceExcluded,
+    ...configInput
+  } = options;
+  const config = resolveHydrologyConfig(configInput);
+  for (const basin of authoredBasins) assertAuthoredBasin(basin);
+  const hash = seedHash(worldSeed);
+  const terrainSample: HydrologyTerrainSampler = (x, z) => normalizedTerrainSample(sourceTerrainSample, x, z);
+  const lakes: HydrologyLake[] = [];
+  for (const basin of authoredBasins) {
+    if (!(basin.levelMeters > config.seaLevel + 0.5)) continue;
+    const rim = basin.rimRadiusMeters;
+    if (
+      basin.centerX + rim < bounds.minX || basin.centerX - rim > bounds.maxX
+      || basin.centerZ + rim < bounds.minZ || basin.centerZ - rim > bounds.maxZ
+    ) continue;
+    const lake = buildAuthoredLake(authoredLakeId(hash, basin), basin, config, terrainSample, hash);
+    if (lake && lakeShoreMeetsBounds(lake, bounds)) lakes.push(lake);
+  }
+  // A basin lake's shore lies within `maximumLakeRadiusMeters` of its basin,
+  // and a trace within its source's trace window.
+  const reach = config.maximumLakeRadiusMeters;
+  const basinBounds: HydrologyBounds = {
+    minX: bounds.minX - reach,
+    maxX: bounds.maxX + reach,
+    minZ: bounds.minZ - reach,
+    maxZ: bounds.maxZ + reach,
+  };
+  const traceRadius = config.traceStepMeters * (config.maximumTraceSteps + 2);
+  const sourceBounds: HydrologyBounds = {
+    minX: basinBounds.minX - traceRadius,
+    maxX: basinBounds.maxX + traceRadius,
+    minZ: basinBounds.minZ - traceRadius,
+    maxZ: basinBounds.maxZ + traceRadius,
+  };
+  const { candidates } = buildSourceCandidates(config, sourceBounds, terrainSample, hash, sourceExcluded);
+  for (const candidate of candidates) {
+    if (!candidate.lakeEligible) continue;
+    const trace = traceFromSource(worldSeed, candidate, config, terrainSample);
+    const end = trace.points.at(-1);
+    if (!end || !inBounds(basinBounds, end.x, end.z)) continue;
+    const lake = sourceBasinLake(candidate, trace, authoredBasins, config, terrainSample, hash);
+    if (lake && lakeShoreMeetsBounds(lake, bounds)) lakes.push(lake);
+  }
+  return Object.freeze(lakes);
 }

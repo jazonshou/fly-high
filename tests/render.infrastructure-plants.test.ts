@@ -118,7 +118,7 @@ describe("plants on built ground", () => {
         const system = new GroundCoverSystem(scene, {
           terrainSample: sample,
           seedHash: 1_234,
-          ...(plantExclusions ? { plantExclusions } : {}),
+          ...(plantExclusions ? { plantExclusionsIn: () => plantExclusions } : {}),
         });
         const internals = system as unknown as {
           bakeAttributeColumns(row: number, from: number, to: number): void;

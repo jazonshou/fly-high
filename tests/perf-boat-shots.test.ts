@@ -24,7 +24,7 @@ const KNOT = 1_852 / 3_600;
 const boatShots = PERF_CAPTURE_SHOTS.filter((shot) => shot.boat !== undefined);
 
 describe("boat shots", () => {
-  it("are four boat views, appended after every aircraft shot", () => {
+  it("are four boat views, appended after every aircraft shot, with only the cars after them", () => {
     expect(boatShots.map((shot) => shot.name)).toEqual([
       "boat-moored-dock",
       "boat-planing-35kn",
@@ -32,7 +32,7 @@ describe("boat shots", () => {
       "boat-wake-lowsun",
     ]);
     const firstBoat = PERF_CAPTURE_SHOTS.findIndex((shot) => shot.boat !== undefined);
-    expect(PERF_CAPTURE_SHOTS.slice(firstBoat).every((shot) => shot.boat !== undefined)).toBe(true);
+    expect(PERF_CAPTURE_SHOTS.slice(firstBoat).every((shot) => shot.boat !== undefined || shot.car !== undefined)).toBe(true);
   });
 
   it("start the dock shot made fast at the marina's start berth, at rest", () => {

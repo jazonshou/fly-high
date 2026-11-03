@@ -1,5 +1,6 @@
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import { BoatSimulator } from "../boat/boatSimulator";
+import { createCarSimulator } from "../ground";
 import type { SurfaceVehicleSimulator, SurfaceVehicleSpawn } from "./types";
 
 export * from "./types";
@@ -13,5 +14,7 @@ export function createSurfaceSimulator(
   switch (kind) {
     case "speedboat":
       return new BoatSimulator(spawn);
+    case "landcruiser":
+      return createCarSimulator(spawn);
   }
 }

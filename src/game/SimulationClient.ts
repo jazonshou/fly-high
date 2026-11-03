@@ -1,7 +1,14 @@
-import type { ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
+import type { CarSetup, ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
 import type { AircraftKind } from "@/src/sim";
+import { DEFAULT_CAR_SETUP } from "@/src/sim/surface/types";
+import type { HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
-import type { AirportDefinition, WorldDefinition } from "@/src/world";
+import { TERRAIN_REFERENCE_DAY_OF_YEAR, type AirportDefinition, type WorldDefinition } from "@/src/world";
+import {
+  InfrastructureRegionsForwarder,
+  packInfrastructureRegionsUpdate,
+  type InfrastructureRegionsUpdate,
+} from "@/src/world/infrastructureSync";
 import {
   TERRAIN_READBACK_RING_CAPACITY,
   type TerrainMacroGrid,
@@ -93,6 +100,8 @@ function createSimulationWorker(): Worker {
 
 export class SimulationClient {
   private worker: Worker;
+  /** What the worker's copy of the streamed infrastructure regions holds. */
+  private readonly infrastructure: InfrastructureRegionsForwarder;
   private stateListener: StateListener | null = null;
   private errorListener: ErrorListener | null = null;
   private previousState: FlightVisualState | null = null;
@@ -126,18 +135,24 @@ export class SimulationClient {
     attractMode = false,
     aircraft: AircraftKind = "trainer",
     surfaceVehicle: SurfaceVehicleKind | null = null,
+    carSetup: CarSetup = DEFAULT_CAR_SETUP,
+    dayOfYear = TERRAIN_REFERENCE_DAY_OF_YEAR,
   ) {
     this.worker = this.attachWorker();
+    this.infrastructure = new InfrastructureRegionsForwarder(world);
     this.send({
       type: "initialize",
       world,
+      infrastructure: packInfrastructureRegionsUpdate(this.infrastructure.initial()),
       aircraft,
       surfaceVehicle,
+      carSetup,
       mode,
       spawn,
       weather,
       airborneStartAgl,
       attractMode,
+      dayOfYear,
     });
   }
 
@@ -160,6 +175,16 @@ export class SimulationClient {
 
   setWeather(weather: WeatherPreset): void {
     this.send({ type: "weather", weather });
+  }
+
+  /** The car's gearbox and clutch for its next start; a drive under way keeps the one it began with. */
+  setCarSetup(carSetup: CarSetup): void {
+    this.send({ type: "carSetup", carSetup });
+  }
+
+  /** The calendar day the renderer paints for, so the car drives the snow that is drawn. */
+  setDayOfYear(dayOfYear: number): void {
+    this.send({ type: "dayOfYear", dayOfYear });
   }
 
   setAttractMode(enabled: boolean): void {
@@ -217,6 +242,29 @@ export class SimulationClient {
     );
   }
 
+  /**
+   * One change to the streamed infrastructure regions (roads), posted on the
+   * port the terrain pages take, so it reaches the worker before any page
+   * baked against it. Each change once; the whole set after a gap.
+   */
+  publishInfrastructure(update: InfrastructureRegionsUpdate): void {
+    const post = this.infrastructure.next(update);
+    if (post) this.send({ type: "infrastructure", update: packInfrastructureRegionsUpdate(post) });
+  }
+
+  /** One hydrology region's lakes and rivers, for the car's water; its arrays are transferred. */
+  publishHydrology(key: string, region: HydrologyWaterRegion): void {
+    const buffers = [region.riverPoints, region.riverStarts, region.lakeLevels, region.lakeBoundary, region.lakeStarts]
+      .map((array) => array.buffer)
+      .filter((buffer): buffer is ArrayBuffer => buffer instanceof ArrayBuffer);
+    this.send({ type: "hydrology", key, region }, buffers);
+  }
+
+  /** The renderer is done with a hydrology region. */
+  evictHydrology(key: string): void {
+    this.send({ type: "hydrologyEvict", key });
+  }
+
   /** The world's full airport list, home field first (see `withAirports`). */
   setAirports(airports: readonly AirportDefinition[]): void {
     this.send({ type: "airports", airports });
@@ -236,6 +284,12 @@ export class SimulationClient {
   restartAfterCrash(airborneStartAgl = DEFAULT_AIRBORNE_START_AGL): void {
     this.clearPresentationPause();
     this.send({ type: "restartAfterCrash", airborneStartAgl });
+  }
+
+  /** R in a car session: the car back on its newest safe spot, upright and stopped, in the same drive. */
+  recover(): void {
+    this.clearPresentationPause();
+    this.send({ type: "recover" });
   }
 
   getRenderState(timestamp = performance.now()): FlightVisualState | null {
@@ -456,6 +510,19 @@ function replayableCommand(command: SimulationCommand): SimulationCommand {
   }
   if (command.type === "terrainMacro") {
     return { ...command, macro: { ...command.macro, heights: command.macro.heights.slice() } };
+  }
+  if (command.type === "hydrology") {
+    const region = command.region;
+    return {
+      ...command,
+      region: {
+        riverPoints: region.riverPoints.slice(),
+        riverStarts: region.riverStarts.slice(),
+        lakeLevels: region.lakeLevels.slice(),
+        lakeBoundary: region.lakeBoundary.slice(),
+        lakeStarts: region.lakeStarts.slice(),
+      },
+    };
   }
   return command;
 }

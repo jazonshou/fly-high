@@ -102,6 +102,75 @@ export function getAirportInfluence(
   return 1 - smoothstep(0, airport.terrainBlendDistance, distance);
 }
 
+/**
+ * Distance from the world segment a-b to an airport's graded platform (the
+ * rectangle the rounded one grows from: runway and end safety areas by runway
+ * and shoulders), 0 where they touch. The earthworks and the influence reach
+ * exactly `terrainBlendDistance` past it (`roundedRectangleSignedDistance` is
+ * this distance outside the platform), and the blend is only ever modulated
+ * inward, so nothing past that is graded.
+ */
+export function airportPlatformDistanceToSegment(
+  airport: Readonly<AirportDefinition>,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+): number {
+  const a = worldToRunway(airport, ax, az);
+  const b = worldToRunway(airport, bx, bz);
+  const halfLength = airport.runwayLength * 0.5 + airport.endSafetyArea;
+  const halfWidth = airport.runwayWidth * 0.5 + airport.shoulderWidth;
+  const outside = (along: number, across: number) =>
+    Math.hypot(Math.max(Math.abs(along) - halfLength, 0), Math.max(Math.abs(across) - halfWidth, 0));
+  // A segment and a convex box are apart by an endpoint's distance to the
+  // box or a corner's to the segment, unless they cross (0).
+  let best = Math.min(outside(a.along, a.across), outside(b.along, b.across));
+  if (best === 0) return 0;
+  const dAlong = b.along - a.along;
+  const dAcross = b.across - a.across;
+  const lengthSquared = dAlong * dAlong + dAcross * dAcross;
+  // Clip the segment's parameter to the box's slab in each axis (Liang-Barsky).
+  let enter = 0;
+  let exit = 1;
+  const slab = (start: number, delta: number, half: number): boolean => {
+    if (delta === 0) return Math.abs(start) <= half;
+    let t0 = (-half - start) / delta;
+    let t1 = (half - start) / delta;
+    if (t0 > t1) [t0, t1] = [t1, t0];
+    enter = Math.max(enter, t0);
+    exit = Math.min(exit, t1);
+    return enter <= exit;
+  };
+  if (slab(a.along, dAlong, halfLength) && slab(a.across, dAcross, halfWidth)) return 0;
+  for (const along of [-halfLength, halfLength]) {
+    for (const across of [-halfWidth, halfWidth]) {
+      const t = lengthSquared > 0
+        ? Math.min(1, Math.max(0, ((along - a.along) * dAlong + (across - a.across) * dAcross) / lengthSquared))
+        : 0;
+      best = Math.min(best, Math.hypot(along - (a.along + dAlong * t), across - (a.across + dAcross * t)));
+    }
+  }
+  return best;
+}
+
+/**
+ * Whether a capsule (the segment a-b grown by `radius`, as an infrastructure
+ * segment's halfWidth + reach) reaches into an airport's earthworks: the
+ * platform grown by `terrainBlendDistance`, the support of
+ * `getAirportInfluence`.
+ */
+export function segmentReachesAirportEarthworks(
+  airport: Readonly<AirportDefinition>,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  radius = 0,
+): boolean {
+  return airportPlatformDistanceToSegment(airport, ax, az, bx, bz) < Math.max(0, airport.terrainBlendDistance) + radius;
+}
+
 export function isPointOnRunway(
   airport: Readonly<AirportDefinition>,
   x: number,
