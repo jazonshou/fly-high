@@ -74,6 +74,7 @@ const PROFILE_EXAMPLES: Record<string, readonly number[]> = {
   marinaBreakwater: [2, 2.5, 1.5],
   carriageway: [1.2, 3.4, 0.03, -0.02, 0.04, 0.5, 1.5],
   junctionPad: [1.2, 6, 0.08],
+  clearing: [],
 };
 
 describe("infrastructure stage containment", () => {

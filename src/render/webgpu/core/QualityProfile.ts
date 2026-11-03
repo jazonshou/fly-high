@@ -543,6 +543,50 @@ export interface WebGpuQualityProfile {
    * water. Only while submerged.
    */
   readonly underwaterCaustics: boolean;
+  /**
+   * The generated buildings (`StructureSystem`, the structures plan's tier
+   * rows): the kit's full-detail closed shells are drawn within this of the
+   * camera, metres, horizontally to a building's centre, and the blocks past
+   * it, the two dithered across a 40 m band. World content (the pads, the
+   * clearings, the colliders) is the same on every tier; only the drawing
+   * changes.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly structureNearRadiusMeters: number;
+  /**
+   * The blocks out to this, metres; 0 draws none. The settlements stream
+   * only `SETTLEMENT_STREAM_WINDOW` (3.9 km) round the observer, so the
+   * system draws no further than that whatever this says: the plan's 6 and
+   * 8 km on High and Ultra wait for a longer stream, where a 10 m house is
+   * a pixel or two tall anyway.
+   */
+  readonly structureFarRadiusMeters: number;
+  /** How many buildings next to the camera are drawn open (rooms, glass); 0 opens none. */
+  readonly structureOpenBuildings: number;
+  /** The near shells cast the sun's shadows (one caster, drawn once per cascade). */
+  readonly structureNearCastsShadows: boolean;
+  /**
+   * The building kit's material arrays (`kitTextures.ts`: boards, stone,
+   * shingle, windows...), texels on an edge; 0 draws the parts' colours
+   * alone. 256 is 8.7 MiB with full chains, 512 34.7 MiB — which High's
+   * 700 MiB ceiling has no room for at 2560×1440@2, so only Ultra takes it.
+   */
+  readonly structureTextureEdge: 0 | 256 | 512;
+  /**
+   * The most light points the buildings' lights take (`StructureLampPool`):
+   * four a building for its lit windows past the near radius, two a weather
+   * mast, four a lighthouse. In the home field's one light-point draw, so
+   * they add vertices and no draw; signal lights first, then the windows
+   * nearest the near radius.
+   */
+  readonly structureLampPoints: number;
+  /**
+   * The homes' chimneys smoke (`structureSmoke.ts`): wisps of the volcanic
+   * steam's one draw, within its wisp cap (vents first), so the draw is
+   * submitted wherever a smoking chimney is within 1.5 km.
+   */
+  readonly structureChimneySmoke: boolean;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -674,6 +718,13 @@ function resolveBaseQualityProfile(
       personFigureTextureSize: 512,
       underwaterSnellWindow: false,
       underwaterCaustics: false,
+      structureNearRadiusMeters: 250,
+      structureFarRadiusMeters: 2_500,
+      structureOpenBuildings: 2,
+      structureNearCastsShadows: false,
+      structureTextureEdge: 0,
+      structureLampPoints: 256,
+      structureChimneySmoke: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -796,6 +847,13 @@ function resolveBaseQualityProfile(
       personFigureTextureSize: 1024,
       underwaterSnellWindow: true,
       underwaterCaustics: false,
+      structureNearRadiusMeters: 400,
+      structureFarRadiusMeters: 4_000,
+      structureOpenBuildings: 4,
+      structureNearCastsShadows: true,
+      structureTextureEdge: 256,
+      structureLampPoints: 1_024,
+      structureChimneySmoke: false,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -905,13 +963,20 @@ function resolveBaseQualityProfile(
       marinaCastsShadows: true,
       personFigureFinestLod: 0,
       personShadowCascades: 2,
-      // 1024, not 2048: the 2048 maps' 64 MiB put this tier's estimate at
-      // 753 of its 700 MiB (`MEMORY_CEILING_MIB`); 1024 leaves it at 698. The
-      // chase camera sits 3.2 m back, where 1024 already exceeds the pixels
-      // the figure covers.
-      personFigureTextureSize: 1024,
+      // 512, Low's maps: this tier's estimate has no room for more. The 2048
+      // maps (64 MiB) put it at 753 of its 700 MiB (`MEMORY_CEILING_MIB`), and
+      // once the generated buildings' kit arrays came in (#41) the 1024 maps
+      // (16 MiB) put it at 711.8; 512 (4 MiB) leaves it at 698.0.
+      personFigureTextureSize: 512,
       underwaterSnellWindow: true,
       underwaterCaustics: true,
+      structureNearRadiusMeters: 600,
+      structureFarRadiusMeters: 6_000,
+      structureOpenBuildings: 6,
+      structureNearCastsShadows: true,
+      structureTextureEdge: 256,
+      structureLampPoints: 2_048,
+      structureChimneySmoke: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -1025,6 +1090,13 @@ function resolveBaseQualityProfile(
     personFigureTextureSize: 2048,
     underwaterSnellWindow: true,
     underwaterCaustics: true,
+    structureNearRadiusMeters: 800,
+    structureFarRadiusMeters: 8_000,
+    structureOpenBuildings: 6,
+    structureNearCastsShadows: true,
+    structureTextureEdge: 512,
+    structureLampPoints: 2_048,
+    structureChimneySmoke: true,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,

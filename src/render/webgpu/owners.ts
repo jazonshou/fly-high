@@ -874,7 +874,8 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
     // 3-1 reuses it with a Toksvig reducer for the terrain material arrays.
     artifact: "texture-array-mips",
     owner: "performance",
-    definitionSites: ["src/render/webgpu/core/TextureArrayMips.ts"],
+    // The reduction is in its own Babylon-free module so a worker can mip its own layers.
+    definitionSites: ["src/render/webgpu/core/TextureArrayMips.ts", "src/render/webgpu/core/TextureArrayMipPlan.ts"],
     consumers: ["performance", "vegetation", "terrain-material", "aircraft"],
     ownedSymbols: [
       "buildMipChain",

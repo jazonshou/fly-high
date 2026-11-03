@@ -25,6 +25,10 @@ import { homeMarina } from "@/src/world/marina";
 import type { AirportDefinition, WorldDefinition } from "@/src/world/types";
 import { ColliderWorld, type ColliderShape } from "../colliders";
 import { addMarinaColliders } from "../marina/colliders";
+import { STRUCTURE_KIT } from "@/src/world/structures/kit/structureKit";
+import type { StructureCollider } from "@/src/world/structures/structureModel";
+import type { StructureRecord } from "@/src/world/structures/structureRecord";
+import { buildStructureColliders, poseStructureCollider, structureShellColliders } from "../structures/colliders";
 import type { Quaternion } from "../types";
 
 /**
@@ -54,6 +58,20 @@ export const CAR_COLLIDER_MATERIAL = Object.freeze({
 export const CAR_AIRPORT_COLLIDER_GROUP = 6_001;
 /** Streamed regions take groups from here up, one each. */
 const REGION_GROUP_BASE = 1_000_000;
+
+/**
+ * Within this of the car, horizontally to its centre, a building's shell box
+ * gives way to every collider the kit lays out (`STRUCTURE_KIT.layout`):
+ * porch, steps, fences, a mast's legs. Further off the box stands in, so a
+ * streamed region costs one collider a building, not a hundred.
+ */
+export const CAR_STRUCTURE_DETAIL_METERS = 120;
+/** And back to the box once this much further. */
+export const CAR_STRUCTURE_DETAIL_HYSTERESIS_METERS = 30;
+/** Buildings laid out per `setFocus` (a sim step): the kit's layout is about a millisecond each. */
+export const CAR_STRUCTURE_DETAIL_PER_STEP = 1;
+/** A car this far from the last sweep looks at the buildings again, metres. */
+const FOCUS_RESWEEP_METERS = 5;
 
 /** Terrain height at a world point, metres; non-finite if the query failed. */
 export type CarColliderGroundHeight = (x: number, z: number) => number;
@@ -164,16 +182,43 @@ export function guardrailColliders(
   return out;
 }
 
-/** A streamed region's colliders for the car: its guardrails. */
+/**
+ * A streamed region's colliders for the car: its guardrails, and its
+ * buildings (`buildStructureColliders`), whose fences give like a guardrail.
+ */
 export function regionColliders(
   region: Readonly<InfrastructureRegion>,
   groundHeight: CarColliderGroundHeight,
 ): readonly CarRegionCollider[] {
   const rails = region.rails;
-  if (!rails || rails.length === 0) return [];
+  const structures = region.structures;
+  if ((!rails || rails.length === 0) && (!structures || structures.length === 0)) return [];
   const out: CarRegionCollider[] = [];
-  for (const rail of rails) guardrailColliders(rail, groundHeight, out);
+  if (rails) for (const rail of rails) guardrailColliders(rail, groundHeight, out);
+  if (structures) {
+    for (const collider of buildStructureColliders(structures)) {
+      out.push({ shape: collider.shape, material: carStructureMaterial(collider.material) });
+    }
+  }
   return out;
+}
+
+/** A building's fences give like a guardrail; everything else is rigid. */
+function carStructureMaterial(material: string): number {
+  return material === "fence" ? CAR_COLLIDER_MATERIAL.guardrail : CAR_COLLIDER_MATERIAL.building;
+}
+
+/** One building of a region as the car meets it: its shell box, or the kit's colliders near the car. */
+interface CarBuilding {
+  readonly record: StructureRecord;
+  /** The handles standing for it now: the shell box's, or the kit's colliders'. */
+  handles: number[];
+  detailed: boolean;
+}
+
+interface CarRegion {
+  readonly group: number;
+  readonly buildings: CarBuilding[];
 }
 
 /**
@@ -185,15 +230,21 @@ export function regionColliders(
 export class CarColliders {
   readonly colliders = new ColliderWorld();
   private airports: readonly Readonly<AirportDefinition>[] | null = null;
-  private readonly regionGroups = new Map<string, number>();
+  private readonly regions = new Map<string, CarRegion>();
   private nextRegionGroup = REGION_GROUP_BASE;
+  private focusX = Number.NaN;
+  private focusZ = Number.NaN;
+  /** Where the buildings were last swept from, and whether that sweep left any to lay out. */
+  private sweptX = Number.NaN;
+  private sweptZ = Number.NaN;
+  private sweepPending = true;
+  /** Buildings laid out by the kit for the car so far, and put back to their box (for tests and probes). */
+  readonly detail = { laidOut: 0, restored: 0 };
 
   constructor(world: WorldDefinition, private readonly groundHeight: CarColliderGroundHeight) {
     addMarinaColliders(this.colliders, homeMarina(world));
     this.setAirports(world);
-    for (const region of installedInfrastructureRegions(world)) {
-      this.setRegion(region.key, regionColliders(region, groundHeight));
-    }
+    for (const region of installedInfrastructureRegions(world)) this.installRegion(region);
   }
 
   /** Every airport's hangars, tower and fuel tanks, rebuilt only when the list itself changes. */
@@ -209,14 +260,54 @@ export class CarColliders {
   /** The worker's infrastructure update, applied to the regions' colliders. */
   applyRegions(update: Readonly<InfrastructureRegionsUpdate>): void {
     if (update.reset) {
-      for (const group of this.regionGroups.values()) this.colliders.removeGroup(group);
-      this.regionGroups.clear();
+      for (const region of this.regions.values()) this.colliders.removeGroup(region.group);
+      this.regions.clear();
     }
     for (const key of update.remove) this.removeRegion(key);
-    for (const region of update.install) this.setRegion(region.key, regionColliders(region, this.groundHeight));
+    for (const region of update.install) this.installRegion(region);
   }
 
-  /** Replace a region's colliders. */
+  /**
+   * Where the car is, once a sim step: buildings within
+   * `CAR_STRUCTURE_DETAIL_METERS` are laid out by the kit, at most
+   * `CAR_STRUCTURE_DETAIL_PER_STEP` a call, nearest first; those past the
+   * hysteresis go back to their box.
+   */
+  setFocus(x: number, z: number): void {
+    this.focusX = x;
+    this.focusZ = z;
+    // Nothing changes for a car that has moved less than this since a sweep that left nothing to do.
+    if (!this.sweepPending && Math.hypot(x - this.sweptX, z - this.sweptZ) < FOCUS_RESWEEP_METERS) return;
+    this.sweptX = x;
+    this.sweptZ = z;
+    this.sweepPending = false;
+    const near = CAR_STRUCTURE_DETAIL_METERS;
+    const far = CAR_STRUCTURE_DETAIL_METERS + CAR_STRUCTURE_DETAIL_HYSTERESIS_METERS;
+    let budget = CAR_STRUCTURE_DETAIL_PER_STEP;
+    // Few buildings stream at once (tens a region): a plain sweep, cheaper than any index.
+    while (budget > 0) {
+      let best: { region: CarRegion; building: CarBuilding } | null = null;
+      let bestDistance = near;
+      for (const region of this.regions.values()) {
+        for (const building of region.buildings) {
+          const distance = Math.hypot(building.record.x - x, building.record.z - z);
+          if (building.detailed) {
+            if (distance > far) this.restore(region, building);
+          } else if (distance <= bestDistance) {
+            best = { region, building };
+            bestDistance = distance;
+          }
+        }
+      }
+      if (!best) return;
+      this.layOut(best.region, best.building);
+      budget -= 1;
+    }
+    // The budget ran out: sweep again next step, however little the car moves.
+    this.sweepPending = true;
+  }
+
+  /** Replace a region's colliders (no buildings of its own: what `regionColliders` gives, as one group). */
   setRegion(key: string, colliders: readonly CarRegionCollider[]): void {
     this.removeRegion(key);
     if (colliders.length === 0) return;
@@ -225,19 +316,71 @@ export class CarColliders {
     for (const collider of colliders) {
       this.colliders.addStatic(collider.shape, { material: collider.material, group });
     }
-    this.regionGroups.set(key, group);
+    this.regions.set(key, { group, buildings: [] });
   }
 
   removeRegion(key: string): void {
-    const group = this.regionGroups.get(key);
-    if (group === undefined) return;
-    this.colliders.removeGroup(group);
-    this.regionGroups.delete(key);
+    const region = this.regions.get(key);
+    if (region === undefined) return;
+    this.colliders.removeGroup(region.group);
+    this.regions.delete(key);
   }
 
   /** How many regions have colliders (for tests). */
   get regionCount(): number {
-    return this.regionGroups.size;
+    return this.regions.size;
+  }
+
+  /** How many buildings stand as the kit's colliders now (for tests and probes). */
+  get detailedBuildings(): number {
+    let count = 0;
+    for (const region of this.regions.values()) for (const building of region.buildings) if (building.detailed) count += 1;
+    return count;
+  }
+
+  /** A streamed region: its guardrails, and each building as its shell box until the car comes near. */
+  private installRegion(region: Readonly<InfrastructureRegion>): void {
+    this.removeRegion(region.key);
+    const rails = regionColliders({ ...region, structures: [] }, this.groundHeight);
+    const records = region.structures ?? [];
+    if (rails.length === 0 && records.length === 0) return;
+    const group = this.nextRegionGroup;
+    this.nextRegionGroup += 1;
+    for (const collider of rails) this.colliders.addStatic(collider.shape, { material: collider.material, group });
+    const state: CarRegion = { group, buildings: [] };
+    for (const record of records) {
+      const building: CarBuilding = { record, handles: [], detailed: false };
+      this.addColliders(state, building, structureShellColliders(record));
+      state.buildings.push(building);
+    }
+    this.regions.set(region.key, state);
+    this.sweepPending = true;
+  }
+
+  private layOut(region: CarRegion, building: CarBuilding): void {
+    this.removeHandles(building);
+    this.addColliders(region, building, STRUCTURE_KIT.layout(building.record).colliders);
+    building.detailed = true;
+    this.detail.laidOut += 1;
+  }
+
+  private restore(region: CarRegion, building: CarBuilding): void {
+    this.removeHandles(building);
+    this.addColliders(region, building, structureShellColliders(building.record));
+    building.detailed = false;
+    this.detail.restored += 1;
+  }
+
+  private addColliders(region: CarRegion, building: CarBuilding, colliders: readonly StructureCollider[]): void {
+    for (const collider of colliders) {
+      const posed = poseStructureCollider(building.record, collider);
+      building.handles.push(this.colliders.addStatic(posed.shape, { material: carStructureMaterial(posed.material), group: region.group }));
+    }
+  }
+
+  private removeHandles(building: CarBuilding): void {
+    for (const handle of building.handles) this.colliders.remove(handle);
+    building.handles = [];
   }
 }
 

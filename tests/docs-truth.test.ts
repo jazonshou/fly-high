@@ -218,6 +218,11 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     ["Walker's finest figure mesh", (p: (typeof PROFILES)[number]) => p.personFigureFinestLod],
     ["Walker's shadow cascades", (p: (typeof PROFILES)[number]) => p.personShadowCascades],
     ["Walker's texture maps", (p: (typeof PROFILES)[number]) => p.personFigureTextureSize],
+    ["Structure near radius", (p: (typeof PROFILES)[number]) => p.structureNearRadiusMeters],
+    ["Structure far radius", (p: (typeof PROFILES)[number]) => p.structureFarRadiusMeters],
+    ["Buildings drawn open", (p: (typeof PROFILES)[number]) => p.structureOpenBuildings],
+    ["Structure texture edge", (p: (typeof PROFILES)[number]) => p.structureTextureEdge],
+    ["Building light points", (p: (typeof PROFILES)[number]) => p.structureLampPoints],
     // PR B part 2. No label here contains an older key or is contained by one
     // ("frame rate" is not "Frame target"): labels match by substring.
     ["CSM refresh interval", (p: (typeof PROFILES)[number]) => p.shadowRefreshFrames],
@@ -254,6 +259,9 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
         (p: (typeof PROFILES)[number]) => p.underwaterSnellWindow],
       ["Underwater caustics",
         (p: (typeof PROFILES)[number]) => p.underwaterCaustics],
+      ["Structure shells cast shadows",
+        (p: (typeof PROFILES)[number]) => p.structureNearCastsShadows],
+      ["Chimney smoke", (p: (typeof PROFILES)[number]) => p.structureChimneySmoke],
     ];
 
   it.each(TIER_BOOLEAN_ROW_CHECKS)(
@@ -354,14 +362,17 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     // comparing two empty lists — the exact false pass this family exists to
     // make impossible. And an upper bound too: the first attempt ran past the
     // table's end into the next one and collected 32 labels. The table has
-    // grown to 48 rows since (volcanic land added two, boats two, the car
-    // four, the roads two, the walker three, the underwater view two, PR B
-    // part 2 three), so the end is pinned by its last row as well as by the
-    // count.
+    // grown since (volcanic land added two, boats two, the car four, the roads
+    // two, PR B part 2 three, the structures seven, the walker three and the
+    // underwater view two), so the end is pinned by its last row as well as by
+    // the count.
     const rows = tierTableRowLabels();
     expect(rows.length).toBeGreaterThan(20);
-    // The next row-adding change raises this again, deliberately.
-    expect(rows.length, "the walk ran past the end of the tier table").toBeLessThan(52);
+    // PR B part 2 adds three rows (34 to 37), part 2b a fourth, the land PR six
+    // (so 43, then 44), the generated buildings seven (50, then 51) and the
+    // walking PR five (55, then 56); the next row-adding change raises this
+    // again, deliberately.
+    expect(rows.length, "the walk ran past the end of the tier table").toBeLessThan(57);
     expect(rows.at(-1), "the walk ran past the end of the tier table").toContain("Frame target");
     expect(TIER_ROW_CHECKS.length + DECLARED_UNVERIFIABLE.length).toBeGreaterThan(20);
   });

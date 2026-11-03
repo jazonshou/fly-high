@@ -1,5 +1,6 @@
 import { INFRASTRUCTURE_PROFILES } from "./infrastructureProfiles";
 import { INFRASTRUCTURE_SOURCES } from "./infrastructureSources";
+import type { StructureRecord } from "./structures/structureRecord";
 import type { WorldDefinition } from "./types";
 
 /**
@@ -153,6 +154,12 @@ export interface InfrastructureRegion {
   readonly segments: readonly InfrastructureSegment[];
   /** The region's guardrails: drawn from these, and the car's colliders (`guardrailColliders`). */
   readonly rails?: readonly InfrastructureRail[];
+  /**
+   * The region's buildings (a settlement region's, `src/world/settlements/`):
+   * drawn from these, solid to the car and the walker, lit at night. The
+   * stage itself reads only the segments (their pads and yards).
+   */
+  readonly structures?: readonly StructureRecord[];
 }
 
 /**

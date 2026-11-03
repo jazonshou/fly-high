@@ -125,7 +125,7 @@ describe("performance budget (1A-2)", () => {
   it("counts the walker's three maps at each tier's size, mips included", () => {
     // The macOS capture measured them: 16.0 MiB more texture lane at tier 1
     // in every car and walk shot than on the land branch, which has no figure.
-    const expected: Readonly<Record<PerformanceTier, number>> = { 0: 4, 1: 16, 2: 16, 3: 64 };
+    const expected: Readonly<Record<PerformanceTier, number>> = { 0: 4, 1: 16, 2: 4, 3: 64 };
     for (const [quality, mode] of [
       ["low", "performance"],
       ["medium", "balanced"],
