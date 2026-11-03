@@ -3829,9 +3829,35 @@ twilight window.
   `blue-hour`, `dusk-mesopic` and `sunset-sunward`. `golden-hour` (+0.087) and
   every night shot (−0.366 or lower) are untouched by shape.
 
-**Baselines are not promoted yet.** They will be promoted from the PR's
-hosted macOS capture once Jason approves the look from its before/after
-frames, the same way as 2026-10-29.
+**`blue-hour`, `dusk-mesopic` and `sunset-sunward` promoted 2026-11-03 from
+the hosted macOS runner**, the same way as 2026-10-29. Jason approved the look
+from the PR's before/after frames ("Dusk fixes look good"). Source: the PR's
+capture at `65460e4`, after main's roads (#37) were merged in (gpu-tests run
+41564357707, artifact `perf-capture-41564357707-1`, zip sha256
+`20b7505001b8e4b7…d11e`). Before promotion it failed 12 visual gates, four on
+each of these three shots and none elsewhere; no draw, triangle or memory gate
+failed. The other thirty-six shots sit within 0.005/255 of their committed
+baselines, so they were not touched. The three agree with the capture Jason
+reviewed (`f691926`, before the merge) to 0.007-0.15/255, the roads' share.
+
+By shot, committed baseline → this capture (mean absolute difference per
+channel, /255; pixels with any channel past 4/255; mean sRGB level change,
+/255; and `scripts/night-look-metrics.mjs`):
+
+| shot | mean abs diff /255 | pixels past 4/255 | mean level | terrain median | skyGroundRatio |
+| --- | --- | --- | --- | --- | --- |
+| `dusk-mesopic` (sun −6.1°) | 15.6 | 98% | −8.9 | 0.196 → 0.191 | 1.85 → 1.61 |
+| `blue-hour` (sun −3.0°) | 9.1 | 65% | +9.1 | 0.036 → 0.094 | 6.06 → 2.35 |
+| `sunset-sunward` (sun −3.0°, facing the sunset) | 8.2 | 90% | +7.5 | 0.059 → 0.087 | 6.27 → 4.81 |
+
+`dusk-mesopic` darkens on average because its sky does (sky median 0.362 →
+0.308): the twilight fill raises the scene key, and the rod response centres
+on it. Its land keeps its brightness and turns from blue-grey to green. The
+other two brighten: their forests come up out of near-black, and the glow on
+`sunset-sunward`'s crowns becomes leaves lit by the sky.
+
+**Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
+delivery.
 
 ## In-app benchmark (?bench=1)
 

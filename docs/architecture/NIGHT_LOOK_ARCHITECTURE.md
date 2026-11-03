@@ -460,7 +460,10 @@ must become the same quantity:
   GPU work identical (perf:ab, every shot above). The sea's reflected
   sky carries the same `skyRadiance`, so its fragment pin moved
   (tests/render.webgpu-water-extraction.test.ts, recorded there).
-  `blue-hour` and `sunset-sunward` are judged on the PR's Mac capture.
+  On the Mac (the PR's capture, promoted 2026-11-03 on Jason's "Dusk
+  fixes look good"): `blue-hour` terrain 0.036 → 0.094, ratio 2.35, the
+  Belt's pink accent kept; `sunset-sunward` terrain 0.059 → 0.087, ratio
+  4.81; `dusk-mesopic` terrain 0.191, ratio 1.61.
 
 - **(a⁹) THE DIP NARROWING, AND THE TONEMAP'S FIRST TWO-EXPOSURE
   MEASUREMENT (2026-09-02).** Jason: *"the sunward twilight frame is too
