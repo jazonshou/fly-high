@@ -22,6 +22,11 @@ import {
   TWILIGHT_WARM_TINT,
   TWILIGHT_WARM_STRENGTH,
   TWILIGHT_BELT_RATIO,
+  TWILIGHT_BELT_SET_SINES,
+  TWILIGHT_WARM_DEEP_TINT,
+  TWILIGHT_WARM_ELEVATION_FOLD,
+  TWILIGHT_WARM_FOLD_SPREAD,
+  twilightBeltDepthFade,
   MOON_TWILIGHT_RECESSION,
   TWILIGHT_ARCH_TINT,
   TWILIGHT_ARCH_STRENGTH,
@@ -35,7 +40,11 @@ import {
 import {
   SKY_FRAGMENT_WGSL,
   sunDirectionalHorizonGate,
+  twilightFillIntensity,
+  TWILIGHT_FILL_INTENSITY,
+  TWILIGHT_FILL_TINT,
 } from "../src/render/webgpu/atmosphere/AtmosphereSystem";
+import { readSource } from "./support/sourceText";
 import {
   DEFAULT_ENVIRONMENT_STATE,
   createEnvironmentState,
@@ -475,23 +484,84 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     expect(twilightArchStrength(-0.26)).toBe(0);
   });
 
-  it("shifts the warm lobe orange-to-pink with sun depth (round O)", () => {
-    // The depth blend is a SHAPE with zero new freedom: both endpoints are
-    // fixed (palette 0-deg sunColor orange; the established Belt pink) and
-    // depthT normalizes on the window's own release sine. The falsifiable
-    // consequence: deeper sun = pinker lobe (B/R rises monotonically),
-    // which is what separates the -3 deg probe (orange-leaning) from the
-    // -6 deg dusk (pinker) in the frames.
+  it("deepens the warm lobe toward amber, never pink, with sun depth", () => {
+    // 2026-11-02 (Jason, Sep 13 19:00 solar: "not a fan of how purple
+    // everything looks"): round O blended the lobe toward the Belt's pink,
+    // and pink over the arch's blue is purple. The deep end is amber now,
+    // with LESS blue than the sunset end, so B/R falls as the sun sinks.
     const shallow = twilightWarmRadiance(-0.052); // sunset-sunward's clock
-    const deep = twilightWarmRadiance(-0.107); // dusk-mesopic's clock
-    expect(shallow[2]! / shallow[0]!).toBeLessThan(deep[2]! / deep[0]!);
-    // Shallow stays in the orange family, well under the pink endpoint's
-    // 0.65 B/R; G tracks the blend upward toward pink.
-    expect(shallow[2]! / shallow[0]!).toBeLessThan(0.35);
-    expect(shallow[1]! / shallow[0]!).toBeLessThan(deep[1]! / deep[0]!);
+    const deep = twilightWarmRadiance(-0.1333); // Jason's Sep 13 19:00
+    expect(deep[2]! / deep[0]!).toBeLessThan(shallow[2]! / shallow[0]!);
+    // Never pink anywhere in the window: blue stays a small fraction of red
+    // and green stays above blue (orange-amber, not rose).
+    for (let sine = -0.005; sine > -0.26; sine -= 0.005) {
+      const warm = twilightWarmRadiance(sine);
+      if (warm[0] === 0) continue;
+      expect(warm[2]! / warm[0]!).toBeLessThan(0.2);
+      expect(warm[1]!).toBeGreaterThan(warm[2]! * 2);
+    }
+    expect(TWILIGHT_WARM_DEEP_TINT[2]).toBeLessThan(TWILIGHT_WARM_TINT[2]);
     // Endpoint zeros untouched: the window still gates everything.
     expect(twilightWarmRadiance(sineAt(12.5))).toEqual([0, 0, 0]);
     expect(twilightWarmRadiance(sineAt(23.75))).toEqual([0, 0, 0]);
+  });
+
+  it("grades the afterglow orange to yellow as it climbs, mirror and WGSL alike", () => {
+    // Red keeps the lobe's fold; green and blue reach higher, so above the
+    // horizon the glow turns yellow and pale instead of magenta where it
+    // meets the arch. At the horizon itself nothing changes.
+    expect(TWILIGHT_WARM_FOLD_SPREAD[0]).toBe(1);
+    expect(TWILIGHT_WARM_FOLD_SPREAD[1]).toBeGreaterThan(1);
+    expect(TWILIGHT_WARM_FOLD_SPREAD[2]).toBeGreaterThan(TWILIGHT_WARM_FOLD_SPREAD[1]);
+    const state = resolveEnvironmentState({
+      clock: { dayOfYear: 255, solarTimeHours: 19 },
+      latitudeDegrees: 45,
+      weather: "clear",
+    });
+    const binding = resolveAerialPerspectiveBinding(
+      state, 152, [0.94, 0.41, 0.22], [0.3, 0.13, 0.13], 0.07,
+    );
+    const lobeOnly = (y: number): [number, number, number] => {
+      const c = Math.sqrt(1 - y * y);
+      const dir: [number, number, number] = [
+        binding.sunsetDirection[0] * c, y, binding.sunsetDirection[1] * c,
+      ];
+      const bare = {
+        ...binding,
+        twilightWarm: [0, 0, 0] as [number, number, number],
+      };
+      const withLobe = evaluateSkyRadiance(binding, dir);
+      const without = evaluateSkyRadiance(bare, dir);
+      return [0, 1, 2].map((k) => withLobe[k]! - without[k]!) as [number, number, number];
+    };
+    const low = lobeOnly(0.01);
+    const high = lobeOnly(Math.sin((12 * Math.PI) / 180));
+    // Yellower and paler with height: G/R and B/R both rise.
+    expect(high[1] / high[0]).toBeGreaterThan(low[1] / low[0]);
+    expect(high[2] / high[0]).toBeGreaterThan(low[2] / low[0]);
+    // The WGSL carries the same three folds.
+    const folds = TWILIGHT_WARM_FOLD_SPREAD.map((k) =>
+      Number((TWILIGHT_WARM_ELEVATION_FOLD * k).toFixed(6)));
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain(
+      `/ vec3f(${folds.join(", ")}));`,
+    );
+    expect(AERIAL_PERSPECTIVE_WGSL).toContain("uniforms.aerialTwilightWarm * warmLobe * warmHug");
+  });
+
+  it("sets the Belt of Venus as the sun sinks, keeping it at the -3 deg clocks", () => {
+    // The Belt is the sunlit air above the Earth's shadow; it goes as the
+    // shadow climbs. Full at blue-hour/sunset-sunward (-3.0 deg), gone by
+    // dusk-mesopic (-6.1 deg) and Jason's -7.7 deg.
+    const [full, gone] = TWILIGHT_BELT_SET_SINES;
+    expect(twilightBeltDepthFade(-0.0523)).toBe(1);
+    expect(twilightBeltDepthFade(full)).toBe(1);
+    expect(twilightBeltDepthFade(gone)).toBe(0);
+    expect(twilightBeltDepthFade(sineAt(20.45))).toBe(0);
+    expect(twilightBeltRadiance(-0.1333)).toEqual([0, 0, 0]);
+    const blueHourBelt = twilightBeltRadiance(-0.0523);
+    expect(blueHourBelt[0]).toBeCloseTo(
+      twilightWarmRadiance(-0.0523)[0]! * TWILIGHT_BELT_RATIO, 9,
+    );
   });
 
   it("paints the sunset lobe toward the TRUE sun, zero outside the window", () => {
@@ -504,9 +574,9 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     const duskWarm = twilightWarmRadiance(sineAt(20.45));
     expect(duskWarm[0]).toBeCloseTo(TWILIGHT_WARM_TINT[0] * TWILIGHT_WARM_STRENGTH, 9);
     expect(duskWarm[0]).toBeGreaterThan(duskWarm[2]! * 2); // warm means R-dominant
-    // The belt is the weaker pink tail, by the fixed ratio exactly.
-    const duskBelt = twilightBeltRadiance(sineAt(20.45));
-    expect(duskBelt[0]).toBeCloseTo(duskWarm[0]! * TWILIGHT_BELT_RATIO, 9);
+    // The belt has set by dusk-mesopic (see the Belt test below); where it
+    // shows, it is the weaker pink tail by the fixed ratio exactly.
+    expect(twilightBeltRadiance(sineAt(20.45))).toEqual([0, 0, 0]);
 
     // The lobe aims at the TRUE sun, never the nightness-blended source: at
     // dusk with a moon the binding's sunDirection has swung toward the moon,
@@ -639,6 +709,44 @@ describe("the twilight arch window (NIGHT_LOOK_ARCHITECTURE 2.6)", () => {
     expect(recession(sineAt(0))).toBe(1);
     expect(recession(-0.26)).toBe(1);
     expect(recession(sineAt(20.45))).toBeCloseTo(1 - MOON_TWILIGHT_RECESSION, 6);
+  });
+
+  it("lights the land with the twilight fill only inside the window", () => {
+    // 2026-11-02: Jason's "crazy darks" at Sep 13 19:00 solar. The fill is
+    // art-directed and exactly zero above sunset and at/below the release,
+    // so day and the approved night frames cannot move by shape.
+    for (const sine of [sineAt(12.5), sineAt(19.0), sineAt(0), sineAt(23.75), -0.26, 0, 0.3]) {
+      expect(twilightFillIntensity(sine)).toBe(0);
+    }
+    expect(twilightFillIntensity(-0.0523)).toBeCloseTo(TWILIGHT_FILL_INTENSITY, 9);
+    expect(twilightFillIntensity(-0.1333)).toBeCloseTo(TWILIGHT_FILL_INTENSITY, 9);
+    expect(twilightFillIntensity(sineAt(20.45))).toBeCloseTo(TWILIGHT_FILL_INTENSITY, 9);
+    // Monotone hand-over into night through the release.
+    expect(twilightFillIntensity(-0.2)).toBeGreaterThan(twilightFillIntensity(-0.24));
+    // A cool daylight, not the arch's saturated blue: luminance ~1, B/R < 2.
+    const [r, g, b] = TWILIGHT_FILL_TINT;
+    expect(0.2126 * r + 0.7152 * g + 0.0722 * b).toBeCloseTo(1, 2);
+    expect(b / r).toBeGreaterThan(1);
+    expect(b / r).toBeLessThan(2);
+    expect(b / r).toBeLessThan(TWILIGHT_ARCH_TINT[2] / TWILIGHT_ARCH_TINT[0]);
+    // σ counts the fill as it counts the hemispheric it rides on — raw
+    // intensity, never ×π (measured: ×π handed the fill back to the rod
+    // response's auto-centring and darkened the sky instead) and never zero
+    // (measured: a σ-blind fill lit dusk ground brighter than its sky,
+    // skyGroundRatio 0.87, the round-3 inversion).
+    const atmosphere = readSource("src/render/webgpu/atmosphere/AtmosphereSystem.ts");
+    expect(atmosphere).toMatch(/\n\s*fillKeyIntensity = fillIntensity;\n/);
+    expect(atmosphere).toMatch(/\+ archKeyIntensity\s*\n\s*\+ fillKeyIntensity\)/);
+  });
+
+  it("gates the leaves' sun glow at the horizon, like the directional sun", () => {
+    // The canopy's wrap transmission is DIRECT sun. Fed the snapshot's
+    // ungated scatter intensity it lit every sunward crown amber with the
+    // sun 7.7 deg down. Source pin: the renderer multiplies by the gate.
+    const renderer = readSource("src/render/FlightRenderer.ts");
+    expect(renderer).toMatch(
+      /detail\.setKeyLight\([^;]*keySnapshot\.sunIlluminanceNormalized\s*\*\s*sunDirectionalHorizonGate\(keySnapshot\.sunDirection\.y\),?\s*\);/,
+    );
   });
 
   it("cuts the ambient floor only inside the window", () => {

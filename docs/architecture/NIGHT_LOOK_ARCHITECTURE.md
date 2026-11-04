@@ -365,6 +365,106 @@ must become the same quantity:
   quantity — it is cut ONLY if round 3 still shows compression, with
   the night delta quantified first.
 
+- **(a¹⁰) ROUND D — the purple dusk and the black land (2026-11-02).**
+  Jason, Medium / balanced, Sep 13 at 19:00 solar (sun −7.66°, sine
+  −0.1333), verbatim: *"I'm not a fan of how purple everything looks.
+  Also, how come all the mountains/land are black except for some glowing
+  trees in the landscape. Please fix for greater realism (you might need
+  to have some unrealistic lighting for the sake of the game to prevent
+  crazy darks/contrast at these hours)"*; and of a marina pier at dusk:
+  *"I don't like how translucent the dock looks and how purple things
+  are … maintain lighting even in bad lighting environments."*
+  Reproduced first, on SwiftShader, with scratch shots at his clock
+  (the `dusk-mesopic` pose, a sunward turn of it, `mountain-close`, the
+  moored-boat dock at the `dusk-mesopic` clock). Four findings:
+  1. **The sky is all art terms there.** At −7.66° the physical
+     in-scatter is ~2e-4 luma: the dome is the arch, the warm lobe and
+     the Belt. Anti-solar, round O's pink Belt (0.35 of the warm lobe)
+     laid over the arch's blue IS the purple; sunward, round O's
+     `TWILIGHT_WARM_DEEP_TINT` [1.0, 0.55, 0.65] put a mauve band 6–15°
+     up. The pink-at-depth sequence was right for the Belt at −2..−4°
+     and wrong past it: the Belt sinks into the Earth's shadow and is
+     gone by ~−6°, and the deep afterglow is orange-yellow.
+  2. **The glowing trees were round S's split, missed by one consumer.**
+     The canopy's wrap transmission (`DetailInstanceMaterialPlugin`,
+     `detailKeyLight`) is DIRECT sun, but `FlightRenderer` fed it the
+     snapshot's SCATTER intensity — the ungated palette ramp, still 7%
+     of noon at −7.7°. Every crown facing the sunset burned amber over
+     ground the gated DirectionalLight left black.
+  3. **The land had almost no light.** The sky probe's up-facing
+     irradiance reads 0.014 (Lambertian SH luma) at −7.66° and 0.031 at
+     −3°; (b)'s floor follows the dome down by design. Committed frames:
+     `blue-hour` terrain median 0.036 — the DARKEST scene in the game,
+     against `night` 0.061, `night-moonlit` 0.126, `golden-hour` 0.127.
+     Real civil twilight is hundreds of lux.
+  4. **The "translucent" dock is the same blue as the water.** Deck
+     (63, 78, 119) beside water (67, 88, 136): with diffuse light near
+     zero, the brown deck (albedo [0.28, 0.22, 0.16]) shows only the
+     blue sky's IBL and the rod tint, which is exactly what the sea
+     reflects. Nothing is see-through; it is a colour match.
+
+  Mechanism, five parts. (i) `TWILIGHT_WARM_DEEP_TINT` → amber
+  [1.0, 0.5, 0.08]. (ii) `TWILIGHT_WARM_FOLD_SPREAD` [1, 2, 2.4]: the
+  warm lobe's elevation fold per channel (WGSL `warmHug`, a vec3), so
+  the glow grades orange at the rim, yellow above, pale into the arch,
+  instead of thinning into it as magenta. (iii) The Belt SETS:
+  `twilightBeltDepthFade`, full to sine −0.06 (−3.4°, so `blue-hour`
+  keeps round O's pink accents), smoothstep to zero by −0.10 (−5.7°).
+  (iv) The leaf glow takes `sunDirectionalHorizonGate`, the same
+  geometric gate as the DirectionalLight (exactly 1 at and above sine
+  +0.02, so daylight canopies are unchanged). (v) **The twilight FILL**
+  — art-directed, sanctioned by Jason's words: `TWILIGHT_FILL_INTENSITY`
+  0.08 × `twilightArchStrength` (one more consumer of the window, so
+  exactly zero above sunset and at/below the −0.26 release: day and night are
+  untouched by shape), a near-neutral cool tint ([0.94, 1.0, 1.18],
+  luminance 1, B/R 1.26 against the arch's 7, so materials keep their
+  own hue), carried by the one HemisphericLight blended by intensity,
+  its sky side leaned toward the sunset by tan 25° (`TWILIGHT_FILL_TILT`)
+  so slopes facing the afterglow catch more of it.
+
+  **σ IS THE KNOB THAT DECIDES WHETHER A FILL SHOWS — three arms
+  measured (SwiftShader, half scale, display luma; Jason's sunward view
+  unless named).** σ = the fill ×π (the directional lights' Lambertian
+  convention): σ ~14× the shipped dusk key, and the auto-centred rod
+  response handed back almost nothing — ground 0.062 → 0.076, upper sky
+  0.53 → 0.41. σ-blind: ground 0.384, and `dusk-mesopic` terrain 0.398
+  over sky 0.346 — skyGroundRatio **0.87**, the round-3 inversion,
+  rejected. σ counts the fill as it counts the hemispheric it rides on
+  (raw intensity — the E/π intensity-equivalent convention of
+  `TWILIGHT_ARCH_KEY_FACTOR`): ground 0.102, forest 0.165, upper sky
+  0.49. Pinned by source regex, both the line and the σ sum.
+
+  **Landed, full scale, main → fix (perf:ab, SwiftShader).** Main's
+  `dusk-mesopic` from SwiftShader reads terrain 0.1956 and ratio 1.851
+  against the committed Mac baseline's 0.1962 and 1.845, so these
+  numbers transfer. `dusk-mesopic`: terrain 0.1956 → 0.1899, ratio
+  1.85 → **1.62**, sky median 0.362 → 0.308. Jason's clock facing away
+  (the `dusk-mesopic` pose at Sep 13 19:00): terrain 0.167 → 0.200,
+  ratio 2.43 → **1.55**, the purple left horizon (135, 128, 173) →
+  (63, 87, 141). Sunward: ground 0.063 → 0.101, mountains 0.054 →
+  0.087, forest crowns 0.281 → 0.161 (the glow gone), ratio 1.93 →
+  2.78. Close to a mountain: snow lavender → blue-grey, valley floor
+  0.074 → 0.108. Marina at the `dusk-mesopic` clock: deck (63, 78, 119)
+  beside water (67, 88, 137) → deck (92, 100, 121) over water
+  (38, 54, 95) — solid, lighter than the sea, sides shaded.
+
+  **The floor that binds the fill is the ratio facing away from the
+  sun**, where the sky is the dimmest in the window and the fill raises
+  σ: 1.55 at Jason's clock, 1.62 at `dusk-mesopic`. A protection that
+  binds is never widened; 0.08 is the strength that clears it. The
+  sky's 15–23% dimming there is the same auto-centring — the eye adapting
+  to brighter land — and it lowers the contrast Jason called crazy.
+  Criteria: night and day untouched by shape (window zero; pinned);
+  skyGroundRatio ≥ 1.5 and `dusk-mesopic` terrain ≤ 0.37; no mauve
+  band sunward; the Belt's pink kept at the −3° clocks; draw calls and
+  GPU work identical (perf:ab, every shot above). The sea's reflected
+  sky carries the same `skyRadiance`, so its fragment pin moved
+  (tests/render.webgpu-water-extraction.test.ts, recorded there).
+  On the Mac (the PR's capture, promoted 2026-11-03 on Jason's "Dusk
+  fixes look good"): `blue-hour` terrain 0.036 → 0.094, ratio 2.35, the
+  Belt's pink accent kept; `sunset-sunward` terrain 0.059 → 0.087, ratio
+  4.81; `dusk-mesopic` terrain 0.191, ratio 1.61.
+
 - **(a⁹) THE DIP NARROWING, AND THE TONEMAP'S FIRST TWO-EXPOSURE
   MEASUREMENT (2026-09-02).** Jason: *"the sunward twilight frame is too
   dark"* — against his own Option B darkness, resolved without touching

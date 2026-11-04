@@ -476,12 +476,13 @@ export function evaluateSkyRadiance(
   const viewHLen = Math.max(Math.hypot(direction[0], direction[2]), 1e-4);
   const viewAz = (direction[0] / viewHLen) * binding.sunsetDirection[0]
     + (direction[2] / viewHLen) * binding.sunsetDirection[1];
-  const horizonHug = Math.exp(-Math.max(direction[1], 0) / TWILIGHT_WARM_ELEVATION_FOLD);
   const beltHug = Math.exp(-Math.max(direction[1], 0) / TWILIGHT_BELT_ELEVATION_FOLD);
   const warmLobe = Math.max(viewAz, 0) ** 4;
   const beltLobe = Math.max(-viewAz, 0) ** 4;
   const sunset = [0, 1, 2].map((c) =>
-    binding.twilightWarm[c]! * warmLobe * horizonHug
+    binding.twilightWarm[c]! * warmLobe
+      * Math.exp(-Math.max(direction[1], 0)
+        / (TWILIGHT_WARM_ELEVATION_FOLD * TWILIGHT_WARM_FOLD_SPREAD[c]!))
     + binding.twilightBelt[c]! * beltLobe * beltHug);
   // Round G zenith fade — mirrors the WGSL line for line.
   const zenithFade = Math.exp(-binding.nightZenithFade * Math.max(direction[1], 0));
@@ -800,7 +801,11 @@ fn skyRadiance(direction: vec3f) -> vec3f {
   // sun's azimuth, never the nightness-blended source.
   let viewHLen = max(length(vec2f(direction.x, direction.z)), 1e-4);
   let viewAz = dot(vec2f(direction.x, direction.z) / viewHLen, uniforms.aerialSunsetDir.xz);
-  let horizonHug = exp(-max(direction.y, 0.0) / 0.12);
+  // 2026-11-02: one fold per channel (TWILIGHT_WARM_ELEVATION_FOLD x
+  // TWILIGHT_WARM_FOLD_SPREAD), so the glow grades orange, then yellow, then
+  // pale as it climbs instead of thinning into the arch as magenta.
+  let warmHug = exp(-vec3f(max(direction.y, 0.0))
+    / vec3f(0.12, 0.24, 0.288));
   // Round O(b): the Belt is a TIGHT arc (the anti-solar shadow edge), not
   // a broad glow - its own fold at half the lobe's. The falloff constants
   // mirror TWILIGHT_WARM_ELEVATION_FOLD and TWILIGHT_BELT_ELEVATION_FOLD.
@@ -810,7 +815,7 @@ fn skyRadiance(direction: vec3f) -> vec3f {
   let belt2 = max(-viewAz, 0.0) * max(-viewAz, 0.0);
   let warmLobe = warm2 * warm2;
   let beltLobe = belt2 * belt2;
-  let sunset = uniforms.aerialTwilightWarm * warmLobe * horizonHug
+  let sunset = uniforms.aerialTwilightWarm * warmLobe * warmHug
     + uniforms.aerialTwilightBelt * beltLobe * beltHug;
   // Round G: the night zenith fade - the sky glow transitions to black the
   // further up you look (Jason's ask), while stars and the moon disc are
@@ -1158,17 +1163,23 @@ export const NIGHT_ZENITH_FALLOFF = 2.3;
 export const TWILIGHT_WARM_STRENGTH = 0.30;
 export const TWILIGHT_WARM_TINT: readonly [number, number, number] = [1.0, 0.42, 0.18];
 /**
- * Round O: the deep-twilight endpoint of the warm lobe's depth blend —
- * the established Belt pink, reused. The lobe's tint now shifts
- * TWILIGHT_WARM_TINT (palette 0-deg sunColor orange, the sunset end)
- * toward this with sun depth: oranges live at the horizon crossing, pink
- * as the sun sinks. depthT = clamp(-sunY / 0.26, 0, 1) - normalized on
- * the window's own release sine, no new constants; both endpoints are
- * palette/Belt-established, FIXED, not knobs. At the sunset-sunward clock
- * (-3.0 deg) depthT is 0.20 - orange-leaning, which is where Jason's
- * yellow/orange lives; at dusk-mesopic (-6.1) 0.41 - pinker.
+ * The deep-twilight endpoint of the warm lobe's depth blend. The lobe's
+ * tint shifts TWILIGHT_WARM_TINT (palette 0-deg sunColor orange, the
+ * sunset end) toward this with sun depth, depthT = clamp(-sunY / 0.26, 0,
+ * 1), normalized on the window's own release sine.
+ *
+ * 2026-11-02, Jason at Sep 13 19:00 solar (sun -7.7 deg): *"I'm not a fan
+ * of how purple everything looks."* Round O had blended toward the Belt's
+ * pink [1.0, 0.55, 0.65], and at that depth the whole sunward horizon was
+ * pink laid over the arch's blue, which is purple. That is not what the
+ * sky does: the afterglow of nautical twilight is an amber band hugging
+ * the horizon, and the pink of the Belt and of the "purple light" belongs
+ * to the first few degrees below sunset. So the deep end is AMBER, with
+ * less blue than the sunset end (blue is what turned the lobe magenta
+ * where it met the arch). The yellow above the band comes from the
+ * per-channel fold, TWILIGHT_WARM_FOLD_SPREAD.
  */
-export const TWILIGHT_WARM_DEEP_TINT: readonly [number, number, number] = [1.0, 0.55, 0.65];
+export const TWILIGHT_WARM_DEEP_TINT: readonly [number, number, number] = [1.0, 0.5, 0.08];
 // Round O: banded [0.35, 0.60] from the fixed 0.35 - Jason named pink
 // explicitly, so the Belt's share is in scope as ONE knob, turned only
 // after the strength settles (his "more" first, his "pink" second).
@@ -1176,6 +1187,19 @@ export const TWILIGHT_BELT_RATIO = 0.35;
 export const TWILIGHT_BELT_TINT: readonly [number, number, number] = [1.0, 0.55, 0.65];
 /** ~7° e-folding of the horizon hug — fixed, see the registration above. */
 export const TWILIGHT_WARM_ELEVATION_FOLD = 0.12;
+
+/**
+ * 2026-11-02: the warm lobe's fold per channel, as multiples of
+ * TWILIGHT_WARM_ELEVATION_FOLD. Red keeps the ~7° fold; green and blue
+ * reach higher, so the glow grades orange at the horizon, yellow a few
+ * degrees up and pale above that, the order a real afterglow has (the
+ * lowest, longest paths are the reddest). With one fold for all three the
+ * lobe kept its orange all the way up and, where it thinned into the
+ * arch's blue, the mix was magenta: the purple band Jason saw between the
+ * glow and the blue. At the horizon itself the fold changes nothing.
+ * Mirrored in the WGSL `warmHug`.
+ */
+export const TWILIGHT_WARM_FOLD_SPREAD: readonly [number, number, number] = [1.0, 2.0, 2.4];
 
 /**
  * Round O(b) — the Belt of Venus gets its OWN, tighter fold: ~3.5°
@@ -1208,11 +1232,30 @@ export function twilightWarmRadiance(
   ];
 }
 
+/**
+ * 2026-11-02 — the Belt of Venus sets. It is sunlight still reaching the
+ * air above the Earth's shadow on the anti-solar side, so it shows through
+ * civil twilight and goes as the shadow climbs over it: full at sine −0.06
+ * (−3.4°, the blue-hour and sunset-sunward clock keep it exactly) and gone
+ * by −0.10 (−5.7°). Before this the Belt held its full pink to −15°, laid
+ * over the arch's blue at the horizon behind every camera facing away from
+ * the sunset — the purple horizon in Jason's Sep 13 19:00 frame (sun
+ * −7.7°) and in the marina dusk shot.
+ */
+export const TWILIGHT_BELT_SET_SINES = Object.freeze([-0.06, -0.1] as const);
+
+export function twilightBeltDepthFade(sunDirectionY: number): number {
+  const [full, gone] = TWILIGHT_BELT_SET_SINES;
+  const t = Math.min(1, Math.max(0, (full - sunDirectionY) / (full - gone)));
+  return 1 - t * t * (3 - 2 * t);
+}
+
 /** Premultiplied Belt of Venus radiance — the mirrored, weaker, pinker tail. */
 export function twilightBeltRadiance(
   sunDirectionY: number,
 ): [number, number, number] {
-  const w = twilightArchStrength(sunDirectionY) * TWILIGHT_WARM_STRENGTH * TWILIGHT_BELT_RATIO;
+  const w = twilightArchStrength(sunDirectionY) * TWILIGHT_WARM_STRENGTH * TWILIGHT_BELT_RATIO
+    * twilightBeltDepthFade(sunDirectionY);
   return [
     TWILIGHT_BELT_TINT[0] * w,
     TWILIGHT_BELT_TINT[1] * w,

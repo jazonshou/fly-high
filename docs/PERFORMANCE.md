@@ -3900,6 +3900,63 @@ run's other SwiftShader shots: `approach-500ft` +0.4%, `cruise-horizon`
 runner's GPU every shot was again the same, frame wall time +1.0% to +1.7%
 and CPU time +3.2% to +6.1% (the guard is 15%).
 
+## Dusk lighting: amber afterglow and the twilight fill (2026-11-02): no draw ceiling moves
+
+Jason, Sep 13 at 19:00 solar (sun −7.7°): the dusk looked purple, and the
+land was black except for glowing trees. The mechanism and its measurements
+are in `docs/architecture/NIGHT_LOOK_ARCHITECTURE.md` §2.6 (a¹⁰). In short:
+the deep afterglow is amber instead of pink, the Belt of Venus sets between
+sun sines −0.06 and −0.10, the leaves' sun glow takes the DirectionalLight's
+horizon gate, and a soft cool fill rides the HemisphericLight through the
+twilight window.
+
+- **What it costs.** CPU: a few dozen flops a frame in
+  `AtmosphereSystem.applyEnvironment`, inside the window only. GPU: the shared
+  `skyRadiance` (sky dome, IBL probe bake, the sea's reflected sky) evaluates
+  the warm lobe's fold as a vec3 exp instead of a scalar one, two more
+  exponentials per fragment. No new uniforms, textures, passes or memory; the
+  fill reuses the existing HemisphericLight.
+- **Draw calls and GPU work unchanged**: perf:ab (`--rounds 0`, SwiftShader,
+  base `d347ef4`) read identical draw counts and GPU work on `dusk-mesopic`
+  (248), `blue-hour` (247, half scale) and four uncommitted shots at Jason's
+  clock: facing the sunset (250), facing away (249), close to a mountain (225)
+  and the marina at dusk (125).
+- **Which baselines move.** Every changed term is zero above sunset and at or
+  below the window's release (sine −0.26), and the leaf gate is exactly 1 at
+  and above sine +0.02, so only the three shots inside the window can move:
+  `blue-hour`, `dusk-mesopic` and `sunset-sunward`. `golden-hour` (+0.087) and
+  every night shot (−0.366 or lower) are untouched by shape.
+
+**`blue-hour`, `dusk-mesopic` and `sunset-sunward` promoted 2026-11-03 from
+the hosted macOS runner**, the same way as 2026-10-29. Jason approved the look
+from the PR's before/after frames ("Dusk fixes look good"). Source: the PR's
+capture at `65460e4`, after main's roads (#37) were merged in (gpu-tests run
+41564357707, artifact `perf-capture-41564357707-1`, zip sha256
+`20b7505001b8e4b7…d11e`). Before promotion it failed 12 visual gates, four on
+each of these three shots and none elsewhere; no draw, triangle or memory gate
+failed. The other thirty-six shots sit within 0.005/255 of their committed
+baselines, so they were not touched. The three agree with the capture Jason
+reviewed (`f691926`, before the merge) to 0.007-0.15/255, the roads' share.
+
+By shot, committed baseline → this capture (mean absolute difference per
+channel, /255; pixels with any channel past 4/255; mean sRGB level change,
+/255; and `scripts/night-look-metrics.mjs`):
+
+| shot | mean abs diff /255 | pixels past 4/255 | mean level | terrain median | skyGroundRatio |
+| --- | --- | --- | --- | --- | --- |
+| `dusk-mesopic` (sun −6.1°) | 15.6 | 98% | −8.9 | 0.196 → 0.191 | 1.85 → 1.61 |
+| `blue-hour` (sun −3.0°) | 9.1 | 65% | +9.1 | 0.036 → 0.094 | 6.06 → 2.35 |
+| `sunset-sunward` (sun −3.0°, facing the sunset) | 8.2 | 90% | +7.5 | 0.059 → 0.087 | 6.27 → 4.81 |
+
+`dusk-mesopic` darkens on average because its sky does (sky median 0.362 →
+0.308): the twilight fill raises the scene key, and the rod response centres
+on it. Its land keeps its brightness and turns from blue-grey to green. The
+other two brighten: their forests come up out of near-black, and the glow on
+`sunset-sunward`'s crowns becomes leaves lit by the sky.
+
+**Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
+delivery.
+
 ## In-app benchmark (?bench=1)
 
 `?bench=1` turns the game into a benchmark anyone can run in their own
