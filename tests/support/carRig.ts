@@ -1,4 +1,4 @@
-import type { CarControlState, CarSetup } from "../../src/game/types";
+import type { CarControlState } from "../../src/game/types";
 import { GroundVehicleSimulator } from "../../src/sim/ground";
 import type { GroundField, GroundPoint } from "../../src/sim/ground/terrainPatch";
 import { NEUTRAL_BOAT_CONTROLS, NEUTRAL_CAR_CONTROLS } from "../../src/sim/surface";
@@ -48,16 +48,8 @@ export function rampAhead(toe: number, degrees: number): GroundField {
   });
 }
 
-export function car(setup: Partial<CarSetup> = {}, ground: GroundField = FLAT, heading = 0): GroundVehicleSimulator {
-  return new GroundVehicleSimulator(
-    {
-      position: { x: 0, y: 0, z: 0 },
-      heading,
-      moored: false,
-      car: { gearbox: setup.gearbox ?? "automatic", manualClutch: setup.manualClutch ?? false },
-    },
-    { ground },
-  );
+export function car(ground: GroundField = FLAT, heading = 0): GroundVehicleSimulator {
+  return new GroundVehicleSimulator({ position: { x: 0, y: 0, z: 0 }, heading, moored: false }, { ground });
 }
 
 export function controls(sim: GroundVehicleSimulator, input: Partial<CarControlState>): void {

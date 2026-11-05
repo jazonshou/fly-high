@@ -109,7 +109,6 @@ function initialize(infrastructure: InfrastructureRegionsUpdate): void {
     world,
     aircraft: "trainer",
     surfaceVehicle: null,
-    carSetup: { gearbox: "automatic", manualClutch: false },
     mode: "unassisted",
     spawn: "airborne",
     airborneStartAgl: 450,

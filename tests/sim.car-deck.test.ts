@@ -192,7 +192,6 @@ describe("the car on the marina's decks", () => {
       position: { x: p.x, y: 0, z: p.z },
       heading: OUT_HEADING,
       moored: false,
-      car: { gearbox: "automatic", manualClutch: false },
     });
     sim.setEnvironment({
       water: new CalmWaterSurface(SEA, bare),

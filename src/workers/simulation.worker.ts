@@ -51,7 +51,6 @@ import {
 } from "@/src/sim/terrainGrid";
 import {
   createSurfaceSimulator,
-  DEFAULT_CAR_SETUP,
   NEUTRAL_BOAT_CONTROLS,
   NEUTRAL_CAR_CONTROLS,
   surfaceVisualState,
@@ -83,7 +82,6 @@ import { createSurfaceRecoverySpawn, createSurfaceSpawn } from "@/src/game/surfa
 import { vehicleClass, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import type {
   AutolandVisualState,
-  CarSetup,
   ControlState,
   FlightMode,
   FlightVisualState,
@@ -202,8 +200,6 @@ let carColliders: CarColliders | null = null;
 const hydrologyWater = new HydrologyWaterSource(terrainHeightSample);
 /** The sea a car session wades: the boat's sea twin, asked only where the car is in it. */
 let carSea: CarSea | null = null;
-/** The car's gearbox and clutch, from the session's settings. */
-let carSetup: CarSetup = DEFAULT_CAR_SETUP;
 const surfaceControls: SurfaceVehicleControls = {
   assist: "scenic",
   boat: { ...NEUTRAL_BOAT_CONTROLS },
@@ -320,7 +316,7 @@ function installSurface(kind: SurfaceVehicleKind, spawn: SurfaceVehicleSpawn): v
   // airport's buildings, the marina and the roads' guardrails.
   carColliders = !boat && world ? new CarColliders(world, terrainHeightSample) : null;
   surfaceEnvironment.colliders = carColliders?.colliders ?? null;
-  surface = createSurfaceSimulator(kind, boat ? spawn : { ...spawn, car: carSetup });
+  surface = createSurfaceSimulator(kind, spawn);
   harbour = surface instanceof BoatSimulator && world ? new MarinaHarbour(world, surface) : null;
   if (harbour && spawn.moored && world) harbour.makeFastAtStart(world);
   accumulator = 0;
@@ -805,7 +801,6 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
       weather = command.weather;
       attractMode = command.attractMode;
       surfaceVehicle = command.surfaceVehicle;
-      carSetup = command.carSetup;
       surfaceEnvironment.dayOfYear = command.dayOfYear;
       surface = null;
       harbour = null;
@@ -867,9 +862,6 @@ workerScope.addEventListener("message", (event: MessageEvent<SimulationCommand>)
         surfaceEnvironment.water.setConfig(resolveSeaSpectrumConfig(world, weather));
       }
       if (world && carSea) carSea.setConfig(resolveSeaSpectrumConfig(world, weather));
-    }
-    else if (command.type === "carSetup") {
-      carSetup = command.carSetup;
     }
     else if (command.type === "dayOfYear") {
       surfaceEnvironment.dayOfYear = command.dayOfYear;
