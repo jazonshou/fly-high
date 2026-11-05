@@ -40,6 +40,8 @@ import {
   PRESENTATION_HEADROOM_MS,
   SLOWEST_TRUSTED_DISPLAY_PERIOD_MS,
   cadenceFloorMs,
+  fallbackDivisorFor,
+  fallbackDivisorRange,
   type PresentationCadence,
 } from "./presentationCadence";
 // Type-only: QualityProfile.ts imports presentationCadence, never this file.
@@ -55,7 +57,10 @@ export type GovernorMode =
   | "balanced"
   | "on-cadence"
   | "holding"
-  | "no-gpu-timing";
+  | "no-gpu-timing"
+  // PR B part 2b (G6): a window judged only to decide the even fallback's
+  // trial at the setting's cadence; no lever moves.
+  | "fallback-trial";
 
 /** Window-aggregated timing signals; null means the stream was unavailable. */
 export interface GovernorSignals {
@@ -150,19 +155,50 @@ export interface GovernorConfig {
    * line). Frozen, the governor measures but never steps.
    */
   readonly frozen?: boolean;
+  /**
+   * PR B part 2b (G6): the even rate an exhausted governor may ask the pacer
+   * to fall back to: the profile's `cadenceFallbackHz` where the pacer could
+   * apply it (`fallbackAllowed`), else null. Null under "Match display" and
+   * "30 fps", with no cadence (captures, perf:ab and perf:flight), without a
+   * confirmed period the governor trusts (so never on a 30 or 50 Hz display),
+   * and at every tier whose rate is 0.
+   */
+  readonly cadenceFallbackHz: number | null;
+  /**
+   * PR B part 2b (G6): the trusted, confirmed display period the fallback's
+   * divisors count refreshes of, wherever `cadenceFallbackHz` is set; else
+   * null.
+   */
+  readonly fallbackPeriodMs: number | null;
+  /**
+   * PR B part 2b (G6): the divisors the pacer chooses the fallback's from
+   * (`fallbackDivisorRange`) on this display: [2, 2] at 60 Hz, [2, 3] at
+   * 75, [4, 5] at 144, [5, 6] at 165. The same under the setting's cadence
+   * and under the fallback's own, whose divisor is not the setting's: the
+   * range is taken with a paced divisor of 1, which only bounds it from
+   * below, and every range the 60 fps setting allows starts at 2 or more. A
+   * failed trial reads them, and so do a raise and a failed trial asking
+   * whether they move the divisor. Null wherever `fallbackPeriodMs` is.
+   */
+  readonly fallbackDivisors: readonly [number, number] | null;
+  /** PR B part 2b (G6): a window's nominal length in ms at the paced interval; the fallback's clocks count in it. */
+  readonly windowMs: number;
 }
 
 /**
  * The tier's targets, moved only by a cadence slower than them: the 30 fps
- * setting, which raises Medium's 16.67 ms to 33.3 ms. A null cadence, which
- * captures, perf:ab and perf:flight always have, gives exactly the tier's
- * own numbers. The GPU target keeps Ultra's present/compositor headroom and
- * is rounded to whole microseconds so Ultra's stays exactly 30. The
- * recovery spans follow the paced interval, which a cadence moves either
- * way (72 fps at 144 Hz, 30 at the 30 fps setting).
+ * setting, which raises Medium's 16.67 ms to 33.3 ms, or the governor's own
+ * even fallback (G6), which raises Low's to 33.3 ms at 60 Hz; the pacer
+ * applies it only on a trusted, confirmed period, and a period measured from
+ * slow frames never moves them. A null cadence, which captures, perf:ab and
+ * perf:flight always have, gives exactly the tier's own numbers. The GPU
+ * target keeps Ultra's present/compositor headroom and is rounded to whole
+ * microseconds so Ultra's stays exactly 30. The recovery spans follow the
+ * paced interval, which a cadence moves either way (72 fps at 144 Hz, 30 at
+ * the 30 fps setting).
  */
 export function governorConfigForProfile(
-  profile: Pick<WebGpuQualityProfile, "tier" | "renderScale" | "governorPixelFloorRatio">,
+  profile: Pick<WebGpuQualityProfile, "tier" | "renderScale" | "governorPixelFloorRatio" | "cadenceFallbackHz">,
   cadence: PresentationCadence | null = null,
 ): GovernorConfig {
   const tierPresentationMs = profile.tier === 3 ? 1_000 / 30 : 1_000 / 60;
@@ -177,6 +213,12 @@ export function governorConfigForProfile(
   const pacedMs = period === null ? presentationTargetMs : Math.min(presentationTargetMs, cadence!.divisor * period);
   const windowMs = windowFrames * pacedMs;
   const windowsFor = (seconds: number): number => Math.max(1, Math.round((seconds * 1_000) / windowMs + 1e-9));
+  const fallbackHz = fallbackAllowed(profile.cadenceFallbackHz, cadence) ? profile.cadenceFallbackHz : null;
+  const fallbackPeriodMs = fallbackHz === null ? null : trustedDisplayPeriodMs(cadence);
+  // Computed here, once per cadence, so the fallback's windows read it without allocating.
+  const fallbackDivisors = fallbackHz === null || fallbackPeriodMs === null
+    ? null
+    : fallbackDivisorRange(1_000 / fallbackPeriodMs, fallbackHz, 1);
   return Object.freeze({
     gpuTargetMs: slower
       ? Math.max(tierGpuMs, Math.round((floorMs - PRESENTATION_HEADROOM_MS) * 1_000) / 1_000)
@@ -200,7 +242,27 @@ export function governorConfigForProfile(
     lateFailureWindows: windowsFor(LATE_FAILURE_SECONDS),
     cpuRecoveryCeilingMs: CPU_RECOVERY_RATIO
       * Math.min(presentationTargetMs, onTimeIntervalFor(presentationTargetMs, lateIntervalMs, cadence)),
+    cadenceFallbackHz: fallbackHz,
+    fallbackPeriodMs,
+    fallbackDivisors,
+    windowMs,
   });
+}
+
+/**
+ * PR B part 2b (G6): whether the pacer could apply a fallback near `hz` on
+ * this cadence: only under the 60 fps setting, and only on a confirmed
+ * period the governor trusts with an even divisor above the paced one.
+ */
+function fallbackAllowed(hz: number, cadence: PresentationCadence | null): boolean {
+  if (!(hz > 0) || cadence === null || cadence.frameCapHz !== 60) return false;
+  // Already applied: the divisor is the fallback's, so the range test below would fail.
+  if (cadence.fallbackHz !== undefined) return true;
+  // Only a confirmed period part 1 trusts (red team): a 50 Hz period is not
+  // trusted under the 60 setting, and falling back there gave 25 fps for the session.
+  const period = cadence.periodConfirmed ? cadence.displayPeriodMs : null;
+  if (period === null || period > SLOWEST_TRUSTED_DISPLAY_PERIOD_MS) return false;
+  return fallbackDivisorRange(1_000 / period, hz, cadence.divisor) !== null;
 }
 
 /** The backoff after a ladder's first, second, and third or later unforgiven failed trial. */
@@ -581,6 +643,194 @@ export interface GovernorState {
    * exhausted (`governorExhausted`).
    */
   readonly spentWindows: number;
+  /**
+   * PR B part 2b (G6): on the even fallback (engaged or settled), judged
+   * windows in a row since the last rebase that were off cadence and moved
+   * no lever: no rung shed or restored, no resolution step taken or undone.
+   * `FALLBACK_UNHELD_WINDOWS` of them show the host cannot hold the divisor
+   * the pacer chose for it.
+   */
+  readonly unheldWindows: number;
+  /** PR B part 2b (G6): the even fallback's phase and clocks. */
+  readonly fallback: CadenceFallbackState;
+}
+
+/**
+ * PR B part 2b (G6): the even fallback. "off": the setting's cadence.
+ * "engaged": the pacer draws at the fallback's even rate, and the governor
+ * judges against that interval and sheds only, so the trial tests the state
+ * that was exhausted. An engage is engaged unless it is an early re-entry
+ * (after a passed trial, before forgiveness) that takes the failed trials
+ * past `FALLBACK_SETTLE_AFTER_FAILED_TRIALS`, which settles it
+ * (`maybeEngageFallback`). "trial": the pacer
+ * draws at the setting's cadence again and two to four windows are judged
+ * against it, moving no lever. "settled": the fallback stays, the governor
+ * recovers at its rate, and a trial runs only from full quality.
+ *
+ * Where the range has two divisors (75, 144 and 165 Hz), the pacer leaves
+ * the slower one for the faster only:
+ * - when a failed trial reads the faster divisor calm and its floor, the
+ *   shorter of `engageIntervalMs` and the interval it left, is on the
+ *   faster divisor too (`judgeFallbackTrial`);
+ * - when a settled retry returns to an interval kept to retry
+ *   (`raisedFromMs`), once the retry's own wait is over
+ *   (`retryFallbackDivisor`). Only a measurement keeps one: a raise to the
+ *   slower divisor keeps the interval it rose from, engaged or settled; a
+ *   failed trial whose calm faster reading its floor held back keeps that
+ *   reading; a failed trial that lands on a slower divisor than the
+ *   interval kept already, or else than the interval it left, keeps that
+ *   one; an engage that settles keeps the window mean of the trial that
+ *   passed before it (`exitIntervalMs`) where that is on a faster divisor.
+ *   Nothing is retried blind;
+ * - or when the fallback ends: a passed trial, the setting moved away from
+ *   "60 fps" or a display period no longer trusted (`tickFallback`), or a
+ *   profile change, which resets the governor.
+ * So a host heavy both on the window that engaged it and through its first
+ * trial keeps nothing to retry, and stays on the slower divisor until a
+ * settled trial, from full quality there, reads the faster one calm (kept,
+ * and retried after the retry's wait), or until the fallback ends.
+ */
+export type CadenceFallbackPhase = "off" | "engaged" | "trial" | "settled";
+
+export interface CadenceFallbackState {
+  readonly phase: CadenceFallbackPhase;
+  /**
+   * Window time left, in ms, before the next trial at the setting's cadence
+   * may start (engaged or settled). An engage, a failed trial and a settle
+   * set it; a raise never moves it, and a retry only holds it off for
+   * `FALLBACK_RETRY_TRIAL_GAP_MS` (`retryFallbackDivisor`).
+   */
+  readonly trialDueInMs: number;
+  /** The phase a failed trial returns to. */
+  readonly trialFrom: "engaged" | "settled";
+  /** The open trial's on-cadence windows still pooled, by their late shares. */
+  readonly trialLates: readonly number[];
+  /** The open trial's judged windows, all on cadence so far; `FALLBACK_TRIAL_MAX_WINDOWS` of them pass it. */
+  readonly trialWindows: number;
+  /**
+   * Failed trials since the last forgiveness; an engage after an exit and
+   * before its forgiveness counts as one. A failed trial settles at
+   * `FALLBACK_SETTLE_AFTER_FAILED_TRIALS`; an engage only when it is an
+   * early re-entry that takes the count past it (`maybeEngageFallback`).
+   */
+  readonly failedTrials: number;
+  /** Window time, in ms, since the fallback last ended on a passed trial; null once that is forgiven. */
+  readonly msSinceExit: number | null;
+  /**
+   * The mean interval of the window that passed the last trial: the host
+   * measured holding the setting's cadence, so nearer 60 than any divisor
+   * of the fallback. Set by the pass, kept off with the exit clock, and
+   * cleared with it: by forgiveness, and by the next engage. An engage that
+   * settles keeps it to retry (`raisedFromMs`) where it is on a faster
+   * divisor than the engaging window's mean (`maybeEngageFallback`). Null
+   * on the fallback and with no exit to forgive.
+   */
+  readonly exitIntervalMs: number | null;
+  /**
+   * The shortest interval the pacer may draw at under the fallback: the mean
+   * interval of the window that engaged it, raised when the host cannot hold
+   * the divisor it chose, chosen again from the failing window's mean when a
+   * trial fails (`failedTrialMinIntervalMs`, never below the shorter of
+   * `engageIntervalMs` and the interval the trial left), and restored to
+   * `raisedFromMs` by a settled retry. 0 while off.
+   */
+  readonly minIntervalMs: number;
+  /**
+   * The mean interval of the window that engaged the fallback: what the load
+   * that exhausted the governor needed. Set by the engage only, so fixed for
+   * the episode; 0 while off. A failed trial never sets `minIntervalMs`
+   * below the shorter of it and the interval the trial left. Engaged,
+   * `minIntervalMs` is never below it, so that floor is always it there, and
+   * a trial that lands in a lighter stretch does not choose a faster divisor
+   * than the engage did. Settled, a retry can return `minIntervalMs` below
+   * it, to the faster divisor, and a trial that fails from there is floored
+   * at that divisor, not the engage's. Where the floor holds a slower divisor
+   * than the trial's own reading chose, that reading is kept to retry
+   * (`raisedFromMs`).
+   */
+  readonly engageIntervalMs: number;
+  /**
+   * A shorter interval, at a faster divisor, that a settled retry returns
+   * to (`retryFallbackDivisor`); null when there is none. A raise that moves
+   * the pacer to a slower divisor keeps the interval it rose from (the
+   * first, if there was one already); a failed trial whose own reading
+   * chose a faster divisor than its floor let it keeps that reading; a
+   * failed trial that lands on a slower divisor than the one kept already,
+   * or else than the interval it left, keeps that one, so an engaged
+   * raise's outlasts the trial; an engage that settles keeps the passed
+   * trial's interval (`exitIntervalMs`) where it is on a faster divisor
+   * than the engaging window's. A raise that leaves the divisor where it
+   * was (every raise at 60 Hz) keeps nothing. Any other engage, a retry and
+   * any other failed trial clear it.
+   */
+  readonly raisedFromMs: number | null;
+  /**
+   * Window time left, in ms, before a settled retry of `raisedFromMs` may
+   * run; after a retry, before it has held. Its own clock, apart from the
+   * trial's: a raise that keeps an interval sets it to at least
+   * `FALLBACK_SETTLED_RETRY_AFTER_MS` for the retries so far, keeping a
+   * longer one already running; a failed trial that keeps the interval it
+   * left does the same, or keeps the wait running for one kept already, but
+   * at least `FALLBACK_RETRY_TRIAL_GAP_MS`; one that keeps its own reading
+   * sets the first wait, as does an engage that settles and keeps the passed
+   * trial's interval; and a retry sets it to `FALLBACK_RETRY_HOLD_MS`.
+   * 0 while off and with nothing kept.
+   */
+  readonly retryDueInMs: number;
+  /**
+   * Settled retries of the faster divisor since the last engage, failed
+   * trial that kept no interval it left, or retry that held (its hold ran
+   * out with no raise since). A failed trial that keeps the interval it left
+   * keeps the count, as a raise does.
+   * Each one that ends in another raise lengthens the wait before the next
+   * (`FALLBACK_SETTLED_RETRY_AFTER_MS`).
+   */
+  readonly settledRetries: number;
+}
+
+export const FALLBACK_OFF: CadenceFallbackState = Object.freeze({
+  phase: "off" as CadenceFallbackPhase,
+  trialDueInMs: 0,
+  trialFrom: "engaged" as const,
+  trialLates: Object.freeze([]) as readonly number[],
+  trialWindows: 0,
+  failedTrials: 0,
+  msSinceExit: null,
+  exitIntervalMs: null,
+  minIntervalMs: 0,
+  engageIntervalMs: 0,
+  raisedFromMs: null,
+  retryDueInMs: 0,
+  settledRetries: 0,
+});
+
+/** PR B part 2b (G6): what the governor asks the frame pacer for: the rate, and the shortest interval to draw at. */
+export interface CadenceFallbackRequest {
+  readonly hz: number;
+  readonly minIntervalMs: number;
+}
+
+/**
+ * PR B part 2b (G6): the fallback the pacer should apply now, or null for
+ * the setting's own cadence. Null whenever the config allows none or is
+ * frozen; otherwise a request while the fallback is engaged or settled.
+ * `previous` is the request this returned last: it comes back itself while
+ * its rate and interval hold, because the frame loop asks after every drawn
+ * frame and a fallback holds for minutes, and a new object each frame would
+ * be garbage at the frame rate.
+ */
+export function cadenceFallbackRequest(
+  state: GovernorState,
+  config: GovernorConfig,
+  previous: CadenceFallbackRequest | null = null,
+): CadenceFallbackRequest | null {
+  if (config.cadenceFallbackHz === null || config.frozen) return null;
+  const phase = state.fallback.phase;
+  if (phase !== "engaged" && phase !== "settled") return null;
+  const hz = config.cadenceFallbackHz;
+  const minIntervalMs = state.fallback.minIntervalMs;
+  if (previous !== null && previous.hz === hz && previous.minIntervalMs === minIntervalMs) return previous;
+  return Object.freeze({ hz, minIntervalMs });
 }
 
 const FRESH_LADDER: LadderRecovery = Object.freeze({
@@ -613,6 +863,8 @@ export function createGovernorState(config: GovernorConfig): GovernorState {
     urgent: false,
     latchedAtGpuLevel: null,
     spentWindows: 0,
+    unheldWindows: 0,
+    fallback: FALLBACK_OFF,
   });
 }
 
@@ -621,11 +873,14 @@ export const EXHAUSTED_AFTER_WINDOWS = 4;
 
 /**
  * PR B part 2 (G6): the governor has had nothing left to shed for four
- * judged windows in a row, each well over its reference interval. What Auto
- * will read to move a machine down a tier.
+ * judged windows in a row, each well over its reference interval, or (part
+ * 2b) it is running on the even fallback that answered that. The engaging
+ * rebase zeroes the spent count, so without the phase the bench and the HUD
+ * would read a host on the fallback as not exhausted. What Auto will read
+ * to move a machine down a tier.
  */
 export function governorExhausted(state: GovernorState): boolean {
-  return state.spentWindows >= EXHAUSTED_AFTER_WINDOWS;
+  return state.spentWindows >= EXHAUSTED_AFTER_WINDOWS || state.fallback.phase !== "off";
 }
 
 /** PR B part 2 (G6): means closer than this to a threshold are on it (float noise on the vsync lattice). */
@@ -907,6 +1162,552 @@ function fellBy(before: number | null, after: number | null, share: number): boo
 }
 
 /**
+ * PR B part 2b (G6): the wait before the even fallback's first trial at the
+ * setting's cadence, then before every later one. Window time: the clocks
+ * count judged windows at `windowMs`, so a pause, a hidden tab or a host
+ * slower than its interval stretches them.
+ */
+export const FALLBACK_TRIAL_AFTER_MS: readonly number[] = Object.freeze([60_000, 120_000]);
+/** PR B part 2b (G6): on-cadence windows whose pooled late share is calm pass a trial. */
+export const FALLBACK_TRIAL_WINDOWS = 2;
+/**
+ * PR B part 2b (G6): a trial whose judged windows were all on cadence passes
+ * at this many, calm or not: every one met the bar the governor holds 60 to,
+ * and the test at 60 stays a few seconds long (D5), not open for the session
+ * on a host a steady 3-5% late.
+ */
+export const FALLBACK_TRIAL_MAX_WINDOWS = 4;
+/** PR B part 2b (G6): failed trials that settle the fallback. */
+export const FALLBACK_SETTLE_AFTER_FAILED_TRIALS = 2;
+/** PR B part 2b (G6): settled, a trial runs only from full quality, and at most this often. */
+export const FALLBACK_SETTLED_TRIAL_AFTER_MS = 300_000;
+/**
+ * PR B part 2b (G6): the wait before a settled retry of the faster divisor
+ * (`retryFallbackDivisor`), by the retries since the last that held: none,
+ * one, then two or more. A raise that moves the divisor sets the retry's
+ * clock to at least this, and so does a failed trial that lands on a
+ * slower divisor than the interval it left, with nothing kept before it; a
+ * failed trial that its floor held at the slower divisor sets it to the
+ * first. A host that cannot hold the
+ * faster divisor even fully shed sheds everything there on each retry,
+ * drawing late for one to one and a half minutes, before it is raised
+ * again, so each retry that ends in a raise doubles the wait, up to 20
+ * minutes.
+ */
+export const FALLBACK_SETTLED_RETRY_AFTER_MS: readonly number[] = Object.freeze([300_000, 600_000, 1_200_000]);
+/**
+ * PR B part 2b (G6): a retry that lasts this long with no raise held, and
+ * the count of retries starts again.
+ */
+export const FALLBACK_RETRY_HOLD_MS = 300_000;
+/**
+ * PR B part 2b (G6): a retry moves the cadence, so the trial at the
+ * setting's cadence, a switch out and one back, starts no sooner than this
+ * after it: D5 allows one switch pair in two minutes. Only a retry moves
+ * the trial's wait, and only up to this.
+ */
+export const FALLBACK_RETRY_TRIAL_GAP_MS = 120_000;
+/**
+ * PR B part 2b (G6): this long off after a passed trial forgives the failed
+ * trials. Until then, an engage counts as one more.
+ */
+export const FALLBACK_FORGIVE_MS = 240_000;
+/**
+ * PR B part 2b (G6): off-cadence windows in a row at the fallback, each
+ * moving no lever, that show the host cannot hold the divisor the pacer
+ * chose for it.
+ */
+export const FALLBACK_UNHELD_WINDOWS = 2;
+
+/**
+ * PR B part 2b (G6): one judged window passes for the even fallback's
+ * clocks, where `tickRecovery` runs. Engaged or settled, the waits for the
+ * next trial and the next retry run down, each on its own clock; a retry's
+ * hold that runs out with no raise since means the retry held, and the
+ * count of retries starts again. Off after a passed trial, the time since it
+ * runs up until it forgives the failed trials, and clears the passed
+ * trial's interval with them. With no fallback allowed (the setting moved
+ * away from "60 fps", or the display period lost the trust the fallback
+ * needs) the phase returns to off and the trial's clocks reset, but the
+ * failed trials, the time since the last exit and its interval stay
+ * (correctness red team): a setting toggled away and back must not restart
+ * the trial-and-fail loop the backoff exists to stop. Allocates only when a
+ * clock moves.
+ */
+function tickFallback(fallback: CadenceFallbackState, config: GovernorConfig): CadenceFallbackState {
+  if (config.cadenceFallbackHz === null && fallback.phase !== "off") {
+    return Object.freeze({
+      ...FALLBACK_OFF,
+      failedTrials: fallback.failedTrials,
+      msSinceExit: fallback.msSinceExit,
+      exitIntervalMs: fallback.exitIntervalMs,
+    });
+  }
+  if (fallback.phase === "engaged" || fallback.phase === "settled") {
+    if (fallback.trialDueInMs <= 0 && fallback.retryDueInMs <= 0) return fallback;
+    const trialDueInMs = Math.max(0, fallback.trialDueInMs - config.windowMs);
+    const retryDueInMs = Math.max(0, fallback.retryDueInMs - config.windowMs);
+    const held = fallback.retryDueInMs > 0 && retryDueInMs <= 0 && fallback.settledRetries > 0 && fallback.raisedFromMs === null;
+    return Object.freeze({ ...fallback, trialDueInMs, retryDueInMs, settledRetries: held ? 0 : fallback.settledRetries });
+  }
+  if (fallback.phase === "off" && fallback.msSinceExit !== null) {
+    const since = fallback.msSinceExit + config.windowMs;
+    return since >= FALLBACK_FORGIVE_MS
+      ? Object.freeze({ ...fallback, failedTrials: 0, msSinceExit: null, exitIntervalMs: null })
+      : Object.freeze({ ...fallback, msSinceExit: since });
+  }
+  return fallback;
+}
+
+/** PR B part 2b (G6): the wait before the next trial, after this many failed ones. */
+function fallbackTrialWait(failedTrials: number): number {
+  return FALLBACK_TRIAL_AFTER_MS[Math.min(failedTrials, FALLBACK_TRIAL_AFTER_MS.length - 1)]!;
+}
+
+/** PR B part 2b (G6): the wait before a settled retry, after this many retries since the last that held. */
+function fallbackRetryWait(settledRetries: number): number {
+  return FALLBACK_SETTLED_RETRY_AFTER_MS[Math.min(settledRetries, FALLBACK_SETTLED_RETRY_AFTER_MS.length - 1)]!;
+}
+
+/**
+ * PR B part 2b (G6): the retry's wait after a failed trial that keeps the
+ * interval it left (`judgeFallbackTrial`). With one kept already (a raise
+ * set its clock), the wait already running, but at least
+ * `FALLBACK_RETRY_TRIAL_GAP_MS`: the trial's pair has just switched the
+ * cadence twice. Otherwise the wait a raise starts, for the retries so far.
+ */
+function keptRetryWait(fallback: CadenceFallbackState): number {
+  return fallback.raisedFromMs !== null
+    ? Math.max(fallback.retryDueInMs, FALLBACK_RETRY_TRIAL_GAP_MS)
+    : fallbackRetryWait(fallback.settledRetries);
+}
+
+/**
+ * PR B part 2b (G6): whether `slowerMs` puts the pacer on a slower divisor
+ * than `fasterMs` does (`fallbackDivisorFor` over `fallbackDivisors`).
+ * Never without the divisors, and never where the range has one (60, 90,
+ * 100, 120 and 240 Hz). Numbers only: nothing is allocated.
+ */
+function slowerFallbackDivisor(slowerMs: number, fasterMs: number, config: GovernorConfig): boolean {
+  const range = config.fallbackDivisors;
+  const period = config.fallbackPeriodMs;
+  if (range === null || period === null || range[0] === range[1]) return false;
+  return fallbackDivisorFor(range, period, slowerMs) > fallbackDivisorFor(range, period, fasterMs);
+}
+
+/**
+ * PR B part 2b (G6): the fallback after a failed trial or an engage: settled
+ * where the caller says so (a failed trial that settles, or an engage that
+ * counts more than `FALLBACK_SETTLE_AFTER_FAILED_TRIALS` failed trials),
+ * else engaged. Either chooses the shortest interval afresh (the caller
+ * sets it, and what it keeps to retry), so no raise is remembered, no retry
+ * is due and the settled retries start again. The exit clock and the passed
+ * trial's interval go too: the fallback is on again.
+ */
+function fallbackAfterFailures(fallback: CadenceFallbackState, failedTrials: number, settled: boolean): CadenceFallbackState {
+  return Object.freeze({
+    ...fallback,
+    phase: settled ? "settled" as const : "engaged" as const,
+    trialDueInMs: settled ? FALLBACK_SETTLED_TRIAL_AFTER_MS : fallbackTrialWait(failedTrials),
+    trialFrom: settled ? "settled" as const : "engaged" as const,
+    trialLates: Object.freeze([]) as readonly number[],
+    trialWindows: 0,
+    failedTrials,
+    msSinceExit: null,
+    exitIntervalMs: null,
+    raisedFromMs: null,
+    retryDueInMs: 0,
+    settledRetries: 0,
+  });
+}
+
+/**
+ * PR B part 2b (G6): an off-cadence window left the governor exhausted, and
+ * the config allows a fallback: engage it. The engaging window's mean
+ * interval is the shortest the pacer may draw at, so it takes the fastest
+ * even divisor that covers it (`fallbackDivisorFor`), and it is the floor a
+ * failed trial keeps to (`engageIntervalMs`), unless the trial left a
+ * shorter interval, as one after a settled retry does. An engage after a
+ * passed trial and before `FALLBACK_FORGIVE_MS` has forgiven it counts as a
+ * failed trial, however long after the exit: the trial's four-window cap
+ * passes hosts a steady 3-5% late, and the next heavy stretch could come
+ * more than a minute later and start the episode afresh, with a 60 s first
+ * wait. So its trial waits the later wait, 120 s, and its failure settles.
+ *
+ * An early re-entry engages while the failed trials it counts, itself
+ * included, are at most `FALLBACK_SETTLE_AFTER_FAILED_TRIALS` (an episode's
+ * first and second early re-entries with no failed trial between, or the
+ * first after one failed trial), and settles past that. An engage with no
+ * exit behind it (failed trials kept through a setting moved away and back,
+ * or a display period that lost the governor's trust and got it back)
+ * engages however many it carries, and its trial measures: settled at the
+ * engage with no exit to keep, a host heavy only on that window stayed on
+ * the slower divisor for the session (an earlier draft; every toggle and
+ * display-trust run at 75, 144 and 165 Hz). The engaging window is heavy by construction, the
+ * stretch that exhausted the governor: settled on its mean with nothing
+ * kept to retry, a host that held the faster divisor once the stretch ended
+ * stayed on the slower one for the session (an earlier draft settled at
+ * two: 40 of 48 early re-entries 20 to 200 s after a pass at 75, 144 and
+ * 165 Hz). Engaged, the trial 120 s later reads the load after the stretch,
+ * and a failed trial keeps a faster reading its floor holds back to retry.
+ * But an engage that never settles let alternating load cycle for the
+ * session: each trial landed in a light stretch and passed, and the next
+ * heavy stretch engaged again within the 240 s (165 Hz, 58 ms heavy for
+ * 60 s in every 170, 11 ms light: 21 engages, no settle, twelve 120 s
+ * windows over two switches after 1200 s).
+ *
+ * An engage that settles keeps a measured target to retry where it has
+ * one: the trial that passed before it (the exit not yet forgiven) held the
+ * setting's cadence. Where that trial's window mean (`exitIntervalMs`) is
+ * on a faster divisor than the engaging window's, it is kept
+ * (`raisedFromMs`) with the retry's first wait, so a host that holds the
+ * faster divisor once the stretch ends is back on it about 300 s later,
+ * and one that cannot is raised again, with the backoff. At 60 Hz, and
+ * where the engaging window is on the faster divisor already, nothing is
+ * kept. An engage that does not settle keeps nothing: its trial, 120 s on,
+ * measures again. Kept there too, no stuck count in the sweeps moved, and
+ * hosts that never hold the faster divisor retried it more (39 more
+ * switches over 432 alternating-load runs, 74 over 480 periodic ones).
+ *
+ * Never while a resolution step waits for its verdict, the window that took
+ * it included: its probe holds the spent count until then, and one window
+ * moves one lever.
+ */
+function maybeEngageFallback(state: GovernorState, signals: GovernorSignals, config: GovernorConfig): GovernorState {
+  const fallback = state.fallback;
+  if (
+    config.cadenceFallbackHz === null
+    || fallback.phase !== "off"
+    || !governorExhausted(state)
+    || state.pendingProbe !== null
+  ) return state;
+  // Forgiveness nulls the exit clock, so a clock still running is an exit not yet forgiven.
+  const late = fallback.msSinceExit !== null;
+  const failedTrials = fallback.failedTrials + (late ? 1 : 0);
+  // Only an early re-entry settles here: with no exit, the trial measures.
+  const settled = late && failedTrials > FALLBACK_SETTLE_AFTER_FAILED_TRIALS;
+  const after = fallbackAfterFailures(fallback, failedTrials, settled);
+  const mean = signals.intervalMeanMs ?? 0;
+  // Settled at the engage: the passed trial's interval, where it is on a faster divisor, is kept to retry.
+  const exit = fallback.exitIntervalMs;
+  const keepExit = settled && exit !== null && slowerFallbackDivisor(mean, exit, config);
+  return Object.freeze({
+    ...state,
+    fallback: Object.freeze({
+      ...after,
+      minIntervalMs: mean,
+      engageIntervalMs: mean,
+      raisedFromMs: keepExit ? exit : null,
+      retryDueInMs: keepExit ? fallbackRetryWait(after.settledRetries) : 0,
+    }),
+  });
+}
+
+/**
+ * PR B part 2b (G6): engaged or settled, and `FALLBACK_UNHELD_WINDOWS`
+ * windows in a row since the last rebase off cadence without moving a lever
+ * (`unheldWindows`): the host cannot hold the divisor the pacer chose. The
+ * shortest interval rises to this window's mean, which moves the pacer to
+ * the slower divisor where the range has one (75, 144 and 165 Hz). Where it
+ * has none (60 Hz), only the number moves. A window that sheds a rung,
+ * takes a resolution step or has its step undone starts the count again,
+ * and no raise comes while a step waits for its verdict: one window moves
+ * one lever, and the rebase the slower divisor brings would drop the step's
+ * probe. So the governor sheds what it still can at the faster divisor
+ * first, as it does before the fallback engages. Settled, this is how a
+ * host whose load grew past the faster divisor leaves it instead of
+ * drawing every frame late, fully shed.
+ *
+ * A raise that moves the pacer to a slower divisor keeps the interval it
+ * rose from (`raisedFromMs`, the first if one is kept already), and sets
+ * the retry's clock to at least `FALLBACK_SETTLED_RETRY_AFTER_MS` for the
+ * retries since the last that held, keeping a longer wait already running:
+ * 300 s, then 600 s and 1200 s once retries have ended in raises. Engaged,
+ * the next failed trial chooses the interval again, and keeps the one the
+ * raise rose from to retry where it lands on the slower divisor too
+ * (`judgeFallbackTrial`): a stretch that raised an engaged host and lasted
+ * through its trial held it on the slower divisor for the session. Settled,
+ * only a full-quality trial chose the interval again, and a host that only
+ * just held the faster divisor shed never reaches full quality at the
+ * slower one, so a heavier stretch of 10 to 60 s held it there for the
+ * session; now `retryFallbackDivisor` returns to it once the wait is over. A raise that
+ * leaves the divisor where it was keeps nothing and moves no clock: there
+ * is no faster divisor to retry, and at 60 Hz a retry moved only the number
+ * and lengthened the next wait. Neither moves the trial's wait.
+ */
+function raiseFallbackInterval(state: GovernorState, signals: GovernorSignals, config: GovernorConfig): GovernorState {
+  const fallback = state.fallback;
+  const mean = signals.intervalMeanMs ?? null;
+  if (
+    (fallback.phase !== "engaged" && fallback.phase !== "settled")
+    || state.unheldWindows < FALLBACK_UNHELD_WINDOWS
+    || state.pendingProbe !== null
+    || mean === null
+    || mean <= fallback.minIntervalMs + MEAN_TOLERANCE_MS
+  ) return state;
+  if (!slowerFallbackDivisor(mean, fallback.minIntervalMs, config)) {
+    return Object.freeze({ ...state, fallback: Object.freeze({ ...fallback, minIntervalMs: mean }) });
+  }
+  return Object.freeze({
+    ...state,
+    fallback: Object.freeze({
+      ...fallback,
+      minIntervalMs: mean,
+      raisedFromMs: fallback.raisedFromMs ?? fallback.minIntervalMs,
+      retryDueInMs: Math.max(fallback.retryDueInMs, fallbackRetryWait(fallback.settledRetries)),
+    }),
+  });
+}
+
+/**
+ * PR B part 2b (G6): settled, with a shorter interval kept to retry
+ * (`raisedFromMs`: a raise moved the host to the slower divisor, a failed
+ * trial read it calm at the faster one and its floor held it at the slower,
+ * or a failed trial landed on a slower divisor than one kept already or
+ * than the interval it left). Once the retry's own wait is over, on an on-cadence window with no
+ * recovery trial or resolution probe open, the shortest interval returns to
+ * the one kept, so the pacer draws at the faster divisor again, and a trial
+ * that fails from there is floored at it, not at the engage's interval
+ * (`judgeFallbackTrial`): a host that reaches full quality there and fails
+ * its trial at 60 stays at the faster divisor. It comes before the settled
+ * trial at the setting's cadence: a host at full quality at the slower
+ * divisor reads that divisor in a trial at full quality, and the design
+ * prefers the even rate nearest 30 the host can hold, the faster where it
+ * can, to quality. The window need not be calm: a host at the edge
+ * of the slower divisor is often 2.5-5% late there, and waiting for a calm
+ * streak held a 75 Hz host at 25 fps 150 s past its wait. It moves nothing
+ * else (one lever per window). At the faster divisor the governor sheds what
+ * it must to hold it, as it did before the raise, and a divisor retried
+ * without that would not hold where the host held it only shed. A host that
+ * cannot hold it even fully shed is raised again by two unheld windows,
+ * which lengthens the wait before the next retry (`raiseFallbackInterval`).
+ * A retry that lasts `FALLBACK_RETRY_HOLD_MS` with no raise held, which
+ * starts the count again (`tickFallback`). It moves the cadence, so the
+ * trial's wait becomes at least `FALLBACK_RETRY_TRIAL_GAP_MS`.
+ */
+function retryFallbackDivisor(state: GovernorState): GovernorState {
+  const fallback = state.fallback;
+  return Object.freeze({
+    ...state,
+    fallback: Object.freeze({
+      ...fallback,
+      minIntervalMs: fallback.raisedFromMs ?? fallback.minIntervalMs,
+      raisedFromMs: null,
+      settledRetries: fallback.settledRetries + 1,
+      retryDueInMs: FALLBACK_RETRY_HOLD_MS,
+      trialDueInMs: Math.max(fallback.trialDueInMs, FALLBACK_RETRY_TRIAL_GAP_MS),
+    }),
+  });
+}
+
+/**
+ * PR B part 2b (G6): whether an on-cadence window may start a trial: its
+ * wait is over, and no recovery trial or resolution probe is open, so the
+ * trial judges a state no lever is about to move.
+ */
+function fallbackTrialDue(state: GovernorState): boolean {
+  return state.fallback.trialDueInMs <= 0 && state.trial === null && state.pendingProbe === null;
+}
+
+/**
+ * PR B part 2b (G6): whether an on-cadence window may retry the faster
+ * divisor: settled, an interval kept to retry, its wait over, and no
+ * recovery trial or resolution probe open, so the retry shares its window
+ * with no lever.
+ */
+function fallbackRetryDue(state: GovernorState): boolean {
+  const fallback = state.fallback;
+  return fallback.phase === "settled"
+    && fallback.raisedFromMs !== null
+    && fallback.retryDueInMs <= 0
+    && state.trial === null
+    && state.pendingProbe === null;
+}
+
+/** PR B part 2b (G6): start a trial. The pacer draws at the setting's cadence again from the next frame. */
+function startFallbackTrial(state: GovernorState): GovernorState {
+  return Object.freeze({
+    ...state,
+    calmStreak: Object.freeze([]),
+    mode: "fallback-trial" as GovernorMode,
+    fallback: Object.freeze({
+      ...state.fallback,
+      phase: "trial" as const,
+      trialLates: Object.freeze([]) as readonly number[],
+      trialWindows: 0,
+    }),
+  });
+}
+
+/**
+ * PR B part 2b (G6): a failed trial's mean fits a faster divisor than the
+ * current shortest interval only if it fits it within this share of a
+ * refresh: a mean N + 0.025 refreshes is 2.5% of frames a refresh longer,
+ * the calm late share, where `fallbackDivisorFor` allows 5%.
+ */
+const FALLBACK_CALM_FIT_REFRESHES = CALM_LATE_FRACTION;
+
+/**
+ * PR B part 2b (G6): the shortest interval after a failed trial. The failing
+ * window's mean is the freshest measure of what the host draws at the
+ * setting's cadence, and it replaces the current interval, as at the
+ * engage, so a stall that raised the interval earlier no longer holds the
+ * slower divisor for the session.
+ *
+ * Where that mean would choose a faster divisor N than the current interval
+ * does, the trial must also show the host calm at N, or the current
+ * interval stays:
+ * - its mean fits N within `FALLBACK_CALM_FIT_REFRESHES`, and
+ * - its p95 is not late at N (at most half a refresh past N refreshes), so
+ *   at most 5% of its frames took longer than N refreshes. The trial draws
+ *   at the setting's finer cadence, where frames shorter than N refreshes
+ *   pull the mean down while the frames longer than N are still there: at
+ *   165 Hz, trial means of 4.96 and 4.98 refreshes came with 7-13% of
+ *   frames late in the first windows drawn at 5.
+ * Without this, a host whose 60-class mean only just fits N went there only
+ * to be raised back to the slower divisor 7 to 100 s later: three cadence
+ * switches in two minutes, where D5 allows one pair. Without the divisors
+ * to choose from (`fallbackDivisors` null), the mean replaces the interval;
+ * without a p95, the mean alone decides. Numbers only: nothing is allocated.
+ */
+function failedTrialMinIntervalMs(currentMs: number, signals: GovernorSignals, config: GovernorConfig): number {
+  const mean = signals.intervalMeanMs ?? null;
+  if (mean === null) return currentMs;
+  const range = config.fallbackDivisors;
+  const period = config.fallbackPeriodMs;
+  if (range === null || period === null) return mean;
+  const divisor = fallbackDivisorFor(range, period, mean);
+  if (divisor >= fallbackDivisorFor(range, period, currentMs)) return mean;
+  const p95 = signals.intervalP95Ms;
+  const calm = fallbackDivisorFor(range, period, mean, FALLBACK_CALM_FIT_REFRESHES) === divisor
+    && (p95 === null || p95 <= (divisor + 0.5) * period);
+  return calm ? mean : currentMs;
+}
+
+/**
+ * PR B part 2b (G6): a window of the trial at the setting's cadence, judged
+ * against its 60-class target and never acted on.
+ * - Off cadence and clearly so (a mean over `SPENT_MEAN_RATIO` × the
+ *   reference, under 50 fps at 60): settled at once (product red team).
+ *   The machine has just shown, fully shed, that it cannot hold 60.
+ * - Off cadence otherwise: back to the phase the trial came from, or
+ *   settled at the second failed trial.
+ * - Either way, the failing window's mean chooses the fallback's divisor
+ *   again (`failedTrialMinIntervalMs`), so a stall that raised it earlier
+ *   no longer holds it for the session, but never below a floor: the
+ *   engaging window's mean (`engageIntervalMs`), or the interval the trial
+ *   left where that is shorter: never a faster divisor than the faster of
+ *   the engage's and the one the trial left.
+ *   - Engaged, the interval is never below the engage's, so the floor is
+ *     the engage's: engaged tests exactly the state that was exhausted, so
+ *     a trial that lands in a lighter stretch, calm at the faster divisor,
+ *     must not choose a faster one than the load that exhausted the
+ *     governor needed. Under alternating load that choice was undone by the
+ *     next heavy stretch: three switches in about 25 s. Settled, it is the
+ *     engage's too, unless a retry has returned the host to a shorter
+ *     interval (`retryFallbackDivisor`): then it is the interval the trial
+ *     left, on the faster divisor, so a host at full quality there whose
+ *     trial at 60 fails stays there. Floored at the engage's instead, each
+ *     such trial put it back on the slower divisor and kept its reading for
+ *     another retry 300 s on: 70 to 80% of the time at the slower divisor
+ *     at 75, 144 and 165 Hz.
+ *   - Where the floor holds the slower divisor against the trial's own
+ *     reading, the reading is kept to retry (`raisedFromMs`), with the
+ *     retry's first wait: the engaging window can be heavier than
+ *     everything after it (startup streaming, a spike on that window), and
+ *     without the retry a host that holds the faster divisor stayed on the
+ *     slower one for the session. Engaged, the next failed trial chooses
+ *     again, and keeps it where that lands on the slower divisor; settled,
+ *     the retry returns to it once its wait is over
+ *     (`retryFallbackDivisor`).
+ *   - Otherwise, where the interval chosen is on a slower divisor than one
+ *     kept already (a raise's, engaged or settled), or else than the one
+ *     the trial left, that one is kept to retry, as a raise keeps the
+ *     interval it rose from, with the retries counted so far: with nothing
+ *     kept before, the wait a raise starts
+ *     (`FALLBACK_SETTLED_RETRY_AFTER_MS`); with one kept, the wait already
+ *     running, but at least `FALLBACK_RETRY_TRIAL_GAP_MS`, since the trial
+ *     has just switched the cadence twice (a retry 86 s after a trial's pair
+ *     put a random-load sweep over D5 in 7 runs of 54, against 4). Without
+ *     it, a stall on the window of the trial that settles, or a full-quality
+ *     settled trial that reads the slower divisor, held a host that holds
+ *     the faster one on the slower for the session: one that holds it only
+ *     shed never reaches full quality at the slower for another trial; so
+ *     did a stretch that raised an engaged host and lasted through its
+ *     trial. The count is kept, not started again, so a host whose load
+ *     grew for good retries no more often than the backoff allows. An
+ *     engaged raise's interval costs what a settled raise's does: a host
+ *     that only just holds the faster divisor fully shed retries it after
+ *     each raise, with the backoff.
+ *   - Nothing else is kept: a trial that reads the divisor it left, with
+ *     nothing kept, keeps no measurement that a faster one held, and no
+ *     retry is blind.
+ * - On cadence: `FALLBACK_TRIAL_WINDOWS` windows whose pooled late share is
+ *   calm pass. Then the fallback is off, its exit clock starts, the
+ *   passing window's mean is kept with it (`exitIntervalMs`), and the
+ *   spent count and the calm streak start over. On cadence but not calm,
+ *   the oldest window is dropped and one more decides, up to
+ *   `FALLBACK_TRIAL_MAX_WINDOWS` judged windows, which pass.
+ */
+function judgeFallbackTrial(
+  state: GovernorState,
+  signals: GovernorSignals,
+  cadenceMet: boolean,
+  config: GovernorConfig,
+): GovernorState {
+  const fallback = state.fallback;
+  const judged: GovernorState = { ...state, mode: "fallback-trial" };
+  if (!cadenceMet) {
+    const failedTrials = fallback.failedTrials + 1;
+    const settled = isSevere(signals, config)
+      || fallback.trialFrom === "settled"
+      || failedTrials >= FALLBACK_SETTLE_AFTER_FAILED_TRIALS;
+    const reading = failedTrialMinIntervalMs(fallback.minIntervalMs, signals, config);
+    // The engage's interval, or the shorter one the trial left (a retry's): the engage's while engaged.
+    const floorMs = Math.min(fallback.engageIntervalMs, fallback.minIntervalMs);
+    const minIntervalMs = Math.max(floorMs, reading);
+    // The floor held the slower divisor against the trial's own reading: keep the reading to retry.
+    const floored = slowerFallbackDivisor(floorMs, reading, config);
+    // Or the trial lands on a slower divisor than the interval it left, or
+    // than one a raise rose from: keep that one to retry, as the raise did,
+    // with the retries counted so far.
+    const left = fallback.raisedFromMs ?? fallback.minIntervalMs;
+    const keepLeft = !floored && slowerFallbackDivisor(minIntervalMs, left, config);
+    const after = fallbackAfterFailures(fallback, failedTrials, settled);
+    return Object.freeze({
+      ...judged,
+      calmStreak: Object.freeze([]),
+      fallback: Object.freeze({
+        ...after,
+        minIntervalMs,
+        raisedFromMs: floored ? reading : keepLeft ? left : null,
+        retryDueInMs: floored ? fallbackRetryWait(after.settledRetries) : keepLeft ? keptRetryWait(fallback) : 0,
+        settledRetries: keepLeft ? fallback.settledRetries : after.settledRetries,
+      }),
+    });
+  }
+  const trialLates = Object.freeze([...fallback.trialLates, signals.lateFraction ?? 0]);
+  const trialWindows = fallback.trialWindows + 1;
+  const calm = trialLates.length >= FALLBACK_TRIAL_WINDOWS
+    && trialLates.reduce((sum, late) => sum + late, 0) / trialLates.length <= CALM_LATE_FRACTION;
+  if (!calm && trialWindows < FALLBACK_TRIAL_MAX_WINDOWS) {
+    const pooled = trialLates.length < FALLBACK_TRIAL_WINDOWS ? trialLates : Object.freeze(trialLates.slice(1));
+    return Object.freeze({ ...judged, fallback: Object.freeze({ ...fallback, trialLates: pooled, trialWindows }) });
+  }
+  return Object.freeze({
+    ...judged,
+    spentWindows: 0,
+    calmStreak: Object.freeze([]),
+    fallback: Object.freeze({
+      ...FALLBACK_OFF,
+      failedTrials: fallback.failedTrials,
+      msSinceExit: 0,
+      exitIntervalMs: signals.intervalMeanMs ?? null,
+    }),
+  });
+}
+
+/**
  * One decision per completed sample window. Returns the next state; the
  * caller applies `renderScale`/`cpuWorkLevel`/`gpuWorkLevel` differences to
  * the engine and reports downward-step effectiveness through
@@ -930,6 +1731,7 @@ export function nextGovernorDecision(
     framesSinceScaleChange: state.framesSinceScaleChange + config.windowFrames,
     mode: "holding",
     recovery: tickRecovery(state.recovery, config),
+    fallback: tickFallback(state.fallback, config),
   };
 
   // Re-arm the resolution-insensitive latch on a window clock.
@@ -1002,6 +1804,8 @@ export function nextGovernorDecision(
   }
 
   const cadenceMet = resolved.classification === "on-cadence";
+  // G6 (part 2b): the even fallback's trial windows only decide the trial.
+  if (next.fallback.phase === "trial") return judgeFallbackTrial(next, signals, cadenceMet, config);
   next = { ...next, urgent: !cadenceMet && isUrgent(signals, config) };
   if (next.trial !== null) {
     if (!cadenceMet) return failTrial({ ...next, spentWindows: 0 }, next.trial, config);
@@ -1014,13 +1818,29 @@ export function nextGovernorDecision(
   const spentWindows = outcome === "probe"
     ? next.spentWindows
     : outcome === "spent" && isSevere(signals, config) ? next.spentWindows + 1 : 0;
-  return Object.freeze({ ...decided, spentWindows });
+  // G6 (part 2b): on the fallback, count the window toward the raise only if
+  // it moved no lever: no rung or step shed here, and no scale restored by
+  // the verdict on the last step.
+  const movedLever = outcome === "shed" || outcome === "probe" || decided.renderScale !== state.renderScale;
+  const unheldWindows = decided.fallback.phase !== "off" && !movedLever ? next.unheldWindows + 1 : 0;
+  const counted: GovernorState = Object.freeze({ ...decided, spentWindows, unheldWindows });
+  // G6 (part 2b): exhausted, the governor may engage the even fallback;
+  // engaged or settled, a host that cannot hold the fallback's divisor asks
+  // for a slower one.
+  return counted.fallback.phase === "off"
+    ? maybeEngageFallback(counted, signals, config)
+    : raiseFallbackInterval(counted, signals, config);
 }
 
 /**
  * On cadence: never shed. After four on-cadence windows whose pooled late
  * share is calm, recover one step, GPU work first, then CPU work, then
  * resolution, each on trial and each only once its ladder's backoff is over.
+ * On the even fallback (part 2b), engaged recovers nothing and starts the
+ * trial once it is due; settled recovers as above at the fallback's rate,
+ * retries the faster divisor once its own wait is over where an interval is
+ * kept to retry (`retryFallbackDivisor`), in place of that window's step,
+ * and otherwise starts a trial only from full quality.
  */
 function onCadenceDecision(
   state: GovernorState,
@@ -1035,15 +1855,32 @@ function onCadenceDecision(
     ...state,
     calmStreak,
     offCadenceWindows: 0,
+    unheldWindows: 0,
     cpuHotWindows: 0,
     gpuHotWindows: 0,
     mode: "on-cadence",
   };
-  if (
-    state.trial !== null
-    || calmStreak.length < RECOVER_AFTER_CALM_WINDOWS
-    || calmStreak.reduce((sum, late) => sum + late, 0) / calmStreak.length > CALM_LATE_FRACTION
-  ) {
+  const calm = calmStreak.length >= RECOVER_AFTER_CALM_WINDOWS
+    && calmStreak.reduce((sum, late) => sum + late, 0) / calmStreak.length <= CALM_LATE_FRACTION;
+  const fallback = state.fallback.phase;
+  if (fallback === "engaged") {
+    // G6 (part 2b): engaged, the governor sheds only, so the trial tests
+    // exactly the state that was exhausted. It starts from a window on the
+    // fallback's cadence, once its wait is over.
+    return fallbackTrialDue(state) ? startFallbackTrial(held) : Object.freeze(held);
+  }
+  // G6 (part 2b): settled, a host held at the slower divisor retries the
+  // faster one once the retry's own wait is over, at full quality too.
+  if (fallbackRetryDue(state)) return retryFallbackDivisor(held);
+  if (fallback === "settled" && fallbackTrialDue(state)) {
+    const fullQuality = state.gpuWorkLevel === 0
+      && state.cpuWorkLevel === 0
+      && state.renderScale >= config.scaleCeiling - 1e-6;
+    // G6 (part 2b): settled, the governor recovers at the fallback's rate,
+    // and a trial runs only from full quality, so it never moves a lever.
+    if (fullQuality && calm) return startFallbackTrial(held);
+  }
+  if (state.trial !== null || !calm) {
     return Object.freeze(held);
   }
   // Without timestamps the GPU side has no gate of its own: the trial is the guard.
@@ -1335,6 +2172,8 @@ function failTrial(state: GovernorState, trial: RecoveryTrial, config: GovernorC
     trial: null,
     calmStreak: Object.freeze([]),
     offCadenceWindows: state.offCadenceWindows + 1,
+    // G6 (part 2b): the restore below moves a lever.
+    unheldWindows: 0,
     cpuHotWindows: 0,
     gpuHotWindows: 0,
     recovery: strike(state.recovery, trial.ladder, config),
@@ -1465,11 +2304,16 @@ export function summariseIntervals(
 /**
  * PR B: the presentation cadence moved the targets, so the window in flight
  * was judged against the old ones. Drop what that judgement fed: the
- * pending probe, the calm streak, the hot counts, urgency and the spent
- * count. Levels, scale, latch and recovery records stay, and an open trial
- * restarts its count rather than escaping its verdict (red team finding 11).
+ * pending probe, the calm streak, the hot, off-cadence and unheld counts,
+ * urgency and the spent count. Levels, scale, latch and recovery records
+ * stay, and an open trial restarts its count rather than escaping its
+ * verdict (red team finding 11). The even fallback (part 2b) keeps its
+ * phase and clocks, since the cadence moving is what it asked for, and only
+ * the windows its trial pools restart (not the count toward the trial's
+ * limit).
  */
 export function rebaseGovernorState(state: GovernorState): GovernorState {
+  const fallback = state.fallback;
   return Object.freeze({
     ...state,
     pendingProbe: null,
@@ -1481,6 +2325,10 @@ export function rebaseGovernorState(state: GovernorState): GovernorState {
     calmStreak: Object.freeze([]),
     trial: state.trial === null ? null : Object.freeze({ ...state.trial, windowsPassed: 0 }),
     spentWindows: 0,
+    unheldWindows: 0,
     urgent: false,
+    fallback: fallback.trialLates.length === 0
+      ? fallback
+      : Object.freeze({ ...fallback, trialLates: Object.freeze([]) as readonly number[] }),
   });
 }

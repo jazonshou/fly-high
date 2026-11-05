@@ -12,6 +12,7 @@ import { FlightAudio } from "@/src/audio";
 import { InputManager, type InputAction } from "@/src/input";
 import { FlightRenderer } from "@/src/render/FlightRenderer";
 import { createHudCamera, type FlightRenderingSystem, type ScreenPoint } from "@/src/render/types";
+import type { CadenceFallbackRequest } from "@/src/render/webgpu/core/AdaptiveGovernor";
 import type { PresentationCadence } from "@/src/render/webgpu/core/presentationCadence";
 import type { BenchSession } from "@/src/bench/types";
 import {
@@ -672,6 +673,10 @@ export function FlightGame() {
     // that does, so the renderer only hears of it inside the frame's `try`.
     const framePacer = new FramePacer();
     let pendingCadence: PresentationCadence | null = null;
+    // PR B part 2b (G6): the even fallback the governor asked for after the
+    // last frame, handed to the pacer's next tick, which decides whether it
+    // applies. It lives with this renderer: a rebuilt one starts with none.
+    let cadenceFallback: CadenceFallbackRequest | null = null;
     let idleProbe: IdleProbe | null = null;
     let lastNearestAirportUpdate = Number.NEGATIVE_INFINITY;
     // B3: what the HUD's readout last showed; null until this run publishes.
@@ -900,7 +905,7 @@ export function FlightGame() {
       );
       const renderLoop = (now: number) => {
         if (disposed || rendererTerminal) return;
-        const paced = framePacer.tick(now, settingsRef.current.frameRate, phaseRef.current === "paused");
+        const paced = framePacer.tick(now, settingsRef.current.frameRate, phaseRef.current === "paused", cadenceFallback);
         if (paced.cadence !== null) pendingCadence = paced.cadence;
         if (!paced.render) {
           animationFrame = requestAnimationFrame(renderLoop);
@@ -932,6 +937,7 @@ export function FlightGame() {
             pendingCadence = null;
           }
           renderer.render(frameState, deltaSeconds);
+          cadenceFallback = renderer.cadenceFallbackRequest();
         } catch (renderError) {
           console.error("Flight renderer stopped after an unrecoverable frame error", renderError);
           const reason = renderError instanceof Error ? renderError.message : "Unknown rendering error";

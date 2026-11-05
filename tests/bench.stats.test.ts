@@ -421,8 +421,13 @@ describe("paced display streams (PR B)", () => {
   it("records a cadence by its rate, a common one as its whole number", () => {
     const at = (hz: number, divisor: number) =>
       ({ frameCapHz: 60, divisor, displayPeriodMs: 1_000 / hz, periodConfirmed: true }) as const;
-    expect(benchCadence(at(165, 2))).toEqual({ frameCapHz: 60, divisor: 2, displayHz: 165, confirmed: true });
+    expect(benchCadence(at(165, 2))).toEqual({ frameCapHz: 60, divisor: 2, displayHz: 165, confirmed: true, fallbackHz: null });
     expect(pacedHz(at(165, 2))).toBe(82.5);
+    // The governor's even fallback (G6): its rate, which is also the paced one.
+    expect(benchCadence({ ...at(60, 2), fallbackHz: 30 })).toEqual({
+      frameCapHz: 60, divisor: 2, displayHz: 60, confirmed: true, fallbackHz: 30,
+    });
+    expect(pacedHz({ ...at(100, 3), fallbackHz: 100 / 3 })).toBeCloseTo(100 / 3, 9);
     expect(pacedHz(at(144, 2))).toBe(72);
     expect(pacedHz(at(60, 1))).toBe(60);
     expect(benchCadence({ ...at(60, 1), displayPeriodMs: null })!.displayHz).toBeNull();
@@ -437,6 +442,97 @@ describe("paced display streams (PR B)", () => {
     expect(late).toBeCloseTo(18.18, 2);
     expect(missedRefresh([late], period, 2).count).toBe(1);
     expect(vsyncBuckets([late], period, 0.005, 2)).toMatchObject({ x1: 0, offSlot: 1 });
+  });
+});
+
+describe("per-frame cadence (fly-high.bench/4, G6)", () => {
+  const period = 1_000 / 60;
+
+  it("counts a missed refresh against each interval's own divisor, which wins over the scalar", () => {
+    // At 60 Hz, two frames at 60 and two under the even fallback (divisor 2):
+    // 33.3 ms misses a refresh at 60 and is on time under the fallback, 50 ms misses one under either.
+    const intervals = [16.7, 33.3, 33.3, 50];
+    expect(missedRefresh(intervals, period, 1, [1, 1, 2, 2])).toEqual({ count: 2, per240: 120, longestStreak: 1 });
+    expect(missedRefresh(intervals, period, 1).count).toBe(3);
+    expect(missedRefresh(intervals, period, 2).count).toBe(1);
+    // A 0 (none logged) leaves the scalar.
+    expect(missedRefresh(intervals, period, 1, [0, 0, 2, 0]).count).toBe(2);
+    // 33.3 ms is two slots at 60 and one under the fallback; 50 ms missed the fallback's slot by a refresh.
+    expect(vsyncBuckets(intervals, period, 0.005, 1, [1, 1, 2, 2]))
+      .toMatchObject({ divisor: 1, x1: 2, x2: 1, offSlot: 1, irregular: 0 });
+    expect(vsyncBuckets([2 * period, 2 * period, 3 * period], period, 0.005, 1, [1, 2, 2]))
+      .toMatchObject({ divisor: 1, x2: 1, x1: 1, offSlot: 1, irregular: 0 });
+  });
+
+  it("counts a hitch against each interval's own threshold where it has one", () => {
+    expect(countOver([30, 30, 70], 27.4, [27.4, 60, 60])).toMatchObject({ count: 2 });
+    expect(countOver([30, 30, 70], 27.4, [Number.NaN, 60, Number.NaN])).toMatchObject({ count: 2 });
+    expect(countOver([30, 30, 70], 27.4)).toMatchObject({ count: 3 });
+  });
+
+  /**
+   * A log of `intervals` at 60 Hz whose frame `i` was drawn under
+   * `divisors[i]`, one more than the intervals for the closing frame, with
+   * the threshold that divisor has at 60 Hz.
+   */
+  function pacedLog(intervals: readonly number[], divisors: readonly number[]): BenchFrameLog {
+    const log = createFrameLog(intervals.length + 8);
+    const threshold = (divisor: number) => (divisor === 2 ? 60 : 27.4);
+    let time = 1_000;
+    intervals.forEach((interval, frame) => {
+      recordFrame(log, time, time + 0.1, 4, 0, false, null, divisors[frame]!, threshold(divisors[frame]!));
+      time += interval;
+    });
+    const last = divisors[intervals.length]!;
+    recordFrame(log, time, time + 0.1, 4, 0, false, null, last, threshold(last));
+    return log;
+  }
+
+  it("judges each interval by the cadence the frame that closes it was drawn under: a switch is on time both ways", () => {
+    // 60 at 60 Hz, then the fallback at 30, then a trial back at 60. The
+    // pacer skips and draws by a new cadence from the tick it emits it, so
+    // the first 33.3 ms interval ends on the first frame drawn under the
+    // fallback, and the first 16.7 ms one after it on the first back at 60.
+    const intervals = [
+      ...new Array<number>(120).fill(period),
+      ...new Array<number>(60).fill(2 * period),
+      ...new Array<number>(120).fill(period),
+    ];
+    // Frame 120 is the last drawn at 60 and stays up 33.3 ms; frame 121 is
+    // the first drawn under the fallback. Frame 180 is the last under it and
+    // stays up 16.7 ms; frame 181 is the first back at 60.
+    const drawn = [
+      ...new Array<number>(121).fill(1),
+      ...new Array<number>(60).fill(2),
+      ...new Array<number>(120).fill(1),
+    ];
+    const window = summarizeWindow(pacedLog(intervals, drawn), WHOLE, context(60));
+    expect(window.frames).toBe(300);
+    expect(window.missedRefresh).toEqual({ count: 0, per240: 0, longestStreak: 0 });
+    expect(window.vsyncBuckets).toMatchObject({ divisor: 1, x1: 300, x2: 0, offSlot: 0, irregular: 0 });
+    expect(window.over.hitch).toMatchObject({ count: 0, thresholdMs: 60 });
+    expect(window.over["27.4"].count).toBe(60);
+    expect(window.displayCapped).toBe(true);
+
+    // Read by its own frame's cadence instead, each switch would cost an interval.
+    const own = summarizeWindow(pacedLog(intervals, [1, ...drawn.slice(0, -1)]), WHOLE, context(60));
+    expect(own.missedRefresh!.count).toBe(1);
+    expect(own.vsyncBuckets).toMatchObject({ x1: 298, irregular: 1, x2: 1 });
+    // And by the flight's first frame's cadence, as `/3` read it, every fallback frame would.
+    const flat = summarizeWindow(logOf({ intervals }), WHOLE, context(60));
+    expect(flat.missedRefresh!.count).toBe(60);
+    expect(flat.over.hitch).toMatchObject({ count: 60, thresholdMs: 27.4 });
+  });
+
+  it("is display-capped by the slot of the median interval's own cadence", () => {
+    // Mostly under the fallback: the median is 33.3 ms, on the fallback's slot.
+    const intervals = [...new Array<number>(40).fill(period), ...new Array<number>(80).fill(2 * period)];
+    const drawn = [...new Array<number>(41).fill(1), ...new Array<number>(80).fill(2)];
+    const window = summarizeWindow(pacedLog(intervals, drawn), WHOLE, context(60));
+    expect(window.intervalMs!.p50).toBeCloseTo(2 * period, 9);
+    expect(window.displayCapped).toBe(true);
+    // The same intervals by the flight-start divisor alone are not.
+    expect(summarizeWindow(logOf({ intervals }), WHOLE, context(60)).displayCapped).toBe(false);
   });
 });
 

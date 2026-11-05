@@ -6,6 +6,7 @@ import type {
   WeatherPreset,
 } from "@/src/game/types";
 import type { RendererBenchProbe } from "@/src/render/FlightRenderer";
+import type { CadenceFallbackRequest } from "@/src/render/webgpu/core/AdaptiveGovernor";
 import type {
   FlightRenderingSystem,
   HudCamera,
@@ -190,6 +191,11 @@ export class BenchRenderer implements FlightRenderingSystem {
   /** Forwarded for the same reason; the bench's flight never pauses. */
   setGovernorHold(held: boolean): void {
     this.inner.setGovernorHold(held);
+  }
+
+  /** Forwarded too (PR B part 2b, G6): a governor that falls back does so for a player, so the bench records it. */
+  cadenceFallbackRequest(): CadenceFallbackRequest | null {
+    return this.inner.cadenceFallbackRequest();
   }
 
   discardNextFrameInterval(): void {
