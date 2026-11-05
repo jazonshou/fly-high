@@ -38,7 +38,7 @@ describe("LandCruiser driveline", () => {
     expect(atRatio).toBeCloseTo(38.51, 1);
   });
 
-  it("holds on a 20 degree slope with the brake held through the stop, and in P with nothing held", () => {
+  it("holds on a 20 degree slope with the brake held through the stop, and in P in 4H with nothing held", () => {
     // Up the slope in D, then the brake held through the stop and on for a minute.
     const braked = car(slopeAhead(20));
     drive(braked, 1, { handbrake: 1 });
@@ -55,12 +55,14 @@ describe("LandCruiser driveline", () => {
     );
     expect(braked.transmission.gear).toBe(1);
 
-    // A start on the slope: P, every pedal up, held by the parking pawl alone.
+    // A start on the slope: P, every pedal up, 4H, held by the parking pawl alone.
     const parked = car(slopeAhead(20));
-    drive(parked, 3, {});
+    drive(parked, 0.1, {});
+    drive(parked, 3, { rangePresses: 1 });
     expect(parked.transmission.selector).toBe("P");
+    expect(parked.transmission.range).toBe("4H");
     const start = { ...parked.state.position };
-    drive(parked, 60, {});
+    drive(parked, 60, { rangePresses: 1 });
     const parkedCreep = Math.hypot(
       parked.state.position.x - start.x,
       parked.state.position.y - start.y,
