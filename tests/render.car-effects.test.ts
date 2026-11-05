@@ -67,7 +67,6 @@ function car(overrides: Partial<CarVisualState> = {}): CarVisualState {
   return {
     kind: "car",
     speed: 0,
-    gearbox: "automatic",
     selector: "D",
     gear: 2,
     range: "4H",
@@ -76,7 +75,6 @@ function car(overrides: Partial<CarVisualState> = {}): CarVisualState {
     downhillAssistActive: false,
     tractionControlActive: false,
     absActive: false,
-    clutch: 1,
     engineRunning: true,
     stalled: false,
     flooded: false,
@@ -804,7 +802,7 @@ describe("the car's effects together", () => {
     // ground (from the wading depth) can make it a ford.
     const grade = Math.tan((3 * Math.PI) / 180);
     const height = (z: number): number => 0.6 - grade * z;
-    const sim = rigCar({}, groundOf((out) => {
+    const sim = rigCar(groundOf((out) => {
       out.height = height(out.z);
       out.dhdx = 0;
       out.dhdz = -grade;

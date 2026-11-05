@@ -94,7 +94,7 @@ class Pool implements WaterSurfaceAuthority {
 /** The car on a gravel ford `depth` deep under a river flowing at `current`. */
 function fordCar(depth: number, current: Readonly<Vec3> = { x: 0, y: 0, z: 0 }): GroundVehicleSimulator {
   const sim = new GroundVehicleSimulator(
-    { position: { x: 0, y: 0, z: 0 }, heading: 0, moored: false, car: { gearbox: "automatic", manualClutch: false } },
+    { position: { x: 0, y: 0, z: 0 }, heading: 0, moored: false },
     { ground: fordGround(depth), surface: (_at, out) => { describeSurface(SurfaceMaterial.Gravel, 0, out); } },
   );
   sim.setEnvironment({
@@ -201,7 +201,7 @@ describe("car in water", () => {
     // The car parked on a bed 1.6 m under a still lake.
     const bed = (): number => -1.6;
     const sim = new GroundVehicleSimulator(
-      { position: { x: 0, y: -1.6, z: 0 }, heading: 0, moored: false, car: { gearbox: "automatic", manualClutch: false } },
+      { position: { x: 0, y: -1.6, z: 0 }, heading: 0, moored: false },
       { ground: groundOf((out) => {
         out.height = -1.6;
         out.dhdx = 0;
@@ -241,7 +241,7 @@ describe("car in water", () => {
     // On the car's own lattice over the environment's bed, as in the worker.
     const cars = [new CalmWaterSurface(0, counted), asking].map((water) => {
       const sim = new GroundVehicleSimulator({
-        position: { x: 0, y: beach(0, 0), z: 0 }, heading: 0, moored: false, car: { gearbox: "automatic", manualClutch: false },
+        position: { x: 0, y: beach(0, 0), z: 0 }, heading: 0, moored: false,
       });
       sim.setEnvironment({ water, wind: { x: 0, y: 0, z: 0 }, bedHeight: beach, world: null, colliders: null, gravity: 9.80665 });
       return sim;

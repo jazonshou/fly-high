@@ -12,9 +12,10 @@ or estimate. The drawn car reads the same record (`LC76_GEOMETRY`).
 A 76 Series five-door wagon (GXL): ladder frame, a rigid front axle on coils
 with a Panhard rod, a rigid rear axle on leaf springs, part-time four-wheel
 drive with a two-speed transfer case (high 1.000, low 2.488) and lockable
-front and rear differentials. The 2.8 L 1GD-FTV turbo diesel (150 kW, 500 Nm
-with the automatic, 450 Nm with the manual) drives either the six-speed
-automatic (final drive 4.300) or the five-speed manual (4.100). 2,300 kg at
+front and rear differentials. The 2.8 L 1GD-FTV turbo diesel (150 kW,
+500 Nm) drives the six-speed automatic (final drive 4.300). The five-speed
+manual Toyota added in 2025 was modelled too, until Jason took it out on
+2026-11-05 for simpler controls. 2,300 kg at
 kerb, CG about 0.80 m up with 52% on the front axle (an estimate, set so the
 tilt table tips at about 40 degrees), 265/70 R16 tyres.
 
@@ -106,10 +107,10 @@ nor wrecked, and only once it has moved 3 m from the last spot, so a parked
 car keeps its history. `recover` puts the body origin back on the newest
 spot at its heading, level, stopped and through the spawn gate, so it seats
 on the ground at its next step as a start does (and waits if the pages
-there have gone). The engine restarts dry, the box goes to P (or first with
-the clutch open), the cabin drains, and the wreck, the roll, the ruts, the
-tyres' slip and the axles' motion are cleared; the setup, range, locks, tyre
-pressures, lights and downhill assist stay as they were, and the input is
+there have gone). The engine restarts dry, the box goes to P, the cabin
+drains, and the wreck, the roll, the ruts, the tyres' slip and the axles'
+motion are cleared; the range, locks, tyre pressures, lights and downhill
+assist stay as they were, and the input is
 left alone, so the press counts carry on. A spot the car is still within
 2 m of is dropped for the one before, so a second press, or a press while
 stuck where the last spot was taken, goes one spot further back; the oldest
@@ -379,28 +380,22 @@ scaled boost by rpm, which counted the curve's own low-rpm shape twice: the
 automatic sat at 812 rpm on a 20 degree slope and rolled back. An idle
 governor adds fuel below 750 rpm, the fuel cuts near 4,000, motoring friction
 grows with rpm, the engine stalls below 380 and the starter brings it back
-with the pedal (or the clutch) down.
+in P with the pedal down.
 
 ## Driveline
 
 The engine and the four wheels are five speeds; everything that turns at a
 fixed ratio to the wheels (propeller shafts, the transmission output and, in
-gear, the turbine or clutch disc) is folded into the wheels' mass matrix.
-What can slip or lock is a constraint row solved by projected Gauss-Seidel
-each substep (Catto 2005): the dry clutch or the converter's lockup clutch,
-the four brakes, the parking pawl and the transmission-drum handbrake as
+gear, the turbine) is folded into the wheels' mass matrix. What can slip or
+lock is a constraint row solved by projected Gauss-Seidel each substep
+(Catto 2005): the converter's lockup clutch, the four brakes, the parking
+pawl and the transmission-drum handbrake as
 friction rows; a locked differential as a bilateral row; the windup spring
 between the shafts in 4H and 4L as a soft row (Catto 2011). The torque
 converter's fluid coupling (K 10.77, stall ratio 2.0) is a smooth torque.
 
 The automatic shifts on a throttle-dependent schedule with kickdown and
-locks up from third; a sequential mode holds the gear the driver picks. The
-manual is worked by an auto-clutch (the default) or the player's pedal. The
-auto-clutch launches at an rpm that rises with throttle and opens before the
-engine can stall: it reads the input shaft's rate and opens when the shaft
-would fall under 1.1 x idle within 1.5 release times off the throttle, or as
-soon as the engine drops under 85% of idle. With the player's clutch the car
-stalls if the clutch is let out in gear at idle.
+locks up from third; a sequential mode holds the gear the driver picks.
 
 ## The pedals and direction
 
@@ -409,8 +404,6 @@ reverse, and in reverse S drives and W brakes; holding W at a stop in reverse
 selects drive. Only a fresh press does it: S held through the stop keeps the
 car stopped and braked, as a brake pedal does on a hill, and S let up and
 pressed again, once stopped, backs it up. The same holds for W from reverse.
-The manual follows the rule with the auto-clutch; with the player's clutch it
-is a plain H-pattern through R, N and 1 to 5 on the shift keys.
 
 ## Driver aids
 
@@ -429,8 +422,7 @@ is a plain H-pattern through R, N and 1 to 5 on the shift keys.
 - Traction control brakes a wheel that spins more than 3 rad/s faster than
   the other on its axle, in either direction of travel. It stands down while
   a locker is in, and `tractionControl = false` turns it off for tests.
-- Downhill assist (the automatic, 4L, neither pedal) holds about 5 km/h on
-  the brakes.
+- Downhill assist (4L, neither pedal) holds about 5 km/h on the brakes.
 - Hill-start assist holds the brakes for up to 2 s on slopes over 3 degrees
   once the driver lets the brake up, until the drive pulls uphill with 5% to
   spare over gravity's pull along the car.
@@ -443,10 +435,10 @@ is a plain H-pattern through R, N and 1 to 5 on the shift keys.
 | Approach and departure angles (static, SAE J1100) | 33 and 23 degrees | 32.8 and 23.0 | `sim.car-chassis` |
 | Turning circle, kerb to kerb | 12.6 m | 12.75 m | `sim.car-chassis` |
 | Tilt table | about 40 degrees (estimate) | tips between 38 and 42 | `sim.car-chassis` |
-| Crawl ratio in first, 4L | 38.51 (AT), 48.69 (MT) | 38.51, 48.69 | `sim.car-driveline` |
+| Crawl ratio in first, 4L | 38.51 | 38.51 | `sim.car-driveline` |
 | 100 to 0 km/h on dry asphalt | none published; the test allows 38 to 50 m | 42.3 m with ABS, in 3.1 s | `sim.car-driveline` |
 | 10 m/s to 0 on dry asphalt, 2H and 4H | v^2 / 2g at the tyres' peak friction of 1 is 5.1 m | 6.6 m in 2H, 5.8 m in 4H, no wheel locked | `sim.car-driveline` |
-| Holds on a 20 degree slope for a minute | under 1 cm (the plan's test) | under 6 mm (brake in D; handbrake alone in 4H) | `sim.car-driveline` |
+| Holds on a 20 degree slope for a minute | under 1 cm (the plan's test) | under 6 mm (brake in D; the pawl in P) | `sim.car-driveline` |
 
 The published approach and departure angles are static: SAE J1100 measures
 them on the car at rest, as the steepest plane tangent to the loaded tyre

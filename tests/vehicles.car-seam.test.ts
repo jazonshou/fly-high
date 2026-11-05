@@ -87,7 +87,7 @@ describe("car seam", () => {
 
   it("drives, steers and sits on the ground through the seam, and presents the car payload", () => {
     const spawn = createSurfaceSpawn(world, "landcruiser");
-    const car = createSurfaceSimulator("landcruiser", { ...spawn, car: { gearbox: "manual", manualClutch: false } });
+    const car = createSurfaceSimulator("landcruiser", spawn);
     expect(car).toBeInstanceOf(GroundVehicleSimulator);
     car.setEnvironment(environment(world));
     drive(car, 4, { accelerator: 1 });
@@ -99,7 +99,6 @@ describe("car seam", () => {
 
     const state = surfaceVisualState(moved, undefined);
     if (moved.payload.kind !== "car") throw new Error("the car's snapshot carries the car payload");
-    expect(moved.payload.gearbox).toBe("manual");
     expect(moved.payload.speed).toBeGreaterThan(5);
     expect(state.airspeed).toBe(Math.abs(moved.payload.speed));
     expect(state.vehicle).toBe(moved.payload);
@@ -143,13 +142,10 @@ describe("car seam", () => {
     expect(car.visualState().headlights).toBe("off");
   });
 
-  it("remembers the gearbox and the clutch option, and migrates settings without them", () => {
-    expect(validateSettings({}).carGearbox).toBe("automatic");
-    expect(validateSettings({}).carManualClutch).toBe(false);
-    const manual = validateSettings({ vehicle: "landcruiser", carGearbox: "manual", carManualClutch: true });
-    expect(manual.vehicle).toBe("landcruiser");
-    expect(manual.carGearbox).toBe("manual");
-    expect(manual.carManualClutch).toBe(true);
-    expect(validateSettings({ carGearbox: "cvt" }).carGearbox).toBe("automatic");
+  it("drops the old gearbox and clutch settings, keeping the car chosen", () => {
+    const saved = validateSettings({ vehicle: "landcruiser", carGearbox: "manual", carManualClutch: true });
+    expect(saved.vehicle).toBe("landcruiser");
+    expect(saved).not.toHaveProperty("carGearbox");
+    expect(saved).not.toHaveProperty("carManualClutch");
   });
 });

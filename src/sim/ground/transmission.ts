@@ -1,34 +1,23 @@
-import type {
-  CarControlState,
-  CarDiffLocks,
-  CarGearbox,
-  CarSetup,
-  CarTransferRange,
-  CarVisualState,
-} from "@/src/game/types";
+import type { CarControlState, CarDiffLocks, CarTransferRange, CarVisualState } from "@/src/game/types";
 import { LANDCRUISER_76 } from "@/src/vehicles/landcruiser76";
 import { DOUBLE_ZERO } from "./doubleZero";
-import { RPM_PER_RAD_S, type Engine } from "./engine";
+import { RPM_PER_RAD_S } from "./engine";
 
 /**
  * Everything between the crank and the propeller shafts that a driver
- * chooses or a controller schedules: the automatic's selector, shift
- * schedule, kickdown, sequential mode and lockup; the manual's gears and its
- * dry clutch, worked by the auto-clutch or the player's pedal; the transfer
- * range and the diff locks. It runs once per 120 Hz step and hands the
- * driveline solver its ratios, inertias and clutch capacities.
+ * chooses or a controller schedules: the six-speed automatic's selector,
+ * shift schedule, kickdown, sequential mode and lockup, the transfer range
+ * and the diff locks. It runs once per 120 Hz step and hands the driveline
+ * solver its ratios, inertias and lockup capacity.
  *
  * The pedals: W is the accelerator and S the service brake, except that at
  * a stop holding S selects reverse and holding W selects drive (the plan's
  * controls), and in reverse S drives and W brakes. Only a fresh press does
  * it: S held through the stop holds the car, as a brake pedal does on a
- * hill, and S let up and held again backs it up. The manual does that only
- * with the auto-clutch; with the player's clutch it is a plain H-pattern
- * through R, N and 1 to 5 on the shift keys.
+ * hill, and S let up and held again backs it up.
  */
 
 const AT = LANDCRUISER_76.automatic;
-const MT = LANDCRUISER_76.manual;
 const TRANSFER = LANDCRUISER_76.transfer;
 
 /** Under this speed, m/s, the car counts as stopped for the selector, the range and the locks. */
@@ -40,18 +29,9 @@ const MANUAL_MODE_OVERREV_RPM = 3_800;
 /** And it steps down by itself when the input falls under this. */
 const MANUAL_MODE_LUG_RPM = 950;
 const LOCKUP_RELEASE_SECONDS = 0.1;
-/** The auto-clutch's hold on the launch speed, N m of clutch torque per rad/s the engine is over it. */
-const AUTO_CLUTCH_GAIN = 12;
-/** Off the throttle the auto-clutch is open by this multiple of idle at the input shaft. */
-const AUTO_CLUTCH_COAST = 1.1;
-/** How far ahead of its release time the auto-clutch reads the shaft's fall: the plate slips late. */
-const AUTO_CLUTCH_LEAD = 1.5;
-/** The smoothing of the input shaft's rate, s. */
-const INPUT_RATE_SECONDS = 0.05;
 
-/** Each gearbox's ratios by `gear + 1`, signed: reverse, neutral, then the forward gears. */
-const AT_GEAR_RATIOS = Float64Array.of(-AT.reverse, 0, ...AT.ratios);
-const MT_GEAR_RATIOS = Float64Array.of(-MT.reverse, 0, ...MT.ratios);
+/** The ratios by `gear + 1`, signed: reverse, neutral (and P), then the six forward gears. */
+const GEAR_RATIOS = Float64Array.of(-AT.reverse, 0, ...AT.ratios);
 
 export interface DriverPedals {
   /** The accelerator and service brake as the car uses them, after reverse's swap. */
@@ -67,7 +47,6 @@ export interface TransmissionMotion {
   speed: number;
   /** Rear propeller shaft speed, rad/s. */
   rearPropOmega: number;
-  engineOmega: number;
 }
 
 /** Counts presses the way the input profile sends them: a change of count, the first count a baseline. */
@@ -86,23 +65,18 @@ class PressCounter {
   }
 }
 
-type AutoClutchPhase = "engaged" | "releasing" | "engaging";
-
 export class Transmission {
-  readonly gearbox: CarGearbox;
-  readonly manualClutch: boolean;
-  /** The automatic's selector; null with the manual. */
-  selector: "P" | "R" | "N" | "D" | "M" | null;
-  /** Gear engaged: -1 reverse, 0 neutral (and P), 1..6 or 1..5. */
-  gear: number;
+  /** The selector: P at a start, then D or R as the pedals choose, or M in the sequential mode. */
+  selector: "P" | "R" | "D" | "M" = "P";
+  /** Gear engaged: -1 reverse, 0 in P, 1..6. */
+  gear = 0;
   range: CarTransferRange = "2H";
   locks: CarDiffLocks = "off";
-  /** The manual's clutch engagement, 0 open .. 1 engaged; the automatic's lockup clutch likewise. */
-  clutch = DOUBLE_ZERO;
+  /** The converter's lockup clutch, 0 open .. 1 engaged. */
   lockup = DOUBLE_ZERO;
   /** Seconds left of a shift's torque gap. */
   shiftTime = DOUBLE_ZERO;
-  /** The automatic's turbine (or the manual's clutch disc) speed last step, rad/s. */
+  /** The turbine's speed last step, rad/s. */
   inputOmega = DOUBLE_ZERO;
 
   /*
@@ -111,19 +85,19 @@ export class Transmission {
    * the getter, and the car's step allocates nothing.
    */
   /** The axles' final drive. */
-  finalDrive: number;
+  readonly finalDrive = AT.finalDrive;
   /** The transfer case's ratio in this range. */
   transferRatio = DOUBLE_ZERO;
   /** Input shaft speed per rear propeller shaft speed: the gear times the transfer range (negative in reverse). */
   inputRatio = DOUBLE_ZERO;
-  /** The turbine (or clutch disc) and input shaft's inertia, kg m^2. */
-  inputInertia: number;
+  /** The turbine and input shaft's inertia, kg m^2. */
+  readonly inputInertia = AT.inputInertia;
   /** Share of the turbine's torque that reaches the output: less during a clutch-to-clutch shift. */
   torqueShare = DOUBLE_ZERO;
-  /** The coupling between the crank and the input shaft, N m: the dry clutch, or the converter's lockup. */
+  /** The coupling between the crank and the input shaft past the converter: the lockup clutch, N m. */
   couplingCapacity = DOUBLE_ZERO;
 
-  private readonly gearRatios: Float64Array;
+  private readonly gearRatios = GEAR_RATIOS;
   private dt = DOUBLE_ZERO;
   private speed = DOUBLE_ZERO;
   /**
@@ -132,43 +106,17 @@ export class Transmission {
    */
   private rpmPerRatio = DOUBLE_ZERO;
 
-  /** The input shaft's speed change, rad/s per s, smoothed: the auto-clutch reads a stop coming. */
-  private inputRate = DOUBLE_ZERO;
   private directionHold = DOUBLE_ZERO;
   /** The direction rule's pedal has been up with the car stopped: only a fresh press at a stop changes direction. */
   private directionArmed = false;
-  private autoClutchPhase: AutoClutchPhase = "engaged";
-  private autoClutchTime = DOUBLE_ZERO;
-  private pendingGear = 0;
   private readonly shiftUp = new PressCounter();
   private readonly shiftDown = new PressCounter();
   private readonly autoMode = new PressCounter();
   private readonly rangePresses = new PressCounter();
   private readonly lockPresses = new PressCounter();
 
-  constructor(setup: Readonly<CarSetup>) {
-    this.gearbox = setup.gearbox;
-    this.manualClutch = setup.gearbox === "manual" && setup.manualClutch;
-    const automatic = setup.gearbox === "automatic";
-    this.finalDrive = automatic ? AT.finalDrive : MT.finalDrive;
-    this.inputInertia = automatic ? AT.inputInertia : MT.inputInertia;
-    this.gearRatios = automatic ? AT_GEAR_RATIOS : MT_GEAR_RATIOS;
-    if (automatic) {
-      this.selector = "P";
-      this.gear = 0;
-      this.clutch = 1;
-    } else {
-      this.selector = null;
-      // The auto-clutch waits in first with the clutch open; the player's clutch starts in neutral.
-      this.gear = this.manualClutch ? 0 : 1;
-      this.clutch = this.manualClutch ? 1 : 0;
-      this.autoClutchPhase = "engaging";
-    }
+  constructor() {
     this.refresh();
-  }
-
-  get automatic(): boolean {
-    return this.gearbox === "automatic";
   }
 
   get fourWheelDrive(): boolean {
@@ -180,55 +128,44 @@ export class Transmission {
     return this.gearRatios[gear + 1]!;
   }
 
-  /** The automatic is driving through its converter (D, M or R). */
+  /** Driving through the converter (D, M or R). */
   get converterEngaged(): boolean {
-    return this.automatic && this.gear !== 0;
+    return this.gear !== 0;
   }
 
   get parked(): boolean {
     return this.selector === "P";
   }
 
-  /** Whether a stalled engine may crank now: the clutch down (the pedal past 0.8), or the automatic in P or N. */
-  canCrank(controls: Readonly<CarControlState>): boolean {
-    if (this.automatic) return this.gear === 0;
-    return this.gear === 0 || this.clutch < 0.05 || (this.manualClutch && controls.clutch > 0.8);
+  /** Whether a stalled engine may crank now: in P. */
+  get canCrank(): boolean {
+    return this.gear === 0;
   }
 
-  /** Bring the fields the driveline reads up to date with the gear, range, clutch and shift. */
+  /** Bring the fields the driveline reads up to date with the gear, range, lockup and shift. */
   private refresh(): void {
     this.transferRatio = this.range === "4L" ? TRANSFER.low : TRANSFER.high;
     this.inputRatio = this.gearRatios[this.gear + 1]! * this.transferRatio;
-    this.torqueShare = this.automatic && this.shiftTime > 0 ? AT.shiftTorqueShare : 1;
-    this.couplingCapacity = this.gear === 0
-      ? 0
-      : this.automatic ? AT.lockupCapacity * this.lockup : MT.clutchCapacity * this.clutch;
+    this.torqueShare = this.shiftTime > 0 ? AT.shiftTorqueShare : 1;
+    this.couplingCapacity = this.gear === 0 ? 0 : AT.lockupCapacity * this.lockup;
   }
 
   /**
    * One 120 Hz step of `motion.dt`: presses, the direction rule, the
-   * schedule and the clutch. Writes the pedals as the car uses them into
+   * schedule and the lockup. Writes the pedals as the car uses them into
    * `pedals`.
    */
-  update(
-    controls: Readonly<CarControlState>,
-    motion: Readonly<TransmissionMotion>,
-    engine: Engine,
-    pedals: DriverPedals,
-  ): void {
+  update(controls: Readonly<CarControlState>, motion: Readonly<TransmissionMotion>, pedals: DriverPedals): void {
     const dt = motion.dt;
     this.dt = dt;
     this.speed = motion.speed;
     const stopped = Math.abs(motion.speed) < STOPPED_SPEED;
-    const previousInput = this.inputOmega;
     this.inputOmega = this.inputRatio * motion.rearPropOmega;
     const ratio = this.gearRatios[this.gear + 1]!;
     this.rpmPerRatio = ratio === 0 ? 0 : (this.inputOmega / ratio) * RPM_PER_RAD_S;
-    if (dt > 0) this.inputRate += (Math.min(1, dt / INPUT_RATE_SECONDS)) * ((this.inputOmega - previousInput) / dt - this.inputRate);
     this.updateRange(controls);
     if (this.shiftTime > 0) this.shiftTime = Math.max(0, this.shiftTime - dt);
-    if (this.automatic) this.updateAutomatic(controls, stopped, pedals);
-    else this.updateManual(controls, motion, stopped, engine, pedals);
+    this.updateAutomatic(controls, stopped, pedals);
     this.refresh();
   }
 
@@ -258,14 +195,14 @@ export class Transmission {
     const ups = this.shiftUp.take(controls.shiftUpPresses);
     const downs = this.shiftDown.take(controls.shiftDownPresses);
     const autoPresses = this.autoMode.take(controls.autoModePresses);
-    const selector = this.selector!;
+    const selector = this.selector;
 
     // Direction: W at a stop selects D; S held at a stop selects R; W held at a stop in R selects D.
     if (selector === "R") {
       pedals.accelerator = s;
       pedals.brake = w;
       if (this.directionRequested(stopped, controls, true)) this.selectDrive();
-    } else if (selector === "P" || selector === "N") {
+    } else if (selector === "P") {
       pedals.accelerator = 0;
       pedals.brake = s;
       if (stopped && w > 0.05) this.selectDrive();
@@ -288,7 +225,6 @@ export class Transmission {
       else this.schedule(pedals, stopped);
     }
     this.updateLockup();
-    this.clutch = this.gear === 0 ? 0 : 1;
   }
 
   /**
@@ -391,157 +327,22 @@ export class Transmission {
     else if (target < this.lockup) this.lockup = Math.max(0, this.lockup - dt / LOCKUP_RELEASE_SECONDS);
   }
 
-  private updateManual(
-    controls: Readonly<CarControlState>,
-    motion: Readonly<TransmissionMotion>,
-    stopped: boolean,
-    engine: Engine,
-    pedals: DriverPedals,
-  ): void {
-    const dt = this.dt;
-    const w = controls.accelerator;
-    const s = controls.brake;
-    const ups = this.shiftUp.take(controls.shiftUpPresses);
-    const downs = this.shiftDown.take(controls.shiftDownPresses);
-    this.autoMode.take(controls.autoModePresses);
-    pedals.accelerator = w;
-    pedals.brake = s;
-
-    if (this.manualClutch) {
-      const pedal = Number.isFinite(controls.clutch) ? Math.max(0, Math.min(1, controls.clutch)) : 0;
-      const t = Math.max(0, Math.min(1, (pedal - 0.15) / 0.7));
-      this.clutch = 1 - t * t * (3 - 2 * t);
-      // A gear goes in only with the clutch down.
-      if (pedal > 0.7) {
-        for (let i = 0; i < ups; i += 1) this.gear = this.nextManualGear(this.gear, 1);
-        for (let i = 0; i < downs; i += 1) this.gear = this.nextManualGear(this.gear, -1);
-      }
-      return;
-    }
-
-    // The auto-clutch: the direction rule, sequential presses, launches and anti-stall.
-    if (this.gear < 0) {
-      pedals.accelerator = s;
-      pedals.brake = w;
-    }
-    let requested = this.pendingGear !== 0 || this.autoClutchPhase === "releasing" ? this.pendingGear : this.gear;
-    for (let i = 0; i < ups; i += 1) requested = this.nextManualGear(requested, 1);
-    for (let i = 0; i < downs; i += 1) requested = this.nextManualGear(requested, -1);
-    const forward = this.gear >= 0;
-    if (this.directionRequested(stopped, controls, !forward)) {
-      requested = forward ? -1 : 1;
-    }
-    if (requested !== this.gear && this.autoClutchPhase !== "releasing") {
-      this.pendingGear = requested;
-      this.autoClutchPhase = "releasing";
-      this.autoClutchTime = 0;
-    }
-
-    switch (this.autoClutchPhase) {
-      case "releasing": {
-        this.autoClutchTime += dt;
-        this.clutch = Math.max(0, this.clutch - dt / MT.autoClutchReleaseSeconds);
-        // The throttle lifts through the change: the shift's torque gap.
-        pedals.accelerator = 0;
-        if (this.clutch <= 0) {
-          this.gear = this.pendingGear;
-          this.pendingGear = 0;
-          this.autoClutchPhase = "engaging";
-          this.shiftTime = MT.autoClutchEngageSeconds;
-        }
-        break;
-      }
-      case "engaging":
-      case "engaged":
-        this.autoClutchTake(motion, engine, pedals);
-        break;
-    }
-  }
-
-  /** The auto-clutch's take-up: hold the engine at the launch speed while the clutch slips, then lock. */
-  private autoClutchTake(motion: Readonly<TransmissionMotion>, engine: Engine, pedals: DriverPedals): void {
-    const dt = this.dt;
-    if (this.gear === 0 || !engine.running) {
-      this.clutch = Math.max(0, this.clutch - dt / MT.autoClutchReleaseSeconds);
-      this.autoClutchPhase = "engaging";
-      return;
-    }
-    const engineOmega = motion.engineOmega;
-    const inputOmega = this.gearRatios[this.gear + 1]! * this.transferRatio * motion.rearPropOmega;
-    const slip = engineOmega - inputOmega;
-    const idle = LANDCRUISER_76.engine.idleRpm / RPM_PER_RAD_S;
-    const throttle = pedals.accelerator;
-    if (this.autoClutchPhase === "engaged") {
-      // Anti-stall: off the throttle, the clutch lets go before the shaft's fall would take the
-      // engine under idle by the time it is open; on it, the engine pulled under idle means it lugs.
-      const opening = inputOmega + Math.min(0, this.inputRate) * MT.autoClutchReleaseSeconds * AUTO_CLUTCH_LEAD;
-      if (engineOmega < idle * 0.85 || (throttle < 0.02 && opening < idle * AUTO_CLUTCH_COAST)) {
-        this.autoClutchPhase = "engaging";
-      } else {
-        this.clutch = Math.min(1, this.clutch + dt / MT.autoClutchEngageSeconds);
-        return;
-      }
-    }
-    // Engaging: no throttle and slow means wait with the clutch open (no creep in a manual).
-    if (throttle < 0.02 && inputOmega < idle * AUTO_CLUTCH_COAST) {
-      this.clutch = Math.max(0, this.clutch - dt / MT.autoClutchReleaseSeconds);
-      return;
-    }
-    if (inputOmega > engineOmega + 5) {
-      // A downshift or the car pushing: the clutch takes up and drags the engine to speed.
-      this.clutch = Math.min(1, this.clutch + dt / MT.autoClutchEngageSeconds);
-    } else {
-      // A launch: pass what the engine makes at this pedal, plus more while it is over the launch
-      // speed and less while it is pulled under it, so the engine sits at the launch speed.
-      const launch = (MT.launchRpm + MT.launchRpmPerThrottle * throttle) / RPM_PER_RAD_S;
-      const target = Math.max(launch, inputOmega);
-      engine.omega = engineOmega;
-      engine.pedal = throttle;
-      engine.evaluate();
-      const torque = engine.pedalTorque + AUTO_CLUTCH_GAIN * (engineOmega - target);
-      const wanted = Math.max(0, Math.min(1, torque / MT.clutchCapacity));
-      const up = dt / MT.autoClutchEngageSeconds;
-      const down = dt / MT.autoClutchReleaseSeconds;
-      this.clutch += Math.max(-down, Math.min(up, wanted - this.clutch));
-    }
-    if (Math.abs(slip) < 8 && inputOmega > idle * 0.9) this.autoClutchPhase = "engaged";
-  }
-
-  /** The manual's sequence R, N, 1..5; reverse only nearly stopped. */
-  private nextManualGear(gear: number, step: number): number {
-    const next = gear + step;
-    if (next > MT.ratios.length) return gear;
-    if (next < -1) return gear;
-    if (next === -1 && Math.abs(this.speed) > 1.5) return gear;
-    return next;
-  }
-
-  /** The payload's selector, gear and clutch fields. */
-  fill(state: Pick<CarVisualState, "selector" | "gear" | "clutch" | "range" | "locks" | "gearbox">): void {
-    state.gearbox = this.gearbox;
+  /** The payload's selector, gear, range and locks. */
+  fill(state: Pick<CarVisualState, "selector" | "gear" | "range" | "locks">): void {
     state.selector = this.selector;
     state.gear = this.gear;
-    state.clutch = this.automatic ? (this.gear === 0 ? 0 : 1) : this.gear === 0 ? 0 : this.clutch;
     state.range = this.range;
     state.locks = this.locks;
   }
 
-  /** A recovery: stopped in P (automatic) or first with the clutch open (manual), in the range and locks it had. */
+  /** A recovery: stopped in P, in the range and locks it had. */
   reset(): void {
     this.shiftTime = 0;
     this.lockup = 0;
     this.directionHold = 0;
     this.directionArmed = false;
-    this.pendingGear = 0;
-    this.inputRate = 0;
-    if (this.automatic) {
-      this.selector = "P";
-      this.gear = 0;
-    } else {
-      this.gear = this.manualClutch ? 0 : 1;
-      this.clutch = this.manualClutch ? 1 : 0;
-      this.autoClutchPhase = "engaging";
-    }
+    this.selector = "P";
+    this.gear = 0;
     this.refresh();
   }
 }

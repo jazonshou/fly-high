@@ -121,7 +121,7 @@ describe("LandCruiser chassis", () => {
     const touches = (degrees: number, reverse: boolean): boolean => {
       // The ramp's toe 4 m ahead of (behind) the leading axle; 4L, at idle creep (walking pace) either way.
       const toe = 4 + (reverse ? -CAR.geometry.rearAxleX : CAR.geometry.frontAxleX);
-      const sim = car({}, reverse ? rampBehind(toe, degrees) : rampAhead(toe, degrees));
+      const sim = car(reverse ? rampBehind(toe, degrees) : rampAhead(toe, degrees));
       drive(sim, 1, { handbrake: 1 });
       drive(sim, 0.5, { handbrake: 1, rangePresses: 2 });
       expect(sim.transmission.range).toBe("4L");
@@ -193,7 +193,7 @@ describe("LandCruiser chassis", () => {
       out.dhdx = grade;
       out.dhdz = 0;
     });
-    const sim = car({}, table);
+    const sim = car(table);
     drive(sim, 2, { handbrake: 1 });
     let tipped = Number.NaN;
     let angle = 30;

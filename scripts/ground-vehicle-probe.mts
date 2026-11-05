@@ -62,7 +62,7 @@ import { GroundVehicleSimulator } from "../src/sim/ground";
 import { CarColliders } from "../src/sim/ground/carColliders";
 import { type CarSea, createCarSea } from "../src/sim/ground/carSea";
 import { outerAngle, rackLimit } from "../src/sim/ground/steering";
-import { DEFAULT_CAR_SETUP, NEUTRAL_BOAT_CONTROLS, NEUTRAL_CAR_CONTROLS } from "../src/sim/surface";
+import { NEUTRAL_BOAT_CONTROLS, NEUTRAL_CAR_CONTROLS } from "../src/sim/surface";
 import { sampleGroundHeight } from "../src/sim/terrainGrid";
 import { createWaterSurfaceSample } from "../src/sim/water";
 import { WaterSurfaceComposite } from "../src/sim/water/compositeWater";
@@ -387,7 +387,6 @@ function startCar(site: Site, x: number, z: number, heading: number, rivers: rea
     position: { x, y: site.height(x, z), z },
     heading,
     moored: false,
-    car: { ...DEFAULT_CAR_SETUP },
   });
   const inland = new HydrologyWaterSource(site.height);
   if (rivers.length > 0) inland.setRegion("probe-ford", packHydrologyWater(rivers, []));

@@ -150,8 +150,6 @@ export interface BoatControlState {
   moorPresses: number;
 }
 
-/** The LandCruiser 76's gearbox, chosen on its card in the picker (land decision 1). */
-export type CarGearbox = "automatic" | "manual";
 /** The part-time transfer case: rear drive, locked 4WD high, locked 4WD low. */
 export type CarTransferRange = "2H" | "4H" | "4L";
 /** The diff locks, in Toyota's order: the rear engages first, then the front. */
@@ -159,13 +157,6 @@ export type CarDiffLocks = "off" | "rear" | "both";
 export type CarHeadlights = "off" | "dipped" | "main";
 /** The tyre pressure preset, set while stopped: road 2.4 bar, sand 1.2 bar. */
 export type CarTyrePressure = "road" | "sand";
-
-/** How a car session is set up, from settings, before its first step. */
-export interface CarSetup {
-  gearbox: CarGearbox;
-  /** The player works the clutch pedal (Q). Off, an auto-clutch launches and shifts. */
-  manualClutch: boolean;
-}
 
 /** The order of every per-wheel array in `CarVisualState`. */
 export const CAR_WHEELS = ["frontLeft", "frontRight", "rearLeft", "rearRight"] as const;
@@ -181,13 +172,9 @@ export interface CarVisualState {
   kind: "car";
   /** Signed speed along the body's forward axis, m/s: what the speedometer reads. */
   speed: number;
-  gearbox: CarGearbox;
-  /**
-   * The automatic's selector: P, R, N, D, or M in its sequential mode. Null
-   * with the manual, whose position is `gear`.
-   */
-  selector: "P" | "R" | "N" | "D" | "M" | null;
-  /** The gear engaged: -1 reverse, 0 neutral, 1..6 (automatic) or 1..5 (manual). */
+  /** The automatic's selector: P at a start, R, D, or M in its sequential mode. */
+  selector: "P" | "R" | "D" | "M";
+  /** The gear engaged: -1 reverse, 0 in P, 1..6. */
   gear: number;
   range: CarTransferRange;
   locks: CarDiffLocks;
@@ -196,8 +183,6 @@ export interface CarVisualState {
   downhillAssistActive: boolean;
   tractionControlActive: boolean;
   absActive: boolean;
-  /** How much torque the clutch passes: 0 open .. 1 fully engaged. */
-  clutch: number;
   engineRunning: boolean;
   stalled: boolean;
   /** Water reached the air intake and the engine hydrolocked: the HUD's FLOODED. */
@@ -276,8 +261,6 @@ export interface CarControlState {
   steer: number;
   /** Handbrake, 0..1 (Space, A button): the transmission drum. */
   handbrake: number;
-  /** Clutch pedal, 0 up .. 1 down (Q, X button); read only with `CarSetup.manualClutch`. */
-  clutch: number;
   /** Shift and Ctrl, the bumpers. */
   shiftUpPresses: number;
   shiftDownPresses: number;

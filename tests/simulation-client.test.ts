@@ -309,7 +309,6 @@ describe("simulation worker lifecycle commands", () => {
       airborneStartAgl: 450,
       attractMode: false,
       surfaceVehicle: null,
-      carSetup: { gearbox: "automatic", manualClutch: false },
       infrastructure: { version: 0, reset: true, install: [], remove: [] },
       dayOfYear: 171,
     });
@@ -358,7 +357,7 @@ describe("simulation worker lifecycle commands", () => {
   it("starts the worker on the settings' calendar day and sends each new one, for the car's snow", () => {
     vi.stubGlobal("Worker", WorkerStub);
     const world = createWorld(123);
-    const client = new SimulationClient(world, "unassisted", "airfield", "breezy", 450, false, "trainer", "landcruiser", undefined, 15);
+    const client = new SimulationClient(world, "unassisted", "airfield", "breezy", 450, false, "trainer", "landcruiser", 15);
     const worker = WorkerStub.latest!;
     expect((worker.messages[0] as { dayOfYear: number }).dayOfYear).toBe(15);
     client.setDayOfYear(200);

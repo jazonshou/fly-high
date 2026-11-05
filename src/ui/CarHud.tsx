@@ -20,12 +20,9 @@ interface CarHudProps {
   onToggleNearestAirport?: (() => void) | undefined;
 }
 
-/** What the gear readout shows: the automatic's selector (its gear in M), or the manual's gear. */
+/** What the gear readout shows: the automatic's selector, or its gear in M. */
 export function carGearLabel(car: CarVisualState): string {
-  if (car.selector !== null && car.selector !== "M") return car.selector;
-  if (car.gear < 0) return "R";
-  if (car.gear === 0) return "N";
-  return car.selector === "M" ? `M${car.gear}` : String(car.gear);
+  return car.selector === "M" ? `M${car.gear}` : car.selector;
 }
 
 /** The tachometer's red band starts where the fuel cut does (L1's engine record). */
@@ -171,7 +168,7 @@ export function CarHud({
             <div className="instrument-readout" aria-label={`Gear ${carGearLabel(car)}`}>
               <small>GEAR</small>
               <strong>{carGearLabel(car)}</strong>
-              <em>{car.gearbox === "automatic" ? "AUTO" : "MANUAL"}</em>
+              <em>AUTO</em>
             </div>
             <div className="instrument-readout" aria-label={`Range ${car.range}`}>
               <small>RANGE</small>
