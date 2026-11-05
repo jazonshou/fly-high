@@ -142,6 +142,11 @@ audit is why it now carries all four tiers):
 | Road ribbon range (`roadRibbonRangeMeters`; the 128 m chunks in reach drawn as one, a slot each) | 150 m | 500 m | 800 m | 1,200 m |
 | Guardrail draw range (`barrierDrawRangeMeters`; the 128 m chunks in reach drawn as one, a slot each) | 300 m | 600 m | 900 m | 1,200 m |
 | Home marina casts shadows (`marinaCastsShadows`; within 1.5 km) | no | yes | yes | yes |
+| Walker's finest figure mesh (`personFigureFinestLod`; car sessions only; 0 = 33k triangles within 10 m, 1 = 10k within 25 m, 2 = 3k within 80 m, 3 = 1k) | 1 | 0 | 0 | 0 |
+| Walker's shadow cascades (`personShadowCascades`; the nearest ones, capped by the tier's cascades) | 1 | 2 | 2 | 3 |
+| Walker's texture maps (`personFigureTextureSize`; albedo, normal and occlusion-roughness-metal, each this square; 64, 16 or 4 MiB with mips) | 512 | 1,024 | 512 | 2,048 |
+| Underwater Snell's window (`underwaterSnellWindow`; car sessions, camera submerged; off = a flat underside) | no | yes | yes | yes |
+| Underwater caustics (`underwaterCaustics`; car sessions, camera submerged) | no | no | yes | yes |
 | Structure near radius (`structureNearRadiusMeters`; the kit's closed shells, dithered over 40 m into the blocks) | 250 m | 400 m | 600 m | 800 m |
 | Structure far radius (`structureFarRadiusMeters`; the blocks, drawn no further than the 3.9 km the settlements stream) | 2,500 m | 4,000 m | 6,000 m | 8,000 m |
 | Buildings drawn open (`structureOpenBuildings`; rooms and glass, within 40 m of the camera) | 2 | 4 | 6 | 6 |
@@ -3808,6 +3813,81 @@ painted far out and drawn as a surface near the camera. `mountain-close` and
 
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
 delivery.
+
+## The walker's figure (2026-10-28): no aircraft, boat or car frame moves
+
+The walker's figure (`src/render/webgpu/person/`, docs/WALKER_FIGURE.md)
+replaces the lead's stand-in. It is built in car sessions only, hidden until
+the walker gets out, and draws one skinned mesh of three LODs (9,082 / 2,906
+/ 798 triangles) plus its shadow in the tier's `personShadowCascades`
+cascades. MEASURED in `tests/gpu/person-figure.test.ts` off Babylon's draw
+counter: 2 draws on Low, 3 on Medium, High and Ultra (Ultra asks for 3
+cascades, every tier has 2). The material compiles at 14 of 16 fragment
+inputs with the cascades, cloud shadows and aerial haze. No walker shot has
+a baseline or a draw ceiling yet, so nothing is re-pinned.
+
+`npm run perf:ab -- --base origin/claude/project-thread-63g5pc --rounds 0`
+(the lead's branch with the stand-in) on SwiftShader, 2026-10-28:
+
+| Shot | Draws | Work counts | Pixels |
+| --- | --- | --- | --- |
+| approach-500ft | 247 -> 247 | identical | 0.00% differ, max delta 2, SSIM 1.0000 |
+| boat-moored-dock | 125 -> 125 | identical | identical |
+| car-clearing-chase | 147 -> 147 | identical | identical |
+| walk-door-chase | 142 -> 142 | see below | the new figure (8.55% differ, SSIM 0.9708) |
+
+The car shot's inventoried GPU memory is 308.47 -> 309.71 MiB: the hidden
+figure's three meshes and its 256-texel atlas, built at load in every car
+session. The first walker run found the figure adding a 1,792-byte buffer,
+a copy and a submit to every walking frame: Babylon uploads a bone texture
+through a fresh staging buffer whenever it changes. The bones now ride in
+the draws' uniforms (`7c70f6b`), and the GPU test checks a walking frame
+adds no buffer or submit. Re-run on `7c70f6b`: walk-door-chase 141 -> 141
+draws, and the only work count that differs is the uniform upload, 176.1k ->
+179.7k bytes a frame (the bones, 1,792 bytes, in two of the draws' uniform
+buffers).
+
+CPU: `PersonMotion.update` MEASURED about 20 us a frame over every mode
+(`tests/render.person-motion-budget.test.ts`) against the walking plan's
+80 us, with about 190 B of boxed doubles a frame. GPU time was not
+measured: SwiftShader's timings are not a GPU's, so the walker shots' timing
+waits for the macOS runner.
+
+## The realistic walker (2026-11-02): the same draws, more triangles and maps
+
+The figure's lofted body gave way to a baked one (docs/WALKER_FIGURE.md):
+four levels of 33,112 / 10,000 / 3,000 / 996 triangles switching at 10, 25
+and 80 m, against the old 9,082 / 2,906 / 798 at 25 and 80 m, and three
+texture maps at the tier's size in place of the 256-texel atlas. Draws are
+unchanged, one mesh plus the tier's cascades: MEASURED again in
+`tests/gpu/person-figure.test.ts`, 2 on Low, 3 on Medium, High and Ultra.
+
+- Load: the tier's files only, fetched with the scene in car sessions:
+  742 KB of mesh and 123 KB (Low, High), 399 KB (Medium) or 1.5 MB (Ultra)
+  of JPEG maps.
+- GPU memory, maps with their mips: 4 MiB on Low and High, 16 on Medium, 64
+  on Ultra. They are a row of the memory estimate, `personFigureMiB`, since
+  every car session holds them. With it and the generated buildings' rows
+  (#41) the estimate reads 259.3 of Low's 260 MiB, 434.7 of Medium's 480,
+  698.0 of High's 700 and 992.0 of Ultra's 1,000 (the largest of the three
+  budget viewports). High first had the 2,048 maps, which put it at 753 of
+  700, then the 1,024 maps, which put it at 711.8 once the buildings' kit
+  arrays came in, so it takes 512. The macOS
+  capture (529c041, tier 1) measured the maps: every car and walk shot's
+  texture lane read 16.0 MiB over the land branch's. Its six walker shots
+  failed the estimate-against-inventory check (15.3-15.5% of 15%) until the
+  row went in. Vertex and index buffers: 2.4 MB with all four levels built
+  (19,128 / 6,545 / 2,353 / 1,059 vertices at 64 bytes, 32-bit indices),
+  0.8 MB on Low, which skips the finest; they are scene geometry, inside
+  `miscMiB`.
+- Triangles drawn: within 10 m the 33k mesh, which only the close views (the
+  chase camera at 3.2 m, the front view) see; the shadow passes draw the
+  same level.
+- Its shadow uses a 5 mm normal bias of its own (`FIGURE_SHADOW_NORMAL_BIAS`)
+  in place of the sun's 3.5 cm, a uniform the figure sets on its own shadow
+  draws: no draw, buffer or pipeline is added.
+
+GPU time is for the macOS runner's walker shots, as before.
 
 ## Generated buildings (2026-11, PR #41)
 

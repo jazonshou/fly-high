@@ -1,3 +1,4 @@
+import type { WalkerTextureSize } from "../person/walkerBody";
 import {
   GROUND_COVER_LAWS,
 } from "@/src/render/webgpu/detail/groundCoverLaw";
@@ -170,7 +171,7 @@ export interface WebGpuQualityProfile {
    * Tier 0 is OFF, not for want of need. It was off for memory while the
    * sharpen was a pass of its own (one LDR target, against tier 0's then
    * 259.6 of 260 MiB at 2560x1440@2, 254.7 since PR B part 2's 0.85 Mpx
-   * cap); fused into FXAA (`FxaaSharpenPass`) it costs no target, only
+   * cap, 259.3 with the walker's maps); fused into FXAA (`FxaaSharpenPass`) it costs no target, only
    * RCAS's arithmetic, so turning it on there is now a decision about the
    * low tier's look, not its budget.
    *
@@ -203,6 +204,14 @@ export interface WebGpuQualityProfile {
    * ramp inside it holds screen-space blade density roughly constant.
    */
   readonly grassRadiusMeters: number;
+  /**
+   * Walking: how far round the walker the near solids reach (the trunks,
+   * rocks, logs and stumps the walker and the character camera meet,
+   * `src/sim/person/nearSolids.ts`). The list is asked for again every 16 m
+   * the walker moves, so it always reaches this less 16 m ahead; Low lists
+   * fewer.
+   */
+  readonly nearSolidsRadiusMeters: number;
   /**
    * `3-0`: edge of both terrain material `Texture2DArray`s. `3-1` synthesises
    * at this edge and `estimateGpuMemory`'s material-array row follows it, so
@@ -503,6 +512,38 @@ export interface WebGpuQualityProfile {
    */
   readonly marinaCastsShadows: boolean;
   /**
+   * The walker's figure (car sessions only): the finest of its four meshes
+   * it draws (0 = 33k triangles within 10 m, 1 = 10k within 25 m, 2 = 3k
+   * within 80 m, 3 = 1k), how many of the nearest shadow cascades it casts
+   * into (capped by `shadowCascades`), and the size of its texture maps
+   * (albedo, normal and occlusion-roughness-metal, each this square with
+   * its mip chain: 2048 is 64 MiB of GPU memory, 1024 16 MiB, 512 4 MiB;
+   * `estimateGpuMemoryBreakdown` counts them as `personFigureMiB`).
+   * Its draws are one plus the cascades: the walking plan's budget table, 2
+   * on Low and 3 above it while every tier has two cascades.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly personFigureFinestLod: 0 | 1 | 2 | 3;
+  readonly personShadowCascades: number;
+  readonly personFigureTextureSize: WalkerTextureSize;
+  /**
+   * Walking plan, "Underwater view": the sea's underside, drawn instead of the
+   * sea while the camera is under it. With the window it is shaded with the
+   * sea's own wave normals, the sky probe and the sun bent through them;
+   * without it the underside is flat (one window of analytic sky, one mirror,
+   * no texture reads). Only while submerged, and only in car sessions.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly underwaterSnellWindow: boolean;
+  /**
+   * The sea's caustic web on what the water column sees under water (the bed,
+   * the piles), from the same surface curvature the sea lays on its bed above
+   * water. Only while submerged.
+   */
+  readonly underwaterCaustics: boolean;
+  /**
    * The generated buildings (`StructureSystem`, the structures plan's tier
    * rows): the kit's full-detail closed shells are drawn within this of the
    * camera, metres, horizontally to a building's centre, and the blocks past
@@ -605,6 +646,7 @@ function resolveBaseQualityProfile(
       treeVariantCap: 1,
       treePrototypeMode: "families",
       grassRadiusMeters: 90,
+      nearSolidsRadiusMeters: 32,
       materialArrayEdge: 256,
       terrainTriplanarMode: "planar",
       heightBlendMaxMaterials: 2,
@@ -671,6 +713,11 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 150,
       barrierDrawRangeMeters: 300,
       marinaCastsShadows: false,
+      personFigureFinestLod: 1,
+      personShadowCascades: 1,
+      personFigureTextureSize: 512,
+      underwaterSnellWindow: false,
+      underwaterCaustics: false,
       structureNearRadiusMeters: 250,
       structureFarRadiusMeters: 2_500,
       structureOpenBuildings: 2,
@@ -725,6 +772,7 @@ function resolveBaseQualityProfile(
       // which is noise. Row 3 of §7 is a single-reader estimate and the
       // measurement does not support it here. `6-11` owns the re-tier.
       grassRadiusMeters: 150,
+      nearSolidsRadiusMeters: 48,
       materialArrayEdge: 512,
       terrainTriplanarMode: "biplanar",
       heightBlendMaxMaterials: 3,
@@ -794,6 +842,11 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 500,
       barrierDrawRangeMeters: 600,
       marinaCastsShadows: true,
+      personFigureFinestLod: 0,
+      personShadowCascades: 2,
+      personFigureTextureSize: 1024,
+      underwaterSnellWindow: true,
+      underwaterCaustics: false,
       structureNearRadiusMeters: 400,
       structureFarRadiusMeters: 4_000,
       structureOpenBuildings: 4,
@@ -840,6 +893,7 @@ function resolveBaseQualityProfile(
       treeVariantCap: 5,
       treePrototypeMode: "species",
       grassRadiusMeters: 220,
+      nearSolidsRadiusMeters: 48,
       materialArrayEdge: 512,
       terrainTriplanarMode: "triplanar",
       heightBlendMaxMaterials: 4,
@@ -907,6 +961,15 @@ function resolveBaseQualityProfile(
       roadRibbonRangeMeters: 800,
       barrierDrawRangeMeters: 900,
       marinaCastsShadows: true,
+      personFigureFinestLod: 0,
+      personShadowCascades: 2,
+      // 512, Low's maps: this tier's estimate has no room for more. The 2048
+      // maps (64 MiB) put it at 753 of its 700 MiB (`MEMORY_CEILING_MIB`), and
+      // once the generated buildings' kit arrays came in (#41) the 1024 maps
+      // (16 MiB) put it at 711.8; 512 (4 MiB) leaves it at 698.0.
+      personFigureTextureSize: 512,
+      underwaterSnellWindow: true,
+      underwaterCaustics: true,
       structureNearRadiusMeters: 600,
       structureFarRadiusMeters: 6_000,
       structureOpenBuildings: 6,
@@ -948,6 +1011,7 @@ function resolveBaseQualityProfile(
     treeVariantCap: 5,
     treePrototypeMode: "species",
     grassRadiusMeters: 320,
+    nearSolidsRadiusMeters: 48,
     materialArrayEdge: 512,
     terrainTriplanarMode: "triplanar",
     heightBlendMaxMaterials: 4,
@@ -1021,6 +1085,11 @@ function resolveBaseQualityProfile(
     roadRibbonRangeMeters: 1_200,
     barrierDrawRangeMeters: 1_200,
     marinaCastsShadows: true,
+    personFigureFinestLod: 0,
+    personShadowCascades: 3,
+    personFigureTextureSize: 2048,
+    underwaterSnellWindow: true,
+    underwaterCaustics: true,
     structureNearRadiusMeters: 800,
     structureFarRadiusMeters: 8_000,
     structureOpenBuildings: 6,

@@ -1,3 +1,4 @@
+import { WALKER_MAP_BYTES_PER_TEXEL, WALKER_MAP_COUNT } from "../person/walkerBody";
 import { standaloneSharpen, type WebGpuQualityProfile } from "./QualityProfile";
 
 /**
@@ -672,6 +673,17 @@ export interface GpuMemoryEstimateMiB {
   readonly groundCoverMiB: number;
   readonly otherDetailMiB: number;
   readonly materialArraysMiB: number;
+  /**
+   * Walking: the walker's maps at the tier's `personFigureTextureSize`, with
+   * their mip chains (4 / 16 / 16 / 64 MiB). They load with every car
+   * session, before anyone gets out, so a car session holds them whether or
+   * not the walker is shown; a budget has to hold the heaviest session. The
+   * figure's meshes (2.4 MB, 0.8 on Low) are scene geometry, which `miscMiB`
+   * already covers. Measured on the macOS capture at tier 1 (529c041): the
+   * texture lane of every car and walk shot read 16.0 MiB over the land
+   * branch's, which is this row exactly.
+   */
+  readonly personFigureMiB: number;
   /** The generated buildings: their meshes' allowance and the kit's material arrays. */
   readonly structuresMiB: number;
   readonly miscMiB: number;
@@ -822,6 +834,12 @@ export function estimateGpuMemoryBreakdown(
       * inputs.materialArrayBytesPerTexel
       * mipChainByteFactor(profile.materialArrayEdge))
     / MIB;
+  const personFigureMiB =
+    (WALKER_MAP_COUNT
+      * profile.personFigureTextureSize * profile.personFigureTextureSize
+      * WALKER_MAP_BYTES_PER_TEXEL
+      * mipChainByteFactor(profile.personFigureTextureSize))
+    / MIB;
   const structureEdge = profile.structureTextureEdge;
   const structuresMiB = STRUCTURE_MESH_ALLOWANCE_MIB[tier]
     + (structureEdge > 0
@@ -834,7 +852,7 @@ export function estimateGpuMemoryBreakdown(
       + heightAtlasMiB + channelAtlasMiB + heightPyramidMiB
       + macroEvolutionMiB + erosionScratchMiB + bathymetryClipmapMiB + channelGraphMiB
       + detailInstancesMiB + foliageAtlasMiB + impostorAtlasMiB + groundCoverMiB
-      + otherDetailMiB + materialArraysMiB + structuresMiB + miscMiB)
+      + otherDetailMiB + materialArraysMiB + personFigureMiB + structuresMiB + miscMiB)
     * ESTIMATE_FUDGE_FACTOR;
 
   return Object.freeze({
@@ -856,6 +874,7 @@ export function estimateGpuMemoryBreakdown(
     groundCoverMiB,
     otherDetailMiB,
     materialArraysMiB,
+    personFigureMiB,
     structuresMiB,
     miscMiB,
     totalMiB,
@@ -896,6 +915,7 @@ export function assertWithinBudget(
     `impostor-atlas ${breakdown.impostorAtlasMiB.toFixed(1)}`,
     `other-detail ${breakdown.otherDetailMiB.toFixed(1)}`,
     `material-arrays ${breakdown.materialArraysMiB.toFixed(1)}`,
+    `person-figure ${breakdown.personFigureMiB.toFixed(1)}`,
     `structures ${breakdown.structuresMiB.toFixed(1)}`,
     `misc ${breakdown.miscMiB.toFixed(1)}`,
   ].join(", ");

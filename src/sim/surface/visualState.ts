@@ -28,8 +28,8 @@ const DEGREES = 180 / Math.PI;
  * A surface vehicle's snapshot as the common `FlightVisualState`: the pose,
  * speed and engine in the shared fields, the aircraft-only ones neutral, and
  * the class payload on `vehicle`. `airspeed` carries a boat's speed through
- * the water and a car's road speed, which is what the chase camera's speed
- * ramps want.
+ * the water, a car's road speed and a walker's ground speed, which is what
+ * the chase camera's speed ramps want.
  */
 export function surfaceVisualState(
   snapshot: SurfaceVehicleSnapshot,
@@ -37,7 +37,11 @@ export function surfaceVisualState(
 ): FlightVisualState {
   const angles = flightAnglesOf(snapshot.orientation);
   const payload = snapshot.payload;
-  const speed = payload.kind === "car" ? Math.abs(payload.speed) : payload.speedThroughWater;
+  const speed = payload.kind === "car"
+    ? Math.abs(payload.speed)
+    : payload.kind === "person"
+      ? payload.speed
+      : payload.speedThroughWater;
   return {
     position: { ...snapshot.position },
     velocity: { ...snapshot.velocity },

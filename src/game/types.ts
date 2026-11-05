@@ -82,10 +82,121 @@ export interface FlightVisualState {
    * read neutral.
    */
   vehicle?: VehicleVisualPayload | null;
+  /**
+   * The walking session a car session carries (the walking plan, 2026-10-27):
+   * which of the person and the car is driven, the other one, and the
+   * boarding prompt. Absent in aircraft and boat sessions. The common fields
+   * above always describe the DRIVEN one: the car's pose while driving, the
+   * person's (feet point, yaw-only orientation) while on foot.
+   */
+  walking?: WalkingVisualState | null;
 }
 
-/** Surface-vehicle payloads, discriminated by `kind`. */
-export type VehicleVisualPayload = BoatVisualState | CarVisualState;
+/** Surface-vehicle payloads, discriminated by `kind`. The person is one too, while it is driven. */
+export type VehicleVisualPayload = BoatVisualState | CarVisualState | PersonVisualState;
+
+/**
+ * What the walker is doing, as the sim classifies it (`src/sim/person/`).
+ * `land` is the crouch or roll after a hard landing (never damage: D5);
+ * `mantle` climbs out of the water onto a ledge; `board` is getting in or
+ * out of the car (see `PersonVisualState.boarding`); `seated` is aboard,
+ * while the car is driven.
+ */
+export type PersonMode =
+  | "stand"
+  | "walk"
+  | "run"
+  | "air"
+  | "land"
+  | "wade"
+  | "swim"
+  | "dive"
+  | "mantle"
+  | "board"
+  | "seated";
+
+export type CarDoorSide = "right" | "left";
+
+/** Getting in or out of the car: what the figure, the car's door and the camera play. */
+export interface PersonBoardingState {
+  action: "getIn" | "getOut";
+  /** 0 at the start .. 1 seated (getting in) or standing clear (getting out). */
+  progress: number;
+  /** The door used: the driver's (right, right-hand drive) unless it was blocked. */
+  side: CarDoorSide;
+}
+
+/**
+ * What the HUD, the drawn figure, its sound and the camera read from the
+ * walker's sim. Pose in the common fields: `position` is the FEET point (the
+ * bottom of the capsule, on the ground when standing), `orientation` turns
+ * about world Y only (body +X is the facing direction), `velocity` is world
+ * m/s. Depths are positive below the local water surface.
+ */
+export interface PersonVisualState {
+  kind: "person";
+  mode: PersonMode;
+  /**
+   * Horizontal speed over what is under the feet (the ground, a pontoon,
+   * the current), m/s: what the gait reads.
+   */
+  speed: number;
+  /** The run (or the faster stroke) is being asked for. */
+  running: boolean;
+  /** Feet on a walkable surface this step. */
+  grounded: boolean;
+  /** Ground slope along the facing direction, rise over run (positive uphill), for the gait's lean. 0 off the ground. */
+  slope: number;
+  /** Water surface above the feet, metres; 0 when dry. */
+  waterDepth: number;
+  /** How much of the body is under the surface, 0 dry .. 1 the head under. */
+  submersion: number;
+  /** The head (eye) below the local surface, metres; negative above it. */
+  headDepth: number;
+  /** Body pitch while swimming or diving, radians: 0 prone and level, positive head up, -pi/2 straight down. */
+  swimPitch: number;
+  /** Speed of the most recent landing, m/s, and seconds since it. */
+  landingSpeed: number;
+  landingAge: number;
+  /**
+   * What is under the feet for footsteps: a `SurfaceMaterial` id on the
+   * ground, `PERSON_SURFACE_COLLIDER_BASE` + a collider material id on a
+   * deck or floor, `PERSON_SURFACE_WATER` in water, -1 in the air.
+   */
+  surface: number;
+  /** Getting in or out of the car, null otherwise. */
+  boarding: PersonBoardingState | null;
+}
+
+/** `PersonVisualState.surface` for a foot in water. */
+export const PERSON_SURFACE_WATER = -2;
+/** `PersonVisualState.surface` offset for a collider top (`ColliderMaterial` id added). */
+export const PERSON_SURFACE_COLLIDER_BASE = 1_000;
+
+/**
+ * The walking session's other half and its prompt, on
+ * `FlightVisualState.walking`.
+ */
+export interface WalkingVisualState {
+  driven: "person" | "car";
+  /**
+   * The parked car, as its own surface visual state, while the person is
+   * driven; null while the car is (it is the common state then, with the
+   * person seated in it).
+   */
+  car: FlightVisualState | null;
+  /** The car's front doors, 0 shut .. 1 open: right (driver's), then left. */
+  doors: [number, number];
+  /** The get-in or get-out prompt, when one applies; `ready` false says why not. */
+  prompt: WalkingPrompt | null;
+}
+
+export interface WalkingPrompt {
+  action: "getIn" | "getOut";
+  ready: boolean;
+  /** Why it cannot happen now: the car is moving, or every door is blocked. */
+  reason: "moving" | "blocked" | null;
+}
 
 export type BoatGear = "forward" | "neutral" | "reverse";
 
@@ -334,6 +445,42 @@ export interface ControlState {
   boat?: BoatControlState;
   /** Present only while driving the car; aircraft and boats never send it. */
   car?: CarControlState;
+  /** Present only while on foot in a car session's walking mode. */
+  person?: PersonControlState;
+  /**
+   * Get in or out of the car (X, pad Y), as a press COUNT like the car's
+   * toggles: on foot a press at the door; in the car the input profile counts
+   * one only after X is HELD 0.4 s, so a stray tap never throws you out.
+   * Car sessions only.
+   */
+  interactPresses?: number;
+}
+
+/**
+ * The walker's controls, carried on `ControlState.person` by the person input
+ * profile. The move vector is already in world axes, turned by the camera's
+ * yaw on the main thread, so the worker never needs the camera; its pitch
+ * comes along for swimming where the camera points.
+ */
+export interface PersonControlState {
+  /** World-axis move, |(moveX, moveZ)| <= 1: keys give 1, a stick anything between. */
+  moveX: number;
+  moveZ: number;
+  /**
+   * The camera's heading (`FlightTelemetry.heading`, radians) and pitch
+   * (radians, positive looking up): under water you swim where it points,
+   * the pitch applying to the forward part of the move only.
+   */
+  lookHeading: number;
+  lookPitch: number;
+  /** Shift held (or toggled in settings), right trigger: run, or the faster stroke. */
+  run: boolean;
+  /** Space, pad A, held: rise in the water. */
+  rise: boolean;
+  /** Ctrl, pad B, held: dive, or swim down. */
+  dive: boolean;
+  /** Space, pad A: jumps, as a press count. */
+  jumpPresses: number;
 }
 
 /** Which governor acted (or held) in the most recent decision window (1A-6b). */

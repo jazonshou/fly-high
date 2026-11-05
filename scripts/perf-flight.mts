@@ -116,6 +116,11 @@ const USAGE = `usage: npm run perf:flight -- [options]
   --pitch-down <deg>      legs 2, 4, ... push the nose that far below the horizon (at 30 deg/s) and
                           legs 1, 3, ... bring it back level; the path still follows the terrain, so the
                           camera looks at the ground from the clearance (default 0: every leg level)
+  --dive <m>              on a walker shot (the walk route: --shot swim-sea-chase, walk-door-chase, ...),
+                          legs 2, 4, ... take the swimmer's eye that far under the sea (at 1 m/s) and
+                          legs 1, 3, ... bring it back to the shot's depth: the first dive is where the
+                          underwater view's pipelines meet the frame (default 0: the shot's depth throughout).
+                          A walker shot walks or swims at its own speed unless --speed is given.
   --camera chase|cockpit  (default chase)
   --weather clear|breezy|cloudy
                           (default clear, as the capture; the game's default is breezy)
@@ -445,12 +450,13 @@ async function main(): Promise<number> {
       shot: { type: "string", default: "approach-500ft" },
       legs: { type: "string", default: "6" },
       "leg-frames": { type: "string", default: "240" },
-      speed: { type: "string", default: "120" },
+      speed: { type: "string" },
       "burst-legs": { type: "boolean", default: false },
       "park-legs": { type: "boolean", default: false },
       clearance: { type: "string", default: "150" },
       bank: { type: "string", default: "0" },
       "pitch-down": { type: "string", default: "0" },
+      dive: { type: "string", default: "0" },
       camera: { type: "string", default: "chase" },
       weather: { type: "string", default: "clear" },
       quality: { type: "string", default: "medium" },
@@ -495,6 +501,11 @@ async function main(): Promise<number> {
   const pitchDown = Number(values["pitch-down"]);
   if (!(Number.isFinite(pitchDown) && pitchDown >= 0 && pitchDown <= 89)) {
     console.error(`perf-flight: --pitch-down takes degrees from 0 to 89 (got ${values["pitch-down"]})`);
+    return 2;
+  }
+  const dive = Number(values.dive);
+  if (!(Number.isFinite(dive) && dive >= 0 && dive <= 30)) {
+    console.error(`perf-flight: --dive takes metres from 0 to 30 (got ${values.dive})`);
     return 2;
   }
   const settleTrials = Number(values["settle-trials"]);
@@ -637,7 +648,7 @@ async function main(): Promise<number> {
 
     const request: Omit<FlightRequest, "restart"> = {
       frames: legFrames,
-      speedMetersPerSecond: Number(values.speed),
+      speedMetersPerSecond: Number(values.speed ?? shot.walk?.speedMetersPerSecond ?? 120),
       clearanceMeters: Number(values.clearance),
       bankDegrees: Number(values.bank),
       cameraMode: camera,
@@ -673,6 +684,7 @@ async function main(): Promise<number> {
           ...(values["burst-legs"] ? { speedMetersPerSecond: leg % 2 === 0 ? 250 : 60 } : {}),
           ...(values["park-legs"] && leg % 2 === 0 ? { speedMetersPerSecond: 0 } : {}),
           ...(pitchDown > 0 ? { pitchDownDegrees: leg % 2 === 1 ? pitchDown : 0 } : {}),
+          ...(dive > 0 && leg % 2 === 1 ? { headDepthMeters: dive } : {}),
           killDetailWorkerAtFrame: faults.kill?.leg === leg + 1 ? faults.kill.frame : null,
           hangDetailWorkerAtFrame: faults.hang?.leg === leg + 1 ? faults.hang.frame : null,
           hitch: hitch && hitchLeg ? { frame: hitch.frame, milliseconds: hitch.milliseconds } : null,
@@ -758,6 +770,7 @@ async function main(): Promise<number> {
       ...(values["burst-legs"] ? { burstLegs: "250 and 60 m/s, alternating" } : {}),
       ...(values["park-legs"] ? { parkLegs: "0 m/s on odd legs" } : {}),
       ...(pitchDown > 0 ? { pitchDown: `${pitchDown} deg on legs 2, 4, ...; level on legs 1, 3, ...` } : {}),
+      ...(dive > 0 ? { dive: `${dive} m under on legs 2, 4, ...; the shot's depth on legs 1, 3, ...` } : {}),
       ...(hitch ? { emulateHitch: hitch } : {}),
       ...(frameDump ? { frameDump } : {}),
       ...(worldOptions.base ? { baseWorld: worldOptions.base } : {}),

@@ -4,6 +4,7 @@ import type { HudMode, UnitSystem } from "@/src/settings";
 import { surfaceVehicleSpec } from "@/src/vehicles/catalogue";
 import { LANDCRUISER_76 } from "@/src/vehicles/landcruiser76";
 import { formatHeading, MetricTape, NearestAirportControl } from "@/src/ui/hudParts";
+import { WalkingPrompt } from "@/src/ui/PersonHud";
 
 interface CarHudProps {
   state: FlightVisualState;
@@ -145,6 +146,7 @@ export function CarHud({
         </>
       ) : null}
 
+      {upright && !car.settling ? <WalkingPrompt prompt={state.walking?.prompt} /> : null}
       {state.crashed ? <div className="flight-alert flight-alert--danger">CAR DAMAGED · PRESS R: BACK TO SAFE GROUND</div> : null}
       {!state.crashed && car.rolled ? <div className="flight-alert flight-alert--danger">ROLLED · PRESS R: BACK TO SAFE GROUND</div> : null}
       {upright && car.settling ? (

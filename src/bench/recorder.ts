@@ -8,6 +8,7 @@ import type {
 import type { RendererBenchProbe } from "@/src/render/FlightRenderer";
 import type {
   FlightRenderingSystem,
+  FootstepEvents,
   HudCamera,
   ScreenPoint,
   TerrainAuthorityPublisher,
@@ -152,6 +153,22 @@ export class BenchRenderer implements FlightRenderingSystem {
 
   cutCamera(): void {
     this.inner.cutCamera();
+  }
+
+  applyCharacterLook(look: { readonly yaw: number; readonly pitch: number; readonly zoom: number }): void {
+    this.inner.applyCharacterLook(look);
+  }
+
+  characterView(): { readonly heading: number; readonly pitch: number } {
+    return this.inner.characterView();
+  }
+
+  consumeFootsteps(out: FootstepEvents): FootstepEvents {
+    return this.inner.consumeFootsteps(out);
+  }
+
+  cameraUnderwaterDepth(): number {
+    return this.inner.cameraUnderwaterDepth();
   }
 
   setViewerMode(enabled: boolean): void {

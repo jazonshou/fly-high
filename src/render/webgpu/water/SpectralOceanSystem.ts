@@ -793,6 +793,94 @@ const OCEAN_SURF_ALBEDO_WGSL =
 /** 2-9: Gate 2B's declared crest-SSS tuning knob. */
 const OCEAN_CREST_SSS_INTENSITY_WGSL = "0.55";
 
+/**
+ * The sea fragment's slope reads: a cascade's slope, foam and Jacobian at a
+ * world point, and the slope variance its texture fade hands to roughness.
+ * Exported so the view from under the water (`OceanUnderside`) shades the
+ * same normals the sea is drawn with from above.
+ */
+export const OCEAN_SURFACE_SLOPES_WGSL = /* wgsl */ `// 2-8: derivatives come from the UNWRAPPED coordinate — fract() has a
+// derivative discontinuity at every patch seam that would spike the
+// selected mip there. Slopes filter linearly, so the mip chain is correct
+// by construction (a box-filtered normal is not).
+${OCEAN_FFT_TEXEL_ALIGNMENT_WGSL}
+
+fn sampleSlopeTexture(worldXZ: vec2f, patchLength: f32, source: texture_2d<f32>, sourceSampler: sampler) -> vec4f {
+  let unwrapped = worldXZ / patchLength;
+  let coordinate = fract(unwrapped) + oceanFftTexelAlignment(textureDimensions(source));
+  return textureSampleGrad(source, sourceSampler, coordinate, dpdx(unwrapped), dpdy(unwrapped));
+}
+
+// 2-8: the variance folded into roughness is the band's MISSING energy —
+// what the true sea carries (the moment mips' E[s²]) minus what the rendered
+// surface keeps (the fade-scaled mean, squared). At fade 1 this is the
+// classic Toksvig footprint variance; at fade 0 it is the band's whole
+// mean-square slope, so a faded-out cascade lives on as roughness instead of
+// vanishing from the BRDF (multiplying Var(s) by fade² deleted exactly the
+// energy this term exists to preserve).
+fn cascadeSlopeVariance(sample: vec4f, moment: vec4f, fade: f32) -> f32 {
+  return max(moment.x - fade * fade * sample.x * sample.x, 0.0)
+    + max(moment.y - fade * fade * sample.y * sample.y, 0.0);
+}`;
+
+/**
+ * The sea fragment's `oceanConstituents`, exported so the view from under the
+ * water fades and dims with the same water its surface is coloured by.
+ */
+export const OCEAN_CONSTITUENTS_WGSL = /* wgsl */ `
+// W-8 — THE SEA'S OWN CHEMISTRY, from the two things a sea pixel knows
+// cheaply: its depth and its province.
+//
+// Case 1 water (open ocean) is chlorophyll and nothing else; Case 2 water (a
+// shelf, an estuary, a surf zone) adds the land's runoff and whatever the
+// waves lift off the bottom. Depth carries most of that on its own — this
+// world's bed reaches only ~110 m, so the shelf IS the coast — and the
+// environment field carries the rest: a cold wet coast makes green water and a
+// warm dry one blue, from the same climate fields the forests are placed by.
+fn oceanConstituents(depth: f32, province: vec2f) -> WaterConstituents {
+  let coastal = 1.0 - smoothstep(
+    ${OCEAN_COASTAL_DEPTH_NEAR.toFixed(1)},
+    ${OCEAN_COASTAL_DEPTH_FAR.toFixed(1)},
+    depth,
+  );
+  // Resuspension: the surf zone stirs the bed it is breaking over.
+  let surf = 1.0 - smoothstep(
+    ${OCEAN_SURF_DEPTH_NEAR.toFixed(1)},
+    ${OCEAN_SURF_DEPTH_FAR.toFixed(1)},
+    depth,
+  );
+  // W-8c: the contrast curve. It re-shapes the INDEX, not the optics — the
+  // concentrations still go through the same published spectra — and it is
+  // exactly the identity at mid-province, so the world's middle does not move.
+  let productivity = smoothstep(
+    ${OCEAN_PROVINCE_CONTRAST_LOW.toFixed(2)},
+    ${OCEAN_PROVINCE_CONTRAST_HIGH.toFixed(2)},
+    province.x,
+  );
+  let runoff = smoothstep(
+    ${OCEAN_PROVINCE_CONTRAST_LOW.toFixed(2)},
+    ${OCEAN_PROVINCE_CONTRAST_HIGH.toFixed(2)},
+    province.y,
+  );
+  // W-8b widened the province's authority. The first cut ran 0.45 + 1.7p on
+  // chlorophyll, which put a dry subtropical coast and a rain-fed temperate one
+  // within 60% of each other in hue — measurable, but not something a player
+  // would call a different sea. The real spread is far larger: an arid coast
+  // with no river feeding it is oligotrophic (chlorophyll under 0.3) while a
+  // wet forested one runs a spring bloom at 3-5, and CDOM tracks runoff even
+  // harder because it IS runoff.
+  return WaterConstituents(
+    mix(${OCEAN_OPEN_CHLOROPHYLL}, ${OCEAN_COASTAL_CHLOROPHYLL}, coastal)
+      * (0.22 + 2.6 * productivity * productivity),
+    mix(${OCEAN_OPEN_CDOM}, ${OCEAN_COASTAL_CDOM}, coastal)
+      * (0.18 + 2.4 * runoff * runoff),
+    (${OCEAN_COASTAL_SEDIMENT} * coastal * coastal
+      + ${OCEAN_SURF_SEDIMENT} * surf * surf)
+      * (${OCEAN_SEDIMENT_LOAD_BASE} + ${OCEAN_SEDIMENT_LOAD_RUNOFF} * runoff * runoff),
+    0.0,
+  );
+}`;
+
 export const WATER_FRAGMENT_WGSL = /* wgsl */ `
 varying worldPosition: vec3f;
 varying oceanCoordinate: vec2f;
@@ -881,59 +969,7 @@ ${WATER_DEPTH_OPTICS_WGSL}
 // W-8: the constituent model (one text, both water surfaces). It needs the
 // WaterOptics struct the depth include declares, so it is composed after it.
 ${WATER_CONSTITUENT_WGSL}
-
-// W-8 — THE SEA'S OWN CHEMISTRY, from the two things a sea pixel knows
-// cheaply: its depth and its province.
-//
-// Case 1 water (open ocean) is chlorophyll and nothing else; Case 2 water (a
-// shelf, an estuary, a surf zone) adds the land's runoff and whatever the
-// waves lift off the bottom. Depth carries most of that on its own — this
-// world's bed reaches only ~110 m, so the shelf IS the coast — and the
-// environment field carries the rest: a cold wet coast makes green water and a
-// warm dry one blue, from the same climate fields the forests are placed by.
-fn oceanConstituents(depth: f32, province: vec2f) -> WaterConstituents {
-  let coastal = 1.0 - smoothstep(
-    ${OCEAN_COASTAL_DEPTH_NEAR.toFixed(1)},
-    ${OCEAN_COASTAL_DEPTH_FAR.toFixed(1)},
-    depth,
-  );
-  // Resuspension: the surf zone stirs the bed it is breaking over.
-  let surf = 1.0 - smoothstep(
-    ${OCEAN_SURF_DEPTH_NEAR.toFixed(1)},
-    ${OCEAN_SURF_DEPTH_FAR.toFixed(1)},
-    depth,
-  );
-  // W-8c: the contrast curve. It re-shapes the INDEX, not the optics — the
-  // concentrations still go through the same published spectra — and it is
-  // exactly the identity at mid-province, so the world's middle does not move.
-  let productivity = smoothstep(
-    ${OCEAN_PROVINCE_CONTRAST_LOW.toFixed(2)},
-    ${OCEAN_PROVINCE_CONTRAST_HIGH.toFixed(2)},
-    province.x,
-  );
-  let runoff = smoothstep(
-    ${OCEAN_PROVINCE_CONTRAST_LOW.toFixed(2)},
-    ${OCEAN_PROVINCE_CONTRAST_HIGH.toFixed(2)},
-    province.y,
-  );
-  // W-8b widened the province's authority. The first cut ran 0.45 + 1.7p on
-  // chlorophyll, which put a dry subtropical coast and a rain-fed temperate one
-  // within 60% of each other in hue — measurable, but not something a player
-  // would call a different sea. The real spread is far larger: an arid coast
-  // with no river feeding it is oligotrophic (chlorophyll under 0.3) while a
-  // wet forested one runs a spring bloom at 3-5, and CDOM tracks runoff even
-  // harder because it IS runoff.
-  return WaterConstituents(
-    mix(${OCEAN_OPEN_CHLOROPHYLL}, ${OCEAN_COASTAL_CHLOROPHYLL}, coastal)
-      * (0.22 + 2.6 * productivity * productivity),
-    mix(${OCEAN_OPEN_CDOM}, ${OCEAN_COASTAL_CDOM}, coastal)
-      * (0.18 + 2.4 * runoff * runoff),
-    (${OCEAN_COASTAL_SEDIMENT} * coastal * coastal
-      + ${OCEAN_SURF_SEDIMENT} * surf * surf)
-      * (${OCEAN_SEDIMENT_LOAD_BASE} + ${OCEAN_SEDIMENT_LOAD_RUNOFF} * runoff * runoff),
-    0.0,
-  );
-}
+${OCEAN_CONSTITUENTS_WGSL}
 
 ${WATER_DETAIL_NOISE_WGSL}
 
@@ -1010,29 +1046,7 @@ fn oceanTerrainVisibility(
   return mix(1.0, visibility, resident);
 }
 
-// 2-8: derivatives come from the UNWRAPPED coordinate — fract() has a
-// derivative discontinuity at every patch seam that would spike the
-// selected mip there. Slopes filter linearly, so the mip chain is correct
-// by construction (a box-filtered normal is not).
-${OCEAN_FFT_TEXEL_ALIGNMENT_WGSL}
-
-fn sampleSlopeTexture(worldXZ: vec2f, patchLength: f32, source: texture_2d<f32>, sourceSampler: sampler) -> vec4f {
-  let unwrapped = worldXZ / patchLength;
-  let coordinate = fract(unwrapped) + oceanFftTexelAlignment(textureDimensions(source));
-  return textureSampleGrad(source, sourceSampler, coordinate, dpdx(unwrapped), dpdy(unwrapped));
-}
-
-// 2-8: the variance folded into roughness is the band's MISSING energy —
-// what the true sea carries (the moment mips' E[s²]) minus what the rendered
-// surface keeps (the fade-scaled mean, squared). At fade 1 this is the
-// classic Toksvig footprint variance; at fade 0 it is the band's whole
-// mean-square slope, so a faded-out cascade lives on as roughness instead of
-// vanishing from the BRDF (multiplying Var(s) by fade² deleted exactly the
-// energy this term exists to preserve).
-fn cascadeSlopeVariance(sample: vec4f, moment: vec4f, fade: f32) -> f32 {
-  return max(moment.x - fade * fade * sample.x * sample.x, 0.0)
-    + max(moment.y - fade * fade * sample.y * sample.y, 0.0);
-}
+${OCEAN_SURFACE_SLOPES_WGSL}
 
 #ifdef ${OCEAN_HULL_CLIP_DEFINE}
 ${OCEAN_HULL_CLIP_WGSL}
@@ -2117,6 +2131,14 @@ class SpectralOceanCompute {
 }
 
 /** FFT-displaced, camera-centered deep ocean with dielectric Fresnel and GGX sun glint. */
+/** What `bindCaustics` writes to: a ShaderMaterial or a post-process's Effect. */
+export interface OceanCausticTarget {
+  setTexture(name: string, texture: RawTexture): unknown;
+  setVector4(name: string, value: Vector4): unknown;
+  setVector2(name: string, value: Vector2): unknown;
+  setFloat(name: string, value: number): unknown;
+}
+
 export class SpectralOceanSystem implements PlanarReflectionReceiver {
   private compute: SpectralOceanCompute;
   private mesh: Mesh;
@@ -2151,6 +2173,15 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
   private readonly cloudShadowSunDirection = Vector3.Up();
   private cloudShadowProjection: CloudShadowProjection | null = null;
   private sunShadowBinding: SunShadowReceiverBinding | null = null;
+  /** The view from under the water draws the sea's underside in its place. */
+  private surfaceHidden = false;
+  private readonly surfaceWind = Vector2.Zero();
+  // The caustic sources `bindCaustics` hands a pass: the values behind this
+  // material's causticCurvatureScales and cascadeWavelengths uniforms.
+  private readonly surfaceCausticScales0 = Vector4.Zero();
+  private surfaceCausticScale4 = 0;
+  private readonly surfaceWavelengths0 = Vector4.Zero();
+  private surfaceWavelength4 = 0;
 
   private constructor(
     private readonly scene: Scene,
@@ -2319,6 +2350,11 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       ocean.dispose();
       throw error;
     }
+  }
+
+  /** The sea's drawn disk; `setProfile` replaces it when the tier changes the lattice. */
+  get presentationMesh(): Mesh {
+    return this.mesh;
   }
 
   get cascadeCount(): number {
@@ -2506,6 +2542,7 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       const nextMesh = createOceanPresentationMesh(this.scene, profile);
       this.configureMesh(nextMesh);
       nextMesh.position.copyFrom(this.mesh.position);
+      nextMesh.setEnabled(!this.surfaceHidden);
       this.mesh.dispose(false, false);
       this.mesh = nextMesh;
     }
@@ -2656,6 +2693,67 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       const cascade = this.compute.cascades[index] ?? fallback;
       material.setTexture(`displacement${index}`, cascade.displacement);
     }
+  }
+
+  /**
+   * Binds the sea's slopes to another material drawn on the sea's own mesh
+   * that includes `OCEAN_SURFACE_SLOPES_WGSL` (each cascade's `slopeFoam` and
+   * `slopeMoment`) and the wind its capillary tail rides (`oceanWind`). Call
+   * it every frame after `update`, with `bindSurface`.
+   */
+  bindSlopes(material: ShaderMaterial): void {
+    const fallback = this.compute.cascades[0];
+    if (!fallback) return;
+    for (let index = 0; index < MAX_RENDER_CASCADES; index += 1) {
+      const cascade = this.compute.cascades[index] ?? fallback;
+      material.setTexture(`slopeFoam${index}`, cascade.slopeFoam[cascade.normalIndex]);
+      material.setTexture(`slopeMoment${index}`, cascade.slopeMoment);
+    }
+    const config = this.compute.config;
+    this.surfaceWind.set(
+      config.windDirection[0] * config.windSpeedMetersPerSecond,
+      config.windDirection[1] * config.windSpeedMetersPerSecond,
+    );
+    material.setVector2("oceanWind", this.surfaceWind);
+  }
+
+  /**
+   * The sea's caustic sources, for a pass that lays the caustic web on what it
+   * sees under the water: each cascade's slope texture (its stored Jacobian),
+   * patch length, Jacobian-to-curvature scale and representative wavelength,
+   * the cascade count, and the wind the capillary tail rides. Call it every
+   * frame after `update`; an Effect takes it as a material does.
+   */
+  bindCaustics(target: OceanCausticTarget): void {
+    const fallback = this.compute.cascades[0];
+    if (!fallback) return;
+    for (let index = 0; index < MAX_RENDER_CASCADES; index += 1) {
+      const cascade = this.compute.cascades[index] ?? fallback;
+      target.setTexture(`slopeFoam${index}`, cascade.slopeFoam[cascade.normalIndex]);
+    }
+    target.setVector4("patchLengths0", this.surfacePatchLengths0);
+    target.setFloat("patchLength4", this.surfacePatchLength4);
+    target.setFloat("cascadeCount", this.surfaceCascadeCount);
+    target.setVector4("causticCurvatureScales0", this.surfaceCausticScales0);
+    target.setFloat("causticCurvatureScale4", this.surfaceCausticScale4);
+    target.setVector4("cascadeWavelengths0", this.surfaceWavelengths0);
+    target.setFloat("cascadeWavelength4", this.surfaceWavelength4);
+    const config = this.compute.config;
+    this.surfaceWind.set(
+      config.windDirection[0] * config.windSpeedMetersPerSecond,
+      config.windDirection[1] * config.windSpeedMetersPerSecond,
+    );
+    target.setVector2("oceanWind", this.surfaceWind);
+  }
+
+  /**
+   * Leaves the sea's surface out of the scene, or puts it back: the view from
+   * under the water draws the underside on this mesh's geometry instead
+   * (`underwater/OceanUnderside`). The waves keep running either way.
+   */
+  setSurfaceHidden(hidden: boolean): void {
+    this.surfaceHidden = hidden;
+    this.mesh.setEnabled(!hidden);
   }
 
   private writeSurfaceUniforms(material: ShaderMaterial): void {
@@ -2833,6 +2931,8 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       w: causticScales[3] ?? 0,
     });
     this.material.setFloat("causticCurvatureScale4", causticScales[4] ?? 0);
+    this.surfaceCausticScales0.set(causticScales[0] ?? 0, causticScales[1] ?? 0, causticScales[2] ?? 0, causticScales[3] ?? 0);
+    this.surfaceCausticScale4 = causticScales[4] ?? 0;
     // 6-2: the same per-cascade representative wavelength, published raw.
     // Absent cascades get ZERO for the same reason the caustic scales do: a
     // zero wavelength cannot win the dominant-band argmax, so the run-up needs
@@ -2847,6 +2947,8 @@ export class SpectralOceanSystem implements PlanarReflectionReceiver {
       w: wavelengths[3] ?? 0,
     });
     this.material.setFloat("cascadeWavelength4", wavelengths[4] ?? 0);
+    this.surfaceWavelengths0.set(wavelengths[0] ?? 0, wavelengths[1] ?? 0, wavelengths[2] ?? 0, wavelengths[3] ?? 0);
+    this.surfaceWavelength4 = wavelengths[4] ?? 0;
     this.updateCascadeFadeRadii();
   }
 
