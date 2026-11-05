@@ -119,7 +119,7 @@ import type { BoatWakeSystem } from "./webgpu/boat/BoatWakeSystem";
 import { resolveBoatLights, type BoatWashLight } from "./webgpu/boat/boatLights";
 import { CAR_HEADLAMP_POOLS, carLampState, carPoolIntensity } from "./webgpu/ground/carLights";
 import { surfaceVehicleWashLights } from "./webgpu/boat/createBoat";
-import { AtmosphereSystem } from "./webgpu/atmosphere/AtmosphereSystem";
+import { AtmosphereSystem, sunDirectionalHorizonGate } from "./webgpu/atmosphere/AtmosphereSystem";
 import { CloudShadowReceiverRegistry } from "./webgpu/clouds/CloudShadowReceiverRegistry";
 import { VolumetricCloudSystem } from "./webgpu/clouds/VolumetricCloudSystem";
 import { inspectWebGpuCapabilities } from "./webgpu/core/Capabilities";
@@ -4998,12 +4998,20 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       keySnapshot.sunDirection.y,
       keySnapshot.sunDirection.z,
     );
+    // 2026-11-02: leaves transmit DIRECT sun, so the glow takes the same
+    // geometric horizon gate as the DirectionalLight (round S). The snapshot's
+    // intensity is the SCATTER ramp, deliberately ungated for the sky, and it
+    // is still 7% of noon with the sun 7.7 deg down: every crown facing the
+    // sunset glowed amber over black ground (Jason, Sep 13 19:00 solar:
+    // "black except for some glowing trees"). Exactly 1 at and above sine
+    // +0.02, so daylight canopies are unchanged.
     this.detail.setKeyLight(
       keySnapshot.sunDirection.x,
       keySnapshot.sunDirection.y,
       keySnapshot.sunDirection.z,
       [keySnapshot.sunColor.r, keySnapshot.sunColor.g, keySnapshot.sunColor.b],
-      keySnapshot.sunIlluminanceNormalized,
+      keySnapshot.sunIlluminanceNormalized
+        * sunDirectionalHorizonGate(keySnapshot.sunDirection.y),
     );
     // Wave Q: the far band's hand-packed CSM receiver, on the same
     // forward-the-snapshot pattern. Impostors start inside the cascade

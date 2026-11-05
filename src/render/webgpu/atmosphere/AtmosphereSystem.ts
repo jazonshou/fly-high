@@ -131,6 +131,66 @@ export const MOON_DISC_RADIANCE = 2.1;
 export const NIGHT_AMBIENT_FLOOR_SCALE = 0.2;
 
 /**
+ * 2026-11-02 — the TWILIGHT FILL: a cool, soft light on the land between
+ * sunset and night, carried by the hemispheric light inside the §2.6 window.
+ *
+ * Jason, at Medium / balanced, Sep 13 19:00 solar (sun −7.7°): *"how come all
+ * the mountains/land are black except for some glowing trees … you might need
+ * to have some unrealistic lighting for the sake of the game to prevent crazy
+ * darks/contrast at these hours."* Measured on the committed frames: the
+ * terrain-band median reads 0.036 at `blue-hour` (−3°) against 0.126 under
+ * the moonlit night and 0.127 at golden hour. Blue hour was the DARKEST
+ * scene in the game: the sun's light is gated at the horizon, the twilight
+ * sky is a few art terms whose irradiance is ~1% of a noon sky's, and the
+ * rod response that lifts night ground does not run until rods engage.
+ * Real civil twilight is still hundreds of lux; you can read outdoors.
+ *
+ * So this is ART-DIRECTED, sanctioned by those words: it keeps the ground
+ * readable through the window and hands over to the night look at the
+ * window's release, where it is exactly zero (night frames untouched by
+ * shape), as it is above sunset (daylight untouched by shape).
+ *
+ * Units are the hemispheric light's own: Babylon's PBR hemispheric diffuse
+ * has no 1/π, so ground radiance is albedo × tint × intensity, directly
+ * comparable to the IBL's Lambertian SH (0.014 for an up-facing surface at
+ * −7.7°, 0.031 at −3°).
+ *
+ * The strength is bounded by §2.6's relation, not by taste: facing away
+ * from the sun the sky is the dimmest in the window, and skyGroundRatio
+ * must stay ≥ 1.5 there. At 0.08 (full scale, SwiftShader, which reproduces
+ * the Mac baseline here): 1.62 at `dusk-mesopic`, 1.55 at Jason's Sep 13
+ * 19:00 in the same pose. A protection that binds is never widened.
+ */
+export const TWILIGHT_FILL_INTENSITY = 0.08;
+
+/**
+ * The fill's colour, Rec. 709 luminance ≈ 1: a cool daylight (~8,000 K),
+ * far less saturated than the arch (B/R 1.26 against the arch's 7). Real
+ * twilight light is bluer still (~15,000 K), but the rod pass already adds a
+ * blue cast as the light fails, and a saturated blue fill turns every
+ * material the colour of the water — the marina's brown deck read as the sea
+ * beside it at dusk, which Jason saw as "translucent", and a first cut at
+ * B/R 1.5 still left the deck lavender-grey under the rod tint. Near-neutral
+ * lets wood stay wood and leaves stay green.
+ */
+export const TWILIGHT_FILL_TINT: readonly [number, number, number] = [0.94, 1.0, 1.18];
+
+/**
+ * How far the fill's "sky" side leans toward the sunset, as the tangent of
+ * the tilt at full window (tan 25°). The twilight sky is several times
+ * brighter over the afterglow than opposite it, so slopes facing the sunset
+ * catch more of it; leaning the hemisphere gives mountains a lit and a shaded
+ * side instead of one flat tone. Zero tilt outside the window, so the
+ * hemispheric points straight up by day and at night as it always has.
+ */
+export const TWILIGHT_FILL_TILT = 0.47;
+
+/** The fill's intensity at a sun elevation sine — the §2.6 window's shape. */
+export function twilightFillIntensity(sunElevationSine: number): number {
+  return TWILIGHT_FILL_INTENSITY * twilightArchStrength(sunElevationSine);
+}
+
+/**
  * The physical horizontal-illuminance law shared by CPU light ownership and
  * additive shader radiance. Deliberately excludes the HemisphericLight's
  * fp16 floor: that floor keeps reflected ground bounce representable, while
@@ -967,6 +1027,40 @@ export class AtmosphereSystem {
     this.ambient.groundColor = skyHorizon.multiply(this.surfaceAlbedo)
       .scale(GROUND_BOUNCE_CALIBRATION);
     this.ambient.intensity = ambientIntensity;
+    // 2026-11-02: the twilight fill (see TWILIGHT_FILL_INTENSITY). Blended
+    // into the one hemispheric light by intensity, so outside the window
+    // (fill exactly 0) the branch is skipped and every value above is the
+    // shipped one, bit for bit.
+    const fillIntensity = twilightFillIntensity(sunDirection.y);
+    let fillKeyIntensity = 0;
+    if (fillIntensity > 0) {
+      const total = ambientIntensity + fillIntensity;
+      const baseShare = ambientIntensity / total;
+      const fillShare = fillIntensity / total;
+      const fillTint = Color3.FromArray(TWILIGHT_FILL_TINT);
+      this.ambient.diffuse = skyZenith.scale(baseShare).add(fillTint.scale(fillShare));
+      // The ground side is the fill bounced off the surface's own albedo.
+      this.ambient.groundColor = this.ambient.groundColor.scale(baseShare).add(
+        fillTint.multiply(this.surfaceAlbedo).scale(GROUND_BOUNCE_CALIBRATION * fillShare),
+      );
+      this.ambient.intensity = total;
+      const lean = TWILIGHT_FILL_TILT * (fillIntensity / TWILIGHT_FILL_INTENSITY);
+      const horizontal = Math.hypot(sunDirection.x, sunDirection.z);
+      const leanX = horizontal > 1e-4 ? (sunDirection.x / horizontal) * lean : 0;
+      const leanZ = horizontal > 1e-4 ? (sunDirection.z / horizontal) * lean : 0;
+      this.ambient.direction.set(leanX, 1, leanZ).normalize();
+      // σ counts the fill exactly as it counts the hemispheric the fill rides
+      // on: its raw intensity, the E/π intensity-equivalent convention
+      // (TWILIGHT_ARCH_KEY_FACTOR's docblock). Measured 2026-11-02: counting
+      // it ×π instead (the directional lights' Lambertian: 0.25 against the
+      // arch's 0.017 at −7.7°) let the rod response — auto-centred on σ —
+      // give the ground back almost none of the fill while it darkened the
+      // sky by a quarter (Sep 13 19:00 sunward: ground 0.062 → 0.076 display
+      // luma, upper sky 0.53 → 0.41).
+      fillKeyIntensity = fillIntensity;
+    } else {
+      this.ambient.direction.set(0, 1, 0);
+    }
 
     // 7-1/7-3: the sky's night inputs.
     const nightStrength = Math.min(1, Math.max(0, (-sunDirection.y - 0.03) / 0.25));
@@ -1015,10 +1109,13 @@ export class AtmosphereSystem {
     const archRadiance = twilightArchRadiance(state.sun.direction[1]);
     const archKeyIntensity = TWILIGHT_ARCH_KEY_FACTOR
       * (0.2126 * archRadiance[0] + 0.7152 * archRadiance[1] + 0.0722 * archRadiance[2]);
+    // The twilight fill is part of the frame's actual light too, counted the
+    // same way (zero outside the window, so σ there is the shipped value).
     const sceneKeyLuminance = ((sunIntensity * Math.max(sunDirection.y, 0)
       + moonIntensity * Math.max(moonDirection.y, 0)
       + ambientIntensity
-      + archKeyIntensity)
+      + archKeyIntensity
+      + fillKeyIntensity)
       * state.atmosphere.groundAlbedo[1]) / Math.PI;
 
     const adaptationTarget = adaptedLuminanceCdM2(state, moonLux);
