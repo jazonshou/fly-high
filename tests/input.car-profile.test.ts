@@ -4,8 +4,8 @@ import { CAR_PAD_PRESSES, CAR_PRESS_KEYS, carSteerRateScale, InputManager } from
 
 /**
  * The car's input profile: the D-pad counts the same presses as T, K, B and
- * L, the bumpers shift, and the keyboard wheel winds more slowly the faster
- * the car goes. Driven through a real InputManager on stubbed window,
+ * L, nothing shifts gears, and the keyboard wheel winds more slowly the
+ * faster the car goes. Driven through a real InputManager on stubbed window,
  * document and gamepad globals.
  */
 
@@ -59,15 +59,23 @@ afterEach(() => {
 });
 
 describe("the car's input profile", () => {
-  it("maps the D-pad to the same presses as T, K, B and L, and the bumpers to the shifts", () => {
+  it("maps the D-pad to the same presses as T, K, B and L, and no key or button to a gear", () => {
     expect(CAR_PAD_PRESSES).toEqual({
-      bumperRight: "shiftUpPresses",
-      bumperLeft: "shiftDownPresses",
       dpadUp: CAR_PRESS_KEYS.KeyT,
       dpadRight: CAR_PRESS_KEYS.KeyK,
       dpadDown: CAR_PRESS_KEYS.KeyB,
       dpadLeft: CAR_PRESS_KEYS.KeyL,
     });
+    expect(Object.keys(CAR_PRESS_KEYS).sort()).toEqual(["KeyB", "KeyK", "KeyL", "KeyT"]);
+    // Shift, Ctrl, M and Q, and the bumpers, count nothing in the car.
+    const input = createInput();
+    for (const code of ["ShiftLeft", "ControlLeft", "KeyM", "KeyQ"]) {
+      key("keydown", code);
+      key("keyup", code);
+    }
+    pad([4, 5]);
+    expect(car(input)).toEqual(car(createInput()));
+    input.dispose();
   });
 
   it("counts one press per D-pad push, however long it is held", () => {
@@ -86,13 +94,6 @@ describe("the car's input profile", () => {
     expect(controls.lockPresses).toBe(1);
     expect(controls.headlightPresses).toBe(1);
     expect(controls.downhillAssistPresses).toBe(1);
-    expect(controls.shiftUpPresses).toBe(0);
-    pad([5]);
-    car(input);
-    pad([4]);
-    const shifted = car(input);
-    expect(shifted.shiftUpPresses).toBe(1);
-    expect(shifted.shiftDownPresses).toBe(1);
     input.dispose();
   });
 

@@ -20,11 +20,6 @@ interface CarHudProps {
   onToggleNearestAirport?: (() => void) | undefined;
 }
 
-/** What the gear readout shows: the automatic's selector, or its gear in M. */
-export function carGearLabel(car: CarVisualState): string {
-  return car.selector === "M" ? `M${car.gear}` : car.selector;
-}
-
 /** The tachometer's red band starts where the fuel cut does (L1's engine record). */
 export const CAR_TACHOMETER_REDLINE_RPM = LANDCRUISER_76.engine.limiterRpm;
 
@@ -73,7 +68,7 @@ const LOCK_LABELS: Record<CarVisualState["locks"], string> = {
 /**
  * The car's panel, in the aircraft HUD's visual language: road speed on the
  * left tape (mph with aviation units, km/h in metric), elevation on the
- * right, heading, the inclinometer, and a strip with the tachometer, gear,
+ * right, heading, the inclinometer, and a strip with the tachometer, the
  * range, the dash's lamps (diff locks, downhill assist, traction control,
  * ABS, main beam), tyre pressure and, in water, the wading bar. FLOODED,
  * ROLLED and STALLED are alerts; R puts the car back on its newest safe
@@ -165,11 +160,6 @@ export function CarHud({
                 <b style={{ left: `${(CAR_TACHOMETER_REDLINE_RPM / spec.engineReadout.maximum) * 100}%` }} />
               </span>
             </div>
-            <div className="instrument-readout" aria-label={`Gear ${carGearLabel(car)}`}>
-              <small>GEAR</small>
-              <strong>{carGearLabel(car)}</strong>
-              <em>AUTO</em>
-            </div>
             <div className="instrument-readout" aria-label={`Range ${car.range}`}>
               <small>RANGE</small>
               <strong>{car.range}</strong>
@@ -211,7 +201,6 @@ export function CarHud({
         <span>W accelerate · S brake</span>
         <span>A left · D right</span>
         <span>Space handbrake</span>
-        <span>Shift · Ctrl gears</span>
         <span>T range · K locks · B descent</span>
         <span>L lights · C view</span>
         {onToggleNearestAirport && nearestAirport ? <span>N nearest airport</span> : null}

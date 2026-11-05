@@ -634,9 +634,6 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     c.brake = finite01(car.brake);
     c.steer = Number.isFinite(car.steer) ? clamp(car.steer, -1, 1) : 0;
     c.handbrake = finite01(car.handbrake);
-    c.shiftUpPresses = car.shiftUpPresses;
-    c.shiftDownPresses = car.shiftDownPresses;
-    c.autoModePresses = car.autoModePresses;
     c.rangePresses = car.rangePresses;
     c.lockPresses = car.lockPresses;
     c.downhillAssistPresses = car.downhillAssistPresses;

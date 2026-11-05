@@ -137,11 +137,6 @@ export function inputProfileForSpawn(spawn: SpawnKind): InputProfile {
 
 /** The car's toggles: each key press is one count on its `CarControlState` counter. */
 export const CAR_PRESS_KEYS: Readonly<Record<string, CarPressCounter>> = Object.freeze({
-  ShiftLeft: "shiftUpPresses",
-  ShiftRight: "shiftUpPresses",
-  ControlLeft: "shiftDownPresses",
-  ControlRight: "shiftDownPresses",
-  KeyM: "autoModePresses",
   KeyT: "rangePresses",
   KeyK: "lockPresses",
   KeyB: "downhillAssistPresses",
@@ -154,23 +149,21 @@ export type CarPressCounter = {
     : never;
 }[keyof CarControlState];
 
-/** In the car, L and M are the headlights and the automatic's D: neither autolands nor moors. */
+/** In the car, L is the headlights and M means nothing: neither autolands nor moors. */
 const CAR_REBOUND_ACTIONS: ReadonlySet<InputAction> = new Set(["autoland", "moor"]);
 
 /**
- * The car's standard-pad buttons that count presses: the bumpers shift, and
- * the D-pad works what T, K, B and L do (the land plan's controls table).
+ * The car's standard-pad buttons that count presses: the D-pad works what T,
+ * K, B and L do (the land plan's controls table).
  */
 export const CAR_PAD_PRESSES: Readonly<Record<CarPadButton, CarPressCounter>> = Object.freeze({
-  bumperRight: "shiftUpPresses",
-  bumperLeft: "shiftDownPresses",
   dpadUp: "rangePresses",
   dpadRight: "lockPresses",
   dpadDown: "downhillAssistPresses",
   dpadLeft: "headlightPresses",
 });
 
-export type CarPadButton = "bumperRight" | "bumperLeft" | "dpadUp" | "dpadRight" | "dpadDown" | "dpadLeft";
+export type CarPadButton = "dpadUp" | "dpadRight" | "dpadDown" | "dpadLeft";
 
 const CAR_PAD_BUTTONS = Object.keys(CAR_PAD_PRESSES) as CarPadButton[];
 
@@ -202,14 +195,11 @@ export function carSteerRateScale(speedMetersPerSecond: number): number {
 const CAR_PEDAL_RATE = 5;
 
 function neutralCarPad(): Record<CarPadButton, boolean> {
-  return { bumperRight: false, bumperLeft: false, dpadUp: false, dpadRight: false, dpadDown: false, dpadLeft: false };
+  return { dpadUp: false, dpadRight: false, dpadDown: false, dpadLeft: false };
 }
 
 function neutralCarPresses(): Record<CarPressCounter, number> {
   return {
-    shiftUpPresses: 0,
-    shiftDownPresses: 0,
-    autoModePresses: 0,
     rangePresses: 0,
     lockPresses: 0,
     downhillAssistPresses: 0,
@@ -483,10 +473,9 @@ export class InputManager {
    * The car's pedals and wheel, from the same keys and pad (the land plan's
    * controls table): W or the right trigger is the accelerator, S or the
    * left trigger the brake (the sim reverses on a held S at a stop), A/D or
-   * the left stick steer, Space or A the handbrake, and Shift/Ctrl or the
-   * bumpers shift up and down. M, T, K, B and L are counted
-   * presses (`CAR_PRESS_KEYS`), and the D-pad counts T, K, B and L's
-   * (`CAR_PAD_PRESSES`). A/D wind the wheel more slowly the faster the car
+   * the left stick steer and Space or A the handbrake; there are no shift
+   * keys. T, K, B and L are counted presses (`CAR_PRESS_KEYS`), and the
+   * D-pad counts the same (`CAR_PAD_PRESSES`). A/D wind the wheel more slowly the faster the car
    * goes (`carSteerRateScale`); the stick is a position and is not eased.
    */
   private carControls(deltaSeconds: number, gamepad: ReturnType<InputManager["readGamepad"]>): CarControlState {
@@ -705,10 +694,8 @@ export class InputManager {
     /** Standard pad only, 0..1: the car's accelerator and brake. */
     rightTrigger: number;
     leftTrigger: number;
-    /** Standard pad only: the car's handbrake (A) and shifts (bumpers). */
+    /** Standard pad only: the car's handbrake (A). */
     buttonA: boolean;
-    bumperRight: boolean;
-    bumperLeft: boolean;
     /** Standard pad only: the car's range, locks, downhill assist and lights. */
     dpadUp: boolean;
     dpadRight: boolean;
@@ -721,7 +708,7 @@ export class InputManager {
       return {
         roll: 0, pitch: 0, yaw: 0, throttle: null, throttleStep: 0, brake: 0,
         triggers: 0, bumpers: 0, rightStickY: 0, buttonB: false, buttonY: false,
-        rightTrigger: 0, leftTrigger: 0, buttonA: false, bumperRight: false, bumperLeft: false,
+        rightTrigger: 0, leftTrigger: 0, buttonA: false,
         dpadUp: false, dpadRight: false, dpadDown: false, dpadLeft: false,
       };
     }
@@ -756,8 +743,6 @@ export class InputManager {
       rightTrigger: standardPad ? pad.buttons[7]?.value ?? 0 : 0,
       leftTrigger: standardPad ? pad.buttons[6]?.value ?? 0 : 0,
       buttonA: standardPad && (pad.buttons[0]?.value ?? 0) > 0.5,
-      bumperRight: standardPad && (pad.buttons[5]?.value ?? 0) > 0.5,
-      bumperLeft: standardPad && (pad.buttons[4]?.value ?? 0) > 0.5,
       dpadUp: standardPad && (pad.buttons[12]?.value ?? 0) > 0.5,
       dpadDown: standardPad && (pad.buttons[13]?.value ?? 0) > 0.5,
       dpadLeft: standardPad && (pad.buttons[14]?.value ?? 0) > 0.5,

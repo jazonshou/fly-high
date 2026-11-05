@@ -6,8 +6,9 @@ import { RPM_PER_RAD_S } from "./engine";
 /**
  * Everything between the crank and the propeller shafts that a driver
  * chooses or a controller schedules: the six-speed automatic's selector,
- * shift schedule, kickdown, sequential mode and lockup, the transfer range
- * and the diff locks. It runs once per 120 Hz step and hands the driveline
+ * shift schedule, kickdown and lockup, the transfer range and the diff
+ * locks. The driver never picks a gear: the pedals choose D or R and the
+ * schedule the gear. It runs once per 120 Hz step and hands the driveline
  * solver its ratios, inertias and lockup capacity.
  *
  * The pedals: W is the accelerator and S the service brake, except that at
@@ -24,10 +25,6 @@ const TRANSFER = LANDCRUISER_76.transfer;
 export const STOPPED_SPEED = 0.4;
 /** How long S (or W in reverse) must be held at a stop to change direction, s. */
 const DIRECTION_HOLD_SECONDS = 0.3;
-/** The sequential mode's protection: no downshift that would put the input over this rpm. */
-const MANUAL_MODE_OVERREV_RPM = 3_800;
-/** And it steps down by itself when the input falls under this. */
-const MANUAL_MODE_LUG_RPM = 950;
 const LOCKUP_RELEASE_SECONDS = 0.1;
 
 /** The ratios by `gear + 1`, signed: reverse, neutral (and P), then the six forward gears. */
@@ -66,8 +63,8 @@ class PressCounter {
 }
 
 export class Transmission {
-  /** The selector: P at a start, then D or R as the pedals choose, or M in the sequential mode. */
-  selector: "P" | "R" | "D" | "M" = "P";
+  /** The selector: P at a start, then D or R as the pedals choose. */
+  selector: "P" | "R" | "D" = "P";
   /** Gear engaged: -1 reverse, 0 in P, 1..6. */
   gear = 0;
   range: CarTransferRange = "2H";
@@ -109,9 +106,6 @@ export class Transmission {
   private directionHold = DOUBLE_ZERO;
   /** The direction rule's pedal has been up with the car stopped: only a fresh press at a stop changes direction. */
   private directionArmed = false;
-  private readonly shiftUp = new PressCounter();
-  private readonly shiftDown = new PressCounter();
-  private readonly autoMode = new PressCounter();
   private readonly rangePresses = new PressCounter();
   private readonly lockPresses = new PressCounter();
 
@@ -128,7 +122,7 @@ export class Transmission {
     return this.gearRatios[gear + 1]!;
   }
 
-  /** Driving through the converter (D, M or R). */
+  /** Driving through the converter (D or R). */
   get converterEngaged(): boolean {
     return this.gear !== 0;
   }
@@ -192,9 +186,6 @@ export class Transmission {
   private updateAutomatic(controls: Readonly<CarControlState>, stopped: boolean, pedals: DriverPedals): void {
     const w = controls.accelerator;
     const s = controls.brake;
-    const ups = this.shiftUp.take(controls.shiftUpPresses);
-    const downs = this.shiftDown.take(controls.shiftDownPresses);
-    const autoPresses = this.autoMode.take(controls.autoModePresses);
     const selector = this.selector;
 
     // Direction: W at a stop selects D; S held at a stop selects R; W held at a stop in R selects D.
@@ -218,12 +209,7 @@ export class Transmission {
       }
     }
 
-    if (this.selector === "D" || this.selector === "M") {
-      if (ups + downs > 0 && this.selector === "D") this.selector = "M";
-      if (autoPresses > 0 && this.selector === "M") this.selector = "D";
-      if (this.selector === "M") this.manualMode(ups, downs, stopped);
-      else this.schedule(pedals, stopped);
-    }
+    if (this.selector === "D") this.schedule(pedals, stopped);
     this.updateLockup();
   }
 
@@ -293,18 +279,6 @@ export class Transmission {
       const lower = perRatio * this.gearRatios[gear]!;
       if (lower < down || (throttle > AT.kickdownThrottle && lower < AT.kickdownMaxRpm)) this.shiftTo(gear - 1);
     }
-  }
-
-  private manualMode(ups: number, downs: number, stopped: boolean): void {
-    const perRatio = this.rpmPerRatio;
-    for (let i = 0; i < ups && this.gear < AT.ratios.length; i += 1) this.shiftTo(this.gear + 1);
-    for (let i = 0; i < downs && this.gear > 1; i += 1) {
-      if (perRatio * this.gearRatios[this.gear]! > MANUAL_MODE_OVERREV_RPM) break;
-      this.shiftTo(this.gear - 1);
-    }
-    if (this.shiftTime > 0) return;
-    if (stopped && this.gear > 1) this.shiftTo(1);
-    else if (this.gear > 1 && perRatio * this.gearRatios[this.gear + 1]! < MANUAL_MODE_LUG_RPM) this.shiftTo(this.gear - 1);
   }
 
   private shiftTo(gear: number): void {

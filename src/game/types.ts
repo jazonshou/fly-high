@@ -172,9 +172,12 @@ export interface CarVisualState {
   kind: "car";
   /** Signed speed along the body's forward axis, m/s: what the speedometer reads. */
   speed: number;
-  /** The automatic's selector: P at a start, R, D, or M in its sequential mode. */
-  selector: "P" | "R" | "D" | "M";
-  /** The gear engaged: -1 reverse, 0 in P, 1..6. */
+  /**
+   * The automatic's selector, which the pedals work (the driver never picks
+   * a gear): P at a start, then D or R.
+   */
+  selector: "P" | "R" | "D";
+  /** The gear engaged, as the shift schedule picks it: -1 reverse, 0 in P, 1..6. */
   gear: number;
   range: CarTransferRange;
   locks: CarDiffLocks;
@@ -261,11 +264,6 @@ export interface CarControlState {
   steer: number;
   /** Handbrake, 0..1 (Space, A button): the transmission drum. */
   handbrake: number;
-  /** Shift and Ctrl, the bumpers. */
-  shiftUpPresses: number;
-  shiftDownPresses: number;
-  /** M: the automatic back from its sequential mode to D. */
-  autoModePresses: number;
   /** T: 2H, 4H, 4L (4L needs a stop). */
   rangePresses: number;
   /** K: off, rear, rear and front (4L only). */

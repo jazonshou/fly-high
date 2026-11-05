@@ -6,7 +6,6 @@ import { INITIAL_VISUAL_STATE, type CarVisualState, type FlightVisualState } fro
 import { AircraftPicker } from "../src/ui/AircraftPicker";
 import {
   CAR_TACHOMETER_REDLINE_RPM,
-  carGearLabel,
   CarHud,
   compassPoint,
   carTiltLevel,
@@ -18,7 +17,7 @@ import { Hud } from "../src/ui/Hud";
 import { LANDCRUISER_76 } from "../src/vehicles/landcruiser76";
 
 /**
- * The car's panels: the HUD (speed, tachometer, gear, range, lamps,
+ * The car's panels: the HUD (speed, tachometer, range, lamps,
  * inclinometer, wading bar, alerts, nearest airport), the picker's car card
  * and the pause menu's tyre panel.
  */
@@ -111,12 +110,14 @@ describe("the car's HUD", () => {
     expect(imperial).toContain('aria-label="ELEV: 394 FT"');
   });
 
-  it("labels the gear as the automatic's selector, or its gear in M", () => {
-    expect(carGearLabel(carPayload({ selector: "P" }))).toBe("P");
-    expect(carGearLabel(carPayload({ selector: "D", gear: 4 }))).toBe("D");
-    expect(carGearLabel(carPayload({ selector: "M", gear: 3 }))).toBe("M3");
-    expect(carGearLabel(carPayload({ selector: "R", gear: -1 }))).toBe("R");
-    expect(renderCar(carPayload())).not.toContain("MANUAL");
+  it("shows no gear: the pedals choose the way and the automatic its gear", () => {
+    for (const car of [carPayload(), carPayload({ selector: "D", gear: 4 }), carPayload({ selector: "R", gear: -1 })]) {
+      const html = renderCar(car);
+      expect(html).not.toContain("<small>GEAR</small>");
+      expect(html).not.toContain('aria-label="Gear');
+      expect(html).not.toContain("MANUAL");
+      expect(html).not.toMatch(/gears/i);
+    }
   });
 
   it("draws the tachometer against the engine's own fuel cut", () => {
@@ -266,7 +267,7 @@ describe("the car's HUD", () => {
     expect(html).toContain("flight-hud--car");
     expect(html).toContain("flight-hud--car-cockpit");
     expect(html).toContain("KQRT");
-    expect(html).toContain('aria-label="Gear D"');
+    expect(html).toContain('aria-label="Range 2H"');
   });
 });
 

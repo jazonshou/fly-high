@@ -395,7 +395,8 @@ between the shafts in 4H and 4L as a soft row (Catto 2011). The torque
 converter's fluid coupling (K 10.77, stall ratio 2.0) is a smooth torque.
 
 The automatic shifts on a throttle-dependent schedule with kickdown and
-locks up from third; a sequential mode holds the gear the driver picks.
+locks up from third. The driver never picks a gear: there are no shift keys
+and no sequential mode, and the HUD shows no gear.
 
 ## The pedals and direction
 
