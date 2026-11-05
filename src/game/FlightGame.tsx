@@ -1124,6 +1124,7 @@ export function FlightGame() {
         >
           <div className="start-screen__minimal">
             <AircraftPicker
+              aircraft={settings.aircraft}
               value={settings.vehicle}
               onChange={(vehicle) => applySettings(
                 // An aircraft is also the menu's attract flight; a boat leaves
