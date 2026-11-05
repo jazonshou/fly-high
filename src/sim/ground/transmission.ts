@@ -11,11 +11,12 @@ import { RPM_PER_RAD_S } from "./engine";
  * schedule the gear. It runs once per 120 Hz step and hands the driveline
  * solver its ratios, inertias and lockup capacity.
  *
- * The pedals: W is the accelerator and S the service brake, except that at
- * a stop holding S selects reverse and holding W selects drive (the plan's
- * controls), and in reverse S drives and W brakes. Only a fresh press does
- * it: S held through the stop holds the car, as a brake pedal does on a
- * hill, and S let up and held again backs it up.
+ * The pedals (Jason, 2026-11-05): W goes forward, S goes back, Space
+ * brakes. Going forward W is the accelerator and S the brake; held on
+ * through the stop, S selects R a moment later and is then the accelerator,
+ * with W the brake, until W held through the next stop selects D again.
+ * From P, at a start, either selects its way at once. Space brakes either
+ * way and never changes direction, so it is what holds the car on a hill.
  */
 
 const AT = LANDCRUISER_76.automatic;
@@ -25,13 +26,16 @@ const TRANSFER = LANDCRUISER_76.transfer;
 export const STOPPED_SPEED = 0.4;
 /** How long S (or W in reverse) must be held at a stop to change direction, s. */
 const DIRECTION_HOLD_SECONDS = 0.3;
+/** A pedal past this is down; under the second, up. */
+const PEDAL_DOWN = 0.05;
+const PEDAL_UP = 0.02;
 const LOCKUP_RELEASE_SECONDS = 0.1;
 
 /** The ratios by `gear + 1`, signed: reverse, neutral (and P), then the six forward gears. */
 const GEAR_RATIOS = Float64Array.of(-AT.reverse, 0, ...AT.ratios);
 
 export interface DriverPedals {
-  /** The accelerator and service brake as the car uses them, after reverse's swap. */
+  /** The accelerator and service brake as the car uses them: W, S and Space through the direction. */
   accelerator: number;
   brake: number;
 }
@@ -103,9 +107,8 @@ export class Transmission {
    */
   private rpmPerRatio = DOUBLE_ZERO;
 
+  /** How long the other way's pedal has been held at a stop, s. */
   private directionHold = DOUBLE_ZERO;
-  /** The direction rule's pedal has been up with the car stopped: only a fresh press at a stop changes direction. */
-  private directionArmed = false;
   private readonly rangePresses = new PressCounter();
   private readonly lockPresses = new PressCounter();
 
@@ -185,64 +188,48 @@ export class Transmission {
 
   private updateAutomatic(controls: Readonly<CarControlState>, stopped: boolean, pedals: DriverPedals): void {
     const w = controls.accelerator;
-    const s = controls.brake;
-    const selector = this.selector;
+    const s = controls.reverse;
+    if (this.selector === "P") {
+      // A start: either pedal alone selects its way at once.
+      if (stopped && w > PEDAL_DOWN && s <= PEDAL_UP) this.selectDrive();
+      else if (stopped && s > PEDAL_DOWN && w <= PEDAL_UP) this.selectReverse();
+    } else if (this.directionRequested(stopped, controls)) {
+      if (this.selector === "D") this.selectReverse();
+      else this.selectDrive();
+    }
 
-    // Direction: W at a stop selects D; S held at a stop selects R; W held at a stop in R selects D.
-    if (selector === "R") {
+    if (this.selector === "R") {
       pedals.accelerator = s;
       pedals.brake = w;
-      if (this.directionRequested(stopped, controls, true)) this.selectDrive();
-    } else if (selector === "P") {
-      pedals.accelerator = 0;
-      pedals.brake = s;
-      if (stopped && w > 0.05) this.selectDrive();
-      else if (this.directionRequested(stopped, controls, false)) this.selectReverse();
-      if (this.selector === "D") pedals.accelerator = w;
-    } else {
+    } else if (this.selector === "D") {
       pedals.accelerator = w;
       pedals.brake = s;
-      if (this.directionRequested(stopped, controls, false)) {
-        this.selectReverse();
-        pedals.accelerator = s;
-        pedals.brake = 0;
-      }
+    } else {
+      pedals.accelerator = 0;
+      pedals.brake = 0;
     }
+    if (controls.brake > pedals.brake) pedals.brake = controls.brake;
 
     if (this.selector === "D") this.schedule(pedals, stopped);
     this.updateLockup();
   }
 
   /**
-   * The arcade direction rule's trigger: the pedal (S going forward, W in
-   * reverse: `viaAccelerator`) pressed afresh once the car is stopped and
-   * held for a moment, with the other up. A pedal held through the stop
-   * only holds the car, so the brake holds it on a hill; let it up and
-   * press again to change direction.
+   * The direction rule's trigger: the other way's pedal (S in D, W in R)
+   * held with the car stopped for `DIRECTION_HOLD_SECONDS`, this way's pedal
+   * up. It brakes the car down to the stop first, so S held from speed stops
+   * the car and then backs it up without being let go.
    */
-  private directionRequested(stopped: boolean, controls: Readonly<CarControlState>, viaAccelerator: boolean): boolean {
-    const pedal = viaAccelerator ? controls.accelerator : controls.brake;
-    const other = viaAccelerator ? controls.brake : controls.accelerator;
-    if (!stopped) {
-      this.directionArmed = false;
-      this.directionHold = 0;
-      return false;
-    }
-    if (pedal <= 0.02) {
-      this.directionArmed = true;
-      this.directionHold = 0;
-      return false;
-    }
-    if (!this.directionArmed || pedal <= 0.05 || other > 0.02) {
+  private directionRequested(stopped: boolean, controls: Readonly<CarControlState>): boolean {
+    const reversing = this.selector === "R";
+    const pedal = reversing ? controls.accelerator : controls.reverse;
+    const other = reversing ? controls.reverse : controls.accelerator;
+    if (!stopped || pedal <= PEDAL_DOWN || other > PEDAL_UP) {
       this.directionHold = 0;
       return false;
     }
     this.directionHold += this.dt;
-    if (this.directionHold < DIRECTION_HOLD_SECONDS) return false;
-    // The pedal is the other direction's accelerator now: it must come up before it can change back.
-    this.directionHold = 0;
-    this.directionArmed = false;
-    return true;
+    return this.directionHold >= DIRECTION_HOLD_SECONDS;
   }
 
   private selectDrive(): void {
@@ -314,7 +301,6 @@ export class Transmission {
     this.shiftTime = 0;
     this.lockup = 0;
     this.directionHold = 0;
-    this.directionArmed = false;
     this.selector = "P";
     this.gear = 0;
     this.refresh();

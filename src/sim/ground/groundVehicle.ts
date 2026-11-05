@@ -631,6 +631,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     const car = controls.car ?? NEUTRAL_CAR_CONTROLS;
     const c = this.controls;
     c.accelerator = finite01(car.accelerator);
+    c.reverse = finite01(car.reverse);
     c.brake = finite01(car.brake);
     c.steer = Number.isFinite(car.steer) ? clamp(car.steer, -1, 1) : 0;
     c.handbrake = finite01(car.handbrake);

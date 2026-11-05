@@ -97,6 +97,39 @@ describe("the car's input profile", () => {
     input.dispose();
   });
 
+  it("sends W as forward, S as back and Space as the brake, each a pedal that takes a fifth of a second", () => {
+    const input = createInput();
+    key("keydown", "KeyW");
+    key("keydown", "KeyS");
+    key("keydown", "Space");
+    const half = car(input, 0.1);
+    expect(half.accelerator).toBeCloseTo(0.5, 6);
+    expect(half.reverse).toBeCloseTo(0.5, 6);
+    expect(half.brake).toBeCloseTo(0.5, 6);
+    const full = car(input, 0.2);
+    expect([full.accelerator, full.reverse, full.brake]).toEqual([1, 1, 1]);
+    // Nothing works the parking brake.
+    expect(full.handbrake).toBe(0);
+    key("keyup", "KeyW");
+    key("keyup", "KeyS");
+    key("keyup", "Space");
+    const up = car(input, 0.2);
+    expect([up.accelerator, up.reverse, up.brake]).toEqual([0, 0, 0]);
+    input.dispose();
+  });
+
+  it("drives forward on the right trigger, back on the left, and brakes on A", () => {
+    const input = createInput();
+    // Standard mapping: 0 A, 6 left trigger, 7 right trigger.
+    pad([7]);
+    expect(car(input).accelerator).toBe(1);
+    pad([6]);
+    expect(car(input).reverse).toBe(1);
+    pad([0]);
+    expect(car(input, 0.2).brake).toBe(1);
+    input.dispose();
+  });
+
   it("counts a key press and a D-pad push on the same counter", () => {
     const input = createInput();
     key("keydown", "KeyT");

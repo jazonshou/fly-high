@@ -131,11 +131,11 @@ describe("LandCruiser chassis", () => {
         touched ||= parts.some((part) => s.touching(part));
       };
       if (reverse) {
-        // A fresh S at a stop selects R (S is then the accelerator).
-        drive(sim, 0.5, { brake: 1, rangePresses: 2 }, watch);
+        // S at a start selects R at once (S is then the accelerator).
+        drive(sim, 0.1, { reverse: 0.2, rangePresses: 2 }, watch);
         expect(sim.transmission.gear).toBe(-1);
       } else {
-        // A fresh W at a stop selects D.
+        // W at a start selects D at once.
         drive(sim, 0.1, { accelerator: 0.2, rangePresses: 2 }, watch);
         expect(sim.transmission.selector).toBe("D");
       }

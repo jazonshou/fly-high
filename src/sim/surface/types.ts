@@ -91,6 +91,7 @@ export interface SurfaceVehicleSpawn {
 
 export const NEUTRAL_CAR_CONTROLS: Readonly<CarControlState> = Object.freeze({
   accelerator: 0,
+  reverse: 0,
   brake: 0,
   steer: 0,
   handbrake: 0,

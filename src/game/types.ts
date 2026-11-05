@@ -256,13 +256,25 @@ export interface CarVisualState {
  * simulator adopts the first counts it sees as its baseline.
  */
 export interface CarControlState {
-  /** Accelerator pedal, 0..1 (W, right trigger). */
+  /**
+   * Forward, 0..1 (W, right trigger): the accelerator, or reversing the
+   * brake until the car stops; held on, it then drives forward.
+   */
   accelerator: number;
-  /** Service brake, 0..1 (S, left trigger). At a stop the sim turns a held S into reverse. */
+  /**
+   * Back, 0..1 (S, left trigger): the brake going forward until the car
+   * stops; held on, it then backs the car up (the transmission's direction
+   * rule). There are no gears to choose.
+   */
+  reverse: number;
+  /** The service brake, 0..1 (Space, A button), either way; it never changes direction. */
   brake: number;
   /** Steering, -1 full left .. +1 full right, eased by the input profile. */
   steer: number;
-  /** Handbrake, 0..1 (Space, A button): the transmission drum. */
+  /**
+   * The parking brake, 0..1: the transmission drum on the rear propeller
+   * shaft. No key works it; the sim's tests hold the car on it.
+   */
   handbrake: number;
   /** T: 2H, 4H, 4L (4L needs a stop). */
   rangePresses: number;

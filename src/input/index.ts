@@ -324,6 +324,7 @@ export class InputManager {
   private moorPresses = 0;
   private padMoorWasDown = false;
   private carAccelerator = 0;
+  private carReverse = 0;
   private carBrake = 0;
   private carSteer = 0;
   private carPresses = neutralCarPresses();
@@ -470,23 +471,25 @@ export class InputManager {
   }
 
   /**
-   * The car's pedals and wheel, from the same keys and pad (the land plan's
-   * controls table): W or the right trigger is the accelerator, S or the
-   * left trigger the brake (the sim reverses on a held S at a stop), A/D or
-   * the left stick steer and Space or A the handbrake; there are no shift
-   * keys. T, K, B and L are counted presses (`CAR_PRESS_KEYS`), and the
+   * The car's pedals and wheel, from the same keys and pad, with no gears
+   * to choose (Jason, 2026-11-05): W or the right trigger goes forward, S or
+   * the left trigger back (each brakes the other way, and the sim changes
+   * direction once the car stops), Space or A brakes, and A/D or the left
+   * stick steer. T, K, B and L are counted presses (`CAR_PRESS_KEYS`), and the
    * D-pad counts the same (`CAR_PAD_PRESSES`). A/D wind the wheel more slowly the faster the car
    * goes (`carSteerRateScale`); the stick is a position and is not eased.
    */
   private carControls(deltaSeconds: number, gamepad: ReturnType<InputManager["readGamepad"]>): CarControlState {
     const keyAccelerator = this.pressed.has("KeyW") ? 1 : 0;
-    const keyBrake = this.pressed.has("KeyS") ? 1 : 0;
+    const keyReverse = this.pressed.has("KeyS") ? 1 : 0;
+    const brakeDown = this.pressed.has("Space") || gamepad.buttonA ? 1 : 0;
     this.carAccelerator = gamepad.rightTrigger > 0.01
       ? gamepad.rightTrigger
       : slewAxis(this.carAccelerator, keyAccelerator, CAR_PEDAL_RATE, CAR_PEDAL_RATE, deltaSeconds);
-    this.carBrake = gamepad.leftTrigger > 0.01
+    this.carReverse = gamepad.leftTrigger > 0.01
       ? gamepad.leftTrigger
-      : slewAxis(this.carBrake, keyBrake, CAR_PEDAL_RATE, CAR_PEDAL_RATE, deltaSeconds);
+      : slewAxis(this.carReverse, keyReverse, CAR_PEDAL_RATE, CAR_PEDAL_RATE, deltaSeconds);
+    this.carBrake = slewAxis(this.carBrake, brakeDown, CAR_PEDAL_RATE, CAR_PEDAL_RATE, deltaSeconds);
 
     if (Math.abs(gamepad.roll) > 0.01) {
       this.carSteer = smoothAxis(this.carSteer, gamepad.roll, 10, deltaSeconds);
@@ -501,9 +504,10 @@ export class InputManager {
     }
     return {
       accelerator: Math.min(1, Math.max(0, this.carAccelerator)),
+      reverse: Math.min(1, Math.max(0, this.carReverse)),
       brake: Math.min(1, Math.max(0, this.carBrake)),
       steer: Math.min(1, Math.max(-1, this.carSteer)),
-      handbrake: this.pressed.has("Space") || gamepad.buttonA ? 1 : 0,
+      handbrake: 0,
       ...this.carPresses,
       tyrePressure: this.carTyrePressure,
     };
@@ -578,6 +582,7 @@ export class InputManager {
     this.boatSteer = 0;
     this.moorPresses = 0;
     this.carAccelerator = 0;
+    this.carReverse = 0;
     this.carBrake = 0;
     this.carSteer = 0;
     this.carPresses = neutralCarPresses();
@@ -691,10 +696,10 @@ export class InputManager {
     rightStickY: number;
     buttonB: boolean;
     buttonY: boolean;
-    /** Standard pad only, 0..1: the car's accelerator and brake. */
+    /** Standard pad only, 0..1: the car's forward and back. */
     rightTrigger: number;
     leftTrigger: number;
-    /** Standard pad only: the car's handbrake (A). */
+    /** Standard pad only: the car's brake (A). */
     buttonA: boolean;
     /** Standard pad only: the car's range, locks, downhill assist and lights. */
     dpadUp: boolean;

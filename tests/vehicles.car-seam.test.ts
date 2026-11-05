@@ -113,15 +113,14 @@ describe("car seam", () => {
     const after = surfaceVisualState(car.snapshot(), undefined).heading;
     expect(((after - before + 540) % 360) - 180).toBeLessThan(-5);
 
-    // The brake stops it and, held through the stop, holds it there.
+    // Space stops it and, held through the stop, holds it there.
     drive(car, 5, { brake: 1 });
     const held = car.snapshot().payload;
     if (held.kind !== "car") throw new Error("the car's snapshot carries the car payload");
     expect(Math.abs(held.speed)).toBeLessThan(0.05);
     expect(held.reversing).toBe(false);
-    // Let up and held again at the stop, it backs the car up.
-    drive(car, 0.2, {});
-    drive(car, 4, { brake: 1 });
+    // S held at the stop backs the car up.
+    drive(car, 4, { reverse: 1 });
     const reversing = car.snapshot().payload;
     if (reversing.kind !== "car") throw new Error("the car's snapshot carries the car payload");
     expect(reversing.speed).toBeLessThan(0);

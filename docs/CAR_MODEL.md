@@ -400,11 +400,15 @@ and no sequential mode, and the HUD shows no gear.
 
 ## The pedals and direction
 
-W is the accelerator and S the brake. At a stop, holding S for 0.3 s selects
-reverse, and in reverse S drives and W brakes; holding W at a stop in reverse
-selects drive. Only a fresh press does it: S held through the stop keeps the
-car stopped and braked, as a brake pedal does on a hill, and S let up and
-pressed again, once stopped, backs it up. The same holds for W from reverse.
+There are no gears to choose (Jason, 2026-11-05): W goes forward, S goes
+back and Space brakes. Going forward W is the accelerator and S the brake.
+Held on through the stop, S selects reverse 0.3 s later and is then the
+accelerator, with W the brake, until W held through the next stop selects
+drive again. The car starts in P, held by the pawl, and either pedal alone
+selects its way at once. Space is the service brake either way and never
+changes direction, so it is what stops the car and holds it on a hill. With
+W and S both held nothing changes. No key works the transmission-drum
+handbrake any more; the tests still park the car on it.
 
 ## Driver aids
 
@@ -439,7 +443,7 @@ pressed again, once stopped, backs it up. The same holds for W from reverse.
 | Crawl ratio in first, 4L | 38.51 | 38.51 | `sim.car-driveline` |
 | 100 to 0 km/h on dry asphalt | none published; the test allows 38 to 50 m | 42.3 m with ABS, in 3.1 s | `sim.car-driveline` |
 | 10 m/s to 0 on dry asphalt, 2H and 4H | v^2 / 2g at the tyres' peak friction of 1 is 5.1 m | 6.6 m in 2H, 5.8 m in 4H, no wheel locked | `sim.car-driveline` |
-| Holds on a 20 degree slope for a minute | under 1 cm (the plan's test) | under 6 mm (brake in D; the pawl in P) | `sim.car-driveline` |
+| Holds on a 20 degree slope for a minute | under 1 cm (the plan's test) | 5.4 mm on Space in D; 4.7 mm in P, 4H | `sim.car-driveline` |
 
 The published approach and departure angles are static: SAE J1100 measures
 them on the car at rest, as the steepest plane tangent to the loaded tyre

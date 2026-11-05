@@ -198,9 +198,9 @@ export function CarHud({
       </div>
 
       <div className="hud-help">
-        <span>W accelerate · S brake</span>
+        <span>W forward · S reverse</span>
         <span>A left · D right</span>
-        <span>Space handbrake</span>
+        <span>Space brake</span>
         <span>T range · K locks · B descent</span>
         <span>L lights · C view</span>
         {onToggleNearestAirport && nearestAirport ? <span>N nearest airport</span> : null}

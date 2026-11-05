@@ -39,7 +39,7 @@ describe("LandCruiser driveline", () => {
   });
 
   it("holds on a 20 degree slope with the brake held through the stop, and in P in 4H with nothing held", () => {
-    // Up the slope in D, then the brake held through the stop and on for a minute.
+    // Up the slope in D, then the brake (Space) held through the stop and on for a minute, still in D.
     const braked = car(slopeAhead(20));
     drive(braked, 1, { handbrake: 1 });
     drive(braked, 3, { accelerator: 0.6 });
