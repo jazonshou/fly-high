@@ -104,7 +104,7 @@ export interface TowerGeometry {
  */
 const BASE_HALF = 7;
 const BASE_TOP_HALF = 5;
-const BASE_HEIGHT = 6;
+const BASE_HEIGHT = TOWER_BASE_HEIGHT_METERS;
 const SHAFT_BOTTOM_HALF = 5;
 const SHAFT_TOP_HALF = 3.5;
 const SHAFT_TOP_Y = 32;
@@ -124,6 +124,7 @@ import {
   AIRFIELD_CONCRETE_TILE_METERS,
   AIRFIELD_METAL_TILE_METERS,
 } from "../airfield/AirfieldMaterials";
+import { TOWER_BASE_HEIGHT_METERS } from "../airfield/AirfieldSiting";
 
 /**
  * Which 7-11 surface each part is drawn with, and therefore which tile period

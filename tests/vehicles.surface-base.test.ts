@@ -4,7 +4,9 @@ import {
   createSurfaceSpawn,
   findOpenWater,
   OPEN_WATER_DEPTH,
+  sessionStartPoint,
 } from "../src/game/surfaceSpawn";
+import { createSimulationSpawn } from "../src/game/spawn";
 import { interpolateFlightState } from "../src/game/SimulationClient";
 import { INITIAL_VISUAL_STATE, type BoatControlState, type FlightVisualState } from "../src/game/types";
 import { inputProfileForSpawn, stepBoatLever } from "../src/input";
@@ -89,7 +91,9 @@ describe("surface visual state", () => {
     // Heading pi/2 is east, +X, as `FlightTelemetry.heading` has it.
     expect(Math.abs(state.heading - 90)).toBeLessThan(2);
     expect(snapshot.position.x).toBeGreaterThan(0.5);
-    expect(state.airspeed).toBe(snapshot.payload.speedThroughWater);
+    const payload = snapshot.payload;
+    if (payload.kind !== "boat") throw new Error("a boat's snapshot carries the boat payload");
+    expect(state.airspeed).toBe(payload.speedThroughWater);
     expect(state.vehicle).toBe(snapshot.payload);
     expect(state.autoland).toBeNull();
     expect(state.crashed).toBe(false);
@@ -129,6 +133,24 @@ describe("boat spawn", () => {
     expect(depth).toBeGreaterThanOrEqual(OPEN_WATER_DEPTH);
     expect(findOpenWater(world, x, z)).toMatchObject({ x: spawn.position.x, z: spawn.position.z });
     expect(Math.hypot(spawn.position.x - x, spawn.position.z - z)).toBeLessThan(10_000);
+  });
+});
+
+describe("the session's start point", () => {
+  it("is where the worker puts each start, for the renderer to prime the roads round", () => {
+    const world = createWorld(0x51a7e);
+    const at = (position: { x?: number; z?: number } | undefined) => ({ x: position?.x, z: position?.z });
+    expect(sessionStartPoint(world, "dock", 450, "trainer", "speedboat"))
+      .toEqual(at(createSurfaceSpawn(world, "speedboat").position));
+    expect(sessionStartPoint(world, "airfield", 450, "trainer", "landcruiser"))
+      .toEqual(at(createSurfaceSpawn(world, "landcruiser").position));
+    for (const kind of ["airborne", "runway"] as const) {
+      expect(sessionStartPoint(world, kind, 900, "jet", null))
+        .toEqual(at(createSimulationSpawn(world, kind, 900, "jet").position));
+    }
+    // A surface start with no surface vehicle flies, as the menu's attract flight does.
+    expect(sessionStartPoint(world, "dock", 450, "trainer", null))
+      .toEqual(at(createSimulationSpawn(world, "airborne", 450, "trainer").position));
   });
 });
 

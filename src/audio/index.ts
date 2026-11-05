@@ -4,6 +4,7 @@ import { aircraftSpec, type EngineSoundSpec } from "@/src/aircraft/catalogue";
 import { surfaceVehicleSpec, type SurfaceVehicleSpec } from "@/src/vehicles/catalogue";
 import { isSurfaceVehicleKind, type VehicleKind } from "@/src/vehicles/kinds";
 import { BoatVoice, boatSoundTargets } from "./boatVoice";
+import { CarVoice, carSoundTargets } from "./carVoice";
 
 export interface AudioLevels {
   master: number;
@@ -47,6 +48,8 @@ export class FlightAudio {
   private noiseBuffer: AudioBuffer | null = null;
   /** The boat's own layer, built the first time a boat's state arrives. */
   private boatVoice: BoatVoice | null = null;
+  /** The car's own layer, built the first time a car's state arrives. */
+  private carVoice: CarVoice | null = null;
   private enabled = false;
   private desiredEnabled = false;
   private activationGeneration = 0;
@@ -105,9 +108,13 @@ export class FlightAudio {
       oscillator.frequency.setTargetAtTime(baseFrequency * (index + 1), now, 0.045);
       oscillator.detune.setTargetAtTime(index === 0 ? -4 : 6, now, 0.08);
     });
+    const car = surface && state.vehicle?.kind === "car" ? state.vehicle : null;
+    const carTargets = car ? carSoundTargets(state, car) : null;
     const engineLevel = this.levels.engine *
       (sound.gainBase + rpmRatio * sound.gainSpan) *
-      (0.55 + state.throttle * 0.45);
+      (0.55 + state.throttle * 0.45) *
+      // A stalled or flooded diesel is silent; a cranking one is quiet.
+      (carTargets ? carTargets.engineShare : 1);
     this.engineGain?.gain.setTargetAtTime(engineLevel, now, 0.07);
     const boat = surface && state.vehicle?.kind === "boat" ? state.vehicle : null;
     if (boat && this.master && this.noiseBuffer && this.engineGain) {
@@ -117,6 +124,12 @@ export class FlightAudio {
       this.engineFilter?.frequency.setTargetAtTime(boatSoundTargets(state, boat).engineCutoffHz, now, 0.15);
     } else {
       this.boatVoice?.silence();
+    }
+    if (carTargets && this.master && this.noiseBuffer) {
+      this.carVoice ??= new CarVoice(context, this.master, this.noiseBuffer);
+      this.carVoice.update(carTargets, this.levels);
+    } else {
+      this.carVoice?.silence();
     }
     const windAmount = Math.min(1, Math.max(0, (state.airspeed - 15) / 75));
     this.windGain?.gain.setTargetAtTime(this.levels.wind * windAmount * 0.12, now, 0.1);
@@ -136,6 +149,15 @@ export class FlightAudio {
     this.lastTouchdown = state.touchdown;
   }
 
+  /**
+   * Every snapshot, including those `update` is too busy for: the car's
+   * event peaks (bump stops, scrapes, splashes) are per snapshot and would
+   * otherwise be lost between updates.
+   */
+  observe(state: FlightVisualState): void {
+    if (state.vehicle?.kind === "car") this.carVoice?.peaks.observe(state.vehicle);
+  }
+
   suspend(): void {
     this.desiredEnabled = false;
     const generation = ++this.activationGeneration;
@@ -153,6 +175,8 @@ export class FlightAudio {
     for (const oscillator of this.engineOscillators) oscillator.stop();
     this.boatVoice?.dispose();
     this.boatVoice = null;
+    this.carVoice?.dispose();
+    this.carVoice = null;
     this.stallOscillator?.stop();
     this.windSource?.stop();
     this.engineOscillators = [];

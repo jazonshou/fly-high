@@ -6,9 +6,9 @@ import { AIRCRAFT_KINDS, type AircraftKind } from "@/src/sim";
  * the few seams a surface vehicle also passes through (settings, the picker,
  * the sim worker, the renderer's vehicle slot, the HUD).
  *
- * The off-road PR adds `"landcruiser"` here, and with it the `"car"` class.
+ * `"landcruiser"` is the Toyota LandCruiser 76 wagon, the `"car"` class.
  */
-export const SURFACE_VEHICLE_KINDS = ["speedboat"] as const;
+export const SURFACE_VEHICLE_KINDS = ["speedboat", "landcruiser"] as const;
 export type SurfaceVehicleKind = (typeof SURFACE_VEHICLE_KINDS)[number];
 export type VehicleKind = AircraftKind | SurfaceVehicleKind;
 
@@ -41,5 +41,7 @@ export function vehicleClass(kind: VehicleKind): VehicleClass {
   switch (kind) {
     case "speedboat":
       return "boat";
+    case "landcruiser":
+      return "car";
   }
 }

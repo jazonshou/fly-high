@@ -1,4 +1,4 @@
-import type { BoatControlState, ControlState } from "@/src/game/types";
+import type { BoatControlState, CarControlState, CarTyrePressure, ControlState } from "@/src/game/types";
 import type { SpawnKind } from "@/src/workers/protocol";
 
 export type InputAction =
@@ -128,11 +128,96 @@ const HELD_CONTROL_KEYS = new Set([
   "Space", "KeyF", "KeyV",
 ]);
 
-/** Which set of controls the keys and pad drive. A dock start drives a boat. */
-export type InputProfile = "aircraft" | "boat";
+/** Which set of controls the keys and pad drive. A dock start drives a boat, an airfield start the car. */
+export type InputProfile = "aircraft" | "boat" | "car";
 
 export function inputProfileForSpawn(spawn: SpawnKind): InputProfile {
-  return spawn === "dock" ? "boat" : "aircraft";
+  return spawn === "dock" ? "boat" : spawn === "airfield" ? "car" : "aircraft";
+}
+
+/** The car's toggles: each key press is one count on its `CarControlState` counter. */
+export const CAR_PRESS_KEYS: Readonly<Record<string, CarPressCounter>> = Object.freeze({
+  ShiftLeft: "shiftUpPresses",
+  ShiftRight: "shiftUpPresses",
+  ControlLeft: "shiftDownPresses",
+  ControlRight: "shiftDownPresses",
+  KeyM: "autoModePresses",
+  KeyT: "rangePresses",
+  KeyK: "lockPresses",
+  KeyB: "downhillAssistPresses",
+  KeyL: "headlightPresses",
+});
+
+export type CarPressCounter = {
+  [K in keyof CarControlState]: CarControlState[K] extends number
+    ? K extends `${string}Presses` ? K : never
+    : never;
+}[keyof CarControlState];
+
+/** In the car, L and M are the headlights and the automatic's D: neither autolands nor moors. */
+const CAR_REBOUND_ACTIONS: ReadonlySet<InputAction> = new Set(["autoland", "moor"]);
+
+/**
+ * The car's standard-pad buttons that count presses: the bumpers shift, and
+ * the D-pad works what T, K, B and L do (the land plan's controls table).
+ */
+export const CAR_PAD_PRESSES: Readonly<Record<CarPadButton, CarPressCounter>> = Object.freeze({
+  bumperRight: "shiftUpPresses",
+  bumperLeft: "shiftDownPresses",
+  dpadUp: "rangePresses",
+  dpadRight: "lockPresses",
+  dpadDown: "downhillAssistPresses",
+  dpadLeft: "headlightPresses",
+});
+
+export type CarPadButton = "bumperRight" | "bumperLeft" | "dpadUp" | "dpadRight" | "dpadDown" | "dpadLeft";
+
+const CAR_PAD_BUTTONS = Object.keys(CAR_PAD_PRESSES) as CarPadButton[];
+
+/** The car's wheel from A/D at a crawl: lock to lock in about 0.7 s, and back to centre a little faster. */
+const CAR_STEER_RATE = 2.8;
+const CAR_STEER_RETURN_RATE = 3.4;
+/**
+ * Road speed at which A/D wind the wheel at half their crawl rate, m/s
+ * (36 km/h). A key is all or nothing, so at speed the wheel must move slowly
+ * for a tap to be a lane change rather than a swerve. The sim still limits
+ * the lock a full key reaches at speed (L1's `steering` record): this eases
+ * only how fast the command gets there.
+ */
+const CAR_STEER_HALF_RATE_SPEED = 10;
+/** The slowest the keyboard wheel gets: lock to lock in about 1.8 s, from about 55 km/h up. */
+const CAR_STEER_SLOWEST_SCALE = 0.4;
+
+/**
+ * How fast A/D turn the car's wheel at this road speed, as a share of the
+ * crawl rate: 1 standing, 1/2 at 36 km/h, never under 0.4. The return to
+ * centre keeps its full rate, as a real wheel's caster pulls it back harder
+ * the faster the car goes.
+ */
+export function carSteerRateScale(speedMetersPerSecond: number): number {
+  const speed = Number.isFinite(speedMetersPerSecond) ? Math.abs(speedMetersPerSecond) : 0;
+  return Math.max(CAR_STEER_SLOWEST_SCALE, 1 / (1 + speed / CAR_STEER_HALF_RATE_SPEED));
+}
+/** Pedals from keys: a key is a button, a pedal is not; full travel in about a fifth of a second. */
+const CAR_PEDAL_RATE = 5;
+/** The clutch from Q: down in a quarter second, let up over about half a second. */
+const CAR_CLUTCH_DOWN_RATE = 4;
+const CAR_CLUTCH_UP_RATE = 2.2;
+
+function neutralCarPad(): Record<CarPadButton, boolean> {
+  return { bumperRight: false, bumperLeft: false, dpadUp: false, dpadRight: false, dpadDown: false, dpadLeft: false };
+}
+
+function neutralCarPresses(): Record<CarPressCounter, number> {
+  return {
+    shiftUpPresses: 0,
+    shiftDownPresses: 0,
+    autoModePresses: 0,
+    rangePresses: 0,
+    lockPresses: 0,
+    downhillAssistPresses: 0,
+    headlightPresses: 0,
+  };
 }
 
 /** Lever travel per second while Shift/Ctrl or a trigger is held: neutral to full ahead in 1.7 s. */
@@ -251,6 +336,14 @@ export class InputManager {
   private boatSteer = 0;
   private moorPresses = 0;
   private padMoorWasDown = false;
+  private carAccelerator = 0;
+  private carBrake = 0;
+  private carSteer = 0;
+  private carClutch = 0;
+  private carPresses = neutralCarPresses();
+  private carTyrePressure: CarTyrePressure = "road";
+  private carSpeed = 0;
+  private carPadWasDown = neutralCarPad();
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -342,6 +435,7 @@ export class InputManager {
       gear: this.gear,
     };
     if (this.profile === "boat") controls.boat = this.boatControls(deltaSeconds, gamepad);
+    if (this.profile === "car") controls.car = this.carControls(deltaSeconds, gamepad);
     return controls;
   }
 
@@ -389,8 +483,62 @@ export class InputManager {
     };
   }
 
+  /**
+   * The car's pedals and wheel, from the same keys and pad (the land plan's
+   * controls table): W or the right trigger is the accelerator, S or the
+   * left trigger the brake (the sim reverses on a held S at a stop), A/D or
+   * the left stick steer, Space or A the handbrake, Q or X the clutch, and
+   * Shift/Ctrl or the bumpers shift up and down. M, T, K, B and L are counted
+   * presses (`CAR_PRESS_KEYS`), and the D-pad counts T, K, B and L's
+   * (`CAR_PAD_PRESSES`). A/D wind the wheel more slowly the faster the car
+   * goes (`carSteerRateScale`); the stick is a position and is not eased.
+   */
+  private carControls(deltaSeconds: number, gamepad: ReturnType<InputManager["readGamepad"]>): CarControlState {
+    const keyAccelerator = this.pressed.has("KeyW") ? 1 : 0;
+    const keyBrake = this.pressed.has("KeyS") ? 1 : 0;
+    this.carAccelerator = gamepad.rightTrigger > 0.01
+      ? gamepad.rightTrigger
+      : slewAxis(this.carAccelerator, keyAccelerator, CAR_PEDAL_RATE, CAR_PEDAL_RATE, deltaSeconds);
+    this.carBrake = gamepad.leftTrigger > 0.01
+      ? gamepad.leftTrigger
+      : slewAxis(this.carBrake, keyBrake, CAR_PEDAL_RATE, CAR_PEDAL_RATE, deltaSeconds);
+
+    if (Math.abs(gamepad.roll) > 0.01) {
+      this.carSteer = smoothAxis(this.carSteer, gamepad.roll, 10, deltaSeconds);
+    } else {
+      const engageRate = CAR_STEER_RATE * carSteerRateScale(this.carSpeed);
+      this.carSteer = slewAxis(this.carSteer, keyboardRollCommand(this.pressed), engageRate, CAR_STEER_RETURN_RATE, deltaSeconds);
+    }
+    const clutchDown = this.pressed.has("KeyQ") || gamepad.buttonX;
+    this.carClutch = slewAxis(this.carClutch, clutchDown ? 1 : 0, CAR_CLUTCH_DOWN_RATE, CAR_CLUTCH_UP_RATE, deltaSeconds);
+
+    for (const button of CAR_PAD_BUTTONS) {
+      if (gamepad[button] && !this.carPadWasDown[button]) this.carPresses[CAR_PAD_PRESSES[button]] += 1;
+      this.carPadWasDown[button] = gamepad[button];
+    }
+    return {
+      accelerator: Math.min(1, Math.max(0, this.carAccelerator)),
+      brake: Math.min(1, Math.max(0, this.carBrake)),
+      steer: Math.min(1, Math.max(-1, this.carSteer)),
+      handbrake: this.pressed.has("Space") || gamepad.buttonA ? 1 : 0,
+      clutch: Math.min(1, Math.max(0, this.carClutch)),
+      ...this.carPresses,
+      tyrePressure: this.carTyrePressure,
+    };
+  }
+
+  /** The tyre pressure preset the pause menu's vehicle panel asks for; the sim inflates only while stopped. */
+  setCarTyrePressure(pressure: CarTyrePressure): void {
+    this.carTyrePressure = pressure;
+  }
+
+  /** The car's road speed from the latest snapshot, m/s, which eases the keyboard wheel. */
+  setCarSpeed(speedMetersPerSecond: number): void {
+    this.carSpeed = Number.isFinite(speedMetersPerSecond) ? Math.abs(speedMetersPerSecond) : 0;
+  }
+
   consumeActions(): InputAction[] {
-    const result = [...this.actions];
+    const result = [...this.actions].filter((action) => this.profile !== "car" || !CAR_REBOUND_ACTIONS.has(action));
     this.actions.clear();
     for (const action of result) {
       if (action === "flapsDown") this.flaps = Math.min(1, this.flaps + 0.5);
@@ -447,6 +595,15 @@ export class InputManager {
     this.boatLeverDetent = false;
     this.boatSteer = 0;
     this.moorPresses = 0;
+    this.carAccelerator = 0;
+    this.carBrake = 0;
+    this.carSteer = 0;
+    this.carClutch = 0;
+    this.carPresses = neutralCarPresses();
+    // Every drive starts aired up for the road, as the sim's new car does.
+    this.carTyrePressure = "road";
+    this.carSpeed = 0;
+    this.carPadWasDown = neutralCarPad();
     this.pressed.clear();
     this.actions.clear();
     this.roll = 0;
@@ -488,6 +645,11 @@ export class InputManager {
     } else if (event.code === "KeyE" || event.code === "KeyQ") {
       this.yawTapDirection = event.code === "KeyE" ? 1 : -1;
       this.yawTapRemaining = 0.14;
+    }
+    const carPress = this.profile === "car" ? CAR_PRESS_KEYS[event.code] : undefined;
+    if (carPress) {
+      this.carPresses[carPress] += 1;
+      event.preventDefault();
     }
     const action = ACTION_KEYS[event.code];
     if (action) {
@@ -548,6 +710,19 @@ export class InputManager {
     rightStickY: number;
     buttonB: boolean;
     buttonY: boolean;
+    /** Standard pad only, 0..1: the car's accelerator and brake. */
+    rightTrigger: number;
+    leftTrigger: number;
+    /** Standard pad only: the car's handbrake (A), clutch (X) and shifts (bumpers). */
+    buttonA: boolean;
+    buttonX: boolean;
+    bumperRight: boolean;
+    bumperLeft: boolean;
+    /** Standard pad only: the car's range, locks, downhill assist and lights. */
+    dpadUp: boolean;
+    dpadRight: boolean;
+    dpadDown: boolean;
+    dpadLeft: boolean;
   } {
     const pads = navigator.getGamepads?.() ?? [];
     const pad = [...pads].find((candidate) => candidate?.connected);
@@ -555,6 +730,8 @@ export class InputManager {
       return {
         roll: 0, pitch: 0, yaw: 0, throttle: null, throttleStep: 0, brake: 0,
         triggers: 0, bumpers: 0, rightStickY: 0, buttonB: false, buttonY: false,
+        rightTrigger: 0, leftTrigger: 0, buttonA: false, buttonX: false, bumperRight: false, bumperLeft: false,
+        dpadUp: false, dpadRight: false, dpadDown: false, dpadLeft: false,
       };
     }
     const axis = (index: number): number =>
@@ -585,6 +762,16 @@ export class InputManager {
       rightStickY: standardPad && pad.axes.length > 3 ? axis(3) : 0,
       buttonB: (pad.buttons[1]?.value ?? 0) > 0.5,
       buttonY: standardPad && (pad.buttons[3]?.value ?? 0) > 0.5,
+      rightTrigger: standardPad ? pad.buttons[7]?.value ?? 0 : 0,
+      leftTrigger: standardPad ? pad.buttons[6]?.value ?? 0 : 0,
+      buttonA: standardPad && (pad.buttons[0]?.value ?? 0) > 0.5,
+      buttonX: standardPad && (pad.buttons[2]?.value ?? 0) > 0.5,
+      bumperRight: standardPad && (pad.buttons[5]?.value ?? 0) > 0.5,
+      bumperLeft: standardPad && (pad.buttons[4]?.value ?? 0) > 0.5,
+      dpadUp: standardPad && (pad.buttons[12]?.value ?? 0) > 0.5,
+      dpadDown: standardPad && (pad.buttons[13]?.value ?? 0) > 0.5,
+      dpadLeft: standardPad && (pad.buttons[14]?.value ?? 0) > 0.5,
+      dpadRight: standardPad && (pad.buttons[15]?.value ?? 0) > 0.5,
     };
   }
 }

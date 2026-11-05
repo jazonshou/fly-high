@@ -21,6 +21,12 @@ export class Surface {
   readonly positions: number[] = [];
   readonly uvs: number[] = [];
   readonly indices: number[] = [];
+  /**
+   * Normals the surface sets itself, one per vertex (a rounded edge's exact
+   * normals, so it meets the flat panel beside it without a shading seam).
+   * Null, as almost every surface leaves it, means computed from its faces.
+   */
+  normals: number[] | null = null;
 
   get vertexCount(): number {
     return this.positions.length / 3;
@@ -34,6 +40,13 @@ export class Surface {
 
   vertexAt(point: Vec3Tuple, uv: readonly [number, number]): number {
     return this.vertex(point[0], point[1], point[2], uv[0], uv[1]);
+  }
+
+  /** A vertex with its own normal: every vertex of such a surface must have one. */
+  vertexWithNormal(point: Vec3Tuple, normal: Vec3Tuple, uv: readonly [number, number]): number {
+    this.normals ??= [];
+    this.normals.push(normal[0], normal[1], normal[2]);
+    return this.vertexAt(point, uv);
   }
 
   /** Counter-clockwise from the shown side. */
@@ -84,6 +97,7 @@ export class Surface {
       copy.positions.push(this.positions[index]!, this.positions[index + 1]!, -this.positions[index + 2]!);
     }
     copy.uvs.push(...this.uvs);
+    if (this.normals) copy.normals = this.normals.map((value, index) => (index % 3 === 2 ? -value : value));
     for (let index = 0; index < this.indices.length; index += 3) {
       copy.indices.push(this.indices[index]!, this.indices[index + 2]!, this.indices[index + 1]!);
     }
@@ -95,6 +109,7 @@ export class Surface {
     const copy = new Surface();
     copy.positions.push(...this.positions);
     copy.uvs.push(...this.uvs);
+    if (this.normals) copy.normals = this.normals.map((value) => -value);
     for (let index = 0; index < this.indices.length; index += 3) {
       copy.indices.push(this.indices[index]!, this.indices[index + 2]!, this.indices[index + 1]!);
     }
@@ -123,8 +138,9 @@ export class BoatMeshData {
    */
   add(surface: Surface, origin: Vec3Tuple = [0, 0, 0]): void {
     if (surface.indices.length === 0) return;
-    const normals: number[] = [];
-    VertexData.ComputeNormals(surface.positions, surface.indices, normals);
+    let normals: number[] = [];
+    if (surface.normals && surface.normals.length === surface.positions.length) normals = surface.normals;
+    else VertexData.ComputeNormals(surface.positions, surface.indices, normals);
     const base = this.vertexCount;
     for (let index = 0; index < surface.positions.length; index += 3) {
       this.positions.push(

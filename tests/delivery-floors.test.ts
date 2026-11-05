@@ -504,6 +504,13 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
     // becomes floor-pinnable the moment somebody runs it on the reference
     // host, by the house method's three runs.
     "water-400ft-glitter",
+    // The generated buildings: a hamlet from 300 ft, at eye height and at
+    // night, and inside a farmhouse. New frames, an unpinned host, and the
+    // buildings still to be reviewed with Jason, as for the boats and cars below.
+    "hamlet-300ft",
+    "hamlet-eye",
+    "hamlet-night",
+    "farmhouse-inside",
     // Boats: the speedboat at the dock, planing in chase and helm views, and
     // its wake under a low sun. New frames with no predecessor, authored on a
     // host that is not the reference adapter, and the look is still being
@@ -512,6 +519,13 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
     "boat-planing-35kn",
     "boat-helm",
     "boat-wake-lowsun",
+    // Cars: the LandCruiser in a forest clearing, climbing a dune, wading
+    // out of the sea and pulling away in its own dust, for the same reasons as
+    // the boats: new frames, an unpinned host, and a look still being tuned.
+    "car-clearing-chase",
+    "car-dune-cockpit",
+    "car-ford-chase",
+    "car-dust-chase",
   ].toSorted();
 
   it("the set of fully-unpinned probes is exactly the declared one", () => {

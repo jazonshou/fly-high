@@ -344,6 +344,41 @@ describe("ground-cover tile bake: the bytes", () => {
     expect(invalidated, "the bake never stopped inside an attribute row").toBe(true);
     expectSameBytes("columns, rewound mid attribute row", tile, expected);
   });
+
+  it("starts over only when a road change's predicate meets the tile", () => {
+    // `invalidateWhere`, as a streamed road's bins ask: the tile's own
+    // rectangle goes to the predicate, and a change elsewhere leaves the bake
+    // where it was.
+    const span = GROUND_COVER_TILE_SPAN_METERS;
+    let reads = 0;
+    const now = (): number => {
+      reads += 1;
+      return reads * 2 * BUDGET;
+    };
+    let checked = false;
+    bakeHomeTile({ ...worldSamplers, now }, (baking, update) => {
+      const internals = baking.internals;
+      if (checked || update < 2 || internals.backTileRow === 0) return;
+      checked = true;
+      const row = internals.backTileRow;
+      const asked: number[][] = [];
+      expect(baking.system.invalidateWhere((...rect) => {
+        asked.push(rect);
+        return false;
+      })).toBe(false);
+      expect(asked.length).toBeGreaterThan(0);
+      for (const [minX, minZ, maxX, maxZ] of asked) {
+        expect(maxX! - minX!).toBe(span);
+        expect(maxZ! - minZ!).toBe(span);
+      }
+      expect(internals.backTileRow).toBe(row);
+      expect(baking.system.invalidateWhere((minX, minZ, maxX, maxZ) =>
+        minX <= HOME_X && HOME_X < maxX && minZ <= HOME_Z && HOME_Z < maxZ)).toBe(true);
+      expect(internals.backTileRow).toBe(0);
+      expect(internals.backTilePhase).toBe("height");
+    });
+    expect(checked, "the bake finished before a second row").toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

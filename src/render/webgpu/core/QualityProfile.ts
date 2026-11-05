@@ -444,6 +444,60 @@ export interface WebGpuQualityProfile {
    */
   readonly boatWakeTrailSeconds: number;
   /**
+   * The LandCruiser: the instance cap on what it throws into the air
+   * (`CarParticleSystem`): dust off dry ground, mud, water off the tyres in a
+   * ford, the bow splash and exhaust smoke. One instanced draw at every cap,
+   * none while nothing is in the air; the emitters scale their rates to the
+   * cap, so a low cap is a thinner cloud rather than a shorter one. Car
+   * sessions only.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly vehicleParticleBudget: number;
+  /**
+   * The LandCruiser: the ring of tyre-track segments every tyre's print is laid
+   * in (`CarTrackSystem`), one instanced draw. A straight segment runs 2 m, so
+   * 1,024 keep about half a kilometre of four prints. 0 is OFF: no mesh, no
+   * material and no draw. Car sessions only.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly tyreTrackSegments: number;
+  /**
+   * Car sessions only: how far round the car the terrain may draw L0 below
+   * `finestResidentLevel`, metres, so the ground under the wheels is the
+   * ground the physics drives on (its 2 m lattice) on a tier whose floor is
+   * L1. 0 where the floor is already L0. The patch geomorphs to L1 over its
+   * outer `vehicleNearTerrainL0BandMeters`, and its nodes come on top of
+   * `cdlodNodeBudget`: at most `terrainNearFloorNodeAllowance` more (183 at
+   * 160 m), with the closures that ring it in L1.
+   */
+  readonly vehicleNearTerrainL0RadiusMeters: number;
+  /**
+   * The outer band of `vehicleNearTerrainL0RadiusMeters` over which the L0
+   * patch geomorphs to L1, metres, reaching it at the disc's edge so a node
+   * leaving the disc merges invisibly. No wider than the radius.
+   */
+  readonly vehicleNearTerrainL0BandMeters: number;
+  /**
+   * The roads' ribbons (`RoadSurfaceSystem`): how far from the camera the
+   * crisp running surface, its shoulders, a track's two ruts and the sealed
+   * road's edge lines are drawn over the splat paint, metres, decided per
+   * 128 m chunk. One draw while any chunk is in reach and none otherwise;
+   * beyond it the splat alone paints the road. 0 is OFF. Every session.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly roadRibbonRangeMeters: number;
+  /**
+   * Guardrails: how far from the camera their posts and beams are drawn,
+   * metres, decided per 128 m chunk; one draw. 0 is OFF. The car's colliders
+   * are the simulation's and never depend on it. Every session.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly barrierDrawRangeMeters: number;
+  /**
    * The home marina's near meshes (decks, pontoons, walls and buildings, the
    * piles and posts, the moored boats) cast sun shadows: three thin-instanced
    * casters, 2 draws each at two cascades, and only while the camera is
@@ -454,6 +508,50 @@ export interface WebGpuQualityProfile {
    * Data, not a `profile.tier` branch, per the tier rule.
    */
   readonly marinaCastsShadows: boolean;
+  /**
+   * The generated buildings (`StructureSystem`, the structures plan's tier
+   * rows): the kit's full-detail closed shells are drawn within this of the
+   * camera, metres, horizontally to a building's centre, and the blocks past
+   * it, the two dithered across a 40 m band. World content (the pads, the
+   * clearings, the colliders) is the same on every tier; only the drawing
+   * changes.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly structureNearRadiusMeters: number;
+  /**
+   * The blocks out to this, metres; 0 draws none. The settlements stream
+   * only `SETTLEMENT_STREAM_WINDOW` (3.9 km) round the observer, so the
+   * system draws no further than that whatever this says: the plan's 6 and
+   * 8 km on High and Ultra wait for a longer stream, where a 10 m house is
+   * a pixel or two tall anyway.
+   */
+  readonly structureFarRadiusMeters: number;
+  /** How many buildings next to the camera are drawn open (rooms, glass); 0 opens none. */
+  readonly structureOpenBuildings: number;
+  /** The near shells cast the sun's shadows (one caster, drawn once per cascade). */
+  readonly structureNearCastsShadows: boolean;
+  /**
+   * The building kit's material arrays (`kitTextures.ts`: boards, stone,
+   * shingle, windows...), texels on an edge; 0 draws the parts' colours
+   * alone. 256 is 8.7 MiB with full chains, 512 34.7 MiB — which High's
+   * 700 MiB ceiling has no room for at 2560×1440@2, so only Ultra takes it.
+   */
+  readonly structureTextureEdge: 0 | 256 | 512;
+  /**
+   * The most light points the buildings' lights take (`StructureLampPool`):
+   * four a building for its lit windows past the near radius, two a weather
+   * mast, four a lighthouse. In the home field's one light-point draw, so
+   * they add vertices and no draw; signal lights first, then the windows
+   * nearest the near radius.
+   */
+  readonly structureLampPoints: number;
+  /**
+   * The homes' chimneys smoke (`structureSmoke.ts`): wisps of the volcanic
+   * steam's one draw, within its wisp cap (vents first), so the draw is
+   * submitted wherever a smoking chimney is within 1.5 km.
+   */
+  readonly structureChimneySmoke: boolean;
   /** Airports spawned mid-flight — see `SpawnedAirfieldTier`. */
   readonly spawnedAirfields: SpawnedAirfieldTier;
 }
@@ -577,7 +675,20 @@ function resolveBaseQualityProfile(
       volcanicSteamMaxWisps: 0,
       boatSprayParticleCap: 256,
       boatWakeTrailSeconds: 12,
+      vehicleParticleBudget: 32,
+      tyreTrackSegments: 0,
+      vehicleNearTerrainL0RadiusMeters: 160,
+      vehicleNearTerrainL0BandMeters: 64,
+      roadRibbonRangeMeters: 150,
+      barrierDrawRangeMeters: 300,
       marinaCastsShadows: false,
+      structureNearRadiusMeters: 250,
+      structureFarRadiusMeters: 2_500,
+      structureOpenBuildings: 2,
+      structureNearCastsShadows: false,
+      structureTextureEdge: 0,
+      structureLampPoints: 256,
+      structureChimneySmoke: false,
       // Off: no structure meshes, no floods, no lamps — low has no memory
       // headroom, and a spawned field costs it nothing.
       spawnedAirfields: {
@@ -688,7 +799,20 @@ function resolveBaseQualityProfile(
       volcanicSteamMaxWisps: 128,
       boatSprayParticleCap: 1_024,
       boatWakeTrailSeconds: 24,
+      vehicleParticleBudget: 128,
+      tyreTrackSegments: 256,
+      vehicleNearTerrainL0RadiusMeters: 0,
+      vehicleNearTerrainL0BandMeters: 0,
+      roadRibbonRangeMeters: 500,
+      barrierDrawRangeMeters: 600,
       marinaCastsShadows: true,
+      structureNearRadiusMeters: 400,
+      structureFarRadiusMeters: 4_000,
+      structureOpenBuildings: 4,
+      structureNearCastsShadows: true,
+      structureTextureEdge: 256,
+      structureLampPoints: 1_024,
+      structureChimneySmoke: false,
       // Cheap: the nearest field only, 4 km draw reach, no shadow casting,
       // one field's floods.
       spawnedAirfields: {
@@ -789,7 +913,20 @@ function resolveBaseQualityProfile(
       volcanicSteamMaxWisps: 192,
       boatSprayParticleCap: 4_096,
       boatWakeTrailSeconds: 40,
+      vehicleParticleBudget: 256,
+      tyreTrackSegments: 512,
+      vehicleNearTerrainL0RadiusMeters: 0,
+      vehicleNearTerrainL0BandMeters: 0,
+      roadRibbonRangeMeters: 800,
+      barrierDrawRangeMeters: 900,
       marinaCastsShadows: true,
+      structureNearRadiusMeters: 600,
+      structureFarRadiusMeters: 6_000,
+      structureOpenBuildings: 6,
+      structureNearCastsShadows: true,
+      structureTextureEdge: 256,
+      structureLampPoints: 2_048,
+      structureChimneySmoke: true,
       // Full: the home field's 6 km structure reach, shadows, floods.
       spawnedAirfields: {
         maxStructureFields: 2,
@@ -891,7 +1028,20 @@ function resolveBaseQualityProfile(
     volcanicSteamMaxWisps: 256,
     boatSprayParticleCap: 4_096,
     boatWakeTrailSeconds: 40,
+    vehicleParticleBudget: 384,
+    tyreTrackSegments: 1_024,
+    vehicleNearTerrainL0RadiusMeters: 0,
+    vehicleNearTerrainL0BandMeters: 0,
+    roadRibbonRangeMeters: 1_200,
+    barrierDrawRangeMeters: 1_200,
     marinaCastsShadows: true,
+    structureNearRadiusMeters: 800,
+    structureFarRadiusMeters: 8_000,
+    structureOpenBuildings: 6,
+    structureNearCastsShadows: true,
+    structureTextureEdge: 512,
+    structureLampPoints: 2_048,
+    structureChimneySmoke: true,
     spawnedAirfields: {
       maxStructureFields: 2,
       structureBuildRadiusMeters: 8_000,

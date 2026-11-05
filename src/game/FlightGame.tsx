@@ -30,6 +30,7 @@ import {
   type GameSettings,
 } from "@/src/settings";
 import { AircraftPicker } from "@/src/ui/AircraftPicker";
+import { CarTyrePanel } from "@/src/ui/CarTyrePanel";
 import { Hud } from "@/src/ui/Hud";
 import { modalTabTarget } from "@/src/ui/modalFocus";
 import { SettingsDialog } from "@/src/ui/SettingsPanel";
@@ -59,6 +60,7 @@ import { DiagnosticsPoller, nearestAirportReadoutKey } from "./diagnosticsCadenc
 import { FramePacer, startIdleProbe, type IdleProbe } from "./framePacer";
 import { FreeFlyController } from "./freeFly";
 import { SimulationClient } from "./SimulationClient";
+import { sessionStartPoint } from "./surfaceSpawn";
 import { startFlightControlPump, type FlightControlPump } from "./controlPump";
 import {
   airborneGearForAircraft,
@@ -74,7 +76,7 @@ import {
   type RenderDiagnostics,
 } from "./types";
 import { handoffTrimSeed, heldElevator } from "@/src/sim";
-import type { SpawnKind } from "@/src/workers/protocol";
+import { isSurfaceSpawn, surfaceSpawnKind, type SpawnKind } from "@/src/workers/protocol";
 import { isAircraftKind, isSurfaceVehicleKind, type SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import {
   beginTransition,
@@ -236,6 +238,8 @@ export function FlightGame() {
       { dayOfYear: next.dayOfYear, solarTimeHours: next.solarTimeHours },
       next.weather,
     );
+    // The car's snow is the snow the terrain is painted with.
+    simulationRef.current?.setDayOfYear(next.dayOfYear);
     inputRef.current?.updateOptions({
       sensitivity: next.sensitivity,
       deadZone: next.gamepadDeadZone,
@@ -249,6 +253,7 @@ export function FlightGame() {
     });
     simulationRef.current?.setMode(next.flightMode);
     simulationRef.current?.setWeather(next.weather);
+    simulationRef.current?.setCarSetup({ gearbox: next.carGearbox, manualClutch: next.carManualClutch });
   }, [invalidatePendingTransitions]);
 
   const toggleNearestAirport = useCallback(() => {
@@ -417,11 +422,15 @@ export function FlightGame() {
   );
 
   /**
-   * A boat's only start: moored at its berth. There is no attract boat to
-   * hand off to, so this is the full reset a runway start is.
+   * A surface vehicle's only start: a boat moored at its berth, the car
+   * parked on the apron. There is no attract boat or car to hand off to, so
+   * this is the full reset a runway start is.
    */
-  const startAtDock = useCallback(
-    () => startNewFlight("dock", true),
+  const startSurfaceVehicle = useCallback(
+    () => {
+      const vehicle = chosenSurfaceVehicle(settingsRef.current);
+      return vehicle ? startNewFlight(surfaceSpawnKind(vehicle), true) : undefined;
+    },
     [startNewFlight],
   );
 
@@ -504,8 +513,9 @@ export function FlightGame() {
     //
     // A boat is the exception that proves it: it recovers upright and afloat
     // in open water near the wreck, still a boat, so its controls stay the
-    // boat's and a later restart still means the berth.
-    const recovery = spawnRef.current === "dock" ? "dock" : "airborne";
+    // boat's and a later restart still means the berth. A rolled car comes
+    // back on its wheels where it lies, still the car.
+    const recovery = isSurfaceSpawn(spawnRef.current) ? spawnRef.current : "airborne";
     inputRef.current?.resetForSpawn(
       recovery,
       airborneThrottleForAircraft(settingsRef.current.aircraft),
@@ -520,6 +530,18 @@ export function FlightGame() {
     simulationRef.current?.setPaused(false);
     updatePhase("flying");
   }, [startNewFlight, unlockAudio, updatePhase]);
+
+  /**
+   * R in a car session: the car back on its newest safe spot, upright and
+   * stopped, in the same drive (`GroundVehicleSimulator.recover`). The input
+   * is left alone, so the tyre pressures and the press counts carry on; the
+   * pause menu's Restart still starts the drive over.
+   */
+  const recoverCar = useCallback(() => {
+    simulationRef.current?.recover();
+    rendererRef.current?.cutCamera();
+    if (phaseRef.current === "paused") void resumeFlight();
+  }, [resumeFlight]);
 
   /** Returns to the live start view without silently replacing the current world. */
   const endFlight = useCallback(() => {
@@ -547,7 +569,8 @@ export function FlightGame() {
         if (settingsOpenRef.current) continue;
         if (action === "camera" && phaseRef.current === "flying") changeCamera();
         if (action === "reset" && phaseRef.current !== "menu") {
-          void restartFlight();
+          if (latestStateRef.current.vehicle?.kind === "car") recoverCar();
+          else void restartFlight();
         }
         if (action === "pause") {
           if (phaseRef.current === "flying") pauseFlight();
@@ -562,6 +585,7 @@ export function FlightGame() {
       applySettings,
       changeCamera,
       pauseFlight,
+      recoverCar,
       restartFlight,
       resumeFlight,
       toggleAutoland,
@@ -694,6 +718,16 @@ export function FlightGame() {
       const urlFarSward = readTerrainFarSwardFromUrl();
       const airportNetwork = startupResources.own(new AirportNetworkController(world));
       const surfaceVehicle = chosenSurfaceVehicle(activeSettings);
+      // Where the worker will put the session: the roads round it come in
+      // before the first pages bake. Read again after startup (below), as
+      // the phase can change while the renderer builds.
+      const startPoint = sessionStartPoint(
+        world,
+        phaseRef.current === "menu" ? "airborne" : spawnRef.current,
+        activeSettings.airborneStartAgl,
+        activeSettings.aircraft,
+        surfaceVehicle,
+      );
       const rendererOptions = {
         canvas,
         aircraft: activeSettings.aircraft,
@@ -724,6 +758,7 @@ export function FlightGame() {
           );
         },
         ...(world.airport ? { runway: world.airport } : {}),
+        startPoint,
         ...(urlFarSward ? { terrainFarSwardRead: urlFarSward } : {}),
         ...(bench ? bench.rendererOptions(canvas) : {}),
       };
@@ -782,6 +817,8 @@ export function FlightGame() {
         initialAttractMode,
         activeSettings.aircraft,
         surfaceVehicle,
+        { gearbox: activeSettings.carGearbox, manualClutch: activeSettings.carManualClutch },
+        activeSettings.dayOfYear,
       ));
       renderer.setTerrainAuthorityPublisher(simulation);
       renderer.setCameraMode(cameraModeRef.current);
@@ -801,6 +838,7 @@ export function FlightGame() {
       simulation.onError((message) => setError(message));
       simulation.onState((state) => {
         latestStateRef.current = state;
+        if (state.vehicle?.kind === "car") input.setCarSpeed(state.vehicle.speed);
         const lastAutoland = lastAutolandRef.current;
         if (lastAutoland && !state.autoland && state.simulationTime >= lastAutoland.time) {
           input.adoptConfiguration(lastAutoland.state.throttle, lastAutoland.state.flaps, lastAutoland.state.gear);
@@ -843,6 +881,7 @@ export function FlightGame() {
             setNearestAirport(nearest);
           }
         }
+        audio.observe(state);
         if (now - lastAudioUpdateRef.current > 35) {
           lastAudioUpdateRef.current = now;
           audio.update(state);
@@ -1099,6 +1138,12 @@ export function FlightGame() {
                   ? { ...settingsRef.current, aircraft: vehicle, vehicle }
                   : { ...settingsRef.current, vehicle },
               )}
+              carSetup={{ gearbox: settings.carGearbox, manualClutch: settings.carManualClutch }}
+              onCarSetupChange={(setup) => applySettings({
+                ...settingsRef.current,
+                carGearbox: setup.gearbox,
+                carManualClutch: setup.manualClutch,
+              })}
             />
             {/*
               * One wrapping row of two GROUPS, never four loose buttons. The two
@@ -1120,9 +1165,11 @@ export function FlightGame() {
                   <button
                     className="primary-action start-screen__start"
                     type="button"
-                    onClick={() => void startAtDock()}
-                    aria-label={`Start at the dock, moored and ready to cast off. ${CONTROL_MODE_LABELS[settings.flightMode]}`}
-                    title="At the dock"
+                    onClick={() => void startSurfaceVehicle()}
+                    aria-label={surfaceSpawnKind(chosenSurfaceVehicle(settings)!) === "airfield"
+                      ? `Start on the apron, parked and ready to drive. ${CONTROL_MODE_LABELS[settings.flightMode]}`
+                      : `Start at the dock, moored and ready to cast off. ${CONTROL_MODE_LABELS[settings.flightMode]}`}
+                    title={surfaceSpawnKind(chosenSurfaceVehicle(settings)!) === "airfield" ? "On the apron" : "At the dock"}
                   >
                     <span>Start</span>
                   </button>
@@ -1258,6 +1305,10 @@ export function FlightGame() {
                   ? visualState.crashed
                     ? "Restart afloat near where the boat was damaged"
                     : "Restart at the dock, where this trip began"
+                  : spawnKind === "airfield"
+                    ? visualState.crashed
+                      ? "Restart on the wheels where the car came to rest"
+                      : "Restart on the apron, where this drive began"
                   : visualState.crashed
                     ? "Restart airborne above the crash location"
                     : spawnKind === "runway"
@@ -1268,6 +1319,12 @@ export function FlightGame() {
               </button>
               <button onClick={endFlight}>End flight</button>
             </div>
+            {visualState.vehicle?.kind === "car" ? (
+              <CarTyrePanel
+                car={visualState.vehicle}
+                onChange={(pressure) => inputRef.current?.setCarTyrePressure(pressure)}
+              />
+            ) : null}
             <button
               className="pause-panel__settings"
               type="button"

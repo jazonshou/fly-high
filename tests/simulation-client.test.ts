@@ -12,7 +12,19 @@ import {
 } from "../src/game/SimulationClient";
 import { INITIAL_VISUAL_STATE, type FlightVisualState } from "../src/game/types";
 import { createWorld } from "../src/world";
+import {
+  changeInfrastructureRegions,
+  clearInfrastructureRegions,
+  infrastructureRegionsVersion,
+  type InfrastructureRegion,
+} from "../src/world/infrastructure";
 import type { SimulationEvent } from "../src/workers/protocol";
+import {
+  packInfrastructureRegionsUpdate,
+  unpackInfrastructureRegionsPost,
+  type InfrastructureRegionsPost,
+} from "../src/world/infrastructureSync";
+import { packHydrologyWater } from "../src/sim/water/hydrologyWater";
 import { TERRAIN_READBACK_RING_CAPACITY } from "../src/workers/terrainAuthority";
 
 class WorkerStub extends EventTarget {
@@ -229,6 +241,33 @@ describe("simulation worker load failures", () => {
     expect(WorkerStub.created).toHaveLength(1);
   });
 
+  it("replays a car's hydrology region intact after its arrays went to the failed worker", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("Worker", WorkerStub);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const client = new SimulationClient(createWorld(794), "unassisted", "airfield", "breezy", 450, false, "trainer", "landcruiser");
+    const first = WorkerStub.latest!;
+    const region = packHydrologyWater(
+      [{ points: [{ x: 0, y: 1, z: 0, widthMeters: 4, flowSpeedMetersPerSecond: 1 }, { x: 0, y: 0.9, z: 50, widthMeters: 4, flowSpeedMetersPerSecond: 1 }] }],
+      [{ surfaceHeight: 3, boundary: [{ x: 100, z: 0 }, { x: 120, z: 0 }, { x: 110, z: 20 }] }],
+    );
+    const expected = structuredClone(region);
+    client.publishHydrology("0:0", region);
+    expect(first.transfers.at(-1)).toHaveLength(5);
+    // What a real transfer does to the sender's arrays.
+    structuredClone(null, { transfer: first.transfers.at(-1)! });
+    expect(region.riverPoints.length).toBe(0);
+
+    first.failToLoad();
+    vi.advanceTimersByTime(SIMULATION_WORKER_RETRY_DELAY_MILLISECONDS);
+    const replayed = WorkerStub.latest!.messages.find(
+      (message) => (message as { type: string }).type === "hydrology",
+    ) as { key: string; region: typeof region };
+    expect(replayed.key).toBe("0:0");
+    expect(replayed.region).toEqual(expected);
+    client.dispose();
+  });
+
   it("holds only the newest pages the worker would keep for a replay", () => {
     vi.useFakeTimers();
     vi.stubGlobal("Worker", WorkerStub);
@@ -270,6 +309,9 @@ describe("simulation worker lifecycle commands", () => {
       airborneStartAgl: 450,
       attractMode: false,
       surfaceVehicle: null,
+      carSetup: { gearbox: "automatic", manualClutch: false },
+      infrastructure: { version: 0, reset: true, install: [], remove: [] },
+      dayOfYear: 171,
     });
 
     client.reset("runway", 450);
@@ -285,6 +327,73 @@ describe("simulation worker lifecycle commands", () => {
       airborneStartAgl: 735,
     });
     client.dispose();
+  });
+
+  it("sends a car's recovery as its own command, apart from the crash restart", () => {
+    vi.stubGlobal("Worker", WorkerStub);
+    const client = new SimulationClient(createWorld(123), "unassisted", "airfield", "breezy", 450, false, "trainer", "landcruiser");
+    const worker = WorkerStub.latest!;
+    client.recover();
+    expect(worker.messages.at(-1)).toEqual({ type: "recover" });
+    client.dispose();
+  });
+
+  it("posts each drawn hydrology region with its arrays transferred, and the end of one", () => {
+    vi.stubGlobal("Worker", WorkerStub);
+    const client = new SimulationClient(createWorld(123), "unassisted", "airfield", "breezy", 450, false, "trainer", "landcruiser");
+    const worker = WorkerStub.latest!;
+    const region = packHydrologyWater(
+      [{ points: [{ x: 0, y: 1, z: 0, widthMeters: 4, flowSpeedMetersPerSecond: 1 }, { x: 0, y: 0.9, z: 50, widthMeters: 4, flowSpeedMetersPerSecond: 1 }] }],
+      [{ surfaceHeight: 3, boundary: [{ x: 100, z: 0 }, { x: 120, z: 0 }, { x: 110, z: 20 }] }],
+    );
+    const buffers = [region.riverPoints, region.riverStarts, region.lakeLevels, region.lakeBoundary, region.lakeStarts].map((array) => array.buffer);
+    client.publishHydrology("0:0", region);
+    expect(worker.messages.at(-1)).toEqual({ type: "hydrology", key: "0:0", region });
+    expect(worker.transfers.at(-1)).toEqual(buffers);
+    client.evictHydrology("0:0");
+    expect(worker.messages.at(-1)).toEqual({ type: "hydrologyEvict", key: "0:0" });
+    client.dispose();
+  });
+
+  it("starts the worker on the settings' calendar day and sends each new one, for the car's snow", () => {
+    vi.stubGlobal("Worker", WorkerStub);
+    const world = createWorld(123);
+    const client = new SimulationClient(world, "unassisted", "airfield", "breezy", 450, false, "trainer", "landcruiser", undefined, 15);
+    const worker = WorkerStub.latest!;
+    expect((worker.messages[0] as { dayOfYear: number }).dayOfYear).toBe(15);
+    client.setDayOfYear(200);
+    expect(worker.messages.at(-1)).toEqual({ type: "dayOfYear", dayOfYear: 200 });
+    client.dispose();
+  });
+
+  it("starts the worker with the roads installed, then posts each change once", () => {
+    vi.stubGlobal("Worker", WorkerStub);
+    const world = createWorld(123);
+    const region: InfrastructureRegion = { key: "test:client", segments: [] };
+    changeInfrastructureRegions(world, [region]);
+    try {
+      const client = new SimulationClient(world, "unassisted");
+      const worker = WorkerStub.latest!;
+      const version = infrastructureRegionsVersion(world);
+      const posted = (worker.messages[0] as { infrastructure: InfrastructureRegionsPost }).infrastructure;
+      expect(unpackInfrastructureRegionsPost(posted)).toEqual({
+        version,
+        reset: true,
+        install: [region],
+        remove: [],
+      });
+      // Already in the start set: nothing to post.
+      client.publishInfrastructure({ version, reset: false, install: [region], remove: [] });
+      expect(worker.messages).toHaveLength(1);
+      const removal = changeInfrastructureRegions(world, [], [region.key])!;
+      const update = { version: removal.version, reset: false, install: [], remove: [region.key] };
+      client.publishInfrastructure(update);
+      client.publishInfrastructure(update);
+      expect(worker.messages.slice(1)).toEqual([{ type: "infrastructure", update: packInfrastructureRegionsUpdate(update) }]);
+      client.dispose();
+    } finally {
+      clearInfrastructureRegions();
+    }
   });
 
   it("recovers only a crashed simulator from its authoritative world coordinates", () => {
@@ -304,6 +413,19 @@ describe("simulation worker lifecycle commands", () => {
     expect(recovery).toContain('installSimulation(\n    "airborne"');
     expect(recovery).not.toContain("originX");
     expect(recovery).not.toContain("originZ");
+  });
+
+  it("recovers a car in place, never an aircraft or a boat, as a fresh start the renderer cuts to", () => {
+    const workerSource = readFileSync(
+      new URL("../src/workers/simulation.worker.ts", import.meta.url),
+      "utf8",
+    );
+    const recover = workerSource.match(/function recoverCar[\s\S]*?\n\}/u)?.[0] ?? "";
+    expect(recover).toContain("surface instanceof GroundVehicleSimulator");
+    expect(recover).toContain("surface.recover()");
+    expect(recover).toContain('post({ type: "ready"');
+    expect(recover).not.toContain("installSurface");
+    expect(workerSource).toContain('command.type === "recover"');
   });
 
   it("transfers terrain page and macro publications without adapter objects", () => {

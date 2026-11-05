@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { readSource } from "./support/sourceText";
@@ -93,6 +93,44 @@ describe("GPU buffer inventory policy", () => {
     expect(() => registerGpuBufferBytes(Number.NaN)).toThrow(RangeError);
     expect(() => releaseGpuBufferBytes(-1)).toThrow(RangeError);
     resetGpuBufferInventoryForTests();
+  });
+
+  it("has the renderer dispose every owner whose storage buffers it registers", () => {
+    // The count is process-wide, and a capture builds a fresh renderer at every
+    // world or vehicle boundary. An owner the renderer builds but leaves out of
+    // `dispose()` never releases its bytes, and the next renderer reads them as
+    // its own: the ground cover's blade lanes, about 3.3 MiB a swap, did this,
+    // so the car shots read 12.8 to 22.6 MiB of buffers where 6.2 were live.
+    const renderer = readSource("src/render/FlightRenderer.ts");
+    const disposeStart = renderer.indexOf("  dispose(): void {");
+    expect(disposeStart).toBeGreaterThan(0);
+    const disposeBody = renderer.slice(disposeStart, renderer.indexOf("\n  }\n", disposeStart));
+    const imports = new Map<string, string>();
+    for (const match of renderer.matchAll(/import \{([^}]*)\} from "(\.[^"]+)";/g)) {
+      for (const name of match[1]!.split(",")) {
+        const trimmed = name.replace(/^\s*type\s+/, "").trim();
+        if (trimmed) imports.set(trimmed, match[2]!);
+      }
+    }
+    const owners: string[] = [];
+    const missing: string[] = [];
+    for (const match of renderer.matchAll(/const (\w+) = new (\w+)\(/g)) {
+      const [, local, className] = match;
+      const from = imports.get(className!);
+      if (!from) continue;
+      const file = [`${from}.ts`, `${from}/index.ts`]
+        .map((candidate) => join("src/render", candidate))
+        .find((candidate) => existsSync(candidate));
+      if (!file) continue;
+      const source = readSource(file);
+      if (!source.includes("registerGpuBufferBytes")) continue;
+      // Only what the renderer keeps: a startup-only helper is not an owner.
+      if (!new RegExp(`this\\.${local} = ${local};`).test(renderer)) continue;
+      owners.push(local!);
+      if (!new RegExp(`this\\.${local}\\??\\.dispose\\(`).test(disposeBody)) missing.push(local!);
+    }
+    expect(owners).toEqual(expect.arrayContaining(["groundCover", "bathymetry"]));
+    expect(missing, "renderer-held owners of registered storage buffers that dispose() skips").toEqual([]);
   });
 
   it("is wired into the renderer's inventory floor", () => {

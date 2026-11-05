@@ -50,6 +50,7 @@ export {
   infrastructurePlantExclusions,
   infrastructurePlantFactor,
   INFRASTRUCTURE_PLANT_BLEND_METERS,
+  INFRASTRUCTURE_SURFACE_BOX_HALF_METERS,
   INFRASTRUCTURE_SURFACE_FEATHER_METERS,
   sampleInfrastructureSurface,
 } from "./infrastructure";

@@ -98,6 +98,37 @@ export const STEAM_FLOATS_PER_WISP = 12;
  * f32 in the shader however long the flight.
  */
 export const STEAM_CYCLE_PERIOD_SECONDS = 960;
+/**
+ * Other wisps than a vent's (`setExtraWisps`: the buildings' chimney smoke)
+ * add this to their noise seed to be drawn as smoke: the seed's whole part is
+ * otherwise unused (the wobble's sine and the noise's offset are periodic in
+ * it), so the flag costs no attribute.
+ */
+export const STEAM_SMOKE_SEED_OFFSET = 2;
+/**
+ * Wood smoke's single-scattering albedo, linear: a light blue-grey. A stove
+ * burning well gives thin smoke whose fine particles scatter most of what
+ * they intercept (biomass smoke's albedo is about 0.85-0.95, a little higher
+ * in the blue), so it reads pale grey against the sky, not dark.
+ */
+export const STEAM_SMOKE_ALBEDO: readonly [number, number, number] = Object.freeze([0.82, 0.84, 0.88] as const);
+
+/**
+ * The sky light a chimney's smoke scatters, as a share of the sky's radiance
+ * behind it. The steam takes the clouds' 0.22, made for a thick medium that
+ * shades its own inside; a stove's plume is thin, lit right through by the
+ * whole sky above it and the darker ground below, about 0.6 of the sky. At
+ * the clouds' share the plume came out darker than the sky behind it, a
+ * dirty smudge, where thin smoke reads pale.
+ */
+export const STEAM_SMOKE_AMBIENT_STRENGTH = 0.6;
+
+/**
+ * Writes `count` wisp records (`writeSteamWisps`' layout) at float `offset`
+ * of `out`, x and z relative to the anchor, for wind of `windSpeed` m/s.
+ */
+export type SteamWispWriter = (anchorX: number, anchorZ: number, windSpeed: number, out: Float32Array, offset: number) => void;
+
 /** Volcanism's seed channels are 240-259; steam takes the last, mixed with each vent's own seed. */
 export const STEAM_SEED_CHANNEL = 259;
 
@@ -247,7 +278,11 @@ export function sampleSteamWisp(
   out.z = records[at + 2]! + flowZ * travel - flowX * wobble;
   out.age = age;
   out.sizeMeters = records[at + 3]! * (0.45 + 1.35 * age);
-  out.alpha = records[at + 6]! * smoothstep(0, 0.12, age) * (1 - smoothstep(0.45, 1, age));
+  // Smoke leaves the flue at once and thins over most of its life, so the plume stays joined to the chimney.
+  const smoke = records[at + 8]! >= STEAM_SMOKE_SEED_OFFSET;
+  out.alpha = records[at + 6]! * (smoke
+    ? smoothstep(0, 0.04, age) * (1 - smoothstep(0.3, 1, age))
+    : smoothstep(0, 0.12, age) * (1 - smoothstep(0.45, 1, age)));
   return out;
 }
 
@@ -299,6 +334,8 @@ const STEAM_BACKWARD_G: f32 = ${wgslFloat(CLOUD.backwardPhaseG)};
 const STEAM_BACKWARD_BLEND: f32 = ${wgslFloat(CLOUD.backwardPhaseBlend)};
 const STEAM_MULTIPLE_SCATTERING: f32 = ${wgslFloat(CLOUD.multipleScatteringFactor)};
 const STEAM_AMBIENT_STRENGTH: f32 = ${wgslFloat(CLOUD.ambientStrength)};
+const STEAM_SMOKE_ALBEDO: vec3f = vec3f(${STEAM_SMOKE_ALBEDO.map(wgslFloat).join(", ")});
+const STEAM_SMOKE_AMBIENT_STRENGTH: f32 = ${wgslFloat(STEAM_SMOKE_AMBIENT_STRENGTH)};
 
 // cloudLighting's phase: forward and backward lobes, mixed, at an octave's g scale.
 fn steamPhase(mu: f32, gScale: f32) -> f32 {
@@ -334,7 +371,14 @@ fn main(input: VertexInputs) -> FragmentInputs {
   // A wisp the camera is about to fly through fades out before it fills the
   // screen: overdraw is the one way this effect could get expensive.
   let nearFade = smoothstep(size * 0.6, size * 2.0, distanceMeters);
-  let lifeFade = smoothstep(0.0, 0.12, age) * (1.0 - smoothstep(0.45, 1.0, age));
+  // Chimney smoke (a noise seed of 2 or more) leaves the flue at once and
+  // thins over most of its life, so the plume stays joined to the chimney.
+  let smoke = recordC.x >= ${wgslFloat(STEAM_SMOKE_SEED_OFFSET)};
+  let lifeFade = select(
+    smoothstep(0.0, 0.12, age) * (1.0 - smoothstep(0.45, 1.0, age)),
+    smoothstep(0.0, 0.04, age) * (1.0 - smoothstep(0.3, 1.0, age)),
+    smoke,
+  );
   let alpha = recordB.z * lifeFade * rangeFade * nearFade;
 
   // Camera-facing: the corner is added in view space. World up seen from
@@ -347,7 +391,8 @@ fn main(input: VertexInputs) -> FragmentInputs {
   let upOnScreen = uniforms.view[1].xy;
   let upLength = length(upOnScreen);
   let upAxis = select(vec2f(0.0, 1.0), upOnScreen / max(upLength, 1e-4), upLength > 1e-4);
-  let stretch = 0.6 * (1.0 - age) * upLength;
+  // Smoke leaves a flue slowly, as a puff rather than a jet: barely stretched.
+  let stretch = select(0.6, 0.15, smoke) * (1.0 - age) * upLength;
   let square = corner * size;
   let offset = square + upAxis * (dot(square, upAxis) * stretch);
   let viewCentre = uniforms.view * vec4f(centre, 1.0);
@@ -377,7 +422,11 @@ fn main(input: VertexInputs) -> FragmentInputs {
     orderEnergy *= STEAM_MULTIPLE_SCATTERING;
     orderScale *= 0.5;
   }
-  let radiance = sunAtWisp * phase + skyRadiance(rayDirection) * STEAM_AMBIENT_STRENGTH;
+  // Chimney smoke (a noise seed of 2 or more, \`STEAM_SMOKE_SEED_OFFSET\`) is
+  // the same medium greyed: wood smoke scatters less of what it is lit by.
+  let albedo = select(vec3f(1.0), STEAM_SMOKE_ALBEDO, smoke);
+  let ambient = select(STEAM_AMBIENT_STRENGTH, STEAM_SMOKE_AMBIENT_STRENGTH, smoke);
+  let radiance = (sunAtWisp * phase + skyRadiance(rayDirection) * ambient) * albedo;
   let haze = aerialPerspective(centre.y, distanceMeters, mu);
 
   vertexOutputs.position = clip;
@@ -449,7 +498,13 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // fbm of three octaves clusters around 0.5; stretch it before thresholding.
   let contrast = clamp((noise - 0.5) * 2.4 + 0.5, 0.0, 1.0);
   let threshold = 0.2 + 0.7 * radiusSquared;
-  let density = smoothstep(threshold, threshold + 0.35, contrast) * (1.0 - radiusSquared);
+  let steamDensity = smoothstep(threshold, threshold + 0.35, contrast) * (1.0 - radiusSquared);
+  // Smoke is a soft, full puff the noise only mottles, not steam's ragged
+  // wisps: overlapping puffs read as one plume, where ragged ones break into
+  // torn specks.
+  let rim = 1.0 - radiusSquared;
+  let smokeDensity = rim * rim * (0.5 + 0.5 * contrast);
+  let density = select(steamDensity, smokeDensity, seed >= ${wgslFloat(STEAM_SMOKE_SEED_OFFSET)});
 
   // Soft against terrain: fade with the gap between the wisp and the ground
   // behind it. A zero depth is sky, where nothing is behind the wisp.
@@ -568,6 +623,10 @@ export class VolcanicSteamSystem {
   private readonly scratchVent: MutableVent = { x: 0, z: 0, radiusMeters: 0, strength: 0, seed: 0 };
   private instances: Float32Array | null = null;
   private liveWisps = 0;
+  /** The other source's wisps (chimney smoke), after the vents' within the cap. */
+  private extraCount = 0;
+  private extraWriter: SteamWispWriter | null = null;
+  private extraWisps = 0;
   private cellX = Number.NaN;
   private cellZ = Number.NaN;
   private rebuildRequested = true;
@@ -706,6 +765,24 @@ export class VolcanicSteamSystem {
     this.rebuildRequested = true;
   }
 
+  /**
+   * Wisps from another source than the vents, drawn in this same draw after
+   * the vents' (the generated buildings' chimney smoke): `count` records,
+   * written by `writer` now and again whenever the vents' set is swapped in
+   * (a new anchor). The vents come first under the tier's cap. 0 removes them.
+   */
+  setExtraWisps(count: number, writer: SteamWispWriter | null): void {
+    this.extraCount = writer ? Math.max(0, Math.floor(count)) : 0;
+    this.extraWriter = writer;
+    const gpu = this.gpu;
+    if (gpu && !this.building) this.writeInstances(gpu, this.live);
+  }
+
+  /** Extra wisps (chimney smoke) in the instances now. */
+  get extraWispCount(): number {
+    return this.extraWisps;
+  }
+
   /** Per-frame haze binding, fanned out by the renderer like every ShaderMaterial consumer's. */
   setAerialPerspective(binding: AerialPerspectiveBinding): void {
     this.binding = binding;
@@ -752,7 +829,7 @@ export class VolcanicSteamSystem {
     }
     if (this.building) this.continueRebuild(gpu);
 
-    const draw = this.primePending || this.anyLiveVentInRange(cameraWorldX, cameraWorldZ);
+    const draw = this.primePending || this.extraWisps > 0 || this.anyLiveVentInRange(cameraWorldX, cameraWorldZ);
     this.primePending = false;
     if (gpu.mesh.isEnabled(false) !== draw) gpu.mesh.setEnabled(draw);
     if (!draw) return;
@@ -996,6 +1073,15 @@ export class VolcanicSteamSystem {
     }
     if (this.heightCursor < set.count) return;
 
+    this.writeInstances(gpu, set);
+    this.pending = this.live;
+    this.live = set;
+    this.building = false;
+    this.anchorUniform.set(set.anchorX - this.originX, 0, set.anchorZ - this.originZ);
+  }
+
+  /** The set's vents' wisps, then the extra source's, into the instances, uploaded. */
+  private writeInstances(gpu: SteamGpu, set: SteamVentSet): void {
     const instances = this.instances!;
     const vent = this.scratchVent;
     let wisps = 0;
@@ -1020,14 +1106,23 @@ export class VolcanicSteamSystem {
       );
       wisps += count;
     }
+    const vents = wisps;
+    const extra = Math.min(this.extraCount, this.maxWisps - wisps);
+    if (extra > 0 && this.extraWriter) {
+      // The writer fills its whole count; past the cap it goes to scratch and only `extra` are kept.
+      if (extra === this.extraCount) {
+        this.extraWriter(set.anchorX, set.anchorZ, this.windSpeed, instances, wisps * STEAM_FLOATS_PER_WISP);
+      } else {
+        const scratch = new Float32Array(this.extraCount * STEAM_FLOATS_PER_WISP);
+        this.extraWriter(set.anchorX, set.anchorZ, this.windSpeed, scratch, 0);
+        instances.set(scratch.subarray(0, extra * STEAM_FLOATS_PER_WISP), wisps * STEAM_FLOATS_PER_WISP);
+      }
+      wisps += extra;
+    }
     if (wisps === 0) instances.fill(0, 0, STEAM_FLOATS_PER_WISP);
     gpu.buffer.updateDirectly(instances, 0);
     gpu.mesh.forcedInstanceCount = Math.max(1, wisps);
-
-    this.pending = this.live;
-    this.live = set;
-    this.liveWisps = wisps;
-    this.building = false;
-    this.anchorUniform.set(set.anchorX - this.originX, 0, set.anchorZ - this.originZ);
+    this.liveWisps = vents;
+    this.extraWisps = Math.max(0, extra);
   }
 }
