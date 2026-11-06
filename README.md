@@ -1,6 +1,6 @@
 # fly high
 
-![fly high](flyhigh.jpeg)
+![A Boeing 747-8 banking over a coast at sunset in fly high](flyhigh.jpeg)
 
 Built with TypeScript, React, and Babylon.js on WebGPU.
 
