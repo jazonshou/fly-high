@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AIRCRAFT_CATALOGUE } from "../src/aircraft/catalogue";
-import { AircraftPicker } from "../src/ui/AircraftPicker";
+import { AircraftPicker, vehicleAfterClosingBeta } from "../src/ui/AircraftPicker";
 import { AIRCRAFT_KINDS } from "../src/sim";
 import { SURFACE_VEHICLE_CATALOGUE } from "../src/vehicles/catalogue";
 import { SURFACE_VEHICLE_KINDS, VEHICLE_KINDS, type VehicleKind } from "../src/vehicles/kinds";
@@ -19,8 +19,9 @@ describe("aircraft picker", () => {
   it("offers every airframe and boat in the catalogues as one native labelled radio group", () => {
     // Driven off the catalogues rather than a hand-written list, so adding an
     // aeroplane cannot leave the picker showing the old two while the rest of
-    // the game flies three.
-    const markup = renderPicker("trainer");
+    // the game flies three. Rendered with a boat chosen, so the Beta group is
+    // open and every vehicle is on screen.
+    const markup = renderPicker("speedboat");
     const values = [...markup.matchAll(/<input[^>]*\bvalue="([^"]+)"[^>]*>/g)]
       .map((match) => match[1]);
     const labels = [...markup.matchAll(/<label\b[^>]*>([\s\S]*?)<\/label>/g)]
@@ -35,7 +36,7 @@ describe("aircraft picker", () => {
     expect(markup.match(/name="vehicle"/g)).toHaveLength(count);
     // The aeroplanes first, in catalogue order, then the boats.
     expect(values).toEqual([...AIRCRAFT_KINDS, ...SURFACE_VEHICLE_KINDS]);
-    expect(markup.match(/class="aircraft-picker__surface"/g)).toHaveLength(SURFACE_VEHICLE_KINDS.length);
+    expect(markup.match(/class="(?:is-selected )?aircraft-picker__surface"/g)).toHaveLength(SURFACE_VEHICLE_KINDS.length);
     for (const spec of [...AIRCRAFT_CATALOGUE, ...SURFACE_VEHICLE_CATALOGUE]) {
       expect(markup).toContain(spec.name);
       // The role is a TOOLTIP now, not rendered text — Jason asked for names
@@ -48,10 +49,52 @@ describe("aircraft picker", () => {
     expect(markup).not.toMatch(/<small>/);
   });
 
+  it("shows only the four aeroplanes by default, with the boat and the car behind a Beta button", () => {
+    // Jason, 2026-11-05: "move the boat/car start options under a beta
+    // tab/button - so default should still be the 4 planes".
+    const markup = renderPicker("trainer");
+    const values = [...markup.matchAll(/<input[^>]*\bvalue="([^"]+)"[^>]*>/g)]
+      .map((match) => match[1]);
+    expect(values).toEqual([...AIRCRAFT_KINDS]);
+    expect(markup).not.toContain("aircraft-picker__surface");
+    for (const spec of SURFACE_VEHICLE_CATALOGUE) expect(markup).not.toContain(spec.name);
+
+    const toggle = markup.match(/<button\b[^>]*class="aircraft-picker__beta"[^>]*>[\s\S]*?<\/button>/)?.[0];
+    expect(toggle).toBeDefined();
+    expect(toggle).toContain('type="button"');
+    expect(toggle).toContain('aria-expanded="false"');
+    expect(toggle).toContain(">Beta</span>");
+    // After the last aeroplane, so the four keep their two-by-two grid.
+    const lastAircraft = markup.indexOf(`value="${AIRCRAFT_KINDS[AIRCRAFT_KINDS.length - 1]}"`);
+    expect(markup.indexOf("aircraft-picker__beta")).toBeGreaterThan(lastAircraft);
+  });
+
+  it("opens the Beta group by itself when a boat or the car is already chosen", () => {
+    for (const kind of SURFACE_VEHICLE_KINDS) {
+      const markup = renderPicker(kind);
+      expect(markup).toContain('class="aircraft-picker__beta is-open"');
+      expect(markup).toContain('aria-expanded="true"');
+      // The button sits between the aeroplanes and the beta vehicles.
+      const button = markup.indexOf("aircraft-picker__beta");
+      for (const aircraft of AIRCRAFT_KINDS) expect(markup.indexOf(`value="${aircraft}"`)).toBeLessThan(button);
+      for (const surface of SURFACE_VEHICLE_KINDS) expect(markup.indexOf(`value="${surface}"`)).toBeGreaterThan(button);
+    }
+  });
+
+  it("goes back to the aircraft behind the menu only when the group closes on a beta vehicle", () => {
+    // Opening chooses nothing; closing with an aeroplane chosen keeps it.
+    expect(vehicleAfterClosingBeta("jet", false, "airliner")).toBeNull();
+    expect(vehicleAfterClosingBeta("jet", true, "airliner")).toBeNull();
+    // Closing with the boat or the car chosen never leaves a hidden selection.
+    expect(vehicleAfterClosingBeta("speedboat", true, "airliner")).toBe("airliner");
+    expect(vehicleAfterClosingBeta("landcruiser", true, "bizjet")).toBe("bizjet");
+    expect(vehicleAfterClosingBeta("landcruiser", true, undefined)).toBe(AIRCRAFT_KINDS[0]);
+  });
+
   it("names the four aeroplanes and the boat the game actually ships", () => {
     // The one place the literal names are asserted: a catalogue-driven test
     // would happily pass on an empty catalogue or a renamed aeroplane.
-    const markup = renderPicker("trainer");
+    const markup = renderPicker("speedboat");
     expect(markup).toContain("Cessna 150");
     expect(markup).toContain("F-16C Fighting Falcon");
     expect(markup).toContain("Bombardier Global 8000");
@@ -120,5 +163,7 @@ describe("aircraft picker", () => {
     expect(menu).toContain("Generate a new world. Current seed");
     expect(menu).toContain('aria-controls="settings-dialog"');
     expect(menu?.match(/<AircraftPicker/g)).toHaveLength(1);
+    // The aircraft behind the menu, for the Beta button to fall back to.
+    expect(menu).toContain("aircraft={settings.aircraft}");
   });
 });
