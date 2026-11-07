@@ -1,6 +1,6 @@
 # fly high
 
-![A Boeing 747-8 banking over a coast at sunset in fly high](flyhigh.jpeg)
+![A Cessna 150 over a coast at sunset in fly high, with the in-game HUD](flyhigh.jpeg)
 
 Built with TypeScript, React, and Babylon.js on WebGPU.
 
