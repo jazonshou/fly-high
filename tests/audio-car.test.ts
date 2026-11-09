@@ -16,7 +16,6 @@ import { surfaceVehicleSpec } from "../src/vehicles/catalogue";
 const CAR: CarVisualState = {
   kind: "car",
   speed: 0,
-  gearbox: "automatic",
   selector: "D",
   gear: 1,
   range: "2H",
@@ -25,7 +24,6 @@ const CAR: CarVisualState = {
   downhillAssistActive: false,
   tractionControlActive: false,
   absActive: false,
-  clutch: 1,
   engineRunning: true,
   stalled: false,
   flooded: false,

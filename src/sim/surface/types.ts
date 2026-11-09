@@ -1,7 +1,6 @@
 import type {
   BoatControlState,
   CarControlState,
-  CarSetup,
   FlightMode,
   PersonControlState,
   VehicleVisualPayload,
@@ -98,29 +97,19 @@ export interface SurfaceVehicleSpawn {
   heading: number;
   /** Starts made fast to a berth (the dock start). */
   moored: boolean;
-  /** The car's gearbox and clutch choice; absent for a boat. */
-  car?: CarSetup;
 }
 
 export const NEUTRAL_CAR_CONTROLS: Readonly<CarControlState> = Object.freeze({
   accelerator: 0,
+  reverse: 0,
   brake: 0,
   steer: 0,
   handbrake: 0,
-  clutch: 0,
-  shiftUpPresses: 0,
-  shiftDownPresses: 0,
-  autoModePresses: 0,
   rangePresses: 0,
   lockPresses: 0,
   downhillAssistPresses: 0,
   headlightPresses: 0,
   tyrePressure: "road",
-});
-
-export const DEFAULT_CAR_SETUP: Readonly<CarSetup> = Object.freeze({
-  gearbox: "automatic",
-  manualClutch: false,
 });
 
 export const NEUTRAL_BOAT_CONTROLS: Readonly<BoatControlState> = Object.freeze({

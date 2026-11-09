@@ -60,7 +60,7 @@ function digest(sim: GroundVehicleSimulator): number[] {
 describe("LandCruiser step", () => {
   it("is bit-identical after ten minutes of identical inputs", () => {
     const run = () => {
-      const sim = car({}, ROLLING);
+      const sim = car(ROLLING);
       for (let i = 0; i < 600 * 120; i += 1) {
         script(sim, i);
         sim.step(STEP);
@@ -95,7 +95,7 @@ describe("LandCruiser step", () => {
       }
     }
     const sim = new GroundVehicleSimulator(
-      { position: { x: 0, y: -0.5, z: 0 }, heading: 0, moored: false, car: { gearbox: "automatic", manualClutch: false } },
+      { position: { x: 0, y: -0.5, z: 0 }, heading: 0, moored: false },
       {
         ground: groundOf((out) => {
           out.height = -0.5;
@@ -135,7 +135,7 @@ describe("LandCruiser step", () => {
   });
 
   it("allocates nothing in the step", () => {
-    const sim = car({}, ROLLING);
+    const sim = car(ROLLING);
     let i = 0;
     for (; i < 2_400; i += 1) {
       script(sim, i);
@@ -165,7 +165,7 @@ describe("LandCruiser step", () => {
   });
 
   it(`steps in under ${BUDGET_MS * 1000} us on rolling ground, on the tuning box`, () => {
-    const sim = car({}, ROLLING);
+    const sim = car(ROLLING);
     let i = 0;
     for (; i < 2_400; i += 1) {
       script(sim, i);

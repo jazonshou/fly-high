@@ -6,7 +6,6 @@ import { INITIAL_VISUAL_STATE, type CarVisualState, type FlightVisualState } fro
 import { AircraftPicker } from "../src/ui/AircraftPicker";
 import {
   CAR_TACHOMETER_REDLINE_RPM,
-  carGearLabel,
   CarHud,
   compassPoint,
   carTiltLevel,
@@ -18,15 +17,14 @@ import { Hud } from "../src/ui/Hud";
 import { LANDCRUISER_76 } from "../src/vehicles/landcruiser76";
 
 /**
- * The car's panels: the HUD (speed, tachometer, gear, range, lamps,
- * inclinometer, wading bar, alerts, nearest airport), the picker's gearbox
- * choice on the car's card and the pause menu's tyre panel.
+ * The car's panels: the HUD (speed, tachometer, range, lamps,
+ * inclinometer, wading bar, alerts, nearest airport), the picker's car card
+ * and the pause menu's tyre panel.
  */
 
 const carPayload = (overrides: Partial<CarVisualState> = {}): CarVisualState => ({
   kind: "car",
   speed: 0,
-  gearbox: "automatic",
   selector: "P",
   gear: 0,
   range: "2H",
@@ -35,7 +33,6 @@ const carPayload = (overrides: Partial<CarVisualState> = {}): CarVisualState => 
   downhillAssistActive: false,
   tractionControlActive: false,
   absActive: false,
-  clutch: 1,
   engineRunning: true,
   stalled: false,
   flooded: false,
@@ -113,17 +110,14 @@ describe("the car's HUD", () => {
     expect(imperial).toContain('aria-label="ELEV: 394 FT"');
   });
 
-  it("labels the gear as the automatic's selector or the manual's gear", () => {
-    expect(carGearLabel(carPayload({ selector: "P" }))).toBe("P");
-    expect(carGearLabel(carPayload({ selector: "D", gear: 4 }))).toBe("D");
-    expect(carGearLabel(carPayload({ selector: "M", gear: 3 }))).toBe("M3");
-    expect(carGearLabel(carPayload({ selector: "R", gear: -1 }))).toBe("R");
-    expect(carGearLabel(carPayload({ gearbox: "manual", selector: null, gear: -1 }))).toBe("R");
-    expect(carGearLabel(carPayload({ gearbox: "manual", selector: null, gear: 0 }))).toBe("N");
-    expect(carGearLabel(carPayload({ gearbox: "manual", selector: null, gear: 5 }))).toBe("5");
-    const manual = renderCar(carPayload({ gearbox: "manual", selector: null, gear: 2 }));
-    expect(manual).toContain('aria-label="Gear 2"');
-    expect(manual).toContain("MANUAL");
+  it("shows no gear: the pedals choose the way and the automatic its gear", () => {
+    for (const car of [carPayload(), carPayload({ selector: "D", gear: 4 }), carPayload({ selector: "R", gear: -1 })]) {
+      const html = renderCar(car);
+      expect(html).not.toContain("<small>GEAR</small>");
+      expect(html).not.toContain('aria-label="Gear');
+      expect(html).not.toContain("MANUAL");
+      expect(html).not.toMatch(/gears/i);
+    }
   });
 
   it("draws the tachometer against the engine's own fuel cut", () => {
@@ -273,40 +267,17 @@ describe("the car's HUD", () => {
     expect(html).toContain("flight-hud--car");
     expect(html).toContain("flight-hud--car-cockpit");
     expect(html).toContain("KQRT");
-    expect(html).toContain('aria-label="Gear D"');
+    expect(html).toContain('aria-label="Range 2H"');
   });
 });
 
-describe("the picker's gearbox choice", () => {
-  const render = (vehicle: "landcruiser" | "speedboat" | "trainer", gearbox: "automatic" | "manual", manualClutch = false) =>
-    renderToStaticMarkup(createElement(AircraftPicker, {
-      value: vehicle,
-      onChange: () => undefined,
-      carSetup: { gearbox, manualClutch },
-      onCarSetupChange: () => undefined,
-    }));
-
-  it("opens on the car's card only while the car is chosen", () => {
-    expect(render("trainer", "automatic")).not.toContain("aircraft-picker__car-setup");
-    expect(render("speedboat", "automatic")).not.toContain("aircraft-picker__car-setup");
-    const car = render("landcruiser", "automatic");
-    expect(car).toContain("aircraft-picker__car-setup");
-    expect(car).toMatch(/checked="" value="automatic"/);
-    // The clutch is the manual's: the automatic has none.
-    expect(car).not.toContain("Clutch pedal");
-  });
-
-  it("offers the clutch pedal with the manual, as settings hold it", () => {
-    const manual = render("landcruiser", "manual");
-    expect(manual).toMatch(/checked="" value="manual"/);
-    expect(manual).toContain("Clutch pedal");
-    expect(manual).not.toMatch(/type="checkbox" checked=""/);
-    expect(render("landcruiser", "manual", true)).toMatch(/type="checkbox" checked=""/);
-  });
-
-  it("leaves the picker exactly as it was without a car setup", () => {
-    const plain = renderToStaticMarkup(createElement(AircraftPicker, { value: "landcruiser", onChange: () => undefined }));
-    expect(plain).not.toContain("aircraft-picker__car-setup");
+describe("the picker's car card", () => {
+  it("carries no gearbox choice: the car has the automatic alone", () => {
+    const html = renderToStaticMarkup(createElement(AircraftPicker, { value: "landcruiser", onChange: () => undefined }));
+    expect(html).toMatch(/checked="" value="landcruiser"/);
+    expect(html).not.toContain("Gearbox");
+    expect(html).not.toContain("Clutch pedal");
+    expect(html).not.toContain('name="car-gearbox"');
   });
 });
 

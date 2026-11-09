@@ -1,16 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { GroundVehicleSimulator } from "../src/sim/ground";
-import { ENGINE } from "../src/sim/ground/drivelineSolver";
-import { LANDCRUISER_76 } from "../src/vehicles/landcruiser76";
 import { car, drive, headingOf, slopeAhead, speedOf, STEP } from "./support/carRig";
 
 /**
  * The LandCruiser 76's driveline against its published numbers (land plan,
- * "Physics tests"): the crawl ratios, holding on a 20 degree slope, the
- * manual's launches and stall, braking from 100 km/h, and windup in 4H.
+ * "Physics tests"): the crawl ratio, holding on a 20 degree slope, a launch
+ * up it, braking from 100 km/h, and windup in 4H.
  */
 
-const CAR = LANDCRUISER_76;
 const KMH = 1 / 3.6;
 
 /** How far the car has moved along its forward axis since `from`, metres. */
@@ -28,7 +25,7 @@ function meanWheelOmega(sim: GroundVehicleSimulator, wheels: readonly number[]):
 }
 
 describe("LandCruiser driveline", () => {
-  it("has the published 38.51 and 48.69 crawl ratios in first, 4L", () => {
+  it("has the published 38.51 crawl ratio in first, 4L", () => {
     // Press counts start from the first one the car sees.
     const automatic = car();
     drive(automatic, 0.1, { handbrake: 1 });
@@ -39,20 +36,11 @@ describe("LandCruiser driveline", () => {
     expect(automatic.transmission.gear).toBe(1);
     const atRatio = automatic.transmission.inputOmega / meanWheelOmega(automatic, [2, 3]);
     expect(atRatio).toBeCloseTo(38.51, 1);
-
-    const manual = car({ gearbox: "manual" });
-    drive(manual, 0.1, { handbrake: 1 });
-    drive(manual, 0.5, { handbrake: 1, rangePresses: 2 });
-    drive(manual, 6, { accelerator: 0.2, rangePresses: 2 });
-    expect(manual.transmission.gear).toBe(1);
-    expect(manual.transmission.clutch).toBe(1);
-    const mtRatio = manual.driveline.omega[ENGINE]! / meanWheelOmega(manual, [0, 1, 2, 3]);
-    expect(Math.abs(mtRatio / 48.69 - 1)).toBeLessThan(0.005);
   });
 
-  it("holds on a 20 degree slope with the brake held through the stop, and on the handbrake alone in 4H", () => {
-    // Up the slope in D, then the brake held through the stop and on for a minute.
-    const braked = car({}, slopeAhead(20));
+  it("holds on a 20 degree slope with the brake held through the stop, and in P in 4H with nothing held", () => {
+    // Up the slope in D, then the brake (Space) held through the stop and on for a minute, still in D.
+    const braked = car(slopeAhead(20));
     drive(braked, 1, { handbrake: 1 });
     drive(braked, 3, { accelerator: 0.6 });
     expect(speedOf(braked)).toBeGreaterThan(1);
@@ -67,14 +55,14 @@ describe("LandCruiser driveline", () => {
     );
     expect(braked.transmission.gear).toBe(1);
 
-    // The manual in neutral (the player's clutch), 4H, held by the transmission drum alone.
-    const parked = car({ gearbox: "manual", manualClutch: true }, slopeAhead(20));
-    drive(parked, 0.1, { handbrake: 1 });
-    drive(parked, 3, { handbrake: 1, rangePresses: 1 });
+    // A start on the slope: P, every pedal up, 4H, held by the parking pawl alone.
+    const parked = car(slopeAhead(20));
+    drive(parked, 0.1, {});
+    drive(parked, 3, { rangePresses: 1 });
+    expect(parked.transmission.selector).toBe("P");
     expect(parked.transmission.range).toBe("4H");
-    expect(parked.transmission.gear).toBe(0);
     const start = { ...parked.state.position };
-    drive(parked, 60, { handbrake: 1, rangePresses: 1 });
+    drive(parked, 60, { rangePresses: 1 });
     const parkedCreep = Math.hypot(
       parked.state.position.x - start.x,
       parked.state.position.y - start.y,
@@ -84,8 +72,8 @@ describe("LandCruiser driveline", () => {
     expect(parkedCreep).toBeLessThan(0.01);
   });
 
-  it("launches up a 20 degree slope on the auto-clutch without stalling or rolling back", () => {
-    const sim = car({ gearbox: "manual" }, slopeAhead(20));
+  it("launches up a 20 degree slope from P without stalling or rolling back", () => {
+    const sim = car(slopeAhead(20));
     drive(sim, 2, { handbrake: 1 });
     const start = { ...sim.state.position };
     let rollback = 0;
@@ -97,19 +85,6 @@ describe("LandCruiser driveline", () => {
     expect(stalled).toBe(false);
     expect(rollback).toBeGreaterThan(-0.02);
     expect(along(sim, start)).toBeGreaterThan(5);
-  });
-
-  it("stalls when the player's clutch is let out in gear at idle, and restarts with the pedal down", () => {
-    const sim = car({ gearbox: "manual", manualClutch: true });
-    drive(sim, 1, { handbrake: 1, clutch: 1 });
-    drive(sim, 0.2, { handbrake: 1, clutch: 1, shiftUpPresses: 1 });
-    expect(sim.transmission.gear).toBe(1);
-    drive(sim, 2, { handbrake: 1, clutch: 0, shiftUpPresses: 1 });
-    expect(sim.engine.running).toBe(false);
-    expect(sim.visualState().stalled).toBe(true);
-    drive(sim, 2.5, { handbrake: 1, clutch: 1, shiftUpPresses: 1 });
-    expect(sim.engine.running).toBe(true);
-    expect(sim.engineRpm).toBeGreaterThan(CAR.engine.idleRpm * 0.9);
   });
 
   it("stops from 100 km/h on dry asphalt in a published-like distance, and steers under ABS", () => {

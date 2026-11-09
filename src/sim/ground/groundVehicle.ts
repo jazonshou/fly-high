@@ -2,7 +2,6 @@ import {
   CAR_WHEELS,
   type CarControlState,
   type CarHeadlights,
-  type CarSetup,
   type CarTyrePressure,
   type CarVisualState,
 } from "@/src/game/types";
@@ -12,7 +11,6 @@ import { createColliderContact, type ColliderAabb } from "../colliders";
 import { clamp, inverseRotateVectorInto, quaternionFromFlightAngles, rotateVectorInto, wrapAngle } from "../math";
 import { RigidBody } from "../rigidBody";
 import {
-  DEFAULT_CAR_SETUP,
   NEUTRAL_CAR_CONTROLS,
   type SurfaceVehicleControls,
   type SurfaceVehicleEnvironment,
@@ -410,7 +408,6 @@ function presetPressure(preset: CarTyrePressure): number {
 
 export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   readonly state: VehiclePoseState;
-  readonly setup: Readonly<CarSetup>;
   private readonly body: RigidBody;
   private readonly controls: CarControlState = { ...NEUTRAL_CAR_CONTROLS };
   private environment: Readonly<SurfaceVehicleEnvironment> | null = null;
@@ -557,7 +554,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private readonly curveY = createResolvedCurve();
   private readonly slip = createCombinedSlipResult();
   private readonly converter: ConverterState = { pumpOmega: 0, turbineOmega: 0, pump: 0, turbine: 0 };
-  private readonly motion: TransmissionMotion = { dt: 0, speed: 0, rearPropOmega: 0, engineOmega: 0 };
+  private readonly motion: TransmissionMotion = { dt: 0, speed: 0, rearPropOmega: 0 };
   private readonly tyreInput = createTyreInput(TYRE.nominalLoad);
   private readonly contactPoint: Vec3 = { x: 0, y: 0, z: 0 };
   // This step's numbers, as fields so that no call passes one.
@@ -577,12 +574,11 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
   private readonly normalScratch: Vec3 = { x: 0, y: 1, z: 0 };
 
   constructor(spawn?: SurfaceVehicleSpawn, options: GroundVehicleOptions = {}) {
-    this.setup = spawn?.car ?? DEFAULT_CAR_SETUP;
     this.fixedGround = options.ground ?? null;
     this.fixedSurface = options.surface ?? null;
     this.decks = new DeckGround(this.fixedGround ?? this.lattice);
-    this.engine = new Engine(this.setup.gearbox === "manual" ? CAR.engine.manualTorque : CAR.engine.automaticTorque);
-    this.transmission = new Transmission(this.setup);
+    this.engine = new Engine(CAR.engine.torque);
+    this.transmission = new Transmission();
     const heading = spawn?.heading ?? 0;
     const position = spawn?.position ?? { x: 0, y: 0, z: 0 };
     const orientation = quaternionFromFlightAngles(heading, 0, 0);
@@ -635,13 +631,10 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     const car = controls.car ?? NEUTRAL_CAR_CONTROLS;
     const c = this.controls;
     c.accelerator = finite01(car.accelerator);
+    c.reverse = finite01(car.reverse);
     c.brake = finite01(car.brake);
     c.steer = Number.isFinite(car.steer) ? clamp(car.steer, -1, 1) : 0;
     c.handbrake = finite01(car.handbrake);
-    c.clutch = finite01(car.clutch);
-    c.shiftUpPresses = car.shiftUpPresses;
-    c.shiftDownPresses = car.shiftDownPresses;
-    c.autoModePresses = car.autoModePresses;
     c.rangePresses = car.rangePresses;
     c.lockPresses = car.lockPresses;
     c.downhillAssistPresses = car.downhillAssistPresses;
@@ -659,8 +652,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     else if (car.downhillAssistPresses !== this.downhillPresses && Number.isFinite(car.downhillAssistPresses)) {
       const presses = car.downhillAssistPresses - this.downhillPresses;
       this.downhillPresses = car.downhillAssistPresses;
-      // Downhill assist is the automatic's alone.
-      if (presses > 0 && presses % 2 === 1 && this.setup.gearbox === "automatic") this.downhillAssist = !this.downhillAssist;
+      if (presses > 0 && presses % 2 === 1) this.downhillAssist = !this.downhillAssist;
     }
   }
 
@@ -738,9 +730,9 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
 
   /**
    * R in a car session (land plan, "Recovery"): the car back on its newest
-   * safe spot, upright and stopped, its engine running dry and its box in P
-   * (or first with the clutch open), in the same drive: the setup, range,
-   * locks, tyre pressures and lights stay as they were. A spot the car is
+   * safe spot, upright and stopped, its engine running dry and its box in P,
+   * in the same drive: the range, locks, tyre pressures and lights stay as
+   * they were. A spot the car is
    * still on is dropped for the one before, so each press steps further
    * back; the oldest is kept. With no spot yet the car comes upright where
    * it lies. It is seated on the ground at its next step, through the spawn
@@ -914,8 +906,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     motion.dt = dt;
     motion.speed = speed;
     motion.rearPropOmega = this.transmission.finalDrive * 0.5 * (omega[3]! + omega[4]!);
-    motion.engineOmega = omega[ENGINE]!;
-    this.transmission.update(c, motion, this.engine, this.pedals);
+    this.transmission.update(c, motion, this.pedals);
     if (this.state.crashed || this.engine.flooded) this.pedals.accelerator = 0;
     this.handbrake = c.handbrake;
     this.steering.input = c.steer;
@@ -937,9 +928,9 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     engine.omega = omega[ENGINE]!;
     engine.pedal = this.pedals.accelerator;
     engine.crank = !this.state.crashed
-      && this.transmission.canCrank(c)
-      // W, or S where it is the accelerator (reverse), or the clutch pedal down turns the key.
-      && (Math.max(c.accelerator, this.pedals.accelerator) > 0.05 || c.clutch > 0.8);
+      && this.transmission.canCrank
+      // W, or S where it is the accelerator (reverse), turns the key.
+      && Math.max(c.accelerator, this.pedals.accelerator) > 0.05;
     engine.dt = dt;
     engine.update();
   }
@@ -1002,7 +993,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     this.tractionControlActive = tc;
 
     // Downhill assist: in 4L with neither pedal, hold about 5 km/h on the brakes.
-    const dacArmed = this.downhillAssist && t.automatic && t.range === "4L" && t.gear !== 0;
+    const dacArmed = this.downhillAssist && t.range === "4L" && t.gear !== 0;
     const dacWanted = dacArmed && this.pedals.accelerator < 0.02 && this.pedals.brake < 0.05;
     const excess = Math.abs(speed) - DAC_SPEED;
     if (dacWanted && (excess > 0 || this.dacIntegral > 0)) {
@@ -1943,7 +1934,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     let couplingRow = -1;
     const capacity = t.couplingCapacity;
     if (inGear && capacity > 0) {
-      // The clutch or lockup: engine against the transmission input.
+      // The lockup: engine against the transmission input.
       couplingRow = solver.openRow();
       const o = couplingRow * DRIVELINE_DOF;
       j[o] = 1;
@@ -1999,7 +1990,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       solver.softness[row] = 1 / (h * (c + h * k));
     }
     solver.solve(torque);
-    // The torque the gearbox input takes from the engine side: the clutch's (its row pushes the
+    // The torque the gearbox input takes from the engine side: the lockup's (its row pushes the
     // engine with the impulse, the input with minus it) and the converter's turbine.
     this.lastCouplingTorque = (couplingRow >= 0 ? -solver.impulse[couplingRow]! / h : 0)
       + (t.converterEngaged ? this.converter.turbine * t.torqueShare : 0);
@@ -2155,8 +2146,7 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
     const state: CarVisualState = {
       kind: "car",
       speed: this.forwardSpeed(),
-      gearbox: t.gearbox,
-      selector: null,
+      selector: "P",
       gear: 0,
       range: "2H",
       locks: "off",
@@ -2164,7 +2154,6 @@ export class GroundVehicleSimulator implements SurfaceVehicleSimulator {
       downhillAssistActive: this.downhillAssistActive,
       tractionControlActive: this.tractionControlActive,
       absActive: this.absActive,
-      clutch: 0,
       engineRunning: this.engine.running,
       stalled: this.engine.stalled && !this.engine.flooded,
       flooded: this.engine.flooded,

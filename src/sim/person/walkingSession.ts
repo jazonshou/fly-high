@@ -271,9 +271,6 @@ export class WalkingSession {
   /** The player's car toggles while driving, so the parked car keeps the same counts. */
   private copyCounters(from: CarControlState): void {
     const parked = this.parkedControls;
-    parked.shiftUpPresses = from.shiftUpPresses;
-    parked.shiftDownPresses = from.shiftDownPresses;
-    parked.autoModePresses = from.autoModePresses;
     parked.rangePresses = from.rangePresses;
     parked.lockPresses = from.lockPresses;
     parked.downhillAssistPresses = from.downhillAssistPresses;

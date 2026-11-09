@@ -83,7 +83,6 @@ describe("a walk in the simulation worker", () => {
       world,
       aircraft: "trainer",
       surfaceVehicle: "landcruiser",
-      carSetup: { gearbox: "automatic", manualClutch: false },
       mode: "pilot",
       spawn: "foot",
       airborneStartAgl: 450,

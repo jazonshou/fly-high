@@ -1,5 +1,4 @@
 import type {
-  CarSetup,
   ControlState,
   FlightMode,
   FlightVisualState,
@@ -68,8 +67,6 @@ export type SimulationCommand =
        * this one.
        */
       surfaceVehicle: SurfaceVehicleKind | null;
-      /** The car's gearbox and clutch choice, from settings; read only for a car. */
-      carSetup: CarSetup;
       mode: FlightMode;
       spawn: SpawnKind;
       airborneStartAgl: number;
@@ -90,8 +87,6 @@ export type SimulationCommand =
   | { type: "controls"; controls: ControlState }
   | { type: "mode"; mode: FlightMode }
   | { type: "weather"; weather: WeatherPreset }
-  /** The car's gearbox and clutch, taken at its next start. */
-  | { type: "carSetup"; carSetup: CarSetup }
   /** A new calendar day, sent with the renderer's: the car's surfaces repaint for it. */
   | { type: "dayOfYear"; dayOfYear: number }
   | { type: "attract"; enabled: boolean }

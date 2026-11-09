@@ -50,7 +50,7 @@ class Rig {
 
   constructor(readonly world: WorldDefinition, start: WalkingStart) {
     const spawn = createSurfaceSpawn(world, "landcruiser");
-    const car = createSurfaceSimulator("landcruiser", { ...spawn, car: { gearbox: "automatic", manualClutch: false } });
+    const car = createSurfaceSimulator("landcruiser", spawn);
     const walker = createPersonSimulator({ position: spawn.position, heading: spawn.heading });
     this.session = new WalkingSession(car, walker, start, environment(world, this.colliders));
   }

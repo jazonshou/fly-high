@@ -253,7 +253,6 @@ export function FlightGame() {
     });
     simulationRef.current?.setMode(next.flightMode);
     simulationRef.current?.setWeather(next.weather);
-    simulationRef.current?.setCarSetup({ gearbox: next.carGearbox, manualClutch: next.carManualClutch });
   }, [invalidatePendingTransitions]);
 
   const toggleNearestAirport = useCallback(() => {
@@ -820,7 +819,6 @@ export function FlightGame() {
         initialAttractMode,
         activeSettings.aircraft,
         surfaceVehicle,
-        { gearbox: activeSettings.carGearbox, manualClutch: activeSettings.carManualClutch },
         activeSettings.dayOfYear,
       ));
       renderer.setTerrainAuthorityPublisher(simulation);
@@ -1158,12 +1156,6 @@ export function FlightGame() {
                   ? { ...settingsRef.current, aircraft: vehicle, vehicle }
                   : { ...settingsRef.current, vehicle },
               )}
-              carSetup={{ gearbox: settings.carGearbox, manualClutch: settings.carManualClutch }}
-              onCarSetupChange={(setup) => applySettings({
-                ...settingsRef.current,
-                carGearbox: setup.gearbox,
-                carManualClutch: setup.manualClutch,
-              })}
             />
             {/*
               * One wrapping row of two GROUPS, never four loose buttons. The two

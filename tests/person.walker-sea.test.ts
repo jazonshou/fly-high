@@ -143,7 +143,7 @@ describe("walker in the car's sea", () => {
     const twin = twinFor("cloudy");
     const env = environment(ground, { water: carSessionWater(ground, twin) });
     const car = new GroundVehicleSimulator({
-      position: { x: 0, y: -0.9, z: 0 }, heading: 0, moored: false, car: { gearbox: "automatic", manualClutch: false },
+      position: { x: 0, y: -0.9, z: 0 }, heading: 0, moored: false,
     });
     carControls(car, { handbrake: 1 });
     const subject = walker({ x: 1.4, y: -0.9, z: -0.25 }, Math.PI / 2, ground);

@@ -391,7 +391,6 @@ export function buildCarShotState(
   const payload: CarVisualState = {
     kind: "car",
     speed,
-    gearbox: "automatic",
     selector: "D",
     gear: speed < 4 ? 1 : 2,
     range: run.range,
@@ -400,7 +399,6 @@ export function buildCarShotState(
     downhillAssistActive: false,
     tractionControlActive: false,
     absActive: false,
-    clutch: 1,
     engineRunning: true,
     stalled: false,
     flooded: false,

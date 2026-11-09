@@ -50,7 +50,6 @@ let car: CarVisual;
 const carState = (overrides: Partial<CarVisualState> = {}): CarVisualState => ({
   kind: "car",
   speed: 0,
-  gearbox: "automatic",
   selector: "P",
   gear: 0,
   range: "2H",
@@ -59,7 +58,6 @@ const carState = (overrides: Partial<CarVisualState> = {}): CarVisualState => ({
   downhillAssistActive: false,
   tractionControlActive: false,
   absActive: false,
-  clutch: 1,
   engineRunning: true,
   stalled: false,
   flooded: false,
