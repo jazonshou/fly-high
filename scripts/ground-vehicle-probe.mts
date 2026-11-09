@@ -62,7 +62,7 @@ import { GroundVehicleSimulator } from "../src/sim/ground";
 import { CarColliders } from "../src/sim/ground/carColliders";
 import { type CarSea, createCarSea } from "../src/sim/ground/carSea";
 import { outerAngle, rackLimit } from "../src/sim/ground/steering";
-import { DEFAULT_CAR_SETUP, NEUTRAL_BOAT_CONTROLS, NEUTRAL_CAR_CONTROLS } from "../src/sim/surface";
+import { NEUTRAL_BOAT_CONTROLS, NEUTRAL_CAR_CONTROLS } from "../src/sim/surface";
 import { sampleGroundHeight } from "../src/sim/terrainGrid";
 import { createWaterSurfaceSample } from "../src/sim/water";
 import { WaterSurfaceComposite } from "../src/sim/water/compositeWater";
@@ -387,7 +387,6 @@ function startCar(site: Site, x: number, z: number, heading: number, rivers: rea
     position: { x, y: site.height(x, z), z },
     heading,
     moored: false,
-    car: { ...DEFAULT_CAR_SETUP },
   });
   const inland = new HydrologyWaterSource(site.height);
   if (rivers.length > 0) inland.setRegion("probe-ford", packHydrologyWater(rivers, []));
@@ -440,8 +439,10 @@ interface LegResult {
 const pedals: CarControlState = { ...NEUTRAL_CAR_CONTROLS };
 const controls = { assist: "pilot" as const, boat: NEUTRAL_BOAT_CONTROLS, car: pedals };
 
-function setPedals(sim: GroundVehicleSimulator, accelerator: number, brake: number, steer: number, handbrake = 0): void {
+/** W, S and Space as the car takes them (`CarControlState`): forward, back, and the brake either way. */
+function setPedals(sim: GroundVehicleSimulator, accelerator: number, reverse: number, brake: number, steer: number, handbrake = 0): void {
   pedals.accelerator = accelerator;
+  pedals.reverse = reverse;
   pedals.brake = brake;
   pedals.steer = steer;
   pedals.handbrake = handbrake;
@@ -534,11 +535,12 @@ function driveRoute(sim: GroundVehicleSimulator, route: Route, maxSeconds: numbe
     let steer = Math.max(-1, Math.min(1, wheel / (FULL_LOCK_CENTRE * rackLimit(Math.abs(speed)))));
     const wanted = hold ? 0 : route.speed[index]!;
     let accelerator = 0;
+    let reverse = 0;
     let brake = 0;
     if (recovery > 0) {
       // Pedals up; S held at the stop selects R and is then its accelerator: back
-      // straight off 4 m at up to 1.5 m/s; W (R's brake) stops it; pedals up, so
-      // the next W selects D.
+      // straight off 4 m at up to 1.5 m/s; Space stops it; pedals up, and the
+      // next W held at the stop selects D.
       recoveryTime += STEP;
       steer = 0;
       integral = 0;
@@ -547,14 +549,14 @@ function driveRoute(sim: GroundVehicleSimulator, route: Route, maxSeconds: numbe
         recoveryTime = 0;
         reversedFrom = result.distance;
       } else if (recovery === 2) {
-        brake = speed > -1.5 ? 0.35 : 0;
-        accelerator = speed < -1.8 ? 0.4 : 0;
+        reverse = speed > -1.5 ? 0.35 : 0;
+        brake = speed < -1.8 ? 0.4 : 0;
         if (result.distance - reversedFrom > 4 || recoveryTime > 6) {
           recovery = 3;
           recoveryTime = 0;
         }
       } else if (recovery === 3) {
-        accelerator = 0.6;
+        brake = 0.6;
         if (Math.abs(speed) < 0.1 || recoveryTime > 4) {
           recovery = 4;
           recoveryTime = 0;
@@ -586,7 +588,7 @@ function driveRoute(sim: GroundVehicleSimulator, route: Route, maxSeconds: numbe
         recoveryTime = 0;
       }
     }
-    setPedals(sim, accelerator, brake, steer, (hold && Math.abs(speed) < 0.3) || recovery === 4 ? 1 : 0);
+    setPedals(sim, accelerator, reverse, brake, steer, (hold && Math.abs(speed) < 0.3) || recovery === 4 ? 1 : 0);
     const started = performance.now();
     stepCar(sim);
     const took = (performance.now() - started) * 1000;
@@ -667,12 +669,12 @@ function driveRoute(sim: GroundVehicleSimulator, route: Route, maxSeconds: numbe
 /** Hold the brake until the car has settled at its start. */
 function settle(sim: GroundVehicleSimulator, rangePresses = 0): void {
   pedals.rangePresses = 0;
-  setPedals(sim, 0, 0.6, 0);
+  setPedals(sim, 0, 0, 0.6, 0);
   for (let i = 0; i < 120; i += 1) stepCar(sim);
   pedals.rangePresses = rangePresses;
-  setPedals(sim, 0, 0.6, 0);
+  setPedals(sim, 0, 0, 0.6, 0);
   for (let i = 0; i < 60; i += 1) stepCar(sim);
-  setPedals(sim, 0, 0, 0);
+  setPedals(sim, 0, 0, 0, 0);
   stepCar(sim);
 }
 

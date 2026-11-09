@@ -58,7 +58,6 @@ const atmosphere: AtmosphereSnapshot = {
 const FORDING: CarVisualState = {
   kind: "car",
   speed: 3,
-  gearbox: "automatic",
   selector: "D",
   gear: 1,
   range: "4L",
@@ -67,7 +66,6 @@ const FORDING: CarVisualState = {
   downhillAssistActive: false,
   tractionControlActive: false,
   absActive: false,
-  clutch: 1,
   engineRunning: true,
   stalled: false,
   flooded: false,

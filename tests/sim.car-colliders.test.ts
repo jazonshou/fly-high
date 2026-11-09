@@ -219,7 +219,7 @@ function hullPoints(sim: GroundVehicleSimulator): Vec3[] {
 
 function onFlat(colliders: ColliderWorld, x: number, z: number, heading: number): GroundVehicleSimulator {
   const sim = new GroundVehicleSimulator(
-    { position: { x, y: 0, z }, heading, moored: false, car: { gearbox: "automatic", manualClutch: false } },
+    { position: { x, y: 0, z }, heading, moored: false },
     { ground: FLAT },
   );
   sim.setEnvironment({
