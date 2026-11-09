@@ -120,10 +120,23 @@ export const SIDE_WINDOWS = Object.freeze([
 export const SIDE_WINDOW_BOTTOM = BODY.belt + 0.035;
 export const SIDE_WINDOW_TOP = GLASSHOUSE.head - 0.07;
 
-/** The door shut lines on the body's side, stations along x. */
+/** The A pillar's width along the body, ahead of the front door's glass. */
+export const A_PILLAR_WIDTH = 0.075;
+
+/**
+ * The door shut lines on the body's side, stations along x. The front door's
+ * leading edge is raked: from behind the front flare's foot at the sill
+ * (`frontDoorFoot`, clear of the flare at every height) to the A pillar's foot
+ * at the belt (`frontDoorBelt`), then up the pillar's rear edge.
+ */
 export const DOOR_LINES = Object.freeze({
-  frontDoorFront: BODY.cowlX - 0.02,
+  frontDoorFoot: LC76_FRONT_AXLE_X - 0.655,
+  frontDoorBelt: GLASSHOUSE.screenFootX - A_PILLAR_WIDTH,
   frontDoorRear: -0.375,
+  /** The doors' bottoms: below them the sill panel runs between the arches. */
+  frontDoorBottom: BODY.sill + 0.06,
+  /** The doors' window frames' tops, under the gutter. */
+  doorTop: GLASSHOUSE.head - 0.035,
   rearDoorRear: -1.315,
 });
 
@@ -131,6 +144,16 @@ export const DOOR_LINES = Object.freeze({
 export const SHELL_SPLIT_Z = BODY.halfWidth - 0.1;
 /** The 60/40 split between the barn doors, z: from the doors' foot up through the windows' mullion to the gutter. */
 export const REAR_DOOR_SPLIT_Z = -0.17;
+
+/**
+ * The front doors' hinges: a vertical axis at the leading edge's top on the
+ * belt, in the side's skin. A door swings its trailing edge out to `openRadians`.
+ */
+export const FRONT_DOOR_HINGE = Object.freeze({
+  x: DOOR_LINES.frontDoorBelt,
+  z: BODY.halfWidth,
+  openRadians: (65 * Math.PI) / 180,
+});
 
 /** The headlamps: round 7-inch LED units at the grille's ends. */
 export const HEADLAMP = Object.freeze({

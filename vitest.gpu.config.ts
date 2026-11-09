@@ -41,6 +41,8 @@ export default defineConfig({
   optimizeDeps: {
     noDiscovery: true,
     include: [
+      "@babylonjs/core/Bones/bone",
+      "@babylonjs/core/Bones/skeleton",
       "@babylonjs/core/Buffers/buffer",
       "@babylonjs/core/Buffers/storageBuffer",
       "@babylonjs/core/Cameras/camera",

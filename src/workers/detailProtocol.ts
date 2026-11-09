@@ -9,6 +9,7 @@ import type {
   GeneratedDetailCell,
 } from "@/src/render/webgpu/detail/types";
 import type { TerrainAuxPagePublication } from "@/src/render/webgpu/terrain/TerrainPageAtlas";
+import { NEAR_SOLID_STRIDE } from "@/src/sim/person/nearSolids";
 import type { AirportDefinition, WorldDefinition, WorldSeed } from "@/src/world";
 import type { InfrastructureRegionsPost } from "@/src/world/infrastructureSync";
 import type { TerrainMacroGrid, TerrainPagePublication } from "./terrainAuthority";
@@ -74,6 +75,21 @@ export interface DetailWorkerPresentationResult {
   readonly buildId: number;
   readonly batches: readonly DetailWorkerPresentationBatch[];
   readonly statistics: DetailPresentationChunkStatistics;
+}
+
+/**
+ * A near-solids request (`selectNearSolids`): the retained cells under the
+ * disc and the tier's selection inputs. Tokens the worker no longer holds
+ * are skipped.
+ */
+export interface DetailWorkerNearSolidsInput {
+  readonly tokens: readonly number[];
+  readonly centerX: number;
+  readonly centerZ: number;
+  readonly radius: number;
+  readonly nearStemsPerHectare: number;
+  readonly treeVariantCap: number;
+  readonly treePrototypeMode: "families" | "species";
 }
 
 /** Commands into the detail generation/presentation worker. */
@@ -148,6 +164,12 @@ export type DetailWorkerCommand =
   | {
       type: "cancelPresentation";
       buildId: number;
+    }
+  | {
+      /** The near solids round the walker, answered at once with a `nearSolids` event. */
+      type: "nearSolids";
+      requestId: number;
+      input: DetailWorkerNearSolidsInput;
     };
 
 export type DetailWorkerEvent =
@@ -190,6 +212,17 @@ export type DetailWorkerEvent =
       /** Slices run so far, and work units packed so far, in this build. */
       slices: number;
       units: number;
+    }
+  | {
+      /** The near solids for a `nearSolids` request (`NEAR_SOLID_STRIDE` floats each); the buffer is transferred. */
+      type: "nearSolids";
+      requestId: number;
+      records: Float32Array;
+    }
+  | {
+      type: "nearSolidsError";
+      requestId: number;
+      message: string;
     };
 
 /** Transfer ownership of retained terrain copies into the detail worker. */
@@ -227,6 +260,9 @@ export function detailWorkerCommandTransferables(
 
 /** Transfer every completed packed batch without copying it through structured clone. */
 export function detailWorkerEventTransferables(event: DetailWorkerEvent): Transferable[] {
+  if (event.type === "nearSolids") {
+    return event.records.buffer instanceof ArrayBuffer ? [event.records.buffer] : [];
+  }
   if (event.type !== "presentation") return [];
   const transfers = new Set<ArrayBuffer>();
   for (const batch of event.batches) {
@@ -315,6 +351,14 @@ export function isDetailWorkerEvent(value: unknown): value is DetailWorkerEvent 
       && Array.isArray(value.batches)
       && value.batches.every(isPresentationBatch)
       && isPresentationStatistics(value.statistics);
+  }
+  if (value.type === "nearSolids") {
+    return isSafeNonNegativeInteger(value.requestId)
+      && value.records instanceof Float32Array
+      && value.records.length % NEAR_SOLID_STRIDE === 0;
+  }
+  if (value.type === "nearSolidsError") {
+    return isSafeNonNegativeInteger(value.requestId) && typeof value.message === "string";
   }
   if (value.type === "presentationProgress") {
     return isSafeNonNegativeInteger(value.buildId)

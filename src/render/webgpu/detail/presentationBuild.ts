@@ -391,7 +391,7 @@ export function detailFadeBandMemberships(
 const DETAIL_PRESENTATION_IMPOSTOR_BLOCK_SIZE = 8;
 
 /** Composes yaw with a small lean about a hashed azimuth (2-12). */
-function yawLeanQuaternion(
+export function yawLeanQuaternion(
   yawRadians: number,
   leanRadians: number,
   leanAzimuthRadians: number,

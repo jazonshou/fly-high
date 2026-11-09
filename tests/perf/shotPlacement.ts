@@ -5,6 +5,7 @@ import { sampleTerrain, sampleTerrainHeight } from "../../src/world";
 import { sunDirectionForClock } from "../../src/render/webgpu/nature/EnvironmentDirector";
 import { densityField } from "../../src/render/webgpu/detail/densityField";
 import { buildCarShotState } from "./carShotState";
+import { buildWalkShotState } from "./walkShotState";
 import {
   PERF_CAPTURE_DEFAULT_CLOCK,
   headingVectorFromYaw,
@@ -13,6 +14,7 @@ import {
   type PerfCaptureBoatRun,
   type PerfCaptureCarRun,
   type PerfCaptureShotDefinition,
+  type PerfCaptureWalkRun,
   type ShotPlacement,
 } from "../../scripts/perf-capture.mts";
 
@@ -214,4 +216,18 @@ export function carShotState(
   simulationTime: number,
 ): FlightVisualState {
   return buildCarShotState(world, run, at, simulationTime);
+}
+
+/**
+ * A walker shot's state (`PerfCaptureShotDefinition.walk`): the person
+ * posed, the car parked. Pinned like the car's, and part of the instrument
+ * for the same reason (`./walkShotState.ts`).
+ */
+export function walkShotState(
+  world: WorldDefinition,
+  run: PerfCaptureWalkRun,
+  at: { readonly x: number; readonly z: number; readonly yawDegrees: number },
+  simulationTime: number,
+): FlightVisualState {
+  return buildWalkShotState(world, run, at, simulationTime);
 }

@@ -109,6 +109,12 @@ import {
 } from "./presentationBuild";
 import { groundCoverHandoffRadiusMeters } from "./groundCoverLaw";
 import {
+  DETAIL_PROTOTYPE_SEED,
+  selectNearSolids,
+  type NearSolidsSelectionResident,
+} from "./nearSolidsSelection";
+import { NEAR_SOLIDS_REFRESH_METERS, type NearSolidsPost } from "@/src/sim/person/nearSolids";
+import {
   CANOPY_SURFACE_AMBIENT,
   CANOPY_SURFACE_SPECULAR,
 } from "./densityField";
@@ -1018,6 +1024,24 @@ export class WorldDetailRuntime {
   private presentationObserverSignature = "";
   /** R-13: normalized environment-clock day forwarded to cell generation. */
   private dayOfYear = 0;
+  /** Where the near solids are listed round (`setNearSolidsFocus`), world metres; NaN for nowhere. */
+  private nearSolidsFocusX = Number.NaN;
+  private nearSolidsFocusZ = Number.NaN;
+  private nearSolidsListener: ((post: NearSolidsPost) => void) | null = null;
+  /** The newest list's inputs: centre, tier inputs, and the cells under it (count, revision sum and sum of squares). */
+  private readonly nearSolidsAsked = {
+    centerX: Number.NaN,
+    centerZ: Number.NaN,
+    radius: 0,
+    nearStemsPerHectare: 0,
+    treeVariantCap: 0,
+    treePrototypeMode: "families" as WebGpuQualityProfile["treePrototypeMode"],
+    cells: 0,
+    revisions: 0,
+    squares: 0,
+  };
+  private nearSolidsPending = false;
+  private nearSolidsVersion = 0;
 
   /**
    * The live world, for its airport list: `options.workerWorld` until
@@ -1643,6 +1667,28 @@ export class WorldDetailRuntime {
   }
 
   /**
+   * Lists the near solids (the trunks, rocks, logs and stumps the near view
+   * draws, `selectNearSolids`) round this world point from the next update,
+   * the walker's feet: again whenever it has moved 16 m from the newest
+   * list's centre, a cell under it is generated again or the tier changes.
+   * Each list goes to the `setNearSolidsListener` listener.
+   */
+  setNearSolidsFocus(x: number, z: number): void {
+    this.nearSolidsFocusX = requireFinite(x, "Near-solids focus x");
+    this.nearSolidsFocusZ = requireFinite(z, "Near-solids focus z");
+  }
+
+  /** No more lists until a focus is set again (a car driven, not stopped). */
+  clearNearSolidsFocus(): void {
+    this.nearSolidsFocusX = Number.NaN;
+    this.nearSolidsFocusZ = Number.NaN;
+  }
+
+  setNearSolidsListener(listener: ((post: NearSolidsPost) => void) | null): void {
+    this.nearSolidsListener = listener;
+  }
+
+  /**
    * R-13: refreshes season-baked appearance without removing live detail.
    * Placement is season-invariant, but crown/shrub/ground-cover colour and
    * deciduous coverage are authored into each generated cell. Keeping those
@@ -2185,6 +2231,8 @@ export class WorldDetailRuntime {
       }
     }
 
+    this.refreshNearSolids(profile);
+
     for (const plugin of this.bandFadePlugins) {
       plugin.setBandFades(
         profile.renderedDensityLaw.near.outerRadiusMeters,
@@ -2205,6 +2253,109 @@ export class WorldDetailRuntime {
       this.refreshRangeCulledBatches(profile);
       this.refreshVisibilityStatistics();
     }
+  }
+
+  /**
+   * Asks for the next near-solids list when one is due (see
+   * `setNearSolidsFocus`). Cells generated here are read at once; cells the
+   * worker retains are read there and the answer arrives with a later update.
+   * One request at a time; no allocation unless a list is due.
+   */
+  private refreshNearSolids(profile: WebGpuQualityProfile): void {
+    const listener = this.nearSolidsListener;
+    const centerX = this.nearSolidsFocusX;
+    const centerZ = this.nearSolidsFocusZ;
+    if (!listener || !Number.isFinite(centerX) || this.nearSolidsPending) return;
+    const radius = profile.nearSolidsRadiusMeters;
+    let cells = 0;
+    let revisions = 0;
+    let squares = 0;
+    for (const resident of this.cells.values()) {
+      if (!this.nearSolidsCellCovers(resident, centerX, centerZ, radius)) continue;
+      cells += 1;
+      if (resident.source === "inline" || (resident.tokenOwned && this.client !== null)) {
+        revisions += resident.revision;
+        squares += resident.revision * resident.revision;
+      }
+    }
+    const asked = this.nearSolidsAsked;
+    const moved = Math.hypot(centerX - asked.centerX, centerZ - asked.centerZ);
+    if (
+      moved < NEAR_SOLIDS_REFRESH_METERS
+      && cells === asked.cells
+      && revisions === asked.revisions
+      && squares === asked.squares
+      && radius === asked.radius
+      && profile.renderedDensityLaw.nearStemsPerHectare === asked.nearStemsPerHectare
+      && profile.treeVariantCap === asked.treeVariantCap
+      && profile.treePrototypeMode === asked.treePrototypeMode
+    ) return;
+    asked.centerX = centerX;
+    asked.centerZ = centerZ;
+    asked.radius = radius;
+    asked.nearStemsPerHectare = profile.renderedDensityLaw.nearStemsPerHectare;
+    asked.treeVariantCap = profile.treeVariantCap;
+    asked.treePrototypeMode = profile.treePrototypeMode;
+    asked.cells = cells;
+    asked.revisions = revisions;
+    asked.squares = squares;
+
+    const inline: NearSolidsSelectionResident[] = [];
+    const tokens: number[] = [];
+    for (const resident of this.cells.values()) {
+      if (!this.nearSolidsCellCovers(resident, centerX, centerZ, radius)) continue;
+      if (resident.source === "inline") inline.push(resident);
+      else if (resident.tokenOwned && this.client !== null) tokens.push(resident.descriptor.token);
+    }
+    const input = {
+      centerX,
+      centerZ,
+      radius,
+      nearStemsPerHectare: asked.nearStemsPerHectare,
+      treeVariantCap: asked.treeVariantCap,
+      treePrototypeMode: asked.treePrototypeMode,
+    };
+    const inlineRecords = selectNearSolids({ ...input, residents: inline }, this.presentationBuildCatalog);
+    const publish = (records: Float32Array): void => {
+      this.nearSolidsVersion += 1;
+      listener({ version: this.nearSolidsVersion, centerX, centerZ, radius, records });
+    };
+    const client = this.client;
+    if (tokens.length === 0 || client === null) {
+      publish(inlineRecords);
+      return;
+    }
+    this.nearSolidsPending = true;
+    const requestId = client.requestNearSolids(
+      { ...input, tokens },
+      (records) => {
+        this.nearSolidsPending = false;
+        if (this.disposed) return;
+        if (inlineRecords.length === 0) {
+          publish(records);
+          return;
+        }
+        const joined = new Float32Array(inlineRecords.length + records.length);
+        joined.set(inlineRecords);
+        joined.set(records, inlineRecords.length);
+        publish(joined);
+      },
+      // Asked again when the walker moves on or a cell under it changes.
+      () => {
+        this.nearSolidsPending = false;
+      },
+    );
+    if (requestId < 0) this.nearSolidsPending = false;
+  }
+
+  /** Whether a resident cell reaches into the near-solids disc. */
+  private nearSolidsCellCovers(resident: ResidentCell, centerX: number, centerZ: number, radius: number): boolean {
+    const minX = resident.cellX * resident.cellSizeMeters;
+    const minZ = resident.cellZ * resident.cellSizeMeters;
+    return minX <= centerX + radius
+      && minX + resident.cellSizeMeters >= centerX - radius
+      && minZ <= centerZ + radius
+      && minZ + resident.cellSizeMeters >= centerZ - radius;
   }
 
   /**
@@ -4186,7 +4337,7 @@ export class WorldDetailRuntime {
     // prototype bound (species, variant and band).
     // Bark stays back-face-culled in its own batch while foliage is
     // two-sided: zero extra draw calls per the plan.
-    const prototypeSeed = 7;
+    const prototypeSeed = DETAIL_PROTOTYPE_SEED;
     for (const species of TREE_SPECIES) {
       const variantCount = clamp(
         Math.round(TREE_VARIANT_COUNTS[species]),

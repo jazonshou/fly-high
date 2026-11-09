@@ -101,6 +101,20 @@ function clamp01(value: number): number {
   return Math.min(Math.max(value, 0), 1);
 }
 
+/** The field at one point (`WaterEnvironmentField.sample`), each 0..1. */
+export interface WaterEnvironmentSample {
+  productivity: number;
+  runoff: number;
+  carbonate: number;
+}
+
+export function createWaterEnvironmentSample(): WaterEnvironmentSample {
+  return { productivity: 0, runoff: 0, carbonate: 0 };
+}
+
+const FALLBACK_PRODUCTIVITY = Math.round(0.35 * 255);
+const FALLBACK_RUNOFF = Math.round(0.5 * 255);
+
 /** The placement a water material binds: origin, 1/span, and a validity flag. */
 export interface WaterEnvironmentPlacement {
   readonly originX: number;
@@ -119,7 +133,7 @@ export function fallbackWaterEnvironmentField(scene: Scene): RawTexture {
   const existing = FALLBACK_FIELDS.get(scene);
   if (existing) return existing;
   const texture = RawTexture.CreateRGBATexture(
-    new Uint8Array([Math.round(0.35 * 255), Math.round(0.5 * 255), 0, 255]),
+    new Uint8Array([FALLBACK_PRODUCTIVITY, FALLBACK_RUNOFF, 0, 255]),
     1,
     1,
     scene,
@@ -210,6 +224,50 @@ export class WaterEnvironmentField {
     this.centerZ = Math.round(cameraZ / texel) * texel;
     this.bake();
     return true;
+  }
+
+  /**
+   * The field at a world point as the water shaders read it: bilinear between
+   * texel centres and clamped to the window's edge, or the fallback's
+   * temperate province before the first bake.
+   */
+  sample(x: number, z: number, out: WaterEnvironmentSample): WaterEnvironmentSample {
+    if (!Number.isFinite(this.centerX)) {
+      out.productivity = FALLBACK_PRODUCTIVITY / 255;
+      out.runoff = FALLBACK_RUNOFF / 255;
+      out.carbonate = 0;
+      return out;
+    }
+    const resolution = WATER_ENVIRONMENT_FIELD_RESOLUTION;
+    const span = WATER_ENVIRONMENT_FIELD_SPAN_METERS;
+    const u = Math.min(Math.max((x - this.centerX) / span + 0.5, 0), 1);
+    const v = Math.min(Math.max((z - this.centerZ) / span + 0.5, 0), 1);
+    const fx = u * resolution - 0.5;
+    const fz = v * resolution - 0.5;
+    const cellX = Math.floor(fx);
+    const cellZ = Math.floor(fz);
+    const tx = fx - cellX;
+    const tz = fz - cellZ;
+    const x0 = Math.min(Math.max(cellX, 0), resolution - 1);
+    const x1 = Math.min(Math.max(cellX + 1, 0), resolution - 1);
+    const z0 = Math.min(Math.max(cellZ, 0), resolution - 1);
+    const z1 = Math.min(Math.max(cellZ + 1, 0), resolution - 1);
+    out.productivity = this.bilinear(0, x0, x1, z0, z1, tx, tz);
+    out.runoff = this.bilinear(1, x0, x1, z0, z1, tx, tz);
+    out.carbonate = this.bilinear(2, x0, x1, z0, z1, tx, tz);
+    return out;
+  }
+
+  private bilinear(lane: number, x0: number, x1: number, z0: number, z1: number, tx: number, tz: number): number {
+    const resolution = WATER_ENVIRONMENT_FIELD_RESOLUTION;
+    const data = this.data;
+    const n00 = data[(z0 * resolution + x0) * 4 + lane]!;
+    const n10 = data[(z0 * resolution + x1) * 4 + lane]!;
+    const n01 = data[(z1 * resolution + x0) * 4 + lane]!;
+    const n11 = data[(z1 * resolution + x1) * 4 + lane]!;
+    const top = n00 + (n10 - n00) * tx;
+    const bottom = n01 + (n11 - n01) * tx;
+    return (top + (bottom - top) * tz) / 255;
   }
 
   private readonly province: ClimateProvinceSample = { temperatureOffset: 0, dryness: 0 };

@@ -43,6 +43,13 @@ function readField(
   return [data[offset]! / 255, data[offset + 1]! / 255];
 }
 
+/** The raw texture's bytes as last baked (Babylon keeps them on the internal texture). */
+function bakedBytes(field: WaterEnvironmentField): Uint8Array {
+  const bytes = (field.fieldTexture as unknown as { _texture: { _bufferView: Uint8Array | null } | null })._texture?._bufferView;
+  if (!bytes) throw new Error("the water environment field kept no bytes of its bake");
+  return bytes;
+}
+
 describe("W-8 water environment field", () => {
   it("reads the same province at a world point from two different bake windows", () => {
     const engine = new NullEngine();
@@ -52,19 +59,19 @@ describe("W-8 water environment field", () => {
     // Bake around the origin, then fly 80 km and bake again. Every point both
     // windows cover has to agree to the byte.
     expect(field.update(0, 0)).toBe(true);
-    const first = new Uint8Array(
-      (field.fieldTexture as unknown as { _bufferView: Uint8Array })._bufferView,
-    );
-    const firstSamples = [[0, 0], [12_000, -9_000], [-31_000, 22_000]]
-      .map(([x, z]) => readField(field, first, x!, z!));
+    const first = new Uint8Array(bakedBytes(field));
+    // Points both windows cover: the second spans x from -20 km to 180 km.
+    const points = [[0, 0], [12_000, -9_000], [-15_000, 22_000]] as const;
+    const firstSamples = points.map(([x, z]) => readField(field, first, x, z));
     expect(field.update(80_000, 0)).toBe(true);
     expect(field.bakes).toBe(2);
-    const second = new Uint8Array(
-      (field.fieldTexture as unknown as { _bufferView: Uint8Array })._bufferView,
-    );
-    [[0, 0], [12_000, -9_000], [-31_000, 22_000]].forEach(([x, z], index) => {
-      expect(readField(field, second, x!, z!)).toEqual(firstSamples[index]);
+    const second = new Uint8Array(bakedBytes(field));
+    points.forEach(([x, z], index) => {
+      expect(readField(field, second, x, z)).toEqual(firstSamples[index]);
     });
+    // Not vacuous: the samples are bytes of the bake, and they differ from place to place.
+    expect(firstSamples.every(([a, b]) => Number.isFinite(a) && Number.isFinite(b))).toBe(true);
+    expect(new Set(firstSamples.map((sample) => sample.join())).size).toBeGreaterThan(1);
     field.dispose();
     scene.dispose();
     engine.dispose();

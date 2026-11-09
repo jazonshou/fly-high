@@ -17,6 +17,15 @@ import type { LandformsOption } from "../src/world/landforms";
 import type { SurfaceMaterial } from "../src/render/webgpu/terrain/surfaceMaterials";
 
 export const PERF_CAPTURE_SEED = "phase1-perf-baseline";
+
+/**
+ * Where a car session's car starts for this seed's analytic world (the home
+ * field's road head, `createSurfaceSpawn`), from the airport's centre,
+ * metres: `walk-door-chase` stands its parked car there. A number here, so
+ * the capture imports nothing the car added; tests/perf-walk-shots.test.ts
+ * holds it to the spawn.
+ */
+export const WALK_SHOT_ROAD_HEAD_OFFSET = Object.freeze({ x: -68.37, z: -149.83, headingDegrees: -178.11 });
 export const PERF_CAPTURE_WIDTH = 1_280;
 export const PERF_CAPTURE_HEIGHT = 720;
 /** Frames rendered before the capture so streaming and temporal state settle. */
@@ -334,6 +343,14 @@ export const PERF_CAPTURE_CEILING_PROVENANCE = Object.freeze({
     "car-dune-cockpit",
     "car-ford-chase",
     "car-dust-chase",
+    // The walker, after the cars and for the same reason: nobody has measured
+    // a walking scene's memory, and two of them are under the sea.
+    "walk-door-chase",
+    "walk-clearing-chase",
+    "swim-sea-chase",
+    "dive-sea-up",
+    "dive-marina-basin",
+    "walk-marina-dusk",
     // The generated buildings, after the cars and for the same reason: two of
     // them hold a whole settlement's meshes, kit textures and interiors on top
     // of the scenery, and the third stands inside a building. Nobody has
@@ -462,6 +479,42 @@ export interface PerfCaptureCarRun {
    * has.
    */
   readonly effectsHistorySeconds?: number;
+}
+
+/**
+ * A walker shot (`PerfCaptureShotDefinition.walk`): the walking plan's
+ * figure on foot or in the water in a car session, the car parked, framed by
+ * the character camera. A pinned pose like the car's, built by
+ * `tests/perf/walkShotState.ts` (part of the A/B instrument).
+ */
+export interface PerfCaptureWalkRun {
+  /**
+   * Where the walker is: "door", beside the parked car's driver's door,
+   * where a foot start stands, walking on along the car (the car stands as a
+   * car shot's `carSite` puts it); "sea", in open water over a bed
+   * `bedDepthMeters` down within 1.5 km of the placement, facing the shore;
+   * "marinaPier", on the home marina's pier deck walking out, the car in
+   * the car park; "marinaBasin", in the home marina's basin by the start
+   * berth, facing out, the car in the car park.
+   */
+  readonly site: "door" | "sea" | "marinaPier" | "marinaBasin";
+  /** "door" only: how the car shot's search stands the car (`PerfCaptureCarRun.site`). */
+  readonly carSite?: "here" | "clearing";
+  /** "door" with `carSite` "here" only: the car's heading, degrees, in place of the shot's yaw. */
+  readonly carHeadingDegrees?: number;
+  /** "door" only: how far ahead of the door the walker has got, metres along the car. */
+  readonly aheadMeters?: number;
+  readonly mode: "stand" | "walk" | "run" | "swim" | "dive";
+  /** Along the walker's facing, m/s. */
+  readonly speedMetersPerSecond: number;
+  /** "sea" only: the water's depth where the walker is, metres. */
+  readonly bedDepthMeters?: number;
+  /** In the water: the eye below the still surface, metres (negative above it). */
+  readonly headDepthMeters?: number;
+  /** In the water: the body's pitch, degrees (0 prone and level, positive head up). */
+  readonly swimPitchDegrees?: number;
+  /** The character camera's pitch from its default, degrees, positive looking up. */
+  readonly lookPitchDegrees?: number;
 }
 
 export interface PerfCaptureShotDefinition {
@@ -702,6 +755,15 @@ export interface PerfCaptureShotDefinition {
    * and airspeed fields are not read.
    */
   readonly car?: PerfCaptureCarRun;
+  /**
+   * A walker in a car session: the figure posed where `walk` says, the car
+   * parked, the character camera framing it (`cameraMode` "chase"). A
+   * rebuild boundary shared with `car`: the renderer is built with the car
+   * and the walker. The placement and `relativeSunBearingDegrees` give the
+   * shot's place and yaw as for a car; altitude, pitch and airspeed are not
+   * read.
+   */
+  readonly walk?: PerfCaptureWalkRun;
   /**
    * `4-10`: page-residency ceilings, for the scenes that exist to stress
    * streaming rather than shading.
@@ -2508,6 +2570,159 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
       // inside the history.
       effectsHistorySeconds: 5,
     },
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  /**
+   * THE WALKER. Six shots of the walking plan's figure in a car session
+   * (`walk` has how the pose is made), appended after the cars so no earlier
+   * shot's canonical index moves. Not baselined and not floor-pinned: a
+   * walking frame has no history, and the figure and the underwater view
+   * are still being built. Walking on from a foot start beside the car;
+   * walking through a forest clearing, the scene a walker spends time in;
+   * swimming at the surface off a shore; diving under the sea looking up at
+   * the surface (Snell's window); diving in the marina's murky basin; and on
+   * the marina's pier at dusk among its lamps.
+   */
+  {
+    name: "walk-door-chase",
+    description:
+      "The walker setting off from the parked LandCruiser's driver's door at the "
+      + "airfield's road head, where a foot start begins: the figure, the car and the field",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    // The car's start at the home field's road head for this seed
+    // (`createSurfaceSpawn`, held by tests/perf-walk-shots.test.ts).
+    offsetXMeters: WALK_SHOT_ROAD_HEAD_OFFSET.x,
+    offsetZMeters: WALK_SHOT_ROAD_HEAD_OFFSET.z,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    walk: {
+      site: "door",
+      carSite: "here",
+      // Facing out along the road, as the car starts.
+      carHeadingDegrees: WALK_SHOT_ROAD_HEAD_OFFSET.headingDegrees,
+      aheadMeters: 1.5,
+      mode: "walk",
+      speedMetersPerSecond: 1.4,
+    },
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "walk-clearing-chase",
+    description:
+      "The walker crossing a forest clearing at a walk, the parked LandCruiser "
+      + "behind: the figure among the trees at ground level",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    // The car shots' clearing (`car-clearing-chase`).
+    offsetXMeters: -1_830,
+    offsetZMeters: 325,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    relativeSunBearingDegrees: 135,
+    walk: { site: "door", carSite: "clearing", aheadMeters: 6, mode: "walk", speedMetersPerSecond: 1.4 },
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "swim-sea-chase",
+    description:
+      "The walker swimming at the surface in 3 m of sea, the shore ahead: the "
+      + "figure in the waves from just above them",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    offsetXMeters: -12_000,
+    offsetZMeters: 8_000,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    locate: "coast",
+    walk: { site: "sea", bedDepthMeters: 3, mode: "swim", speedMetersPerSecond: 0.8, headDepthMeters: -0.05, swimPitchDegrees: 0 },
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "dive-sea-up",
+    description:
+      "Under the sea 1 m down over a 20 m bed, the camera below and behind the "
+      + "diver looking up past it at the surface: the water column, the "
+      + "underside and the edge of Snell's window",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    offsetXMeters: -12_000,
+    offsetZMeters: 8_000,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    locate: "coast",
+    // The shelf 20 m down is the clearest water near the coast (8.8 m of
+    // visibility, docs/UNDERWATER_VIEW.md); shallower beds keep the shore's
+    // sediment and hide the surface. 45 degrees up from the default pitch
+    // puts the camera 1.8 m under the diver, so the window's edge (41.4
+    // degrees up) crosses the top of the frame behind the figure.
+    walk: {
+      site: "sea",
+      bedDepthMeters: 20,
+      mode: "dive",
+      speedMetersPerSecond: 0.9,
+      headDepthMeters: 1,
+      swimPitchDegrees: 10,
+      lookPitchDegrees: 45,
+    },
+    // Under the water everything past a few metres fades into the column, a
+    // smooth gradient by design, so this frame's structure is the diver and
+    // the window's edge: about a quarter of its tiles (0.27 and a mean tile
+    // variance of 0.00013 on SwiftShader at half scale). The floors sit at
+    // about half that and still fail the bare column (no tile structured,
+    // variance 0.000005-0.000007 when the diver and the surface are lost).
+    minMeanTileVariance: 0.000_05,
+    minStructuredTileFraction: 0.15,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "dive-marina-basin",
+    description:
+      "Diving 0.6 m down in the home marina's basin by the start berth, the "
+      + "camera level with the diver: the harbour's murky water, the diver's "
+      + "legs near and its body fading, the pontoons' floats and piles lost in it",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    offsetXMeters: 0,
+    offsetZMeters: 0,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    walk: { site: "marinaBasin", mode: "dive", speedMetersPerSecond: 0.9, headDepthMeters: 0.6, swimPitchDegrees: 0, lookPitchDegrees: 10 },
+    // The basin has 3.1 m of visibility (docs/UNDERWATER_VIEW.md), less than
+    // the camera's 3.2 m boom, so only the diver's legs show and the rest of
+    // the frame is the column's smooth gradient: 0.11 of its tiles structured
+    // and a mean tile variance of 0.00003 on SwiftShader at half scale. The
+    // floors sit at about half that and still fail the bare column.
+    minMeanTileVariance: 0.000_015,
+    minStructuredTileFraction: 0.05,
+    comparesToBaseline: false,
+    ceilings: null,
+  },
+  {
+    name: "walk-marina-dusk",
+    description:
+      "The walker on the home marina's pier at dusk, walking out among its "
+      + "lamps and beacons, the berths and the basin below",
+    cameraMode: "chase",
+    altitudeAglMeters: null,
+    altitudeMslMeters: 0,
+    offsetXMeters: 0,
+    offsetZMeters: 0,
+    pitchDownDegrees: 0,
+    airspeedMetersPerSecond: 0,
+    // `dusk-mesopic`'s hour: the marina's lamps lit against a still-blue sky.
+    clock: { dayOfYear: 171, solarTimeHours: 20.45 },
+    walk: { site: "marinaPier", mode: "walk", speedMetersPerSecond: 1.4 },
     comparesToBaseline: false,
     ceilings: null,
   },
