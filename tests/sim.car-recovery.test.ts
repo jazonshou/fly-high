@@ -67,7 +67,7 @@ class River implements WaterSurfaceAuthority {
 function riverCar(depth: number): GroundVehicleSimulator {
   const bed = bankBed(depth);
   const sim = new GroundVehicleSimulator(
-    { position: { x: 0, y: 0, z: 0 }, heading: 0, moored: false, car: { gearbox: "automatic", manualClutch: false } },
+    { position: { x: 0, y: 0, z: 0 }, heading: 0, moored: false },
     {
       ground: groundOf((out) => {
         out.height = bed(out.z);
@@ -148,13 +148,13 @@ describe("car recovery", () => {
 
   it("keeps no spot steeper than 25 degrees off level", () => {
     const angle = { degrees: 20 };
-    const sim = car({}, tiltTable(angle));
+    const sim = car(tiltTable(angle));
     drive(sim, 3, { brake: 1 });
     expect(upright(sim)).toBeGreaterThan(Math.cos(25 * DEG));
     expect(sim.safeSpotsHeld).toBe(1);
 
     angle.degrees = 30;
-    const steep = car({}, tiltTable(angle));
+    const steep = car(tiltTable(angle));
     drive(steep, 3, { brake: 1 });
     expect(steep.wheelLoad.every((load) => load > 500)).toBe(true);
     expect(steep.safeSpotsHeld).toBe(0);
@@ -170,7 +170,7 @@ describe("car recovery", () => {
 
   it("rights a car the tilt table rolled, back on the spot it was level at", () => {
     const angle = { degrees: 0 };
-    const sim = car({}, tiltTable(angle));
+    const sim = car(tiltTable(angle));
     drive(sim, 2, { handbrake: 1 });
     expect(sim.safeSpotsHeld).toBe(1);
     // Past its 40 degree rollover angle at 4 degrees a second: it goes over.

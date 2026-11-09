@@ -36,7 +36,7 @@ function seaFord(depth: number): { bed: (x: number, z: number) => number; far: n
 /** The car on its own lattice over `bed`, as in the worker, wading `water`. */
 function seaCar(bed: (x: number, z: number) => number, water: CarSea): GroundVehicleSimulator {
   const sim = new GroundVehicleSimulator({
-    position: { x: 0, y: bed(0, 0), z: 0 }, heading: 0, moored: false, car: { gearbox: "automatic", manualClutch: false },
+    position: { x: 0, y: bed(0, 0), z: 0 }, heading: 0, moored: false,
   });
   sim.setEnvironment({
     water: new WaterSurfaceComposite(water, new HydrologyWaterSource(bed), 0),

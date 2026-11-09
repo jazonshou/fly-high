@@ -84,7 +84,6 @@ describe("the simulation worker's lakes and rivers, for the car", () => {
       world,
       aircraft: "trainer",
       surfaceVehicle: "landcruiser",
-      carSetup: { gearbox: "automatic", manualClutch: false },
       mode: "scenic",
       spawn: "airfield",
       airborneStartAgl: 450,

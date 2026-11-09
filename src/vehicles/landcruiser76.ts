@@ -6,9 +6,10 @@
  * The car is the 2024 76 wagon: the five-door 70 Series on its ladder frame,
  * a rigid front axle on coils and a Panhard rod, a rigid rear axle on leaf
  * springs, part-time 4WD through a two-speed transfer case, lockable front
- * and rear differentials, the 2.8 litre 1GD-FTV four-cylinder turbo-diesel,
- * and either the six-speed automatic or the five-speed manual Toyota added in
- * 2025 (land plan, decision 1). Every number says where it came from:
+ * and rear differentials, the 2.8 litre 1GD-FTV four-cylinder turbo-diesel
+ * and the six-speed automatic. (The plan's decision 1 also offered the
+ * five-speed manual Toyota added in 2025; Jason took it out on 2026-11-05.)
+ * Every number says where it came from:
  *
  * - PUBLISHED: Toyota's figures as reported by CarExpert and 4X4 Australia
  *   (the plan's sources): power, torque, ratios, dimensions, weights, angles,
@@ -269,18 +270,14 @@ export const LANDCRUISER_76 = Object.freeze({
     /** Below this the engine cannot keep turning: it stalls. */
     stallRpm: 380,
     /**
-     * Full-load torque with the turbo spooled. Published plateaus: 500 N m
-     * from 1,600 to 2,800 rpm with the automatic, 450 N m from 2,400 to
-     * 3,000 with the manual, and 150 kW (421 N m) at 3,400. The shoulders
-     * below the plateau and past 3,400 are ESTIMATES.
+     * Full-load torque with the turbo spooled, as tuned for the automatic.
+     * Published plateau: 500 N m from 1,600 to 2,800 rpm, and 150 kW
+     * (421 N m) at 3,400. The shoulders below the plateau and past 3,400 are
+     * ESTIMATES.
      */
-    automaticTorque: Object.freeze([
+    torque: Object.freeze([
       [0, 0], [600, 180], [750, 235], [1_000, 330], [1_200, 405], [1_400, 465], [1_600, 500],
       [2_800, 500], [3_000, 477.5], [3_400, 421.3], [3_600, 385], [3_800, 330], [4_000, 260], [4_300, 0],
-    ] as const) satisfies TorqueCurve,
-    manualTorque: Object.freeze([
-      [0, 0], [600, 175], [750, 225], [1_000, 300], [1_200, 340], [1_400, 370], [1_600, 395], [2_000, 430],
-      [2_400, 450], [3_000, 450], [3_400, 421.3], [3_600, 385], [3_800, 330], [4_000, 260], [4_300, 0],
     ] as const) satisfies TorqueCurve,
     /** ESTIMATE: crank, flywheel (or flexplate and converter pump), kg m^2. */
     inertia: 0.3,
@@ -338,26 +335,9 @@ export const LANDCRUISER_76 = Object.freeze({
     parkTorque: 20_000,
   }),
 
-  manual: Object.freeze({
-    /** Published (2025 5-speed): ratios and final drive; reverse PROVISIONAL. */
-    ratios: Object.freeze([4.773, 2.597, 1.57, 1.0, 0.775] as const),
-    reverse: 4.3,
-    finalDrive: 4.1,
-    /** ESTIMATE: dry clutch capacity fully engaged, N m (1.45 x 450). */
-    clutchCapacity: 650,
-    /** Clutch disc and input shaft, kg m^2. */
-    inputInertia: 0.02,
-    /** The auto-clutch: release, gear change and take-up times, s. */
-    autoClutchReleaseSeconds: 0.12,
-    autoClutchEngageSeconds: 0.3,
-    /** The auto-clutch's launch target, rpm, idle to full throttle. */
-    launchRpm: 1_050,
-    launchRpmPerThrottle: 700,
-  }),
-
   transfer: Object.freeze({
     high: 1.0,
-    /** DERIVED: 38.51 / (3.600 x 4.3) and 48.69 / (4.773 x 4.1) both give 2.488. */
+    /** DERIVED: 38.51 / (3.600 x 4.3) gives 2.488, as the 2025 manual's 48.69 / (4.773 x 4.1) does. */
     low: 2.488,
     /** Range changes into or out of 4L only below this speed, m/s. */
     lowRangeMaxSpeed: 0.6,

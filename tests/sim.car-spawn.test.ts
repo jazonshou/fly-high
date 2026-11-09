@@ -48,7 +48,6 @@ describe("car spawn gate", () => {
       position: { x: 100, y: 40, z: 100 },
       heading: 0,
       moored: false,
-      car: { gearbox: "automatic", manualClutch: false },
     });
     const radii: number[] = [];
     const bedHeight = (): number => (isReady() ? 0 : 3);
