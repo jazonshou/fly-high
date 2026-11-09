@@ -51,7 +51,7 @@ type Material = (typeof SurfaceMaterial)[keyof typeof SurfaceMaterial];
 /** The car on `ground`, every tyre on `material`. */
 function carOn(ground: GroundField, material: Material, wetness = 0): GroundVehicleSimulator {
   return new GroundVehicleSimulator(
-    { position: { x: 0, y: 0, z: 0 }, heading: 0, moored: false, car: { gearbox: "automatic", manualClutch: false } },
+    { position: { x: 0, y: 0, z: 0 }, heading: 0, moored: false },
     { ground, surface: (_at, out) => { describeSurface(material, wetness, out); } },
   );
 }
@@ -236,7 +236,7 @@ describe("car seasonal snow", () => {
   /** From rest on flat `material` in 4H at half throttle, held straight: seconds to 10 m/s, then the braking distance from it. */
   function snowRun(material: Material, snowDepth?: number): { toTen: number; braking: number; sinkage: number } {
     const sim = new GroundVehicleSimulator(
-      { position: { x: 0, y: 0, z: 0 }, heading: 0, moored: false, car: { gearbox: "automatic", manualClutch: false } },
+      { position: { x: 0, y: 0, z: 0 }, heading: 0, moored: false },
       { ground: FLAT, surface: (_at, out) => { if (snowDepth === undefined) describeSurface(material, 0, out); else describeSnow(snowDepth, out); } },
     );
     hold(sim, 0.1, { handbrake: 1 });

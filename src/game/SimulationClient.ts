@@ -1,6 +1,5 @@
-import type { CarSetup, ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
+import type { ControlState, FlightMode, FlightVisualState, WeatherPreset } from "./types";
 import type { AircraftKind } from "@/src/sim";
-import { DEFAULT_CAR_SETUP } from "@/src/sim/surface/types";
 import type { HydrologyWaterRegion } from "@/src/sim/water/hydrologyWater";
 import type { SurfaceVehicleKind } from "@/src/vehicles/kinds";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR, type AirportDefinition, type WorldDefinition } from "@/src/world";
@@ -135,7 +134,6 @@ export class SimulationClient {
     attractMode = false,
     aircraft: AircraftKind = "trainer",
     surfaceVehicle: SurfaceVehicleKind | null = null,
-    carSetup: CarSetup = DEFAULT_CAR_SETUP,
     dayOfYear = TERRAIN_REFERENCE_DAY_OF_YEAR,
   ) {
     this.worker = this.attachWorker();
@@ -146,7 +144,6 @@ export class SimulationClient {
       infrastructure: packInfrastructureRegionsUpdate(this.infrastructure.initial()),
       aircraft,
       surfaceVehicle,
-      carSetup,
       mode,
       spawn,
       weather,
@@ -175,11 +172,6 @@ export class SimulationClient {
 
   setWeather(weather: WeatherPreset): void {
     this.send({ type: "weather", weather });
-  }
-
-  /** The car's gearbox and clutch for its next start; a drive under way keeps the one it began with. */
-  setCarSetup(carSetup: CarSetup): void {
-    this.send({ type: "carSetup", carSetup });
   }
 
   /** The calendar day the renderer paints for, so the car drives the snow that is drawn. */
