@@ -1079,6 +1079,40 @@ export const MEASURED_DRAW_DELTAS: readonly MeasuredDrawDelta[] = Object.freeze(
       + "uniform on 34 of 34. Its uniformity is what eliminated furniture as the "
       + "cause of the +24/+12 split.",
   }),
+  Object.freeze({
+    owner: "terrain realism / tree ground shadows (PR #47)",
+    feature: "tree-ground-shadows",
+    baseRef: "b20d758", headRef: "1a7f1d3",
+    shotsMeasured: 32,
+    delta: Object.freeze({
+      // +1: the decal's range (1,100 m at tier 1) reaches one presentation chunk that holds shadows.
+      "approach-500ft": 1, "reference-viewport": 1, "winter-noon": 1, "night": 1,
+      "night-moonlit": 1, "dusk-mesopic": 1, "motion-banked-turn": 1, "page-thrash-turn": 1,
+      "forest-500ft-sunbehind": 1, "canopy-1200ft": 1, "grove-forest-2m": 1,
+      "hills-dusk-glint": 1, "forest-line-highsun": 1, "cliff-60m": 1,
+      "veg-seam-1600ft-oblique": 1, "veg-seam-near-500ft": 1,
+      // +2 and +3: it reaches two and three.
+      "ground-2m-lowsun": 2, "runway-on-approach": 2, "grove-meadow-2m": 2,
+      "horizon-shadow-far-annulus": 2,
+      "canopy-backlit-lowsun": 3,
+    }),
+    note:
+      "The tree ground shadow (`TreeGroundShadowMaterial`) is one batch, so one draw, per "
+      + "4,096 m presentation chunk that holds a shadow record: PREDICTED from the "
+      + "construction, +1.5 to +3.9 by `estimateVegetationDrawCalls`, before measuring. "
+      + "Measured against the committed ceilings, which are main's exact counts at "
+      + "b20d758, on all 32 shots that carry one, by the two macOS captures of gpu-tests "
+      + "run 43204262725 at 1a7f1d3 (attempts 1 and 2, which agree on the draw and batch "
+      + "counts of all 51 shots): 21 moved by the amounts above and 11 did not move "
+      + "(slant-10km, high-10000ft-down, cruise-horizon, cdlod-transition, cruise-sun-30, "
+      + "coast-10km-lowsun, water-25ft, mountain-close, water-3m, "
+      + "terrain-material-1600ft-down, water-400ft-glitter: no tree inside the range). "
+      + "The cloud A/B and the macOS runner's A/B of the same pair agree on the three they "
+      + "share (approach-500ft 248 to 249, forest-500ft-sunbehind 250 to 251, "
+      + "ground-2m-lowsun 123 to 125), with the vegetation batch count rising by the same "
+      + "1, 1 and 2. TWO captures so far: the ceilings move, and this becomes a per-shot "
+      + "DRAW_CALL_RAISES entry, when three agree.",
+  }),
 ]);
 
 /**

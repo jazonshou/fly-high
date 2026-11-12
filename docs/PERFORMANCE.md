@@ -4045,8 +4045,25 @@ its 95% interval, the gate is 5%):
 
 `ground-2m-lowsun` is the worst case for fill: the camera stands in a grove
 with the sun low, so the longest shadows the decal draws cover most of the
-ground in frame, several deep. Frame time on a real GPU is not measured here;
-the macOS runner's advisory A/B is the first reading of it.
+ground in frame, several deep.
+
+**The pull request's own A/B** (`perf-ab` run 43204262835, `1a7f1d3` against
+`b20d758`). On SwiftShader it repeats the table: GPU time same on all three,
++0.8% (+0.7% to +1.0%), +1.1% (+0.6% to +1.5%) and +0.2% (+0.1% to +0.3%).
+On the macOS runner's GPU (Apple M1, virtual; 640 rounds a shot; that adapter
+cannot time passes, so the frame is timed from `render()` to GPU idle) it is
+the first reading of frame time on a real GPU:
+
+| shot | frame wall time | CPU time (guard) | draw calls |
+| --- | --- | --- | --- |
+| `approach-500ft` | same +2.5% (+0.2% to +5.0%) | same +0.6% | 248 → 249 |
+| `cruise-horizon` | same +0.8% (-1.3% to +2.9%) | same +1.2% | 202, identical frames |
+| `forest-500ft-sunbehind` | same +0.9% (+0.3% to +1.5%) | same +0.1% | 250 → 251 |
+| `ground-2m-lowsun` | same +1.3% (+0.6% to +1.9%) | same +2.8% (+1.0% to +4.6%) | 123 → 125 |
+| `water-25ft` | same -0.2% (-0.9% to +0.4%) | same +1.5% | 225, identical frames |
+
+Every shot is inside the 5% gate. The two whose frames are identical in both
+arms show how far that runner moves on its own.
 
 **Known limits.**
 
@@ -4067,12 +4084,19 @@ the macOS runner's advisory A/B is the first reading of it.
   the atmosphere's.
 
 **Draw ceilings and baselines.** Every capture shot with trees inside the
-range gains one draw per chunk the range touches (1 or 2 on the three shots
-above), and the per-shot ceilings are exact measured counts, so the capture's
-draw gate fails until they are re-pinned from three macOS captures that
-agree, under a `DRAW_CALL_RAISES` entry of its own. The visual gates fail on
-every shot with trees near the camera until the baselines are promoted from
-the macOS capture, after Jason approves the look. Both are pending.
+range gains one draw per chunk the range touches, and the per-shot ceilings
+are exact measured counts, so the capture's draw gate and the A/B's ceiling
+check fail until they are re-pinned from three macOS captures that agree,
+under a `DRAW_CALL_RAISES` entry of its own. The first two captures (gpu-tests
+run 43204262725 at `1a7f1d3`, attempts 1 and 2) agree on every shot's count
+and read 21 of the 32 shots that carry a ceiling above
+it: sixteen by 1, four by 2 (`ground-2m-lowsun`, `runway-on-approach`,
+`grove-meadow-2m`, `horizon-shadow-far-annulus`) and `canopy-backlit-lowsun`
+by 3. The other eleven have no tree inside the range and did not move. Those
+deltas are staged in `MEASURED_DRAW_DELTAS` as `tree-ground-shadows`. The
+visual gates fail on every shot with trees near the camera until the
+baselines are promoted from the macOS capture, after Jason approves the
+look. Both are pending.
 
 ## In-app benchmark (?bench=1)
 
