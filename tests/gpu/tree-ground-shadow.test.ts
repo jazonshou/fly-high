@@ -14,6 +14,7 @@ import {
   DetailInstanceBounds,
   DetailInstanceWriter,
   detailPrototypeBoundKernel,
+  type DetailInstanceRecord,
 } from "../../src/render/webgpu/detail/instanceFormat";
 import {
   TREE_GROUND_SHADOW_DIRECT_TO_SKY,
@@ -25,6 +26,7 @@ import {
 import {
   TREE_GROUND_SHADOW_PROTOTYPE_BOUNDS,
   TREE_GROUND_SHADOW_SHAPES,
+  groundObjectShadowRecord,
   treeGroundShadowFootprint,
   treeGroundShadowRecord,
 } from "../../src/render/webgpu/detail/treeGroundShadow";
@@ -127,15 +129,17 @@ describe("tree ground shadow on the adapter", () => {
       shadow.setHazePerMeter(0);
       shadow.setLaw(LAW);
 
-      /** One batch holding one stem's shadow, as the runtime builds its chunks'. */
-      const batch = (stemKey: number): Mesh => {
+      /** One batch holding one shadow record, as the runtime builds its chunks'. */
+      let batches = 0;
+      const batchOf = (record: DetailInstanceRecord): Mesh => {
         const writer = new DetailInstanceWriter();
         writer.pushBounded(
-          treeGroundShadowRecord(TREE, stemKey, 0.2, { x: 0, y: 0, z: 0 }),
+          record,
           new DetailInstanceBounds(),
           detailPrototypeBoundKernel(TREE_GROUND_SHADOW_PROTOTYPE_BOUNDS),
         );
-        const mesh = prototype.clone(`shadow-batch-${stemKey}`);
+        batches += 1;
+        const mesh = prototype.clone(`shadow-batch-${batches}`);
         mesh.makeGeometryUnique();
         shadow.configureBatchMesh(mesh);
         const shared = new Buffer(engine, writer.finish(), false, DETAIL_INSTANCE_STRIDE_BYTES, false, true, true);
@@ -159,6 +163,8 @@ describe("tree ground shadow on the adapter", () => {
         mesh.setEnabled(true);
         return mesh;
       };
+      const batch = (stemKey: number): Mesh =>
+        batchOf(treeGroundShadowRecord(TREE, stemKey, 0.2, { x: 0, y: 0, z: 0 }));
 
       const frame = async (): Promise<Uint8ClampedArray> => {
         for (let index = 0; index < 4; index += 1) {
@@ -280,6 +286,90 @@ describe("tree ground shadow on the adapter", () => {
       expect(near(probe(await frame(), centreX, 0), keep, 6)).toBe(true);
       undrawn.dispose();
       mesh.dispose();
+
+      // 7. A boulder's shadow (`groundObjects.ts`): a record with a variant
+      // lane of 0, in the same batch. It draws by the reach law, has no
+      // trunk, and leaves out the part of the ground its own body hides.
+      const BOULDER = {
+        x: 10,
+        y: 0,
+        z: 0,
+        normal: { x: 0, y: 1, z: 0 },
+        heightMeters: 8,
+        radiusMeters: 3,
+        opacity: 1,
+        standDensityShare: 0,
+        outlinePhase: 0.3,
+        reachShare: 1,
+        bodyHasCore: false,
+      };
+      const EYE_DISTANCE = Math.hypot(BOULDER.x, 50);
+      shadow.setGroundObjectReach(300, 1_000, 0.2);
+      shadow.setGroundObjectCore(0, 0, 1, 1);
+      const dome = { crownCentreUnit: 0.5, crownSemiAxisUnit: 0.5, opacity: 1 };
+      const domePrint = treeGroundShadowFootprint(
+        BOULDER.heightMeters, BOULDER.radiusMeters, dome, COTANGENT);
+      const domeCentreX = BOULDER.x - domePrint.offsetMeters;
+      const domeKeep = TREE_GROUND_SHADOW_SKY_COLOUR.map((sky) => 255 * (1 - direct / (direct + sky)));
+      // Well west of the body, inside the shadow's core: the whole shadow.
+      const clearX = domeCentreX - domePrint.semiAlongMeters * 0.4;
+      expect(BOULDER.x - clearX).toBeGreaterThan(BOULDER.radiusMeters * 1.5);
+      // Inside the shadow's core too, but under the body as the camera sees it.
+      const hiddenX = BOULDER.x - 1;
+      expect(Math.abs(hiddenX - domeCentreX)).toBeLessThan(domePrint.semiAlongMeters * 0.55);
+      const boulder = batchOf(groundObjectShadowRecord(BOULDER, { x: 0, y: 0, z: 0 }));
+      const stone = await frame();
+      const clear = probe(stone, clearX, 0);
+      expect(near(clear, domeKeep, 6), `boulder shadow ${clear} against ${domeKeep.map(Math.round)}`)
+        .toBe(true);
+      expect(near(probe(stone, hiddenX, 0), [255, 255, 255], 2), "nothing under the body itself")
+        .toBe(true);
+      expect(near(probe(stone, BOULDER.x, 0), [255, 255, 255], 2)).toBe(true);
+      expect(near(probe(stone, BOULDER.x + 6, 0), [255, 255, 255], 2)).toBe(true);
+      // It draws while the boulder does: past the tier's cap, nothing.
+      shadow.setGroundObjectReach(300, EYE_DISTANCE - 5, 0.2);
+      expect(near(probe(await frame(), clearX, 0), [255, 255, 255], 2)).toBe(true);
+      // Just inside the cap it has started to grow in, as the body has.
+      shadow.setGroundObjectReach(300, EYE_DISTANCE + 2, 0.2);
+      const growing = probe(await frame(), clearX, 0);
+      expect(growing[0]).toBeGreaterThan(clear[0] + 20);
+      // A reach too short for the height stops it as well (2 m per metre: 16 m).
+      shadow.setGroundObjectReach(2, 1_000, 0.2);
+      expect(near(probe(await frame(), clearX, 0), [255, 255, 255], 2)).toBe(true);
+      shadow.setGroundObjectReach(300, 1_000, 0.2);
+      // A tree's shadow takes none of this: its lanes mean other things.
+      boulder.dispose();
+
+      // A record whose fade lane carries a share of the reach stops there.
+      const shortened = batchOf(groundObjectShadowRecord(
+        { ...BOULDER, reachShare: (EYE_DISTANCE - 5) / 1_000 }, { x: 0, y: 0, z: 0 }));
+      expect(near(probe(await frame(), clearX, 0), [255, 255, 255], 2)).toBe(true);
+      shortened.dispose();
+
+      // A bush's body shrinks to its core near the camera, and the part of
+      // the shadow it stops hiding comes back.
+      const bush = batchOf(groundObjectShadowRecord(
+        { ...BOULDER, bodyHasCore: true }, { x: 0, y: 0, z: 0 }));
+      // 1.65 m from the stem: well inside what the whole body hides (the first
+      // 2.4 m of a 3 m radius) and well outside what its 0.4 core does (1.4 m).
+      const coreX = BOULDER.x - 1.65;
+      const fullBody = await frame();
+      expect(near(probe(fullBody, coreX, 0), [255, 255, 255], 2), "hidden by the full body")
+        .toBe(true);
+      shadow.setGroundObjectCore(300, 1_000, 0.5, 0.4);
+      const coreBody = await frame();
+      const uncovered = probe(coreBody, coreX, 0);
+      // The whole cast shadow is back, and this close to the stem the sky
+      // shade under the body lies on top of it.
+      uncovered.forEach((channel, index) => {
+        const cast = domeKeep[index]!;
+        expect(channel, `uncovered by the core ${uncovered}`).toBeLessThanOrEqual(cast + 6);
+        expect(channel, `uncovered by the core ${uncovered}`)
+          .toBeGreaterThanOrEqual(cast * (1 - TREE_GROUND_SHADOW_SKY_SHADE) - 6);
+      });
+      expect(near(probe(coreBody, BOULDER.x + 0.2, 0), [255, 255, 255], 2)).toBe(true);
+      expect(near(probe(coreBody, clearX, 0), domeKeep, 6)).toBe(true);
+      bush.dispose();
 
       expect(errors, errors.join("\n")).toEqual([]);
       shadow.dispose();

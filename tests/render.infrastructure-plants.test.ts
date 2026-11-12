@@ -2,7 +2,7 @@ import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
 import { GroundCoverSystem } from "../src/render/webgpu/detail/GroundCoverSystem";
-import { GROUND_COVER_GRID, generateDetailCell } from "../src/render/webgpu/detail/generation";
+import { GROUND_COVER_GRID, SCATTER_HALO_METERS, generateDetailCell } from "../src/render/webgpu/detail/generation";
 import { GROUND_COVER_ATTRIBUTE_TILE_EDGE, GROUND_COVER_TILE_SPAN_METERS } from "../src/render/webgpu/detail/groundCoverLaw";
 import type { GeneratedDetailCell } from "../src/render/webgpu/detail/types";
 import {
@@ -43,8 +43,23 @@ function generate(cellX: number, cellZ: number, plantExclusions?: readonly Infra
   });
 }
 
-/** A slipway and car park's worth of capsule across cell (3, 5). */
-const SLIPWAY: InfrastructurePlantExclusion = { ax: 3 * CELL + 40, az: 5 * CELL + 60, bx: 3 * CELL + 210, bz: 5 * CELL + 170, radius: 24 };
+/**
+ * The cell under test. Bushes stand in thickets with clean ground between and
+ * this sampler's stands of trees come and go, so the cell is one whose capsule
+ * crosses both, with a few rocks elsewhere in it. The assertions that arm the
+ * test below fail if a change to the scatter ever leaves the capsule bare.
+ */
+const CELL_X = 2;
+const CELL_Z = 10;
+
+/** A slipway and car park's worth of capsule across the cell. */
+const SLIPWAY: InfrastructurePlantExclusion = {
+  ax: CELL_X * CELL + 40,
+  az: CELL_Z * CELL + 60,
+  bx: CELL_X * CELL + 210,
+  bz: CELL_Z * CELL + 170,
+  radius: 24,
+};
 
 function distanceToCapsule(exclusion: InfrastructurePlantExclusion, x: number, z: number): number {
   const dx = exclusion.bx - exclusion.ax;
@@ -55,27 +70,53 @@ function distanceToCapsule(exclusion: InfrastructurePlantExclusion, x: number, z
 
 describe("plants on built ground", () => {
   it("keeps every stem, rock and log off the capsule and thins them back over the blend", () => {
-    const control = generate(3, 5);
-    const gated = generate(3, 5, [SLIPWAY]);
-    const placed = (cell: GeneratedDetailCell) => [...cell.trees, ...cell.shrubs, ...cell.clutter, ...cell.rocks];
-    const inside = (cell: GeneratedDetailCell) =>
-      placed(cell).filter((p) => distanceToCapsule(SLIPWAY, p.x, p.z) <= SLIPWAY.radius).length;
-    const far = (cell: GeneratedDetailCell) => placed(cell)
-      .filter((p) => distanceToCapsule(SLIPWAY, p.x, p.z) >= SLIPWAY.radius + INFRASTRUCTURE_PLANT_BLEND_METERS);
+    const control = generate(CELL_X, CELL_Z);
+    const gated = generate(CELL_X, CELL_Z, [SLIPWAY]);
+    type Placed = { readonly id: string; readonly x: number; readonly z: number };
+    const placed = (cell: GeneratedDetailCell): readonly Placed[] =>
+      [...cell.trees, ...cell.shrubs, ...cell.clutter, ...cell.rocks];
+    const distance = (p: Placed) => distanceToCapsule(SLIPWAY, p.x, p.z);
+    const inside = (cell: GeneratedDetailCell) => placed(cell).filter((p) => distance(p) <= SLIPWAY.radius).length;
+    /** Past the blend, and `margin` further still. */
+    const beyond = (list: readonly Placed[], margin = 0): readonly Placed[] =>
+      list.filter((p) => distance(p) >= SLIPWAY.radius + INFRASTRUCTURE_PLANT_BLEND_METERS + margin);
     expect(inside(control), "the control grew nothing on the slipway: the test is not armed").toBeGreaterThan(20);
     expect(inside(gated)).toBe(0);
-    // Beyond the blend the factor is exactly 1: the same placements, bit for bit.
-    expect(far(gated)).toEqual(far(control));
-    // Shrubs share the trees' layer scatter and its gate (this sampler grows
-    // understorey only); the cell keeps them off the capsule.
+    for (const kind of ["trees", "shrubs", "rocks"] as const) {
+      expect(beyond(control[kind]).length, `the control has no ${kind} past the blend`).toBeGreaterThan(0);
+    }
+
+    // Beyond the blend the factor is exactly 1. Clutter and rocks are placed
+    // one at a time, so there they are the same placements, bit for bit.
+    // (Rocks draw from one stream for the whole cell and a rock the capsule
+    // removes leaves its later rolls undrawn, so this is a claim about a cell
+    // whose capsule had no rock on it. This is one.)
+    expect(
+      control.rocks.filter((p) => distance(p) < SLIPWAY.radius + INFRASTRUCTURE_PLANT_BLEND_METERS),
+      "a rock on the capsule moves every later rock in the cell: test another cell",
+    ).toHaveLength(0);
+    expect(beyond(gated.clutter)).toEqual(beyond(control.clutter));
+    expect(beyond(gated.rocks)).toEqual(beyond(control.rocks));
+
+    // A tree or a bush also yields to a stronger neighbour inside its spacing,
+    // and the capsule removes neighbours. So past the blend no stem is lost
+    // and none changes; one may stand where a cleared neighbour outranked it;
+    // and past the thinning's whole reach nothing differs at all.
+    for (const kind of ["trees", "shrubs"] as const) {
+      const after = new Map(beyond(gated[kind]).map((stem) => [stem.id, stem]));
+      for (const stem of beyond(control[kind])) expect(after.get(stem.id)).toEqual(stem);
+      expect(beyond(gated[kind], SCATTER_HALO_METERS)).toEqual(beyond(control[kind], SCATTER_HALO_METERS));
+    }
+    // Shrubs share the trees' layer scatter and its gate; the cell keeps the
+    // ones off the capsule.
     expect(gated.shrubs.length).toBeGreaterThan(100);
 
     // The ground-cover grid: nothing at a node on the capsule, untouched past the blend.
     const spacing = CELL / GROUND_COVER_GRID;
     let nodesInside = 0;
     gated.groundCover.forEach((node, index) => {
-      const x = 3 * CELL + ((index % GROUND_COVER_GRID) + 0.5) * spacing;
-      const z = 5 * CELL + (Math.floor(index / GROUND_COVER_GRID) + 0.5) * spacing;
+      const x = CELL_X * CELL + ((index % GROUND_COVER_GRID) + 0.5) * spacing;
+      const z = CELL_Z * CELL + (Math.floor(index / GROUND_COVER_GRID) + 0.5) * spacing;
       const distance = distanceToCapsule(SLIPWAY, x, z);
       if (distance <= SLIPWAY.radius) {
         nodesInside += 1;
@@ -90,8 +131,8 @@ describe("plants on built ground", () => {
 
   it("changes nothing in a cell no exclusion reaches", () => {
     const distant: InfrastructurePlantExclusion = { ax: -9_000, az: 4_000, bx: -8_800, bz: 4_100, radius: 30 };
-    expect(generate(3, 5, [distant])).toEqual(generate(3, 5));
-    expect(infrastructurePlantFactor([distant], 3 * CELL, 5 * CELL)).toBe(1);
+    expect(generate(CELL_X, CELL_Z, [distant])).toEqual(generate(CELL_X, CELL_Z));
+    expect(infrastructurePlantFactor([distant], CELL_X * CELL, CELL_Z * CELL)).toBe(1);
   });
 
   it("empties the ground-cover blades' tile on built ground", () => {

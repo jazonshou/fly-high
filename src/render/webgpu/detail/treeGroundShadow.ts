@@ -126,7 +126,8 @@ function clamp01(value: number): number {
  * - tint: crown centre, crown half-depth (both as shares of the height), how
  *   much sun the crown stops, and the stand's density over the near cap;
  * - state: variant holds the trunk radius in 3 cm steps (kept under 32 so the
- *   packer's lean modifier never applies), and the phase lane holds the stem's
+ *   packer's lean modifier never applies, and at least 1: 0 marks a bush or a
+ *   boulder, `groundObjectShadowRecord`), and the phase lane holds the stem's
  *   key, the same number its tree records carry, so the shadow draws exactly
  *   while the tree does.
  */
@@ -167,6 +168,75 @@ export function treeGroundShadowRecord(
     ],
     windPhase: stemKey,
     windResponse: 0,
+  };
+}
+
+/** A bush or a boulder, as its ground shadow needs it. */
+export interface GroundObjectShadowSource {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  /** The ground's normal where it stands (any length). */
+  readonly normal: { readonly x: number; readonly y: number; readonly z: number };
+  /** Height of the solid that throws the shadow, and its radius on the ground. */
+  readonly heightMeters: number;
+  readonly radiusMeters: number;
+  /** How much direct sun it stops, 0 to 1. */
+  readonly opacity: number;
+  /** The stand's density over the near cap, as a tree's record carries it. */
+  readonly standDensityShare: number;
+  /** Any number in [0, 1): it only varies the outline from one object to the next. */
+  readonly outlinePhase: number;
+  /** The share of its reach the body's record carries in its fade lane; 1 for the whole reach. */
+  readonly reachShare: number;
+  /** Whether its body shrinks to a core near the camera, as a bush's does behind its leaf cards. */
+  readonly bodyHasCore: boolean;
+}
+
+/**
+ * The shadow of a bush or a boulder, in the tree shadow's batch and on its
+ * record layout. Two lanes read differently:
+ *
+ * - variant is 0, which no tree writes (a trunk is at least one step wide).
+ *   It tells the shader there is no trunk and that the object is drawn by the
+ *   reach law (`groundObjectReachMeters`, from the height lane) rather than by
+ *   a stem key;
+ * - the phase lane is free of the stem key, so it only seeds the outline;
+ * - the fade lane, unused by a tree's shadow, is the share of the reach the
+ *   object is drawn to, as its body's record has it;
+ * - the wind lane, unused by any shadow, is 1 where the body shrinks to a
+ *   core near the camera, so the shadow knows how much of itself the body
+ *   hides.
+ *
+ * The solid is a dome from the ground up, so its middle and half-depth are
+ * both half its height. The height written here must be the height its body
+ * record carries: the shader derives the reach from it, and a body and its
+ * shadow have to reach exactly as far as each other.
+ */
+export function groundObjectShadowRecord(
+  source: GroundObjectShadowSource,
+  floatingOrigin: DetailFloatingOrigin,
+): DetailInstanceRecord {
+  const normalLength = Math.hypot(source.normal.x, source.normal.y, source.normal.z);
+  const normal = normalLength > 1e-6 && source.normal.y > 0
+    ? {
+        x: source.normal.x / normalLength,
+        y: source.normal.y / normalLength,
+        z: source.normal.z / normalLength,
+      }
+    : { x: 0, y: 1, z: 0 };
+  return {
+    x: source.x - floatingOrigin.x,
+    y: source.y - floatingOrigin.y,
+    z: source.z - floatingOrigin.z,
+    quaternion: normalAlignedQuaternion(normal, 0, 1),
+    heightScaleMeters: source.heightMeters,
+    radialScale: detailRadialScaleForWorldRadius(source.radiusMeters, source.heightMeters, 1),
+    fade: clamp01(source.reachShare),
+    variant: 0,
+    tint: [0.5, 0.5, clamp01(source.opacity), clamp01(source.standDensityShare)],
+    windPhase: source.outlinePhase,
+    windResponse: source.bodyHasCore ? 1 : 0,
   };
 }
 

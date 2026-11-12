@@ -12,7 +12,24 @@ import {
   type RenderedDensityLaw,
 } from "./renderedDensity";
 import {
+  GROUND_OBJECT_REACH_GROW_SHARE,
+  SHRUB_BODY_FAR_PROTOTYPE_KEY,
+  SHRUB_BODY_FAR_RADIUS_SHARE,
+  SHRUB_BODY_HEIGHT_SHARE,
+  SHRUB_BODY_PROTOTYPE_KEY,
+  SHRUB_BODY_RADIUS_SHARE,
+  SHRUB_BODY_SWAP_METERS_PER_METER,
+  SHRUB_CARD_REACH_METERS_PER_METER,
+  SHRUB_GROUND_SHADOW_BARE_SHARE,
+  SHRUB_GROUND_SHADOW_OPACITY,
+  SHRUB_OPEN_DRAWN_PER_HECTARE,
+  SHRUB_UNDERSTORY_CANOPY_CLOSURE,
+  SHRUB_UNDERSTORY_DRAWN_PER_HECTARE,
+  groundObjectReachMeters,
+} from "./groundObjects";
+import {
   TREE_GROUND_SHADOW_PROTOTYPE_KEY,
+  groundObjectShadowRecord,
   treeGroundShadowRecord,
 } from "./treeGroundShadow";
 import type {
@@ -217,6 +234,25 @@ export interface DetailPresentationBuildInput {
    * those chunks rebuild as the observer moves.
    */
   readonly treeGroundShadowRangeMeters?: number;
+  /**
+   * The tier's cap on how far a bush's body or a boulder is drawn
+   * (`groundObjectReachMeters`); the shaders take the same number. Absent, it
+   * is the law's near radius: what a rock had before it had a reach of its
+   * own. Never past the mid radius, for the reason the shadow range gives.
+   */
+  readonly groundObjectRangeMeters?: number;
+  /**
+   * A tighter cap for boulders alone, for a tier whose draw budget cannot
+   * carry the three rock batches as far as its bushes go. Absent, boulders
+   * take `groundObjectRangeMeters`. A boulder's shadow goes where it goes.
+   */
+  readonly boulderRangeMeters?: number;
+  /**
+   * Bushes a cell of open ground draws per hectare at most
+   * (`shrubOpenDrawnPerHectare`): the tier's share of
+   * `SHRUB_OPEN_DRAWN_PER_HECTARE`. Absent, that constant.
+   */
+  readonly shrubOpenDrawnPerHectare?: number;
   readonly observerX: number;
   readonly observerZ: number;
 }
@@ -466,6 +502,63 @@ export function estimateTreeGroundShadowRecords(
   return records;
 }
 
+/**
+ * The tier's cap on a ground object's reach as the build uses it: the input's
+ * own, or the near radius when none is given, and never past the mid radius.
+ */
+export function groundObjectRangeCapMeters(
+  rangeMeters: number | undefined,
+  law: RenderedDensityLaw,
+): number {
+  const range = rangeMeters !== undefined && Number.isFinite(rangeMeters) && rangeMeters > 0
+    ? rangeMeters
+    : law.near.outerRadiusMeters;
+  return Math.min(range, law.mid.outerRadiusMeters);
+}
+
+/** How many of a cell's bushes stand under closed canopy, counted once per cell. */
+const shrubUnderstoryCounts = new WeakMap<object, number>();
+
+function shrubIsUnderstory(shrub: { readonly canopyClosure?: number }): boolean {
+  return (shrub.canopyClosure ?? 0) >= SHRUB_UNDERSTORY_CANOPY_CLOSURE;
+}
+
+function shrubUnderstoryCount(shrubs: GeneratedDetailCell["shrubs"]): number {
+  const cached = shrubUnderstoryCounts.get(shrubs);
+  if (cached !== undefined) return cached;
+  let count = 0;
+  for (const shrub of shrubs) if (shrubIsUnderstory(shrub)) count += 1;
+  shrubUnderstoryCounts.set(shrubs, count);
+  return count;
+}
+
+/**
+ * The share of a cell's bushes that are drawn, by where they stand: the
+ * understory keeps the budget it always had, and open ground draws what was
+ * authored up to a cap that only a cell of solid thicket reaches. A bush is
+ * drawn while its `selection` is within its share, so the drawn set is the
+ * same from every range and nests as the budget moves.
+ */
+export function shrubDrawnShares(
+  shrubs: GeneratedDetailCell["shrubs"],
+  cellHectares: number,
+  openDrawnPerHectare = SHRUB_OPEN_DRAWN_PER_HECTARE,
+): { readonly understory: number; readonly open: number } {
+  const hectares = Math.max(cellHectares, 1e-6);
+  const understoryCount = shrubUnderstoryCount(shrubs);
+  const openCount = shrubs.length - understoryCount;
+  return {
+    understory: Math.min(
+      1,
+      (SHRUB_UNDERSTORY_DRAWN_PER_HECTARE * hectares) / Math.max(understoryCount, 1e-6),
+    ),
+    open: Math.min(
+      1,
+      (Math.max(0, openDrawnPerHectare) * hectares) / Math.max(openCount, 1e-6),
+    ),
+  };
+}
+
 /** Impostor-only stems are cheap records; charge them to the scheduler in blocks. */
 const DETAIL_PRESENTATION_IMPOSTOR_BLOCK_SIZE = 8;
 
@@ -525,6 +618,18 @@ export function* buildPresentationChunk(
     input.treeGroundShadowRangeMeters,
     densityLaw,
   );
+  const groundObjectCap = groundObjectRangeCapMeters(input.groundObjectRangeMeters, densityLaw);
+  // Past this no bush or boulder of any size has a record: the cap, and the
+  // slack that keeps a record resident while its chunk's rebuild is in flight.
+  const groundObjectEdge = groundObjectCap + DETAIL_MEMBERSHIP_SLACK_METERS;
+  const boulderCap = input.boulderRangeMeters !== undefined && input.boulderRangeMeters > 0
+    ? Math.min(groundObjectCap, input.boulderRangeMeters)
+    : groundObjectCap;
+  // A bush has a solid only when the catalog has both of its meshes: the
+  // body and the stand-in hand over to each other and neither works alone.
+  const shrubBodyRadialUnits = catalog.prototypes[SHRUB_BODY_PROTOTYPE_KEY]?.radialUnits;
+  const shrubBodyFarRadialUnits = catalog.prototypes[SHRUB_BODY_FAR_PROTOTYPE_KEY]?.radialUnits;
+  const shrubBodies = shrubBodyRadialUnits !== undefined && shrubBodyFarRadialUnits !== undefined;
   const statistics: MutableDetailPresentationChunkStatistics = {
     nearCells: 0,
     midCells: 0,
@@ -575,11 +680,6 @@ export function* buildPresentationChunk(
       drawnShareAtDistance(densityLaw, resident.distance)
         + DETAIL_DENSITY_ADMISSION_MARGIN_SHARE,
     );
-    const shrubsPerHa = resident.cell.shrubs.length / Math.max(cellHectares, 1e-6);
-    const shrubBudgetPerHa = 60 * renderedShareAtDistance(densityLaw, resident.distance);
-    const shrubShare = resident.distance > densityLaw.mid.outerRadiusMeters
-      ? 0
-      : Math.min(1, shrubBudgetPerHa / Math.max(shrubsPerHa, 1e-6));
     const currentCellDistance = detailCellMinimumDistanceMeters(
       observerX,
       observerZ,
@@ -854,14 +954,57 @@ export function* buildPresentationChunk(
       }
     }
 
+    // Bushes (`groundObjects.ts`). Which bushes a cell draws is fixed by
+    // `selection` and does not change with range; how far each one is drawn is
+    // its own reach, decided per frame in the vertex stage against the live
+    // camera. The CPU only keeps a record resident while the observer could
+    // come inside that reach before the chunk is rebuilt (one membership
+    // slack). A bush is up to four records: its leaf cards, inside the card
+    // reach; its solid body, while its shape can be seen; the body's
+    // stand-in, from there to the bush's reach; and its shadow.
+    const cellShrubs = currentCellDistance >= groundObjectEdge ? [] : resident.cell.shrubs;
+    const shrubShares = cellShrubs.length > 0
+      ? shrubDrawnShares(cellShrubs, cellHectares, input.shrubOpenDrawnPerHectare)
+      : { understory: 0, open: 0 };
+    const shrubStandShare = Math.min(
+      1,
+      (cellShrubs.length / Math.max(cellHectares, 1e-6))
+        / Math.max(densityLaw.nearStemsPerHectare, 1e-6),
+    );
     let rejectedShrubCandidates = 0;
-    for (
-      const shrub of shrubShare <= 0
-        || currentCellDistance >= densityLaw.mid.outerRadiusMeters
-        ? []
-        : resident.cell.shrubs
-    ) {
-      if (shrub.selection > shrubShare) {
+    for (const shrub of cellShrubs) {
+      const understory = shrubIsUnderstory(shrub);
+      const shrubDistance = Math.hypot(shrub.x - observerX, shrub.z - observerZ);
+      const nearestRange = Math.max(0, shrubDistance - DETAIL_MEMBERSHIP_SLACK_METERS);
+      const cardReach = groundObjectReachMeters(
+        shrub.heightMeters,
+        densityLaw.near.outerRadiusMeters,
+        SHRUB_CARD_REACH_METERS_PER_METER,
+      );
+      const bodyHeight = shrub.heightMeters * SHRUB_BODY_HEIGHT_SHARE;
+      const bodyFullReach = shrubBodies
+        ? groundObjectReachMeters(bodyHeight, groundObjectCap)
+        : 0;
+      // Under closed canopy a body is only ever seen from inside the stand,
+      // so it goes with its cards. The fade lane carries that as a share of
+      // the body's own reach, and the vertex stage scales the reach by it.
+      const bodyReachShare = understory && bodyFullReach > 0
+        ? Math.min(1, cardReach / bodyFullReach)
+        : 1;
+      const bodyReach = bodyFullReach * bodyReachShare;
+      // The body itself (the clump) is drawn to the swap, or to the bush's
+      // reach where that is nearer; its fade lane is the share of the swap
+      // range, which is the reach its own material computes.
+      const clumpFullReach = shrubBodies
+        ? groundObjectReachMeters(bodyHeight, groundObjectCap, SHRUB_BODY_SWAP_METERS_PER_METER)
+        : 0;
+      const clumpReach = Math.min(bodyReach, clumpFullReach);
+      // The stand-in draws from where the clump starts to shrink away.
+      const standInStart = clumpFullReach * (1 - GROUND_OBJECT_REACH_GROW_SHARE);
+      if (
+        shrub.selection > (understory ? shrubShares.understory : shrubShares.open)
+        || nearestRange >= Math.max(cardReach, bodyReach)
+      ) {
         rejectedShrubCandidates += 1;
         if (rejectedShrubCandidates === DETAIL_PRESENTATION_REJECTION_BLOCK_SIZE) {
           yield;
@@ -870,79 +1013,185 @@ export function* buildPresentationChunk(
         continue;
       }
       yield;
-      const shrubDistance = Math.hypot(shrub.x - observerX, shrub.z - observerZ);
-      const shrubEdge = densityLaw.mid.outerRadiusMeters;
-      if (shrubDistance >= shrubEdge) continue;
-      const shrubFade = shrubDistance > shrubEdge - DETAIL_FADE_MARGIN_METERS
-        ? (shrubEdge - shrubDistance) / DETAIL_FADE_MARGIN_METERS
-        : 1;
-      const shrubVariantCount = shrubDistance <= densityLaw.near.outerRadiusMeters
-        ? catalog.shrubs[shrub.species].variantCount
-        : 1;
-      const shrubVariant = Math.min(
-        shrubVariantCount - 1,
-        Math.floor(((shrub.selection * 71.7) % 1) * shrubVariantCount),
-      );
-      const shrubBatchKey = `shrub-${shrub.species}-v${shrubVariant}`;
-      const shrubPrototypeRadius = catalog.prototypes[shrubBatchKey]?.radialUnits;
-      if (shrubPrototypeRadius === undefined) {
-        throw new Error(`Missing radial contract for ${shrubBatchKey}`);
+      const shrubX = shrub.x - floatingOrigin.x;
+      const shrubY = shrub.y - floatingOrigin.y;
+      const shrubZ = shrub.z - floatingOrigin.z;
+      const shrubRadius = shrub.radiusMeters * (0.92 + shrub.selection * 0.12);
+      const shrubQuaternion = yawQuaternion(shrub.yawRadians);
+      const shrubPhase = shrub.windPhaseRadians / (2 * Math.PI);
+      if (nearestRange < cardReach) {
+        // A tier that draws one model of each tree draws one of each bush:
+        // the batches that frees are what the bush's two bodies draw in.
+        const shrubVariantCount = Math.max(
+          1,
+          Math.min(catalog.shrubs[shrub.species].variantCount, treeVariantCap),
+        );
+        const shrubVariant = Math.min(
+          shrubVariantCount - 1,
+          Math.floor(((shrub.selection * 71.7) % 1) * shrubVariantCount),
+        );
+        const shrubBatchKey = `shrub-${shrub.species}-v${shrubVariant}`;
+        const shrubPrototypeRadius = catalog.prototypes[shrubBatchKey]?.radialUnits;
+        if (shrubPrototypeRadius === undefined) {
+          throw new Error(`Missing radial contract for ${shrubBatchKey}`);
+        }
+        sink.appendInstance(shrubBatchKey, {
+          x: shrubX,
+          y: shrubY,
+          z: shrubZ,
+          quaternion: shrubQuaternion,
+          heightScaleMeters: shrub.heightMeters,
+          radialScale: detailRadialScaleForWorldRadius(
+            shrubRadius,
+            shrub.heightMeters,
+            shrubPrototypeRadius,
+          ),
+          // The cards' range is the vertex stage's now; nothing dithers.
+          fade: 1,
+          fadeIncoming: false,
+          variant: shrubVariant,
+          tint: shrub.color,
+          windPhase: shrubPhase,
+          windResponse: clamp(shrub.windResponse, 0, 1),
+        });
       }
-      sink.appendInstance(shrubBatchKey, {
-        x: shrub.x - floatingOrigin.x,
-        y: shrub.y - floatingOrigin.y,
-        z: shrub.z - floatingOrigin.z,
-        quaternion: yawQuaternion(shrub.yawRadians),
-        heightScaleMeters: shrub.heightMeters,
-        radialScale: detailRadialScaleForWorldRadius(
-          shrub.radiusMeters * (0.92 + shrub.selection * 0.12),
-          shrub.heightMeters,
-          shrubPrototypeRadius,
-        ),
-        fade: shrubFade,
-        fadeIncoming: false,
-        variant: shrubVariant,
-        tint: shrub.color,
-        windPhase: shrub.windPhaseRadians / (2 * Math.PI),
-        windResponse: clamp(shrub.windResponse, 0, 1),
-      });
+      if (shrubBodies && nearestRange < bodyReach) {
+        const bodyRadius = shrubRadius * SHRUB_BODY_RADIUS_SHARE;
+        // The body is the bush's wood and inner leaves: it leans with the
+        // gust, and leaves the flutter to the cards.
+        const bodyWindResponse = clamp(shrub.windResponse, 0, 1) * 0.5;
+        if (nearestRange < clumpReach) {
+          sink.appendInstance(SHRUB_BODY_PROTOTYPE_KEY, {
+            x: shrubX,
+            y: shrubY,
+            z: shrubZ,
+            quaternion: shrubQuaternion,
+            heightScaleMeters: bodyHeight,
+            radialScale: detailRadialScaleForWorldRadius(
+              bodyRadius,
+              bodyHeight,
+              shrubBodyRadialUnits,
+            ),
+            fade: clumpReach / clumpFullReach,
+            fadeIncoming: false,
+            variant: 0,
+            tint: shrub.color,
+            windPhase: shrubPhase,
+            windResponse: bodyWindResponse,
+          });
+        }
+        // The stand-in: kept while the observer could be past where it
+        // starts before the chunk is rebuilt. It carries the body's own
+        // height, because its inner edge is computed from that lane.
+        if (
+          bodyReach > standInStart
+          && shrubDistance + DETAIL_MEMBERSHIP_SLACK_METERS > standInStart
+        ) {
+          sink.appendInstance(SHRUB_BODY_FAR_PROTOTYPE_KEY, {
+            x: shrubX,
+            y: shrubY,
+            z: shrubZ,
+            quaternion: shrubQuaternion,
+            heightScaleMeters: bodyHeight,
+            radialScale: detailRadialScaleForWorldRadius(
+              bodyRadius * SHRUB_BODY_FAR_RADIUS_SHARE,
+              bodyHeight,
+              shrubBodyFarRadialUnits,
+            ),
+            fade: bodyReachShare,
+            fadeIncoming: false,
+            variant: 0,
+            tint: shrub.color,
+            windPhase: shrubPhase,
+            windResponse: bodyWindResponse,
+          });
+        }
+        if (treeGroundShadowReach > 0 && shrubDistance <= treeGroundShadowReach) {
+          // Leaf fraction, as a tree's shadow reads it: a bare bush is twigs.
+          const leaf = clamp(shrub.color[3], 0, 1);
+          sink.appendInstance(
+            TREE_GROUND_SHADOW_PROTOTYPE_KEY,
+            groundObjectShadowRecord(
+              {
+                x: shrub.x,
+                y: shrub.y,
+                z: shrub.z,
+                normal: {
+                  x: -(shrub.groundSlopeX ?? 0),
+                  y: 1,
+                  z: -(shrub.groundSlopeZ ?? 0),
+                },
+                heightMeters: bodyHeight,
+                radiusMeters: bodyRadius,
+                opacity: SHRUB_GROUND_SHADOW_OPACITY
+                  * (SHRUB_GROUND_SHADOW_BARE_SHARE
+                    + (1 - SHRUB_GROUND_SHADOW_BARE_SHARE) * leaf),
+                standDensityShare: shrubStandShare,
+                outlinePhase: shrubPhase,
+                reachShare: bodyReachShare,
+                bodyHasCore: true,
+              },
+              floatingOrigin,
+            ),
+          );
+        }
+      }
       statistics.shrubInstances += 1;
     }
 
-    for (
-      const rock of currentCellDistance >= densityLaw.mid.outerRadiusMeters
-        ? []
-        : resident.cell.rocks
-    ) {
-      yield;
+    // Boulders: the same reach law, from the height a rock stands above the
+    // ground, and the same shadow. A rock used to stop at the near radius
+    // whatever its size (the largest at the mid radius), with a dithered edge
+    // baked at build time.
+    for (const rock of currentCellDistance >= groundObjectEdge ? [] : resident.cell.rocks) {
       const rockDistance = Math.hypot(rock.x - observerX, rock.z - observerZ);
-      const bigRock = rock.radiusMeters >= 2.2 && rock.selection <= 0.22;
-      const rockEdge = bigRock
-        ? densityLaw.mid.outerRadiusMeters
-        : densityLaw.near.outerRadiusMeters;
-      if (rockDistance >= rockEdge) continue;
-      const rockFade = rockDistance > rockEdge - DETAIL_FADE_MARGIN_METERS
-        ? (rockEdge - rockDistance) / DETAIL_FADE_MARGIN_METERS
-        : 1;
+      const rockHeight = rock.radiusMeters * rock.flattening;
+      const rockReach = groundObjectReachMeters(rockHeight, boulderCap);
+      if (Math.max(0, rockDistance - DETAIL_MEMBERSHIP_SLACK_METERS) >= rockReach) continue;
+      yield;
+      const rockRadius = rock.radiusMeters * (0.89 + rock.selection * 0.2);
       const rockBatchKey = `rock-${rock.variant}`;
       sink.appendInstance(rockBatchKey, {
         x: rock.x - floatingOrigin.x,
         y: rock.y - floatingOrigin.y,
         z: rock.z - floatingOrigin.z,
         quaternion: normalAlignedQuaternion(rock.normal, rock.yawRadians, 0.6),
-        heightScaleMeters: rock.radiusMeters * rock.flattening,
+        heightScaleMeters: rockHeight,
         radialScale: detailRadialScaleForWorldRadius(
-          rock.radiusMeters * (0.89 + rock.selection * 0.2),
-          rock.radiusMeters * rock.flattening,
+          rockRadius,
+          rockHeight,
           requiredPrototypeRadialUnits(catalog, rockBatchKey),
         ),
-        fade: rockFade,
+        fade: 1,
         fadeIncoming: false,
         variant: 0,
         tint: rock.color,
         windPhase: 0,
         windResponse: 0,
       });
+      if (treeGroundShadowReach > 0 && rockDistance <= treeGroundShadowReach) {
+        sink.appendInstance(
+          TREE_GROUND_SHADOW_PROTOTYPE_KEY,
+          groundObjectShadowRecord(
+            {
+              x: rock.x,
+              y: rock.y,
+              z: rock.z,
+              normal: rock.normal,
+              heightMeters: rockHeight,
+              radiusMeters: rockRadius,
+              opacity: 1,
+              standDensityShare: 0,
+              outlinePhase: (rock.selection * 53.9) % 1,
+              // The shadow's reach is the ground objects' cap; where the
+              // boulders' own is tighter, the fade lane carries the share.
+              reachShare: rockReach / groundObjectReachMeters(rockHeight, groundObjectCap),
+              bodyHasCore: false,
+            },
+            floatingOrigin,
+          ),
+        );
+      }
       statistics.rockInstances += 1;
     }
 

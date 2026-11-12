@@ -71,6 +71,20 @@ import {
  * range, the same test the tree's own band windows run. Where near
  * trees cast real shadows (High and Ultra), the crown shadow hands over to
  * them at the edge of the near band.
+ *
+ * BUSHES AND BOULDERS (`groundObjects.ts`). Their shadows are records in the
+ * same batch, told apart by a variant lane of 0. Such a record has no stem
+ * key: it draws by the reach law, out to a range in proportion to the
+ * object's height, as its body does. It has no trunk and no handover.
+ *
+ * It also has a problem a tree's shadow does not. The depth slack above is
+ * taller than a bush at range, so the bush's own body would take its own
+ * shadow and stand there blackened. The decal therefore leaves out the part
+ * of its plane the object's own body hides from the camera: the body's foot
+ * and its top, thrown onto the plane along the view ray, and a tapered
+ * capsule between them. A bush's body shrinks to its core up close, so the
+ * capsule follows the same rule from the same distance. Known limit: another
+ * bush's or a tree's shadow falling across a distant bush still darkens it.
  */
 
 const SHADER_NAME = "treeGroundShadow";
@@ -138,6 +152,25 @@ export const TREE_GROUND_SHADOW_DEPTH_SLACK_PER_METER = 0.005;
  * through whatever stands in front of it.
  */
 const DEPTH_SLACK_MAX_EYE_SHARE = 0.25;
+/**
+ * A bush or a boulder is shorter than the depth slack at range, so its own
+ * decal would darken all of it: a hillside of black balls. The decal leaves
+ * out the part of its plane the object itself hides from the camera, which is
+ * known in closed form (the body carried along the view rays to the plane is
+ * a capsule running away from the camera's foot) and costs no visible ground,
+ * because the body covers it. The lowest share of the body stays in the
+ * shadow, as the contact shade at its foot. The capsule narrows to the top
+ * as the body does and has a soft edge a little inside the outline. It is the
+ * body as drawn: inside its leaf cards' reach a bush's body is its core
+ * (`SHRUB_BODY_CORE_SCALE`), and the capsule shrinks with it, so the ground
+ * between the cards keeps its shadow.
+ */
+const OWN_BODY_FOOT_SHARE = 0.12;
+const OWN_BODY_TOP_TAPER = 0.5;
+const OWN_BODY_INNER = 0.8;
+const OWN_BODY_FEATHER = 0.35;
+/** The capsule's far end when the camera is level with the object's top or below it. */
+const OWN_BODY_MAX_THROW = 64;
 /** Default haze: the shadow's contrast falls with range as the air between fills in. */
 export const TREE_GROUND_SHADOW_HAZE_PER_METER = 4e-5;
 
@@ -154,6 +187,8 @@ const UNIFORMS = [
   "treeShadowSky",
   "treeShadowBands",
   "treeShadowStand",
+  "treeShadowObjects",
+  "treeShadowCore",
   "treeShadowOrigin",
   "treeShadowHorizon",
   ...CLOUD_SHADOW_RECEIVER_UNIFORMS,
@@ -185,6 +220,10 @@ uniform treeShadowSky: vec4f;
 uniform treeShadowBands: vec4f;
 // x the near cap in stems per hectare, y where real shadows end (0 when nothing casts them)
 uniform treeShadowStand: vec4f;
+// bushes and boulders: x metres of reach per metre of height, y the tier's cap, z the share of the reach they grow in over
+uniform treeShadowObjects: vec4f;
+// a bush's body near the camera: x its leaf cards' metres of reach per metre of body height, y their cap, z the share they grow in over, w the scale the body shrinks to inside it
+uniform treeShadowCore: vec4f;
 // xy the floating origin's x and z: world metres = local metres + this
 uniform treeShadowOrigin: vec4f;
 // xy the horizon field's origin, z one over its span (0 = no field yet), w its soft band
@@ -204,8 +243,10 @@ varying shadowSun: vec3f;
 varying shadowStrength: vec4f;
 // the outline's second and third harmonic, each as (cosine, sine) of its phase times its size
 varying shadowLobes: vec4f;
-// x one over the sky shade's radius
+// x one over the sky shade's radius, y the radius of the object's own body on the plane (negative: a tree, none)
 varying shadowBlob: vec2f;
+// the part of the plane a bush or boulder hides behind itself: xy where it starts, zw where it ends
+varying shadowOwn: vec4f;
 
 fn treeShadowRotate(v: vec3f, q: vec4f) -> vec3f {
   return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
@@ -267,8 +308,18 @@ fn main(input: VertexInputs) -> FragmentInputs {
   // stem draws.
   let drawnShare = treeShadowDrawnShare(bandRange);
   let drawnSliver = clamp((1.0 - drawnShare) * 0.5, 1e-4, ${wgslFloat(DRAWN_FADE_SHARE)});
-  let drawn = clamp(
+  let stemDrawn = clamp(
     (drawnShare - stemKey) / drawnSliver + select(0.25, 1.0, drawnShare >= 1.0), 0.0, 1.0);
+  // A bush or a boulder (variant 0) is drawn by its size instead: out to the
+  // reach its body computes from the same height lane (groundObjects.ts), and
+  // fading in over the stretch the body grows in over.
+  let groundObject = vertexInputs.instanceState.y * 255.0 < 0.5;
+  let objectReach = min(height * uniforms.treeShadowObjects.x, uniforms.treeShadowObjects.y)
+    * (floor(floor(vertexInputs.instanceState.x * 255.0 + 0.5) / 2.0) / 127.0);
+  let objectDrawn = clamp(
+    (objectReach - distanceMeters) / max(objectReach * uniforms.treeShadowObjects.z, 1.0),
+    0.0, 1.0);
+  let drawn = select(stemDrawn, objectDrawn, groundObject);
   let shadowRange = uniforms.treeShadowBands.y;
   let rangeFade = 1.0 - smoothstep(
     shadowRange * ${wgslFloat(RANGE_FADE_START_SHARE)}, shadowRange, bandRange);
@@ -296,7 +347,8 @@ fn main(input: VertexInputs) -> FragmentInputs {
     * vec3f(${TREE_GROUND_SHADOW_SKY_COLOUR.map(wgslFloat).join(", ")});
   let directShare = direct / (direct + skyLight);
   let lowSun = smoothstep(${wgslFloat(LOW_SUN_START)}, ${wgslFloat(LOW_SUN_END)}, incidence);
-  // Where near trees cast real shadows, those own the near band.
+  // Where near trees cast real shadows, those own the near band. Bushes and
+  // boulders cast none anywhere, so theirs is always the decal.
   let realEdge = uniforms.treeShadowStand.y;
   let handover = select(
     1.0,
@@ -304,11 +356,14 @@ fn main(input: VertexInputs) -> FragmentInputs {
       realEdge - ${wgslFloat(REAL_SHADOW_HANDOVER_HALF_WIDTH_METERS)},
       realEdge + ${wgslFloat(REAL_SHADOW_HANDOVER_HALF_WIDTH_METERS)},
       bandRange),
-    realEdge > 0.0);
+    realEdge > 0.0 && !groundObject);
   let sunShadow = directShare * (lowSun * handover * presence);
   let crownStrength = max(sunShadow.r, max(sunShadow.g, sunShadow.b)) * opacity;
-  let trunkOpacity = ${wgslFloat(TRUNK_OPACITY)} * (1.0 - smoothstep(
-    ${wgslFloat(TRUNK_FADE_START_METERS)}, ${wgslFloat(TRUNK_FADE_END_METERS)}, bandRange));
+  let trunkOpacity = select(
+    ${wgslFloat(TRUNK_OPACITY)} * (1.0 - smoothstep(
+      ${wgslFloat(TRUNK_FADE_START_METERS)}, ${wgslFloat(TRUNK_FADE_END_METERS)}, bandRange)),
+    0.0,
+    groundObject);
   let skyStrength = ${wgslFloat(TREE_GROUND_SHADOW_SKY_SHADE)} * opacity * presence;
 
   // The footprint (treeGroundShadow.ts's treeGroundShadowFootprint is its CPU mirror).
@@ -345,7 +400,8 @@ fn main(input: VertexInputs) -> FragmentInputs {
   // forest floor goes to black. The expected number of crown shadows over a
   // point, from the drawn stems per hectare and one shadow's area, becomes
   // the exponent that brings their product back to one shadow's depth.
-  let drawnPerHectare = uniforms.treeShadowStand.x * min(standShare, drawnShare);
+  let drawnPerHectare = uniforms.treeShadowStand.x
+    * select(min(standShare, drawnShare), standShare, groundObject);
   let overlap = drawnPerHectare * 3.14159265 * semiAlong * semiAcross * 1e-4
     * ${wgslFloat(OVERLAP_CLUMPING)};
 
@@ -366,7 +422,27 @@ fn main(input: VertexInputs) -> FragmentInputs {
   vertexOutputs.shadowLobes = vec4f(
     cos(phaseSecond) * ${wgslFloat(LOBE_SECOND)}, sin(phaseSecond) * ${wgslFloat(LOBE_SECOND)},
     cos(phaseThird) * ${wgslFloat(LOBE_THIRD)}, sin(phaseThird) * ${wgslFloat(LOBE_THIRD)});
-  vertexOutputs.shadowBlob = vec2f(1.0 / max(skyRadius, 1e-3), 0.0);
+  // What the object's own body hides of this plane, seen from here: each
+  // height of the body lands where its view ray meets the plane, further from
+  // the camera's foot the higher it is and the lower the camera.
+  let eyeFoot = vec2f(dot(toEye, along), dot(toEye, across));
+  // The body's size right now: DetailInstanceMaterialPlugin's DETAIL_SIZE_RANGE
+  // core rule, for a record whose wind lane says its body has a core.
+  let coreReach = min(height * uniforms.treeShadowCore.x, uniforms.treeShadowCore.y);
+  let coreGrow = clamp(
+    (coreReach - distanceMeters) / max(coreReach * uniforms.treeShadowCore.z, 1.0), 0.0, 1.0);
+  let ownScale = mix(
+    1.0, mix(1.0, uniforms.treeShadowCore.w, vertexInputs.instanceState.w), coreGrow);
+  let ownTop = height * ownScale;
+  let ownFoot = ownTop * ${wgslFloat(OWN_BODY_FOOT_SHARE)};
+  let ownEndThrow = select(
+    ${wgslFloat(OWN_BODY_MAX_THROW)},
+    min(ownTop / max(eyeHeight - ownTop, 1e-4), ${wgslFloat(OWN_BODY_MAX_THROW)}),
+    eyeHeight > ownTop);
+  let ownStartThrow = min(ownFoot / max(eyeHeight - ownFoot, 1e-4), ownEndThrow);
+  vertexOutputs.shadowBlob = vec2f(
+    1.0 / max(skyRadius, 1e-3), select(-1.0, crownRadius * ownScale, groundObject));
+  vertexOutputs.shadowOwn = vec4f(-eyeFoot * ownStartThrow, -eyeFoot * ownEndThrow);
 }
 `;
 
@@ -377,6 +453,7 @@ varying shadowSun: vec3f;
 varying shadowStrength: vec4f;
 varying shadowLobes: vec4f;
 varying shadowBlob: vec2f;
+varying shadowOwn: vec4f;
 
 @fragment
 fn main(input: FragmentInputs) -> FragmentOutputs {
@@ -407,7 +484,24 @@ fn main(input: FragmentInputs) -> FragmentOutputs {
   // The sky shade right under the crown, there whatever the sun does.
   let sky = (1.0 - smoothstep(0.15, 1.0, length(plane) * fragmentInputs.shadowBlob.x)) * strength.y;
 
-  var keep = (vec3f(1.0) - fragmentInputs.shadowSun * max(crown, trunk)) * (1.0 - sky);
+  // A bush or boulder leaves its own body out (see OWN_BODY_FOOT_SHARE).
+  let own = fragmentInputs.shadowOwn;
+  let ownAxis = own.zw - own.xy;
+  let ownAlong = clamp(
+    dot(plane - own.xy, ownAxis) / max(dot(ownAxis, ownAxis), 1e-6), 0.0, 1.0);
+  let ownRadius = fragmentInputs.shadowBlob.y
+    * mix(1.0, ${wgslFloat(OWN_BODY_TOP_TAPER)}, ownAlong);
+  let ownDistance = length(plane - own.xy - ownAxis * ownAlong);
+  let notOwn = select(
+    1.0,
+    clamp(
+      (ownDistance - ownRadius * ${wgslFloat(OWN_BODY_INNER)})
+        / max(ownRadius * ${wgslFloat(OWN_BODY_FEATHER)}, 1e-4),
+      0.0, 1.0),
+    ownRadius > 0.0);
+
+  var keep = (vec3f(1.0) - fragmentInputs.shadowSun * max(crown * notOwn, trunk))
+    * (1.0 - sky * notOwn);
   keep = pow(max(keep, vec3f(1e-3)), vec3f(strength.w));
   // ALPHA_MULTIPLY: what is already drawn is scaled by this; alpha untouched.
   fragmentOutputs.color = vec4f(keep, 0.0);
@@ -439,6 +533,8 @@ export class TreeGroundShadowMaterial {
   );
   private readonly bands = new Vector4(400, 0, 1, 1);
   private readonly stand = new Vector4(78, 0, 0, 0);
+  private readonly objects = new Vector4(0, 0, 1, 0);
+  private readonly core = new Vector4(0, 0, 1, 1);
   private readonly origin = new Vector4(0, 0, 0, 0);
   private readonly horizon = new Vector4(0, 0, 0, HORIZON_SOFT_BAND);
   private readonly cloudShadowCenterLocal = new Vector2(0, 0);
@@ -497,6 +593,8 @@ export class TreeGroundShadowMaterial {
     material.setVector4("treeShadowSky", this.sky);
     material.setVector4("treeShadowBands", this.bands);
     material.setVector4("treeShadowStand", this.stand);
+    material.setVector4("treeShadowObjects", this.objects);
+    material.setVector4("treeShadowCore", this.core);
     material.setVector4("treeShadowOrigin", this.origin);
     material.setVector4("treeShadowHorizon", this.horizon);
     this.material = material;
@@ -576,6 +674,45 @@ export class TreeGroundShadowMaterial {
     this.stand.y = Math.max(0, law.realShadowEdgeMeters);
     this.material.setVector4("treeShadowBands", this.bands);
     this.material.setVector4("treeShadowStand", this.stand);
+  }
+
+  /**
+   * The reach law for bushes' and boulders' shadows: the same three numbers
+   * their bodies' materials take (`groundObjectReachMeters`). A cap of 0
+   * draws none of them.
+   */
+  setGroundObjectReach(metersPerMeter: number, capMeters: number, growShare: number): void {
+    const enabled = Number.isFinite(metersPerMeter) && metersPerMeter > 0
+      && Number.isFinite(capMeters) && capMeters > 0;
+    this.objects.set(
+      enabled ? metersPerMeter : 0,
+      enabled ? capMeters : 0,
+      Number.isFinite(growShare) ? Math.min(1, Math.max(1e-3, growShare)) : 1,
+      0,
+    );
+    this.material.setVector4("treeShadowObjects", this.objects);
+  }
+
+  /**
+   * A bush's body near the camera, as its own material shrinks it
+   * (`DetailInstanceMaterialPlugin.setSizeCore`, the same four numbers): the
+   * shadow leaves out only what the body as drawn hides.
+   */
+  setGroundObjectCore(
+    metersPerMeter: number,
+    capMeters: number,
+    growShare: number,
+    coreScale: number,
+  ): void {
+    const enabled = Number.isFinite(metersPerMeter) && metersPerMeter > 0
+      && Number.isFinite(capMeters) && capMeters > 0;
+    this.core.set(
+      enabled ? metersPerMeter : 0,
+      enabled ? capMeters : 0,
+      Number.isFinite(growShare) ? Math.min(1, Math.max(1e-3, growShare)) : 1,
+      Number.isFinite(coreScale) ? Math.min(1, Math.max(0, coreScale)) : 1,
+    );
+    this.material.setVector4("treeShadowCore", this.core);
   }
 
   setWorldOrigin(worldX: number, worldZ: number): void {

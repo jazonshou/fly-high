@@ -391,7 +391,7 @@ export interface VegetationDrawModelInput {
   readonly midMeshesPerChunk: number;
   /** `2-17`: ONE merged impostor mesh per chunk since the perf-debt pass. */
   readonly farMeshesPerChunk: number;
-  /** Understory, rocks, clutter and ground cover — all near-band only. */
+  /** Bush leaf cards, clutter and ground cover — all near-band only. */
   readonly understoryMeshesPerChunk: number;
   /**
    * Shadow-casting meshes per near chunk, times the cascade count. ZERO at
@@ -408,6 +408,21 @@ export interface VegetationDrawModelInput {
    * Zero draws none.
    */
   readonly groundShadowRangeMeters: number;
+  /**
+   * 2026-11-12: bushes and boulders draw by their own size, out to the tier's
+   * ground object range (`groundObjects.ts`), which is the ground shadow
+   * range above, or the near radius where the tier draws no ground shadows.
+   * Three kinds of batch, each one draw per chunk its range touches:
+   *
+   * - the bush body's stand-in, out to the whole range;
+   * - the bush body itself, out to `bushBodyRangeMeters`: the swap range of
+   *   the tallest bush the generator authors;
+   * - `boulderMeshesPerChunk` rock batches, out to `boulderRangeMeters` (the
+   *   profile's own cap for them).
+   */
+  readonly bushBodyRangeMeters: number;
+  readonly boulderMeshesPerChunk: number;
+  readonly boulderRangeMeters: number;
 }
 
 export interface VegetationDrawEstimate {
@@ -418,6 +433,8 @@ export interface VegetationDrawEstimate {
   readonly shadow: number;
   /** Tree ground shadow decals (not the shadow PASS, which is `shadow`). */
   readonly groundShadow: number;
+  /** Bush bodies, their stand-ins and boulders. */
+  readonly groundObjects: number;
   readonly total: number;
   readonly estimatedMs: number;
 }
@@ -456,7 +473,21 @@ export function estimateVegetationDrawCalls(
   const groundShadow = groundShadowRange > 0
     ? chunksTouchedByDisc(groundShadowRange, chunkEdgeMeters)
     : 0;
-  const total = near + mid + far + understory + shadow + groundShadow;
+  // `groundObjectRangeCapMeters`, restated: the shadow range where the tier
+  // has one, the near radius where it has none.
+  const groundObjectRange = groundShadowRange > 0
+    ? groundShadowRange
+    : law.near.outerRadiusMeters;
+  const groundObjects = chunksTouchedByDisc(groundObjectRange, chunkEdgeMeters)
+    + chunksTouchedByDisc(
+      Math.min(Math.max(0, input.bushBodyRangeMeters), groundObjectRange),
+      chunkEdgeMeters,
+    )
+    + input.boulderMeshesPerChunk * chunksTouchedByDisc(
+      Math.min(Math.max(0, input.boulderRangeMeters), groundObjectRange),
+      chunkEdgeMeters,
+    );
+  const total = near + mid + far + understory + shadow + groundShadow + groundObjects;
   return Object.freeze({
     near,
     mid,
@@ -464,6 +495,7 @@ export function estimateVegetationDrawCalls(
     understory,
     shadow,
     groundShadow,
+    groundObjects,
     total,
     estimatedMs: total * VEGETATION_DRAW_COST_MS,
   });
@@ -505,10 +537,20 @@ export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
   // Wave T: each tree band submits THREE parts (bark skeleton, interior
   // core, leaf-cluster card shell). Modelled 46.1 draws at tier 0.
   50,
-  // Modelled 54.6 draws at the medium/balanced contract tier.
-  58,
-  // Species mode models 435.1 draws at tier 2 and 511.3 at tier 3 with the
+  // Modelled 58.4 draws at the medium/balanced contract tier.
+  62,
+  // Species mode models 443.0 draws at tier 2 and 524.5 at tier 3 with the
   // third tree part; re-pinned as the regression guard the renderer meets.
+  //
+  // 2026-11-12, bushes and boulders (`groundObjects.ts`): the four figures
+  // were 46.1 / 54.6 / 435.1 / 511.3 and the last three ceilings 58 / 440 /
+  // 515. A bush's body and its stand-in are two new batches, and the three
+  // rock batches now draw by a boulder's size, out to the ground object range
+  // rather than the near radius: +3.3 / +7.3 / +7.9 / +13.2 draws. Against
+  // that, tiers 0 and 1 draw one leaf-card model per bush species, not two,
+  // as they already draw one model per tree family (-3.3 / -3.5). Tier 0 has
+  // no room for the rest, so its boulders stop at 250 m
+  // (`boulderRangeMeters`): 46.06 modelled, against 46.15 the row allows.
   //
   // 2026-11-12: the four figures above were 45.7 / 53.3 / 433.8 / 508.6. Two
   // terms moved them and no ceiling: the tree ground shadow adds one decal
@@ -522,8 +564,8 @@ export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
   // extend it. Note these submissions were always modelled per cascade and, up
   // to the same change, only cascade 0 was ever rendered — so this model has
   // just become accurate rather than merely smaller.
-  440,
-  515,
+  448,
+  529,
 ]);
 
 /**
@@ -535,9 +577,11 @@ export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
 export const VEGETATION_DRAW_SUBMISSION_RATIO: readonly number[] = Object.freeze([
   // 2026-11-12: 0.991 / 0.77 before the tree ground shadow's decal draw (and
   // without the retired grass-card batch). Tier 0 has no room left: its
-  // shadow range, 450 m, is the widest that keeps this under one.
-  0.999,
-  0.788,
+  // shadow range, 450 m, is the widest that keeps this under one. With
+  // bushes and boulders (same day) these were 0.999 / 0.788; tier 0's
+  // boulder range, 250 m, is again what keeps it under one.
+  0.998,
+  0.844,
   // The third tree part raises the species-mode submission model; these
   // tiers remain well above the vegetation frame row. The strict capture,
   // not this draw-only model, decides whether skeletal trees close frame
@@ -548,7 +592,8 @@ export const VEGETATION_DRAW_SUBMISSION_RATIO: readonly number[] = Object.freeze
   // is not claimed to. MEASURED separately at tier 3, the cut costs nothing
   // resolvable in fps, so this ratio moving is not itself evidence of a win.
   //
-  // 2026-11-12: 5.936 / 3.674 before the ground shadow's decal draw.
-  5.954,
-  3.693,
+  // 2026-11-12: 5.936 / 3.674 before the ground shadow's decal draw, and
+  // 5.954 / 3.693 before bushes and boulders drew by their own size.
+  6.062,
+  3.788,
 ]);

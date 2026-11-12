@@ -599,9 +599,11 @@ measured ~0. Two consequences the vegetation perf-debt pass made concrete:
   160/200/500/650, debt ratios to 3.28/2.87/6.32/4.56.
   > **Superseded 2026-08-31 (`6-12`). Both figures above are historical: they
   > are what `4.5-C1` pinned, not what the tree holds.** `VEGETATION_DRAW_CEILING`
-  > is now **`[50, 58, 440, 515]`** — tiers 0 and 1 fell by roughly 3x after
+  > is now **`[50, 62, 448, 529]`** — tiers 0 and 1 fell by roughly 3x after
   > `6-8`'s canopy handoff and `6-9`'s GPU scatter, and tier 3 rose. Asserted
-  > against the constant by `tests/docs-truth.test.ts`.
+  > against the constant by `tests/docs-truth.test.ts`. (2026-11-12: it was
+  > `[50, 58, 440, 515]` until bushes and boulders drew by their own size;
+  > see that section.)
   >
   > **`VEGETATION_FRAME_DEBT_RATIO` no longer exists.** Grep for it: zero hits in
   > `src/` and zero in `tests/`. It survives only in prose — here, in
@@ -4194,6 +4196,206 @@ unchanged.
 - Shots over open country gain draws and change their pictures, so their
   ceilings and baselines move with this change, as the tree ground shadow's
   did.
+
+## Bushes and boulders: what stands between a tree and the ground (2026-11-12)
+
+Jason, 2026-11-12: where there are no trees "it looks fake and plasticy
+because, while the skin attempts to create texture, there isn't actually
+texture on the ground". Bushes were already authored (`scatterShrubs`), and
+rocks (`generateRocks`), but neither was there at the range open ground is
+judged from. A bush was a dozen thin leaf cards thinned by the tree law, so
+it was gone by the near radius (110 to 240 m) and threw no shadow. A rock
+stopped at the near radius whatever its size, except one in five of those
+2.2 m across or more, which drew to the mid radius.
+
+**What changed** (`groundObjects.ts` has the law, `presentationBuild.ts` the
+records):
+
+- **A reach set by size.** A bush or a boulder is drawn while it stands about
+  three pixels tall on a 1080-line frame: 300 m of range per metre of its
+  height, capped by the tier's ground shadow range (450 / 1,100 / 1,200 /
+  2,000 m). Over the last fifth of that range it grows out of the ground
+  instead of dithering, so the opaque path keeps its early-Z and nothing
+  pops. The rule runs in the vertex stage against the true camera distance
+  (`DETAIL_SIZE_RANGE` in `DetailInstanceMaterialPlugin`).
+- **A bush is up to four records.** Its leaf cards, as before, out to 90 m
+  per metre of height and never past the near radius. A solid body under
+  them, a clump of three mounds (60 triangles), drawn while its shape can be
+  seen (110 m per metre of its height, about ten pixels). A 12-triangle
+  stand-in for the body from there to the bush's reach. And a ground shadow,
+  which is one more record in the tree shadow's batch (variant lane 0), so
+  it costs no draw.
+- **Leaves that stand on the body.** A bush's cards were a dozen, at the
+  species' card size, on a few bare stems, and each showed its leaf layer
+  once: a hazel leaf was 20 cm on a bush 1.5 m tall, and up close a bush was
+  a dark mound with a few huge leaves round it. Now 26 to 32 smaller cards
+  (`buildShrubPrototype`) stand on the body's own faces, tilted against it
+  so their edges break its outline, and each shows its layer twice over
+  (`SHRUB_CARD_LAYER_REPEAT`): a leaf is half the size and a card holds four
+  times as many. The cards declare the body's radial unit (`radialUnit`), so
+  a card stays on the spot of the body it was built on for every bush. A
+  bush's cards are 52 to 64 triangles where they were 24 to 36, and cover
+  about 18% more area.
+- **The body is the bush at range and its core up close.** Inside 20 m per
+  metre of height (the bush about fifty pixels tall) the body shrinks to
+  0.72 and darkens, and the cards stand out from it: the same construction
+  the near trees use.
+- **The body is lit as leaves of a bush's size.** It is on the trees' opaque
+  crown path, whose leaf-cluster field has clumps 0.74 m and 0.27 m across:
+  a crown's, and as big as a bush's own lumps, so a thicket at 15 to 60 m
+  was a field of smooth green boulders. A material now sets that field's
+  grain (`setClusterGrain`). A bush's is 4.5 times finer (16 cm and 6 cm),
+  its tone runs from 0.5 to 1.5 where a crown's runs from 0.84 to 1.16, and
+  its normal is 1.5 times as strong. The mean tone is unchanged, each octave
+  still fades at its own pixel footprint, and a crown's uniforms hold the
+  values its shader had as constants.
+- **The shadow leaves out what the body hides.** The decal's depth slack is
+  taller than a bush at range, so a bush would take its own shadow. The
+  decal leaves out the part of its plane the body covers as the camera sees
+  it (`TreeGroundShadowMaterial`, "BUSHES AND BOULDERS").
+- **Thickets.** Open country's bushes are placed by a thicket field
+  (`shrubThicketAt`: 90 m thickets, more of them in scrub country 1.4 km
+  across, lone bushes between), not an even spread. A closed stand's
+  understory is unchanged.
+- **A thicket is not an orchard.** The scatter proposes one stem to a
+  subcell, and where the acceptance nears 1, which is a thicket's middle,
+  that is an even carpet: the first pictures showed far thickets as rows of
+  same-height dots. A thicket's stem may now stand anywhere in the
+  two-by-two subcells round its own (`SHRUB_THICKET_JITTER_SPAN`; the
+  expected count is unchanged), and a thicket holds a spread of ages instead
+  of all old growth (the maturity roll's exponent falls from 1.45 to 0.6 in
+  a thicket's middle). Measured in the densest 96 m of two thickets, the
+  Clark-Evans ratio of the drawn bushes (1 is random, above 1 is even) went
+  from 1.28 to 0.96 and 0.87, and bush heights from 0.83 / 0.99 / 1.92 m to
+  0.56 / 0.86 / 1.54 m (10th, 50th, 90th percentile). Stems that now land
+  inside a stronger neighbour's spacing yield, so a dense cell holds about a
+  tenth fewer bushes.
+- **Two drawn budgets per cell.** Understory (canopy closure 0.5 or more)
+  keeps the 60 a hectare it had and its solid goes only as far as its cards.
+  Open ground draws up to 260 a hectare times the tier's density scale (117
+  / 195 / 260 / 260), which only a cell of solid thicket reaches. Thinning
+  is by each bush's own `selection`, so the same bushes are drawn from every
+  range.
+- **Boulders** take the reach law and the shadow. They are not placed any
+  more thickly than before.
+
+**Tier rules, and what pays for them.** A bush's body and its stand-in are
+two new batches, and the three rock batches now draw past the near radius.
+In the draw model (`estimateVegetationDrawCalls`) that is +3.3 / +7.3 / +7.9
+/ +13.2 draws. Low's vegetation row had room for none of it (99.9%), so:
+
+- Low and Medium draw one leaf-card model per bush species, not two, as
+  they already draw one model per tree family (-3.3 / -3.5 draws).
+- Low's boulders stop at 250 m (`boulderRangeMeters`); a boulder up to
+  0.83 m tall keeps its whole reach there. Before this change they stopped
+  at 110 m, but for the one in five of the largest that drew to 640 m: a
+  term the draw model never priced.
+
+| modelled draws | Low | Medium | High | Ultra |
+| --- | --- | --- | --- | --- |
+| before | 46.1 | 54.6 | 435.1 | 511.3 |
+| after | 46.1 | 58.4 | 443.0 | 524.5 |
+| share of the vegetation row | 0.998 | 0.844 | 6.06 | 3.79 |
+
+**Records.** `detailInstanceBudget` now books bushes
+(`estimateBushRecords`, checked against the build's own output in
+`render.webgpu-detail-presentation-build.test.ts`). The rows hold the larger
+of two landscapes: closed forest with its understory, or open scrub at the
+tier's cap inside a bush's reach with forest beyond. Rows 60 k / 155 k / 265
+k / 590 k become 61 k / 185 k / 310 k / 630 k: +0.03 / +0.92 / +1.37 / +1.22
+MiB before the estimate's 1.15 overhead. The scrub figure is a saturation at
+a reference bush of 1.6 m, not a bound.
+
+**Measured load** (real cells and the real build, default world, the densest
+scrub found within 20 km of the start, 2.6 km from the airport):
+
+| tier | bushes with a record | stand-ins | bodies | leaf-card records | shadows | bush records | booked |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Low | 6,705 | 6,609 | 2,031 | 1,221 | 6,705 | 16.6 k | 23.6 k |
+| Medium | 13,380 | 13,287 | 3,338 | 2,421 | 13,380 | 32.4 k | 40.3 k |
+| High | 17,372 | 17,266 | 4,382 | 3,470 | 17,372 | 42.5 k | 53.7 k |
+
+On Medium that is about 159 k stand-in triangles, up to 200 k body triangles
+(fewer are drawn: a body record is kept one membership slack past where it
+draws) and 27 k shadow triangles. Typical scrub holds about half of this,
+open grassland a few hundred bushes.
+
+**Frame time.** A cloud A/B against the lone trees commit `110b6f6` (Medium
+/ balanced, SwiftShader, 4 CPUs, 16 rounds, the gate is 5%) on the two
+capture shots with the most bushes in view:
+
+| shot | GPU time | CPU time (guard) | draw calls | vegetation batches | visible instances | pixels |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ground-2m-lowsun` | same -2.6% (-3.4% to -1.6%) | same -3.2% (-12.0% to +9.0%) | 125 → 122 | 33 → 30 | 122.8 k → 133.4 k | 9.8% differ |
+| `hamlet-300ft` | faster -11.1% (-11.9% to -10.2%) | same +0.8% (-5.3% to +14.1%) | 246 → 242 | 30 → 26 | 47.2 k → 45.4 k | 0.3% differ |
+
+Draws fall on both. Two things return batches on Medium, and which returns
+more was not separated: one leaf-card model per bush species instead of
+two, and a chunk whose bushes all stand past their cards' reach now holds no
+card batch at all. The hamlet's 11% is most likely leaf cards too: a bush's
+cards used to draw to the near radius and now stop at 90 m per metre of its
+height, and alpha-tested cards are what a software rasteriser pays most for.
+Read it as "not slower", not as a gain a GPU will show. The estimated GPU
+memory row moves 404.37 → 405.43 MiB. The A/B was taken before the body's
+leaf grain, which adds four multiplies to the crown path's fragment stage
+and no texture read, and before the leaves that stand on the body.
+
+Those two were then measured together against this change without the new
+leaves, on `ground-2m-lowsun` (same setup): GPU time the same, +0.4% (-0.6%
+to +1.4%); CPU time not resolved, +4.2% (-9.9% to +18.2%); 122 draws on
+both; inventoried GPU memory 301.46 → 301.53 MiB (the card models' larger
+vertex buffers); 6.4% of pixels differ. At the measured load above, Medium's
+2,421 leaf-card records are about 140 k triangles where they were about
+73 k.
+
+**Tests.** `tests/render.webgpu-ground-objects.test.ts` (26: the reach law,
+its two shader transliterations, the body and stand-in meshes, the body's
+leaf grain, the leaf cards' place on the body at every bush size and their
+layer repeat, the shadow record, the thicket field, the tier rules, the
+runtime's wiring, and that a square generated as one page and as four holds
+the same bushes and trees, which is what a thicket's wider stem placement
+must not break).
+`tests/render.webgpu-detail-presentation-build.test.ts` gains the bush and
+boulder records (11: the hand-over by range, the two budgets, the tier's
+cap, the card variant cap, the boulder cap, and the record estimate against
+a built field). `tests/gpu/tree-ground-shadow.test.ts` gains the ground
+object's shadow on the adapter: its footprint, its reach, and what its own
+body hides. The draw model and the record rows are re-pinned in
+`tests/render.webgpu-rendered-density.test.ts`.
+`tests/render.infrastructure-plants.test.ts` moves to a cell whose slipway
+crosses a thicket and a stand of trees (its old cell's slipway fell on clean
+ground between thickets), and now states what the scatter guarantees past a
+plant exclusion's blend: no stem is lost or changed, one may stand where a
+cleared neighbour outranked it, and past `SCATTER_HALO_METERS` nothing
+differs. Its old claim, the same placements bit for bit from the blend
+outward, held only where no two stems competed.
+
+**Known limits.**
+
+- Boulders are as rare as they were (a few a hectare at most, and none on
+  most ground). Rocky ground that reads as rocky needs more of them placed,
+  which this change does not do.
+- On Low the few largest boulders that used to draw to 640 m now stop at
+  250 m with the rest.
+- A bush's body is a 60-triangle clump, and past its cards' reach (90 m per
+  metre of height, and never past the near radius) the leaf grain alone
+  carries it: its outline is angular there if looked for. Its leaves are
+  one flat layer per species, with no twigs or flowers.
+- The body is one clump shape for all three bush species; its colour is the
+  bush's own.
+- The leaf grain is locked to world position, whose 32-bit precision falls
+  with distance from the world's origin: about 1 cm at 100 km, against a
+  6 cm clump. A crown's grain has the same step against a 27 cm clump.
+- Another bush's or a tree's shadow falling across a distant bush darkens
+  it, because of the decal's depth slack. Only its own shadow is left out.
+- The record rows book a saturation, not a bound: scrub of taller bushes
+  than 1.6 m, solid out to their whole reach, would hold more.
+- High's GPU memory estimate has little room left: this takes 1.6 MiB of
+  the 6.4 MiB it had on this branch, and the walking branch takes most of
+  the rest.
+- Shots over open country gain draws and change their pictures, so their
+  ceilings and baselines move with this change. Frame time on a real GPU is
+  not measured.
 
 ## In-app benchmark (?bench=1)
 

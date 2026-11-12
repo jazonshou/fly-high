@@ -14,7 +14,10 @@ import {
 import { DYNAMIC_ALLOCATIONS, FRAME_BUDGET_MS } from "../src/render/webgpu/core/PerformanceBudget";
 import {
   DETAIL_CULL_FADE_MARGIN_METERS,
+  DETAIL_MEMBERSHIP_SLACK_METERS,
   estimateTreeGroundShadowRecords,
+  groundObjectRangeCapMeters,
+  treeGroundShadowReachMeters,
 } from "../src/render/webgpu/detail/presentationBuild";
 import { DETAIL_PRESENTATION_CHUNK_CELL_SPAN } from "../src/render/webgpu/detail/spatialChunks";
 import { DEFAULT_DETAIL_CELL_SIZE_METERS } from "../src/render/webgpu/detail/types";
@@ -30,7 +33,19 @@ import {
   treePrototypeSpecies,
 } from "../src/render/webgpu/detail/treePrototypeFamily";
 import type { TreeSpecies } from "../src/render/webgpu/detail/types";
-import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
+import {
+  resolveWebGpuQualityProfile,
+  type WebGpuQualityProfile,
+} from "../src/render/webgpu/core/QualityProfile";
+import { SHRUB_MAX_HEIGHT_METERS } from "../src/render/webgpu/detail/generation";
+import {
+  SHRUB_BODY_HEIGHT_SHARE,
+  SHRUB_BODY_SWAP_METERS_PER_METER,
+  SHRUB_UNDERSTORY_CANOPY_CLOSURE,
+  SHRUB_UNDERSTORY_DRAWN_PER_HECTARE,
+  estimateBushRecords,
+  shrubOpenDrawnPerHectare,
+} from "../src/render/webgpu/detail/groundObjects";
 import type { QualityLevel } from "../src/game/types";
 import type { RenderingMode } from "../src/settings";
 
@@ -222,17 +237,31 @@ describe("impostor fill (2026-09-13)", () => {
     // chunk's record set ignore the observer.
     // 2026-11-12: every stem with a tree record inside the tier's ground
     // shadow range packs one more, its shadow (`treeGroundShadow.ts`).
-    const shadowRangeByTier = new Map<number, number>();
+    //
+    // 2026-11-12, bushes (`groundObjects.ts`): a bush is up to four records
+    // (leaf cards, body, the body's stand-in, shadow), and on open ground it
+    // is drawn by its size, hundreds of metres out. Two landscapes are
+    // booked, and the row holds the larger. Closed forest everywhere, as
+    // above, with its understory at the understory's cap. And open scrub at
+    // the tier's cap inside a bush's reach, closed forest beyond it: open
+    // ground is ground under less than half a canopy
+    // (`SHRUB_UNDERSTORY_CANOPY_CLOSURE`), so the scrub stands in place of at
+    // least that share of the tree records the forest books inside the same
+    // radius.
+    const profileByTier = new Map<number, WebGpuQualityProfile>();
     for (const [quality, mode] of [
       ["low", "performance"], ["medium", "balanced"], ["high", "balanced"], ["high", "ultra"],
     ] as const) {
       const profile = resolveWebGpuQualityProfile(quality, mode);
-      shadowRangeByTier.set(profile.tier, profile.treeGroundShadowRangeMeters);
+      profileByTier.set(profile.tier, profile);
     }
-    expect([...shadowRangeByTier.keys()].sort()).toEqual([0, 1, 2, 3]);
+    expect([...profileByTier.keys()].sort()).toEqual([0, 1, 2, 3]);
     RENDERED_DENSITY_LAWS.forEach((law, tier) => {
+      const profile = profileByTier.get(tier)!;
+      expect(profile.renderedDensityLaw).toBe(law);
       const estimate = estimateRenderedWoodyLoad(law);
-      const shadowRecords = estimateTreeGroundShadowRecords(shadowRangeByTier.get(tier), law);
+      const shadowRecords = estimateTreeGroundShadowRecords(
+        profile.treeGroundShadowRangeMeters, law);
       // Non-vacuous: the term is live at every tier, and never more than one
       // record per stem inside the mid band.
       expect(shadowRecords, `tier ${tier} shadow records`).toBeGreaterThan(0);
@@ -244,11 +273,54 @@ describe("impostor fill (2026-09-13)", () => {
         + DEFAULT_DETAIL_CELL_SIZE_METERS * Math.SQRT2;
       const beyondCullHectares = Math.PI * (residencyReach ** 2 - farRadius ** 2) / 10_000;
       const beyondCullStems = beyondCullHectares * law.nearStemsPerHectare * law.impostorFloorShare;
-      const records = estimate.nearStems * 7
+      const forestRecords = estimate.nearStems * 7
         + estimate.midStems * 4
         + estimate.impostorStems
         + beyondCullStems
         + shadowRecords;
+      const shadowReach = treeGroundShadowReachMeters(profile.treeGroundShadowRangeMeters, law);
+      const bushes = {
+        nearRadiusMeters: law.near.outerRadiusMeters,
+        groundObjectRangeMeters: groundObjectRangeCapMeters(
+          profile.treeGroundShadowRangeMeters, law),
+        groundShadowReachMeters: shadowReach,
+        membershipSlackMeters: DETAIL_MEMBERSHIP_SLACK_METERS,
+      };
+      const understory = estimateBushRecords({
+        ...bushes, drawnPerHectare: SHRUB_UNDERSTORY_DRAWN_PER_HECTARE, understory: true,
+      });
+      const scrub = estimateBushRecords({
+        ...bushes,
+        drawnPerHectare: shrubOpenDrawnPerHectare(profile.vegetationDensity),
+        understory: false,
+      });
+      // Non-vacuous: both terms are live at every tier, and open scrub is
+      // the heavier by far.
+      expect(understory.records, `tier ${tier} understory`).toBeGreaterThan(1_000);
+      expect(scrub.records, `tier ${tier} scrub`).toBeGreaterThan(understory.records * 4);
+      expect(scrub.radiusMeters).toBeLessThanOrEqual(law.mid.outerRadiusMeters);
+      // The tree records the closed forest books inside the scrub's radius:
+      // the same integral as `estimateRenderedWoodyLoad`, stopped there.
+      const steps = 2_048;
+      let forestRecordsInside = 0;
+      for (let index = 0; index < steps; index += 1) {
+        const r = ((index + 0.5) / steps) * scrub.radiusMeters;
+        const stems = 2 * Math.PI * r * (scrub.radiusMeters / steps)
+          * (law.nearStemsPerHectare / 10_000);
+        const geometry = renderedShareAtDistance(law, r);
+        forestRecordsInside += stems * (r < law.near.outerRadiusMeters
+          ? geometry * 7
+          : geometry * 4 + (drawnShareAtDistance(law, r) - geometry));
+      }
+      forestRecordsInside += estimateTreeGroundShadowRecords(
+        Math.min(scrub.radiusMeters, shadowReach), law);
+      expect(forestRecordsInside).toBeLessThan(forestRecords * 0.5);
+      const closedForest = forestRecords + understory.records;
+      const openScrub = forestRecords
+        - (1 - SHRUB_UNDERSTORY_CANOPY_CLOSURE) * forestRecordsInside
+        + scrub.records;
+      expect(openScrub, `tier ${tier} scrub is the larger`).toBeGreaterThan(closedForest);
+      const records = Math.max(closedForest, openScrub);
       const row = DYNAMIC_ALLOCATIONS.detailInstanceBudget[tier as 0 | 1 | 2 | 3];
       expect(records, `tier ${tier}`).toBeLessThanOrEqual(row);
       // Non-vacuous: the row is a ceiling being approached, not a formality.
@@ -285,6 +357,7 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
     mid: number;
     far: number;
     understory: number;
+    boulders: number;
   } {
     const cohortVariants = (cohort: readonly TreeSpecies[]) => [...new Set(
       cohort.map((name) => treePrototypeSpecies(name, prototypeMode)),
@@ -294,7 +367,11 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
     );
     const nearVariants = Math.max(...cohorts.map(cohortVariants));
     const midVariants = nearVariants;
-    const shrubMeshes = Object.values(SHRUB_VARIANT_COUNTS).reduce((a, b) => a + b, 0);
+    // 2026-11-12: a bush's leaf cards take the tier's variant cap, as its
+    // trees do (`buildPresentationChunk`), so tiers 0 and 1 submit one card
+    // mesh per bush species, not two.
+    const shrubMeshes = Object.values(SHRUB_VARIANT_COUNTS)
+      .reduce((sum, count) => sum + Math.min(count, treeVariantCap), 0);
     return {
       // Wave T: three parts per tree per band — bark skeleton (opaque), the
       // interior core (opaque crown), and the leaf-cluster card shell
@@ -302,13 +379,17 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
       near: nearVariants * 3,
       mid: midVariants * 3,
       far: 1,
-      // Shrub variants + three rock lithologies + four clutter kinds + three
-      // ground-cover card archetypes (fern, heather, reed), all near-band
-      // only. 2026-11-12: this counted four. The grass cards retired with
-      // wave G's blade field: `buildPresentationChunk` emits no grass card
-      // wherever the blades are live, which is every device with compute
-      // shaders, so that batch has had no records and no draw since.
-      understory: shrubMeshes + 3 + 4 + 3,
+      // Shrub card variants + four clutter kinds + three ground-cover card
+      // archetypes (fern, heather, reed), all near-band only. 2026-11-12:
+      // this counted four archetypes. The grass cards retired with wave G's
+      // blade field: `buildPresentationChunk` emits no grass card wherever
+      // the blades are live, which is every device with compute shaders, so
+      // that batch has had no records and no draw since.
+      understory: shrubMeshes + 4 + 3,
+      // Three rock lithologies. 2026-11-12: out of `understory`, because a
+      // boulder is no longer near-band only; it draws by its own size, out
+      // to the profile's `boulderRangeMeters`.
+      boulders: 3,
     };
   }
 
@@ -320,6 +401,16 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
     expect(meshCounts(5).far).toBe(1);
     expect(IMPOSTOR_SPECIES.length).toBeGreaterThan(1);
   });
+
+  /** The bush and boulder terms, from the profile and the generator's tallest bush. */
+  function groundObjectTerms(profile: WebGpuQualityProfile) {
+    return {
+      bushBodyRangeMeters: SHRUB_MAX_HEIGHT_METERS * SHRUB_BODY_HEIGHT_SHARE
+        * SHRUB_BODY_SWAP_METERS_PER_METER,
+      boulderMeshesPerChunk: 3,
+      boulderRangeMeters: profile.boulderRangeMeters,
+    };
+  }
 
   const TIERS: readonly [QualityLevel, RenderingMode][] = [
     ["low", "performance"],
@@ -352,6 +443,7 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
         shadowMeshesPerChunk: profile.vegetationCastsShadows ? counts.near : 0,
         shadowCascades: profile.shadowCascades,
         groundShadowRangeMeters: profile.treeGroundShadowRangeMeters,
+        ...groundObjectTerms(profile),
       }),
     };
   }
@@ -438,6 +530,7 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
       shadowMeshesPerChunk: profile.vegetationCastsShadows ? (counts.near * 2) / 3 : 0,
       shadowCascades: profile.shadowCascades,
       groundShadowRangeMeters: profile.treeGroundShadowRangeMeters,
+      ...groundObjectTerms(profile),
     });
     expect(merged.total).toBeLessThan(estimate.total);
     // Prototype-family batching closes tier 1 without moving opaque trunks
@@ -471,6 +564,7 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
       shadowMeshesPerChunk: profile.vegetationCastsShadows ? counts.near : 0,
       shadowCascades: profile.shadowCascades,
       groundShadowRangeMeters: profile.treeGroundShadowRangeMeters,
+      ...groundObjectTerms(profile),
     };
     const merged = estimateVegetationDrawCalls({ ...shared, farMeshesPerChunk: 1 });
     const perSpecies = estimateVegetationDrawCalls({

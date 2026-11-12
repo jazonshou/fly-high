@@ -67,6 +67,8 @@ import {
   buildCrownFringePrototype,
   buildGrassPatchPrototype,
   buildRockPrototype,
+  buildShrubBodyFarPrototype,
+  buildShrubBodyPrototype,
   buildShrubPrototype,
   buildTreePrototype,
   SHRUB_VARIANT_COUNTS,
@@ -105,6 +107,7 @@ import {
   DETAIL_MEMBERSHIP_SLACK_METERS,
   GROUND_COVER_EDGE_FADE_METERS,
   TREE_IMPOSTOR_PROTOTYPE_KEY,
+  groundObjectRangeCapMeters,
   type DetailPresentationBuildCatalog,
   type DetailPresentationChunkStatistics,
 } from "./presentationBuild";
@@ -114,6 +117,27 @@ import {
   TREE_GROUND_SHADOW_PROTOTYPE_BOUNDS,
   TREE_GROUND_SHADOW_PROTOTYPE_KEY,
 } from "./treeGroundShadow";
+import {
+  GROUND_OBJECT_REACH_GROW_SHARE,
+  GROUND_OBJECT_REACH_METERS_PER_METER,
+  GROUND_OBJECT_REACH_START_SCALE,
+  SHRUB_BODY_CORE_GROW_SHARE,
+  SHRUB_BODY_CORE_REACH_METERS_PER_METER,
+  SHRUB_BODY_CORE_SCALE,
+  SHRUB_BODY_FAR_PROTOTYPE_KEY,
+  SHRUB_BODY_GRAIN_FREQUENCY,
+  SHRUB_BODY_GRAIN_NORMAL,
+  SHRUB_BODY_GRAIN_TONE_FLOOR,
+  SHRUB_BODY_GRAIN_TONE_SPAN,
+  SHRUB_BODY_HEIGHT_SHARE,
+  SHRUB_BODY_PROTOTYPE_KEY,
+  SHRUB_BODY_SWAP_METERS_PER_METER,
+  SHRUB_CARD_REACH_GROW_SHARE,
+  SHRUB_CARD_REACH_METERS_PER_METER,
+  SHRUB_CARD_REACH_START_SCALE,
+  SHRUB_OPEN_DRAWN_PER_HECTARE,
+  shrubOpenDrawnPerHectare,
+} from "./groundObjects";
 import { TreeGroundShadowMaterial } from "./TreeGroundShadowMaterial";
 import {
   CANOPY_SURFACE_AMBIENT,
@@ -929,6 +953,32 @@ export class WorldDetailRuntime {
   private treeGroundShadow: TreeGroundShadowMaterial | null = null;
   /** The tier's shadow range the resident shadow records were built for. */
   private treeGroundShadowRangeMeters = 0;
+  /** The tier's cap on a bush body's or a boulder's reach (`groundObjects.ts`). */
+  private groundObjectRangeMeters = 0;
+  /** The tier's tighter cap for boulders alone; equal to the above where it has none. */
+  private boulderRangeMeters = 0;
+  /**
+   * The tier's open-ground bush cap, per hectare (`shrubOpenDrawnPerHectare`).
+   * The reference cap until the first update supplies the tier's: a build
+   * issued before then must not read "draw none".
+   */
+  private shrubOpenDrawnPerHectare = SHRUB_OPEN_DRAWN_PER_HECTARE;
+  /** Materials drawn by the reach law, with the range per metre of height each takes. */
+  private readonly sizeRangePlugins: {
+    readonly plugin: DetailInstanceMaterialPlugin;
+    readonly metersPerMeter: number;
+    readonly growShare: number;
+    readonly startScale: number;
+    /** Leaf cards stop at the near radius, boulders at their own cap, the rest at the tier's. */
+    readonly cap: "near" | "tier" | "boulder";
+    /** A bush body shrinks to its core close to the camera. */
+    readonly core: boolean;
+    /**
+     * A stand-in draws from where the mesh it replaces starts to shrink
+     * away: that mesh's range per metre of height, and its grow share.
+     */
+    readonly inner: { readonly metersPerMeter: number; readonly growShare: number } | null;
+  }[] = [];
   /** Far impostors are baked from species variant 0 near geometry. */
   private readonly impostorRadialUnits = new Map<TreeSpecies, number>();
   /** Per-species shader frame for the one shared camera-facing impostor quad. */
@@ -1686,6 +1736,29 @@ export class WorldDetailRuntime {
     for (const plugin of this.instancePlugins) plugin.setImpostorSeason(mix);
   }
 
+  /**
+   * Marks a material as drawn by the reach law (`groundObjects.ts`): each
+   * update hands its plugin the tier's cap.
+   */
+  private registerSizeRangeMaterial(
+    material: PBRMaterial,
+    metersPerMeter: number,
+    growShare: number,
+    startScale: number,
+    cap: "near" | "tier" | "boulder",
+    core = false,
+    inner: { readonly metersPerMeter: number; readonly growShare: number } | null = null,
+  ): void {
+    const plugin = this.materialPlugin(material);
+    if (!plugin) return;
+    this.sizeRangePlugins.push({
+      plugin, metersPerMeter, growShare, startScale, cap, core, inner,
+    });
+    // A placeholder cap until the first update supplies the tier's, so the
+    // material compiles the rule once rather than twice.
+    plugin.setSizeRange(metersPerMeter, cap === "near" ? 150 : 1_000, growShare, startScale);
+  }
+
   /** Marks a material's plugin as tree-band shader-faded (2-17 close). */
   private registerBandFadeMaterial(material: PBRMaterial): void {
     const plugin = this.materialPlugin(material);
@@ -2235,6 +2308,67 @@ export class WorldDetailRuntime {
       this.treeGroundShadowRangeMeters = treeGroundShadowRangeMeters;
       this.batchesDirty = true;
     }
+    // Bushes and boulders reach as far as the tier draws ground shadows, and
+    // never past the mid radius (`groundObjectRangeCapMeters`): their
+    // shadows are in the tree shadow's batch and stop where it does.
+    const groundObjectRangeMeters = groundObjectRangeCapMeters(
+      treeGroundShadowRangeMeters,
+      profile.renderedDensityLaw,
+    );
+    if (groundObjectRangeMeters !== this.groundObjectRangeMeters) {
+      this.groundObjectRangeMeters = groundObjectRangeMeters;
+      this.batchesDirty = true;
+    }
+    const boulderRangeMeters = Math.min(
+      groundObjectRangeMeters,
+      Math.max(0, profile.boulderRangeMeters),
+    );
+    const openDrawnPerHectare = shrubOpenDrawnPerHectare(profile.vegetationDensity);
+    if (
+      boulderRangeMeters !== this.boulderRangeMeters
+      || openDrawnPerHectare !== this.shrubOpenDrawnPerHectare
+    ) {
+      this.boulderRangeMeters = boulderRangeMeters;
+      this.shrubOpenDrawnPerHectare = openDrawnPerHectare;
+      this.batchesDirty = true;
+    }
+    for (const entry of this.sizeRangePlugins) {
+      entry.plugin.setSizeRange(
+        entry.metersPerMeter,
+        entry.cap === "near"
+          ? profile.renderedDensityLaw.near.outerRadiusMeters
+          : entry.cap === "boulder" ? boulderRangeMeters : groundObjectRangeMeters,
+        entry.growShare,
+        entry.startScale,
+      );
+      if (entry.core) {
+        // The core's law, restated per metre of the body's own height.
+        entry.plugin.setSizeCore(
+          SHRUB_BODY_CORE_REACH_METERS_PER_METER / SHRUB_BODY_HEIGHT_SHARE,
+          profile.renderedDensityLaw.near.outerRadiusMeters,
+          SHRUB_BODY_CORE_GROW_SHARE,
+          SHRUB_BODY_CORE_SCALE,
+        );
+      }
+      if (entry.inner) {
+        entry.plugin.setSizeInner(
+          entry.inner.metersPerMeter,
+          groundObjectRangeMeters,
+          1 - entry.inner.growShare,
+        );
+      }
+    }
+    this.treeGroundShadow?.setGroundObjectReach(
+      GROUND_OBJECT_REACH_METERS_PER_METER,
+      groundObjectRangeMeters,
+      GROUND_OBJECT_REACH_GROW_SHARE,
+    );
+    this.treeGroundShadow?.setGroundObjectCore(
+      SHRUB_BODY_CORE_REACH_METERS_PER_METER / SHRUB_BODY_HEIGHT_SHARE,
+      profile.renderedDensityLaw.near.outerRadiusMeters,
+      SHRUB_BODY_CORE_GROW_SHARE,
+      SHRUB_BODY_CORE_SCALE,
+    );
     this.treeGroundShadow?.setLaw({
       nearRadiusMeters: profile.renderedDensityLaw.near.outerRadiusMeters,
       rangeMeters: Math.min(
@@ -2658,6 +2792,9 @@ export class WorldDetailRuntime {
       profile.grassRadiusMeters,
       this.groundCoverFieldRadiusMeters,
       this.treeGroundShadowRangeMeters,
+      this.groundObjectRangeMeters,
+      this.boulderRangeMeters,
+      this.shrubOpenDrawnPerHectare,
     ].join(":");
     const targets = new Map<string, DetailChunkBuildTarget>();
 
@@ -2679,6 +2816,9 @@ export class WorldDetailRuntime {
         profile.grassRadiusMeters,
         this.groundCoverFieldRadiusMeters,
         this.treeGroundShadowRangeMeters,
+        this.groundObjectRangeMeters,
+        this.boulderRangeMeters,
+        this.shrubOpenDrawnPerHectare,
         // 2-17 close: the observer term applies ONLY to FRONTIER chunks —
         // those straddling a band or population edge, where memberships and
         // single-edge baked fades actually change with camera range. An
@@ -3019,6 +3159,9 @@ export class WorldDetailRuntime {
           groundCoverBladesActive: this.groundCoverBladesActive,
           groundCoverFieldRadiusMeters: this.groundCoverFieldRadiusMeters,
           treeGroundShadowRangeMeters: this.treeGroundShadowRangeMeters,
+          groundObjectRangeMeters: this.groundObjectRangeMeters,
+          boulderRangeMeters: this.boulderRangeMeters,
+          shrubOpenDrawnPerHectare: this.shrubOpenDrawnPerHectare,
           observerX: this.observerX,
           observerZ: this.observerZ,
         },
@@ -3082,6 +3225,9 @@ export class WorldDetailRuntime {
           groundCoverBladesActive: this.groundCoverBladesActive,
           groundCoverFieldRadiusMeters: this.groundCoverFieldRadiusMeters,
           treeGroundShadowRangeMeters: this.treeGroundShadowRangeMeters,
+          groundObjectRangeMeters: this.groundObjectRangeMeters,
+          boulderRangeMeters: this.boulderRangeMeters,
+          shrubOpenDrawnPerHectare: this.shrubOpenDrawnPerHectare,
           observerX: this.observerX,
           observerZ: this.observerZ,
         },
@@ -3282,10 +3428,11 @@ export class WorldDetailRuntime {
       + statistics.groundCoverInstances;
     // A stem carries at most eight records: three near parts, three mid
     // parts, (2026-09-13) one impostor coexisting with either, and its
-    // ground shadow.
+    // ground shadow. A bush carries at most four (its leaf cards, its body,
+    // the body's stand-in and its shadow) and a boulder two.
     const maximumPackedRecords = statistics.treeInstances * 8
-      + statistics.shrubInstances
-      + statistics.rockInstances
+      + statistics.shrubInstances * 4
+      + statistics.rockInstances * 2
       + statistics.clutterInstances
       + statistics.groundCoverInstances;
     let packedRecords = 0;
@@ -4537,11 +4684,22 @@ export class WorldDetailRuntime {
       material.backFaceCulling = false;
       material.twoSidedLighting = true;
       material.transparencyMode = Material.MATERIAL_ALPHATEST;
+      // The cards are the bush's surface up close and nothing past that: they
+      // reach a short way per metre of its height and grow out of the body.
+      this.registerSizeRangeMaterial(
+        material,
+        SHRUB_CARD_REACH_METERS_PER_METER,
+        SHRUB_CARD_REACH_GROW_SHARE,
+        SHRUB_CARD_REACH_START_SCALE,
+        "near",
+      );
       for (let variant = 0; variant < SHRUB_VARIANT_COUNTS[species]; variant += 1) {
         const prototype = buildShrubPrototype(species, variant, prototypeSeed);
+        // The cards stand on the bush's body, so their radial unit is the
+        // one the prototype declares for that, not their own extent.
         this.prototypeRadialUnits.set(
           `shrub-${species}-v${variant}`,
-          Math.max(prototype.boundingRadius, 0.05),
+          Math.max(prototype.radialUnit ?? prototype.boundingRadius, 0.05),
         );
         this.registerBatch(
           `shrub-${species}-v${variant}`,
@@ -4551,6 +4709,86 @@ export class WorldDetailRuntime {
           prototype.localBounds,
         );
       }
+    }
+
+    // The bush's solid body (`groundObjects.ts`): one mesh and one material
+    // for every species, on the trees' opaque crown path, so it is early-Z
+    // and back-face culled with no fragment discard. Its colour is the
+    // instance tint over the dense-crown layer; the albedo is the crowns', so
+    // a bush and the tree above it are lit as the same kind of surface.
+    // Two meshes: the body while its shape can be seen, and a stand-in from
+    // there to the bush's reach. They differ only in where they draw, which
+    // is a uniform, so each has its own material.
+    {
+      const createBodyMaterial = (name: string): PBRMaterial => {
+        const bodyMaterial = this.createMaterial(
+          name,
+          new Color3(...DETAIL_CROWN_ALBEDO),
+          0.9,
+          true,
+        );
+        this.materialPlugin(bodyMaterial)?.setOpaqueCrown(true);
+        this.materialPlugin(bodyMaterial)?.setClusterGrain(
+          SHRUB_BODY_GRAIN_FREQUENCY,
+          SHRUB_BODY_GRAIN_TONE_FLOOR,
+          SHRUB_BODY_GRAIN_TONE_SPAN,
+          SHRUB_BODY_GRAIN_NORMAL,
+        );
+        bodyMaterial.backFaceCulling = true;
+        bodyMaterial.twoSidedLighting = false;
+        bodyMaterial.transparencyMode = Material.MATERIAL_OPAQUE;
+        bodyMaterial.environmentIntensity = CANOPY_SURFACE_AMBIENT;
+        bodyMaterial.specularIntensity = CANOPY_SURFACE_SPECULAR;
+        return bodyMaterial;
+      };
+      const farMaterial = createBodyMaterial("detail-shrub-body-far-material");
+      this.registerSizeRangeMaterial(
+        farMaterial,
+        GROUND_OBJECT_REACH_METERS_PER_METER,
+        GROUND_OBJECT_REACH_GROW_SHARE,
+        GROUND_OBJECT_REACH_START_SCALE,
+        "tier",
+        false,
+        {
+          metersPerMeter: SHRUB_BODY_SWAP_METERS_PER_METER,
+          growShare: GROUND_OBJECT_REACH_GROW_SHARE,
+        },
+      );
+      const far = buildShrubBodyFarPrototype(prototypeSeed);
+      this.prototypeRadialUnits.set(
+        SHRUB_BODY_FAR_PROTOTYPE_KEY,
+        Math.max(far.boundingRadius, 0.05),
+      );
+      this.registerBatch(
+        SHRUB_BODY_FAR_PROTOTYPE_KEY,
+        this.buildPrototypeMesh("detail-shrub-body-far", far),
+        farMaterial,
+        false,
+        { ...far.localBounds, contractionPivotYUnit: 0.42 },
+      );
+      const bodyMaterial = createBodyMaterial("detail-shrub-body-material");
+      this.registerSizeRangeMaterial(
+        bodyMaterial,
+        SHRUB_BODY_SWAP_METERS_PER_METER,
+        GROUND_OBJECT_REACH_GROW_SHARE,
+        GROUND_OBJECT_REACH_START_SCALE,
+        "tier",
+        true,
+      );
+      const body = buildShrubBodyPrototype(prototypeSeed);
+      this.prototypeRadialUnits.set(
+        SHRUB_BODY_PROTOTYPE_KEY,
+        Math.max(body.boundingRadius, 0.05),
+      );
+      this.registerBatch(
+        SHRUB_BODY_PROTOTYPE_KEY,
+        this.buildPrototypeMesh("detail-shrub-body", body),
+        bodyMaterial,
+        false,
+        // The opaque crown path contracts a leafless broadleaf body about
+        // this height (`detailCrownPivot`), as it does a crown.
+        { ...body.localBounds, contractionPivotYUnit: 0.42 },
+      );
     }
 
     // 2-15: displaced-icosphere rocks — per-lithology normals live in the
@@ -4567,10 +4805,24 @@ export class WorldDetailRuntime {
         `rock-${variant}`,
         Math.max(prototype.boundingRadius, 0.05),
       );
+      const rockMaterial = this.createMaterial(
+        `detail-rock-material-${variant}`,
+        rockColors[variant],
+        0.94,
+      );
+      // A boulder is drawn while it is big enough to see, as a bush is, out
+      // to the cap the tier gives boulders.
+      this.registerSizeRangeMaterial(
+        rockMaterial,
+        GROUND_OBJECT_REACH_METERS_PER_METER,
+        GROUND_OBJECT_REACH_GROW_SHARE,
+        GROUND_OBJECT_REACH_START_SCALE,
+        "boulder",
+      );
       this.registerBatch(
         `rock-${variant}`,
         this.buildPrototypeMesh(`detail-rock-${variant}`, prototype),
-        this.createMaterial(`detail-rock-material-${variant}`, rockColors[variant], 0.94),
+        rockMaterial,
         false,
         prototype.localBounds,
       );

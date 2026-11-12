@@ -430,6 +430,22 @@ export interface WebGpuQualityProfile {
    * Data, not a `profile.tier` branch, per the tier rule.
    */
   readonly treeGroundShadowRangeMeters: number;
+  /**
+   * Metres a boulder is drawn to at most (`groundObjects.ts`). A bush or a
+   * boulder is drawn while it stands about three pixels tall, out to the
+   * ground shadow range above; this is a tighter cap for boulders alone.
+   *
+   * Tiers 1 to 3 have none: it equals their shadow range. Tier 0's is what
+   * its vegetation draw row has room for. Boulders are three batches (one per
+   * lithology), each one more draw per chunk in range, and after the bush's
+   * two body batches that row has room for them to 250 m, not 450.
+   * Before 2026-11-12 a boulder stopped at the near radius on every tier,
+   * but for one in five of the largest, which drew to the mid radius: on
+   * tier 0 those now stop at 250 m with the rest.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly boulderRangeMeters: number;
   readonly activeAnimalBudget: number;
   /**
    * Volcanic phase 5: the instance cap on steam wisps over vents within 15 km
@@ -693,6 +709,7 @@ function resolveBaseQualityProfile(
       // modelled draws.
       vegetationCastsShadows: false,
       treeGroundShadowRangeMeters: 450,
+      boulderRangeMeters: 250,
       activeAnimalBudget: 16,
       volcanicSteamMaxWisps: 0,
       boatSprayParticleCap: 256,
@@ -818,6 +835,7 @@ function resolveBaseQualityProfile(
       // 9.02 ms row.
       vegetationCastsShadows: false,
       treeGroundShadowRangeMeters: 1_100,
+      boulderRangeMeters: 1_100,
       activeAnimalBudget: 48,
       volcanicSteamMaxWisps: 128,
       boatSprayParticleCap: 1_024,
@@ -933,6 +951,7 @@ function resolveBaseQualityProfile(
       // spending pixels, and D15 already cut this tier's cascade count once.
       vegetationCastsShadows: true,
       treeGroundShadowRangeMeters: 1_200,
+      boulderRangeMeters: 1_200,
       activeAnimalBudget: 128,
       volcanicSteamMaxWisps: 192,
       boatSprayParticleCap: 4_096,
@@ -1049,6 +1068,7 @@ function resolveBaseQualityProfile(
     vegetationDensity: 1,
     vegetationCastsShadows: true,
     treeGroundShadowRangeMeters: 2_000,
+    boulderRangeMeters: 2_000,
     activeAnimalBudget: 128,
     volcanicSteamMaxWisps: 256,
     boatSprayParticleCap: 4_096,

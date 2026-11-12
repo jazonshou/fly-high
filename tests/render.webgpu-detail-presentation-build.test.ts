@@ -7,11 +7,31 @@ import {
   DetailInstanceWriter,
   detailPrototypeBoundKernel,
   type DetailBillboardFrameBounds,
+  type DetailInstanceRecord,
 } from "../src/render/webgpu/detail/instanceFormat";
+import {
+  GROUND_OBJECT_REACH_GROW_SHARE,
+  GROUND_OBJECT_REACH_METERS_PER_METER,
+  SHRUB_BODY_FAR_PROTOTYPE_KEY,
+  SHRUB_BODY_FAR_RADIUS_SHARE,
+  SHRUB_BODY_HEIGHT_SHARE,
+  SHRUB_BODY_PROTOTYPE_KEY,
+  SHRUB_BODY_RADIUS_SHARE,
+  SHRUB_BODY_SWAP_METERS_PER_METER,
+  SHRUB_CARD_REACH_METERS_PER_METER,
+  SHRUB_GROUND_SHADOW_BARE_SHARE,
+  SHRUB_GROUND_SHADOW_OPACITY,
+  SHRUB_OPEN_DRAWN_PER_HECTARE,
+  SHRUB_UNDERSTORY_DRAWN_PER_HECTARE,
+  estimateBushRecords,
+  shrubOpenDrawnPerHectare,
+} from "../src/render/webgpu/detail/groundObjects";
 import {
   DETAIL_MEMBERSHIP_SLACK_METERS,
   buildPresentationChunk,
   detailCellMinimumDistanceMeters,
+  groundObjectRangeCapMeters,
+  shrubDrawnShares,
   type DetailPresentationBuildCatalog,
   type DetailPresentationBuildInput,
   type DetailPresentationChunkStatistics,
@@ -74,6 +94,8 @@ function buildCatalog(useImpostors: boolean): DetailPresentationBuildCatalog {
       addPrototype(`shrub-${species}-v${variant}`, 0.52 + variant * 0.05);
     }
   }
+  addPrototype(SHRUB_BODY_PROTOTYPE_KEY, 1.09);
+  addPrototype(SHRUB_BODY_FAR_PROTOTYPE_KEY, 0.95);
   for (const variant of ROCK_VARIANTS) addPrototype(`rock-${variant}`, 1.08);
   for (const kind of CLUTTER_KINDS) addPrototype(`clutter-${kind}`);
   for (const archetype of GROUND_ARCHETYPES) addPrototype(`ground-${archetype}`);
@@ -522,21 +544,24 @@ describe("pure detail presentation build", () => {
             "tree-willow-v1-crown-mid",
             "tree-willow-v1-trunk-mid",
             "shrub-juniper-v1",
+            "shrub-body",
+            "shrub-body-far",
             "shrub-hazel-v0",
-            "shrub-sage-v0",
+            "shrub-sage-v1",
             "rock-granite",
+            "rock-limestone",
             "rock-dark",
             "clutter-log",
             "clutter-stump",
           ],
           "name": "family prototypes at the near/mid boundary",
-          "packedFingerprint": "5ff0edcdfb6619991241f5226fa1995da8eab7213e97da1583d9aee79694f6a5",
+          "packedFingerprint": "bc30fe370a52435c3d7f8b8118889fc4007f43cedefe41b0fe9f1b9cdaf0189d",
           "statistics": {
             "clutterInstances": 2,
             "groundCoverInstances": 0,
             "midCells": 0,
             "nearCells": 1,
-            "rockInstances": 2,
+            "rockInstances": 3,
             "shrubInstances": 3,
             "treeInstances": 7,
           },
@@ -556,21 +581,19 @@ describe("pure detail presentation build", () => {
             "tree-maple-v0-crown-far",
             "tree-birch-v0-crown-far",
             "tree-willow-v0-crown-far",
-            "shrub-juniper-v0",
-            "shrub-hazel-v0",
           ],
           "name": "species prototypes at the mid/far boundary with a shifted origin",
-          "packedFingerprint": "ba0e1e834febc226ef746a7a426e9fca753d6d3e89fd44ecdbaa58ef57fdc8b9",
+          "packedFingerprint": "70b3dbcd4e69c3ec0a0685b1ebd77a0d66514847024f869f2384cd575640cd67",
           "statistics": {
             "clutterInstances": 0,
             "groundCoverInstances": 0,
             "midCells": 1,
             "nearCells": 0,
             "rockInstances": 0,
-            "shrubInstances": 2,
+            "shrubInstances": 0,
             "treeInstances": 7,
           },
-          "workUnits": 15,
+          "workUnits": 9,
         },
         {
           "batchKeys": [
@@ -620,6 +643,8 @@ describe("pure detail presentation build", () => {
             "tree-willow-v1-crown-mid",
             "tree-willow-v1-trunk-mid",
             "shrub-juniper-v1",
+            "shrub-body",
+            "shrub-body-far",
             "shrub-hazel-v0",
             "shrub-sage-v1",
             "rock-granite",
@@ -635,7 +660,7 @@ describe("pure detail presentation build", () => {
             "ground-fern",
           ],
           "name": "ground-cover candidate bounds across a negative cell edge",
-          "packedFingerprint": "02e6e76e96a84153c48f42c2eb4452ff1950259fa8b44a5e03a3d3402a5ebf95",
+          "packedFingerprint": "0ab3ce84ddb159ef2751d5b3fc4ea284ee0623c52483cb16335760d71c622978",
           "statistics": {
             "clutterInstances": 4,
             "groundCoverInstances": 93,
@@ -730,6 +755,15 @@ describe("tree ground shadow records", () => {
       packed.bytes[index * STRIDE + 30]!);
   }
 
+  /**
+   * The key codes of the batch's tree shadows alone. Bushes and boulders lay
+   * theirs in the same batch with a variant of 0, which no tree writes.
+   */
+  function treeShadowKeyCodes(result: BuildResult): number[] {
+    const packed = batch(result, TREE_GROUND_SHADOW_PROTOTYPE_KEY);
+    return keyCodes(packed).filter((_, index) => packed!.bytes[index * STRIDE + 29] !== 0);
+  }
+
   function treeKeyCodes(result: BuildResult): Set<number> {
     const codes = new Set<number>();
     for (const packed of result.batches) {
@@ -768,7 +802,7 @@ describe("tree ground shadow records", () => {
       shadowCatalog(),
       Number.MAX_SAFE_INTEGER,
     );
-    const shadows = keyCodes(batch(result, TREE_GROUND_SHADOW_PROTOTYPE_KEY));
+    const shadows = treeShadowKeyCodes(result);
     // Inside the near radius the law draws the near cap: every stem whose key
     // is a drawable one has records, and each of those has one shadow.
     expect(shadows.length).toBe(result.statistics.treeInstances);
@@ -795,8 +829,8 @@ describe("tree ground shadow records", () => {
       catalog,
       Number.MAX_SAFE_INTEGER,
     );
-    const nearShadows = keyCodes(batch(near, TREE_GROUND_SHADOW_PROTOTYPE_KEY));
-    const midShadows = keyCodes(batch(mid, TREE_GROUND_SHADOW_PROTOTYPE_KEY));
+    const nearShadows = treeShadowKeyCodes(near);
+    const midShadows = treeShadowKeyCodes(mid);
     // 600 m out the drawn share is the impostor floor, 0.3, and a record
     // exists up to the admission margin above it: keys to 0.34, eleven stems.
     expect(nearShadows.length).toBe(32);
@@ -839,5 +873,551 @@ describe("tree ground shadow records", () => {
         .toBe(packedBuildFingerprint(whole.batches));
     }
     expect(() => structuredClone(build)).not.toThrow();
+  });
+});
+
+/**
+ * 2026-11-12 — bushes and boulders (`groundObjects.ts`). A bush is up to four
+ * records (leaf cards, a solid body, the body's far stand-in, a ground shadow)
+ * and a boulder two; how far each is kept resident is its own reach, not a
+ * band.
+ */
+describe("bush and boulder records", () => {
+  const law = RENDERED_DENSITY_LAWS[1]!;
+  const RANGE = law.mid.outerRadiusMeters;
+  type Appended = { readonly key: string; readonly record: DetailInstanceRecord };
+  type Shrub = GeneratedDetailCell["shrubs"][number];
+  type Rock = GeneratedDetailCell["rocks"][number];
+
+  function groundCatalog(): DetailPresentationBuildCatalog {
+    const catalog = buildCatalog(true);
+    return {
+      ...catalog,
+      prototypes: {
+        ...catalog.prototypes,
+        [TREE_GROUND_SHADOW_PROTOTYPE_KEY]: {
+          radialUnits: 1,
+          boundKernel: detailPrototypeBoundKernel(TREE_GROUND_SHADOW_PROTOTYPE_BOUNDS),
+        },
+      },
+    };
+  }
+
+  function shrub(overrides: Partial<Shrub> = {}): Shrub {
+    return {
+      kind: "shrub",
+      id: "shrub",
+      species: "hazel",
+      x: 32,
+      y: 90,
+      z: 32,
+      yawRadians: 0.3,
+      heightMeters: 1.2,
+      radiusMeters: 0.9,
+      windPhaseRadians: 1.1,
+      windResponse: 0.6,
+      color: [0.4, 0.5, 0.3, 0.8],
+      selection: 0,
+      ...overrides,
+    };
+  }
+
+  function rock(overrides: Partial<Rock> = {}): Rock {
+    return {
+      kind: "rock",
+      id: "rock",
+      variant: "granite",
+      x: 32,
+      y: 90,
+      z: 32,
+      yawRadians: 0.3,
+      radiusMeters: 2.4,
+      flattening: 0.65,
+      color: [0.5, 0.48, 0.45, 1],
+      selection: 0.5,
+      normal: { x: 0.1, y: 0.99, z: -0.05 },
+      ...overrides,
+    };
+  }
+
+  function cellOf(shrubs: readonly Shrub[], rocks: readonly Rock[] = []): GeneratedDetailCell {
+    return { ...fixtureCell(0, 0), trees: [], clutter: [], shrubs: [...shrubs], rocks: [...rocks] };
+  }
+
+  /** Every record the build appends, with the observer `range` metres east of the cell's centre. */
+  function collect(
+    cell: GeneratedDetailCell,
+    range: number,
+    overrides: Partial<DetailPresentationBuildInput> = {},
+    catalog = groundCatalog(),
+    groundObjectRangeMeters: number | null = RANGE,
+  ): { readonly records: Appended[]; readonly statistics: DetailPresentationChunkStatistics } {
+    const observerX = cell.minX + 32 + range;
+    const observerZ = cell.minZ + 32;
+    const distance = detailCellMinimumDistanceMeters(
+      observerX, observerZ, cell.cellX, cell.cellZ, cell.cellSizeMeters,
+    );
+    const records: Appended[] = [];
+    const iterator = buildPresentationChunk(
+      {
+        residents: [{
+          cell,
+          treeCanopyRank: new Float32Array(0),
+          lod: distance <= law.near.outerRadiusMeters ? "near" : "mid",
+          distance,
+        }],
+        floatingOrigin: { x: 0, y: 0, z: 0 },
+        densityLaw: law,
+        treeVariantCap: 3,
+        treePrototypeMode: "species",
+        grassRadiusMeters: 0,
+        observerX,
+        observerZ,
+        treeGroundShadowRangeMeters: RANGE,
+        ...(groundObjectRangeMeters === null ? {} : { groundObjectRangeMeters }),
+        ...overrides,
+      },
+      catalog,
+      { appendInstance: (key, record) => { records.push({ key, record }); } },
+    );
+    let step = iterator.next();
+    while (!step.done) step = iterator.next();
+    return { records, statistics: step.value };
+  }
+
+  const keysOf = (records: readonly Appended[]): string[] => records.map((entry) => entry.key);
+
+  it("caps a ground object's reach at the tier's range, the near radius without one, and the mid radius", () => {
+    expect(groundObjectRangeCapMeters(undefined, law)).toBe(law.near.outerRadiusMeters);
+    expect(groundObjectRangeCapMeters(0, law)).toBe(law.near.outerRadiusMeters);
+    expect(groundObjectRangeCapMeters(Number.NaN, law)).toBe(law.near.outerRadiusMeters);
+    expect(groundObjectRangeCapMeters(400, law)).toBe(400);
+    expect(groundObjectRangeCapMeters(50_000, law)).toBe(law.mid.outerRadiusMeters);
+  });
+
+  it("hands a bush from cards and body to the stand-in as it recedes, and drops it past its reach", () => {
+    // Tall enough that each stage has its own stretch of range.
+    const bush = shrub({ heightMeters: 2.4, radiusMeters: 1.6 });
+    const cell = cellOf([bush]);
+    const bodyHeight = bush.heightMeters * SHRUB_BODY_HEIGHT_SHARE;
+    const cardReach = law.near.outerRadiusMeters;
+    expect(bush.heightMeters * SHRUB_CARD_REACH_METERS_PER_METER).toBeGreaterThan(cardReach);
+    const swap = bodyHeight * SHRUB_BODY_SWAP_METERS_PER_METER;
+    const standInStart = swap * (1 - GROUND_OBJECT_REACH_GROW_SHARE);
+    const bodyReach = bodyHeight * GROUND_OBJECT_REACH_METERS_PER_METER;
+    expect(cardReach).toBeLessThan(standInStart);
+    expect(bodyReach).toBeLessThan(RANGE);
+    const SLACK = DETAIL_MEMBERSHIP_SLACK_METERS;
+    const CARDS = "shrub-hazel-v0";
+    const BODY = SHRUB_BODY_PROTOTYPE_KEY;
+    const FAR = SHRUB_BODY_FAR_PROTOTYPE_KEY;
+    const SHADOW = TREE_GROUND_SHADOW_PROTOTYPE_KEY;
+
+    // Up close: the cards and the body, and no stand-in, because the observer
+    // cannot get to where it starts before the chunk is rebuilt.
+    const close = collect(cell, 40);
+    expect(keysOf(close.records)).toEqual([CARDS, BODY, SHADOW]);
+    expect(close.statistics.shrubInstances).toBe(1);
+    // One membership slack short of where the body starts to shrink, the
+    // stand-in's record is there to take over.
+    expect(keysOf(collect(cell, standInStart - SLACK + 5).records)).toEqual([CARDS, BODY, FAR, SHADOW]);
+    expect(keysOf(collect(cell, standInStart - SLACK - 5).records)).toEqual([CARDS, BODY, SHADOW]);
+    // The CPU keeps each record one slack past the reach the shader draws it
+    // to, so a chunk rebuilt 96 m late still has it.
+    expect(keysOf(collect(cell, cardReach + SLACK - 5).records)).toEqual([CARDS, BODY, FAR, SHADOW]);
+    expect(keysOf(collect(cell, cardReach + SLACK + 5).records)).toEqual([BODY, FAR, SHADOW]);
+    expect(keysOf(collect(cell, swap + SLACK - 5).records)).toEqual([BODY, FAR, SHADOW]);
+    expect(keysOf(collect(cell, swap + SLACK + 5).records)).toEqual([FAR, SHADOW]);
+    expect(keysOf(collect(cell, bodyReach + SLACK - 5).records)).toEqual([FAR, SHADOW]);
+    const past = collect(cell, bodyReach + SLACK + 5);
+    expect(past.records).toEqual([]);
+    expect(past.statistics.shrubInstances).toBe(0);
+  });
+
+  it("writes the body a little inside the cards, and a stand-in and a shadow that read the same height", () => {
+    const bush = shrub({ selection: 0.25, groundSlopeX: 0.2, groundSlopeZ: -0.1 });
+    const { records } = collect(cellOf([bush]), 40);
+    const cards = records.find((entry) => entry.key.startsWith("shrub-hazel"))!.record;
+    const body = records.find((entry) => entry.key === SHRUB_BODY_PROTOTYPE_KEY)!.record;
+    const far = records.find((entry) => entry.key === SHRUB_BODY_FAR_PROTOTYPE_KEY)!.record;
+    const shadow = records.find((entry) => entry.key === TREE_GROUND_SHADOW_PROTOTYPE_KEY)!.record;
+
+    expect(cards.heightScaleMeters).toBe(bush.heightMeters);
+    expect(cards.fade).toBe(1);
+    expect(body.heightScaleMeters).toBeCloseTo(bush.heightMeters * SHRUB_BODY_HEIGHT_SHARE, 12);
+    expect([body.x, body.y, body.z]).toEqual([cards.x, cards.y, cards.z]);
+    expect(body.quaternion).toEqual(cards.quaternion);
+    expect(body.tint).toEqual(bush.color);
+    expect(body.variant).toBe(0);
+    expect(body.fade).toBe(1);
+    expect(body.windResponse).toBeCloseTo(bush.windResponse * 0.5, 12);
+    // The body's world radius: the bush's drawn radius times the body's share.
+    const drawnRadius = bush.radiusMeters * (0.92 + bush.selection * 0.12);
+    expect(body.radialScale * body.heightScaleMeters * 1.09)
+      .toBeCloseTo(drawnRadius * SHRUB_BODY_RADIUS_SHARE, 9);
+
+    // The stand-in is the same bush on another mesh. Its inner edge is the
+    // body's reach, computed in the shader from the height lane, so the two
+    // must carry the same height to hand over at the same range.
+    expect(far.heightScaleMeters).toBe(body.heightScaleMeters);
+    expect([far.x, far.y, far.z]).toEqual([body.x, body.y, body.z]);
+    expect(far.quaternion).toEqual(body.quaternion);
+    expect(far.tint).toEqual(body.tint);
+    expect(far.windPhase).toBe(body.windPhase);
+    expect(far.windResponse).toBe(body.windResponse);
+    expect(far.fade).toBe(1);
+    expect(far.radialScale * far.heightScaleMeters * 0.95)
+      .toBeCloseTo(drawnRadius * SHRUB_BODY_RADIUS_SHARE * SHRUB_BODY_FAR_RADIUS_SHARE, 9);
+
+    // The shadow's shader derives the reach from the height lane, as the
+    // stand-in's does, so they must carry the same height.
+    expect(shadow.heightScaleMeters).toBe(body.heightScaleMeters);
+    expect(shadow.radialScale * shadow.heightScaleMeters)
+      .toBeCloseTo(drawnRadius * SHRUB_BODY_RADIUS_SHARE, 9);
+    expect(shadow.variant).toBe(0);
+    expect(shadow.fade).toBe(1);
+    // A bush in four-fifths leaf stops that much less sun than one in full leaf.
+    expect(shadow.tint[2]).toBeCloseTo(
+      SHRUB_GROUND_SHADOW_OPACITY
+        * (SHRUB_GROUND_SHADOW_BARE_SHARE + (1 - SHRUB_GROUND_SHADOW_BARE_SHARE) * 0.8),
+      12,
+    );
+    // Its body shrinks to a core up close, and the shadow has to know.
+    expect(shadow.windResponse).toBe(1);
+    // The decal lies on the slope the generator read under the bush: its
+    // normal is the quaternion's image of +Y.
+    const [qx, qy, qz, qw] = shadow.quaternion;
+    const normal = [2 * (qx * qy - qw * qz), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz + qw * qx)];
+    const length = Math.hypot(-0.2, 1, 0.1);
+    expect(normal[0]).toBeCloseTo(-0.2 / length, 6);
+    expect(normal[1]).toBeCloseTo(1 / length, 6);
+    expect(normal[2]).toBeCloseTo(0.1 / length, 6);
+  });
+
+  it("keeps an understory bush's solid only as far as its cards", () => {
+    const open = shrub();
+    const under = shrub({ canopyClosure: 0.8 });
+    const bodyHeight = open.heightMeters * SHRUB_BODY_HEIGHT_SHARE;
+    const cardReach = open.heightMeters * SHRUB_CARD_REACH_METERS_PER_METER;
+    const swap = bodyHeight * SHRUB_BODY_SWAP_METERS_PER_METER;
+    const bodyReach = bodyHeight * GROUND_OBJECT_REACH_METERS_PER_METER;
+    expect(cardReach).toBeLessThan(swap);
+
+    const close = collect(cellOf([under]), 40).records;
+    const body = close.find((entry) => entry.key === SHRUB_BODY_PROTOTYPE_KEY)!.record;
+    const far = close.find((entry) => entry.key === SHRUB_BODY_FAR_PROTOTYPE_KEY)!.record;
+    const shadow = close.find((entry) => entry.key === TREE_GROUND_SHADOW_PROTOTYPE_KEY)!.record;
+    // Each fade lane is the share of that record's own reach it is drawn to:
+    // its vertex stage multiplies the reach by it. The body's reach is the
+    // swap range; the stand-in's and the shadow's is the bush's.
+    expect(body.fade).toBeCloseTo(cardReach / swap, 12);
+    expect(far.fade).toBeCloseTo(cardReach / bodyReach, 12);
+    expect(shadow.fade).toBe(far.fade);
+
+    const beyond = cardReach + DETAIL_MEMBERSHIP_SLACK_METERS + 5;
+    expect(collect(cellOf([under]), beyond).records).toEqual([]);
+    expect(keysOf(collect(cellOf([open]), beyond).records)).toContain(SHRUB_BODY_FAR_PROTOTYPE_KEY);
+    // Just under the closure that makes a bush understory, it is open ground.
+    expect(keysOf(collect(cellOf([shrub({ canopyClosure: 0.49 })]), beyond).records))
+      .toContain(SHRUB_BODY_FAR_PROTOTYPE_KEY);
+  });
+
+  it("draws a cell's bushes to two budgets, the same bushes from every range", () => {
+    const hectares = (64 * 64) / 10_000;
+    const open = Array.from({ length: 200 }, (_, index) => shrub({
+      id: `open-${index}`,
+      x: 2 + (index % 20) * 3,
+      z: 2 + Math.floor(index / 20) * 6,
+      selection: (index + 0.5) / 200,
+    }));
+    const under = Array.from({ length: 50 }, (_, index) => shrub({
+      id: `under-${index}`,
+      x: 3 + (index % 10) * 6,
+      z: 5 + Math.floor(index / 10) * 12,
+      selection: (index + 0.5) / 50,
+      canopyClosure: 0.9,
+      windPhaseRadians: 3.3,
+    }));
+    const cell = cellOf([...open, ...under]);
+    const shares = shrubDrawnShares(cell.shrubs, hectares);
+    expect(shares.open).toBeCloseTo((SHRUB_OPEN_DRAWN_PER_HECTARE * hectares) / 200, 12);
+    expect(shares.understory).toBeCloseTo((SHRUB_UNDERSTORY_DRAWN_PER_HECTARE * hectares) / 50, 12);
+    const openDrawn = open.filter((entry) => entry.selection <= shares.open).length;
+    const underDrawn = under.filter((entry) => entry.selection <= shares.understory).length;
+    expect(openDrawn).toBe(106);
+    expect(underDrawn).toBe(25);
+
+    const isUnder = (entry: Appended): boolean => entry.record.windPhase > 0.5;
+    const close = collect(cell, 0).records.filter((entry) => entry.key === SHRUB_BODY_PROTOTYPE_KEY);
+    expect(close.filter((entry) => !isUnder(entry)).length).toBe(openDrawn);
+    expect(close.filter(isUnder).length).toBe(underDrawn);
+
+    // Past the cards the open bushes that are drawn are the same ones: the
+    // budget thins by `selection`, never by range.
+    const far = collect(cell, 250).records.filter((entry) => entry.key === SHRUB_BODY_FAR_PROTOTYPE_KEY);
+    expect(far.length).toBe(openDrawn);
+    const place = (entry: Appended): string => `${entry.record.x}:${entry.record.z}`;
+    expect(new Set(far.map(place))).toEqual(new Set(close.filter((entry) => !isUnder(entry)).map(place)));
+
+    // A sparse cell draws every bush it has.
+    expect(shrubDrawnShares(open.slice(0, 40), hectares)).toEqual({ understory: 1, open: 1 });
+
+    // A tier authored thinner draws to a lower open cap, and the bushes it
+    // keeps are the first of the ones a fuller tier draws. The understory's
+    // budget does not move.
+    const lowCap = shrubOpenDrawnPerHectare(0.45);
+    expect(lowCap).toBeCloseTo(SHRUB_OPEN_DRAWN_PER_HECTARE * 0.45, 12);
+    const lowShares = shrubDrawnShares(cell.shrubs, hectares, lowCap);
+    expect(lowShares.understory).toBe(shares.understory);
+    expect(lowShares.open).toBeCloseTo(shares.open * 0.45, 12);
+    const low = collect(cell, 250, { shrubOpenDrawnPerHectare: lowCap }).records
+      .filter((entry) => entry.key === SHRUB_BODY_FAR_PROTOTYPE_KEY);
+    expect(low.length).toBe(open.filter((entry) => entry.selection <= lowShares.open).length);
+    expect(low.length).toBeLessThan(far.length * 0.5);
+    const drawnFar = new Set(far.map(place));
+    for (const entry of low) expect(drawnFar.has(place(entry))).toBe(true);
+    // A cap of nothing draws no open bush, and a tier denser than the
+    // reference draws to the reference cap, not past it.
+    expect(shrubDrawnShares(cell.shrubs, hectares, 0).open).toBe(0);
+    expect(shrubOpenDrawnPerHectare(1.4)).toBe(SHRUB_OPEN_DRAWN_PER_HECTARE);
+    expect(shrubOpenDrawnPerHectare(0)).toBe(0);
+    expect(shrubOpenDrawnPerHectare(Number.NaN)).toBe(0);
+  });
+
+  it("is booked by an estimate that counts what the build emits", () => {
+    // A field of one bush every 8 m (156 per hectare; the spacing tiles the
+    // fixture's 64 m cells) out past a bush's reach, built round an observer
+    // at its middle.
+    const SPACING = 8;
+    const CELL = 64;
+    const perHectare = 10_000 / (SPACING * SPACING);
+    for (const [understory, height] of [[false, 1.6], [false, 1.1], [true, 1.6]] as const) {
+      const common = {
+        nearRadiusMeters: law.near.outerRadiusMeters,
+        groundObjectRangeMeters: RANGE,
+        groundShadowReachMeters: RANGE,
+        membershipSlackMeters: DETAIL_MEMBERSHIP_SLACK_METERS,
+        drawnPerHectare: perHectare,
+        bushHeightMeters: height,
+        understory,
+      };
+      const estimate = estimateBushRecords(common);
+      expect(estimate.records).toBeCloseTo(
+        estimate.cardRecords + estimate.bodyRecords + estimate.standInRecords
+          + estimate.shadowRecords,
+        9,
+      );
+      const span = Math.ceil((estimate.radiusMeters + CELL) / CELL);
+      const residents: DetailPresentationBuildInput["residents"][number][] = [];
+      for (let cellZ = -span; cellZ < span; cellZ += 1) {
+        for (let cellX = -span; cellX < span; cellX += 1) {
+          const bushes: Shrub[] = [];
+          for (let z = SPACING / 2; z < CELL; z += SPACING) {
+            for (let x = SPACING / 2; x < CELL; x += SPACING) {
+              bushes.push(shrub({
+                id: `${cellX}:${cellZ}:${x}:${z}`,
+                x: cellX * CELL + x + ((cellX + cellZ) & 1),
+                z: cellZ * CELL + z,
+                heightMeters: height,
+                radiusMeters: height * 0.7,
+                selection: 0,
+                ...(understory ? { canopyClosure: 0.9 } : {}),
+              }));
+            }
+          }
+          const cell = {
+            ...fixtureCell(cellX, cellZ), trees: [], clutter: [], rocks: [], shrubs: bushes,
+          };
+          const distance = detailCellMinimumDistanceMeters(0, 0, cellX, cellZ, CELL);
+          residents.push({
+            cell,
+            treeCanopyRank: new Float32Array(0),
+            lod: distance <= law.near.outerRadiusMeters ? "near" : "mid",
+            distance,
+          });
+        }
+      }
+      const counts = new Map<string, number>();
+      const iterator = buildPresentationChunk(
+        {
+          residents,
+          floatingOrigin: { x: 0, y: 0, z: 0 },
+          densityLaw: law,
+          treeVariantCap: 1,
+          treePrototypeMode: "species",
+          grassRadiusMeters: 0,
+          observerX: 0,
+          observerZ: 0,
+          treeGroundShadowRangeMeters: RANGE,
+          groundObjectRangeMeters: RANGE,
+          // Every bush is drawn: this checks reach, not the budgets.
+          shrubOpenDrawnPerHectare: 1e6,
+        },
+        groundCatalog(),
+        { appendInstance: (key) => { counts.set(key, (counts.get(key) ?? 0) + 1); } },
+      );
+      let step = iterator.next();
+      while (!step.done) step = iterator.next();
+      const built = {
+        cards: counts.get("shrub-hazel-v0") ?? 0,
+        body: counts.get(SHRUB_BODY_PROTOTYPE_KEY) ?? 0,
+        standIn: counts.get(SHRUB_BODY_FAR_PROTOTYPE_KEY) ?? 0,
+        shadow: counts.get(TREE_GROUND_SHADOW_PROTOTYPE_KEY) ?? 0,
+      };
+      const label = `${understory ? "understory" : "open"} ${height} m`;
+      // The grid is coarse against the smaller discs; a few per cent is the grid.
+      // Every bush here has selection 0, so the understory's budget draws
+      // all of them too.
+      const close = (builtCount: number, estimated: number, what: string): void => {
+        expect(builtCount, `${label} ${what}`).toBeGreaterThan(0);
+        expect(Math.abs(builtCount - estimated), `${label} ${what}: ${builtCount} against ${estimated}`)
+          .toBeLessThan(Math.max(estimated * 0.04, 12));
+      };
+      close(built.cards, estimate.cardRecords, "cards");
+      close(built.body, estimate.bodyRecords, "body");
+      close(built.standIn, estimate.standInRecords, "stand-in");
+      close(built.shadow, estimate.shadowRecords, "shadow");
+      close(
+        built.cards + built.body + built.standIn + built.shadow, estimate.records, "records");
+      if (understory) {
+        // Nothing of an understory bush lies past its cards.
+        expect(estimate.radiusMeters).toBeCloseTo(
+          Math.min(height * SHRUB_CARD_REACH_METERS_PER_METER, law.near.outerRadiusMeters)
+            + DETAIL_MEMBERSHIP_SLACK_METERS,
+          9,
+        );
+      } else {
+        expect(estimate.standInRecords).toBeGreaterThan(estimate.bodyRecords);
+      }
+    }
+    // No reach or no bushes books nothing.
+    const none = estimateBushRecords({
+      nearRadiusMeters: law.near.outerRadiusMeters,
+      groundObjectRangeMeters: RANGE,
+      groundShadowReachMeters: RANGE,
+      membershipSlackMeters: DETAIL_MEMBERSHIP_SLACK_METERS,
+      drawnPerHectare: 0,
+      understory: false,
+    });
+    expect(none.records).toBe(0);
+    expect(none.bushes).toBe(0);
+  });
+
+  it("draws one leaf-card model per bush species on a tier that draws one per tree", () => {
+    const bushes = Array.from({ length: 40 }, (_, index) => shrub({
+      id: `bush-${index}`,
+      x: 4 + (index % 8) * 7,
+      z: 4 + Math.floor(index / 8) * 11,
+      selection: (index + 0.5) / 40,
+    }));
+    const cardKeys = (treeVariantCap: number): Set<string> => new Set(
+      keysOf(collect(cellOf(bushes), 0, { treeVariantCap }).records)
+        .filter((key) => key.startsWith("shrub-hazel-")),
+    );
+    expect(buildCatalog(true).shrubs.hazel.variantCount).toBe(2);
+    expect(cardKeys(3)).toEqual(new Set(["shrub-hazel-v0", "shrub-hazel-v1"]));
+    expect(cardKeys(1)).toEqual(new Set(["shrub-hazel-v0"]));
+    // The cap changes which model a bush's cards use, never which bushes draw.
+    const count = (treeVariantCap: number): number =>
+      collect(cellOf(bushes), 0, { treeVariantCap }).records
+        .filter((entry) => entry.key.startsWith("shrub-hazel-")).length;
+    expect(count(1)).toBe(count(3));
+    expect(count(1)).toBe(40);
+  });
+
+  it("draws the cards alone unless the catalog has both the body and its stand-in", () => {
+    const base = groundCatalog();
+    const cell = cellOf([shrub()]);
+    for (const missing of [SHRUB_BODY_PROTOTYPE_KEY, SHRUB_BODY_FAR_PROTOTYPE_KEY]) {
+      const prototypes = { ...base.prototypes };
+      delete prototypes[missing];
+      const catalog = { ...base, prototypes };
+      expect(keysOf(collect(cell, 40, {}, catalog).records), missing).toEqual(["shrub-hazel-v0"]);
+      expect(collect(cell, 250, {}, catalog).records, missing).toEqual([]);
+    }
+  });
+
+  it("lays a bush's shadow only where the tier draws ground shadows", () => {
+    const cell = cellOf([shrub()]);
+    expect(keysOf(collect(cell, 40, { treeGroundShadowRangeMeters: 0 }).records))
+      .toEqual(["shrub-hazel-v0", SHRUB_BODY_PROTOTYPE_KEY, SHRUB_BODY_FAR_PROTOTYPE_KEY]);
+  });
+
+  it("draws a boulder while it stands tall enough to see, with its shadow", () => {
+    const big = rock();
+    const bigReach = big.radiusMeters * big.flattening * GROUND_OBJECT_REACH_METERS_PER_METER;
+    expect(bigReach).toBeLessThan(RANGE);
+    const inside = collect(cellOf([], [big]), bigReach + DETAIL_MEMBERSHIP_SLACK_METERS - 5);
+    expect(keysOf(inside.records)).toEqual(["rock-granite", TREE_GROUND_SHADOW_PROTOTYPE_KEY]);
+    expect(inside.statistics.rockInstances).toBe(1);
+    expect(collect(cellOf([], [big]), bigReach + DETAIL_MEMBERSHIP_SLACK_METERS + 5).records)
+      .toEqual([]);
+
+    // A stone a fifth of a metre tall is gone inside 70 m, whatever the tier.
+    const small = rock({ radiusMeters: 0.3, flattening: 0.7 });
+    const smallReach = 0.3 * 0.7 * GROUND_OBJECT_REACH_METERS_PER_METER;
+    expect(keysOf(collect(cellOf([], [small]), smallReach + DETAIL_MEMBERSHIP_SLACK_METERS - 5).records))
+      .toEqual(["rock-granite", TREE_GROUND_SHADOW_PROTOTYPE_KEY]);
+    expect(collect(cellOf([], [small]), smallReach + DETAIL_MEMBERSHIP_SLACK_METERS + 5).records)
+      .toEqual([]);
+
+    // The tier's cap stops the largest: with no range given it is the near radius.
+    const capped = collect(
+      cellOf([], [big]),
+      law.near.outerRadiusMeters + DETAIL_MEMBERSHIP_SLACK_METERS + 5,
+      {},
+      groundCatalog(),
+      null,
+    );
+    expect(capped.records).toEqual([]);
+
+    const stone = inside.records[0]!.record;
+    const shadow = inside.records[1]!.record;
+    expect(stone.heightScaleMeters).toBeCloseTo(big.radiusMeters * big.flattening, 12);
+    expect(stone.fade).toBe(1);
+    expect(shadow.heightScaleMeters).toBe(stone.heightScaleMeters);
+    expect(shadow.variant).toBe(0);
+    expect(shadow.tint[2]).toBe(1);
+    // A boulder is the same size from every range: nothing for the shadow to follow.
+    expect(shadow.windResponse).toBe(0);
+    expect(shadow.fade).toBe(1);
+  });
+
+  it("stops boulders at the tier's own cap for them, and their shadows with them", () => {
+    const big = rock();
+    const height = big.radiusMeters * big.flattening;
+    const fullReach = height * GROUND_OBJECT_REACH_METERS_PER_METER;
+    const BOULDERS = 250;
+    expect(fullReach).toBeGreaterThan(BOULDERS * 1.5);
+    const capped = { boulderRangeMeters: BOULDERS };
+    const inside = collect(
+      cellOf([], [big]), BOULDERS + DETAIL_MEMBERSHIP_SLACK_METERS - 5, capped);
+    expect(keysOf(inside.records)).toEqual(["rock-granite", TREE_GROUND_SHADOW_PROTOTYPE_KEY]);
+    expect(collect(cellOf([], [big]), BOULDERS + DETAIL_MEMBERSHIP_SLACK_METERS + 5, capped).records)
+      .toEqual([]);
+    // The stone's own material carries the cap. The shadow's law is capped
+    // by the ground objects' range, so its record carries the share.
+    expect(inside.records[0]!.record.fade).toBe(1);
+    expect(inside.records[1]!.record.fade).toBeCloseTo(BOULDERS / fullReach, 12);
+    // A stone whose reach is inside the cap is untouched by it.
+    const small = rock({ radiusMeters: 0.6, flattening: 0.5 });
+    const smallReach = 0.3 * GROUND_OBJECT_REACH_METERS_PER_METER;
+    expect(smallReach).toBeLessThan(BOULDERS);
+    const smallRecords = collect(
+      cellOf([], [small]), smallReach + DETAIL_MEMBERSHIP_SLACK_METERS - 5, capped).records;
+    expect(keysOf(smallRecords)).toEqual(["rock-granite", TREE_GROUND_SHADOW_PROTOTYPE_KEY]);
+    expect(smallRecords[1]!.record.fade).toBe(1);
+    // A boulder cap wider than the ground objects' range changes nothing,
+    // and neither does one of zero: both are "no cap of its own".
+    for (const boulderRangeMeters of [50_000, 0]) {
+      const records = collect(
+        cellOf([], [big]), fullReach + DETAIL_MEMBERSHIP_SLACK_METERS - 5, { boulderRangeMeters },
+      ).records;
+      expect(keysOf(records)).toEqual(["rock-granite", TREE_GROUND_SHADOW_PROTOTYPE_KEY]);
+      expect(records[1]!.record.fade).toBe(1);
+    }
+    // Bushes do not take the boulders' cap.
+    const bush = shrub({ heightMeters: 2.4, radiusMeters: 1.6 });
+    expect(keysOf(collect(cellOf([bush]), 400, capped).records)).toContain(SHRUB_BODY_FAR_PROTOTYPE_KEY);
   });
 });

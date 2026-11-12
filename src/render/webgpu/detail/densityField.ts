@@ -119,6 +119,14 @@ export interface VegetationDensitySample {
   readonly canopyClosure: number;
   /** `6-8`: absolute grass-sward cover of the ground, canopy-suppressed. */
   readonly grassCover: number;
+  /**
+   * How much of the bushes here are open ground's own scrub, 0 to 1: 0 inside
+   * a forest province, whose understory is spread evenly under the canopy, 1
+   * on open country, where bushes stand in thickets with bare ground between
+   * (`shrubThicketAt`). Scatter applies the thicket pattern to this share of
+   * `shrubStemsPerSquareMeter` at each stem.
+   */
+  readonly shrubThicketShare: number;
 }
 
 /** The five ground-cover archetypes, in the order the weight vector uses. */
@@ -705,6 +713,79 @@ export function openGroundTreeShare(provinceSignal: number, gladeRaw: number): n
   );
 }
 
+/**
+ * Open ground's bushes stand in thickets.
+ *
+ * The shrub law above spreads bushes evenly, which is what an understory is.
+ * Open country is not like that: scrub stands in patches a few tens of metres
+ * across with grass between, some country is scrubby and some is clean, and a
+ * lone bush is the exception. An even 100 bushes a hectare reads as noise from
+ * the air and as nothing in particular from the ground; the same bushes in
+ * thickets read as a place.
+ *
+ * Two fields, neither new to the density law's inputs:
+ * - a 90 m thicket field (two octaves, so a thicket's outline is ragged) says
+ *   where the patches are;
+ * - a 1.4 km scrub field says how much of the country they cover, from about
+ *   3% (clean grassland with the odd thicket) to about 45% (scrubland).
+ *
+ * The factor multiplies a stem's acceptance: `SHRUB_THICKET_PEAK` inside a
+ * thicket, `SHRUB_THICKET_LONE_SHARE` between them, which is the lone bushes.
+ * Over all country it averages a little under 1, so open ground carries about
+ * the bushes it did, somewhere instead of everywhere.
+ */
+export const SHRUB_THICKET_PEAK = 4.5;
+export const SHRUB_THICKET_LONE_SHARE = 0.07;
+const SHRUB_THICKET_WAVELENGTH_METERS = 90;
+const SHRUB_SCRUB_WAVELENGTH_METERS = 1_400;
+/** The thicket field's threshold in clean country and in scrubland (its 97th and 55th percentiles). */
+const SHRUB_THICKET_CLEAN_THRESHOLD = 0.62;
+const SHRUB_THICKET_SCRUB_THRESHOLD = 0.05;
+const SHRUB_THICKET_EDGE_HALF_WIDTH = 0.07;
+
+export interface ShrubThicketSample {
+  /** 0 between thickets, 1 inside one. */
+  readonly core: number;
+  /** What a stem's acceptance is multiplied by here. */
+  readonly factor: number;
+}
+
+/** The thicket pattern at a stem (see `SHRUB_THICKET_PEAK`). Full bandwidth: it places stems. */
+export function shrubThicketAt(seedHash: number, x: number, z: number): ShrubThicketSample {
+  const scrub = smoothstep(
+    -0.35,
+    0.45,
+    filteredValueNoise2D(
+      mixSeed(seedHash, 78),
+      x / SHRUB_SCRUB_WAVELENGTH_METERS,
+      z / SHRUB_SCRUB_WAVELENGTH_METERS,
+      SHRUB_SCRUB_WAVELENGTH_METERS,
+      0,
+    ),
+  );
+  const threshold = SHRUB_THICKET_CLEAN_THRESHOLD
+    + (SHRUB_THICKET_SCRUB_THRESHOLD - SHRUB_THICKET_CLEAN_THRESHOLD) * scrub;
+  const thicket = fbm2D(
+    mixSeed(seedHash, 77),
+    x / SHRUB_THICKET_WAVELENGTH_METERS,
+    z / SHRUB_THICKET_WAVELENGTH_METERS,
+    2,
+    2,
+    0.5,
+    SHRUB_THICKET_WAVELENGTH_METERS,
+    0,
+  );
+  const core = smoothstep(
+    threshold - SHRUB_THICKET_EDGE_HALF_WIDTH,
+    threshold + SHRUB_THICKET_EDGE_HALF_WIDTH,
+    thicket,
+  );
+  return {
+    core,
+    factor: SHRUB_THICKET_LONE_SHARE + (SHRUB_THICKET_PEAK - SHRUB_THICKET_LONE_SHARE) * core,
+  };
+}
+
 /** Base canopy density: ~800 stems/ha before habitat factors. */
 const BASE_TREE_STEMS = 0.08;
 const BASE_SHRUB_STEMS = 0.045;
@@ -721,6 +802,7 @@ const ZERO_DENSITY: VegetationDensitySample = Object.freeze({
   riparianBand: 0,
   canopyClosure: 0,
   grassCover: 1,
+  shrubThicketShare: 0,
 });
 
 interface ForestPatternSample {
@@ -1045,11 +1127,17 @@ export function densityField(
   // The parkland's understory goes with the forest it grew under; the
   // desert keeps its moisture-gated scrub, which is sage and juniper there.
   const understoryKeep = dryProvinceClosedForestKeep(0, parkland, riparian.bankBand);
-  const shrubStems =
+  const moistShrubStems =
     BASE_SHRUB_STEMS * shrubMoisture * shrubSlope * shrubTreeline * openness * shoreline
     * forest.disturbance * shrubForestGate * edgeShrubGain * clearance
-    * riparian.clearance * riparian.shrubDensityGain * understoryKeep
-    + dryShrubStems;
+    * riparian.clearance * riparian.shrubDensityGain * understoryKeep;
+  const shrubStems = moistShrubStems + dryShrubStems;
+  // Thickets are open country's (see `shrubThicketAt`): a forest province's
+  // understory stays even, and the dry provinces' bushes already clump on the
+  // glade field.
+  const shrubThicketShare = shrubStems > 0
+    ? (moistShrubStems / shrubStems) * (1 - forest.forestFraction)
+    : 0;
 
   const groundCover = groundCoverWeights(
     input.moisture,
@@ -1080,5 +1168,6 @@ export function densityField(
     riparianBand: riparian.bankBand,
     canopyClosure: closure,
     grassCover: canopyGrassCover(groundCover.grass, closure),
+    shrubThicketShare,
   };
 }

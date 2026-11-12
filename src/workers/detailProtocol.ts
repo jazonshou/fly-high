@@ -59,6 +59,12 @@ export interface DetailWorkerPresentationBuildInput {
   readonly groundCoverFieldRadiusMeters?: number;
   /** Metres inside which each drawn tree also emits a ground shadow record; 0 or absent emits none. */
   readonly treeGroundShadowRangeMeters?: number;
+  /** The tier's cap on how far a bush's body or a boulder is drawn; absent is the near radius. */
+  readonly groundObjectRangeMeters?: number;
+  /** A tighter cap for boulders alone; absent is the cap above. */
+  readonly boulderRangeMeters?: number;
+  /** The tier's open-ground bush cap, per hectare; absent is `SHRUB_OPEN_DRAWN_PER_HECTARE`. */
+  readonly shrubOpenDrawnPerHectare?: number;
   readonly observerX: number;
   readonly observerZ: number;
 }

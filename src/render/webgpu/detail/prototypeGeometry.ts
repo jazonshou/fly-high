@@ -1,6 +1,7 @@
 import { clamp, lerp } from "@/src/world/noise";
 import { hashLatticeCoordinates, mixSeed, unitFloatFromHash } from "@/src/world/seed";
 import { FOLIAGE_LAYERS } from "./FoliageAtlas";
+import { SHRUB_BODY_HEIGHT_SHARE, SHRUB_BODY_RADIUS_SHARE } from "./groundObjects";
 import {
   detailPrototypeBoundsFromPositions,
   type DetailPrototypeBounds,
@@ -58,6 +59,12 @@ export interface PrototypeGeometry {
   readonly triangleCount: number;
   /** Furthest vertex from the +y axis. */
   readonly boundingRadius: number;
+  /**
+   * The radial unit an instance's world radius is mapped onto, where that is
+   * not the bounding radius: a prototype built to stand on another one
+   * declares that one's unit, so the two stay aligned at every size.
+   */
+  readonly radialUnit?: number;
   /** Highest vertex y (prototype heights are normalized to ~1). */
   readonly boundingHeight: number;
   /** Exact authored xyz envelope used by generator-side instance culling. */
@@ -156,6 +163,10 @@ function norm3(x: number, y: number, z: number): Vec3 {
 
 function cross3(a: Vec3, b: Vec3): Vec3 {
   return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
+}
+
+function length3(v: Vec3): number {
+  return Math.hypot(v.x, v.y, v.z);
 }
 
 function dot3(a: Vec3, b: Vec3): number {
@@ -414,6 +425,11 @@ interface FoliageQuad {
   readonly halfWidth: number;
   readonly halfHeight: number;
   readonly layer: number;
+  /**
+   * The card's window on its layer: where it starts and how many times the
+   * layer repeats across it. Left out, the card shows the layer once.
+   */
+  readonly uv?: { readonly u: number; readonly v: number; readonly repeat: number };
 }
 
 function quadDisk(quad: FoliageQuad): OccluderDisk {
@@ -426,7 +442,7 @@ function quadDisk(quad: FoliageQuad): OccluderDisk {
   };
 }
 
-/** Full-tile uv quad; owners records the quad id for each emitted vertex. */
+/** One card over its uv window (the whole layer once unless the quad says otherwise); owners records the quad id for each emitted vertex. */
 function emitFoliageQuad(
   acc: GeometryAccumulator,
   quad: FoliageQuad,
@@ -434,11 +450,14 @@ function emitFoliageQuad(
   ownerId: number,
 ): void {
   const { center: c, normal: n, tangent: t, bitangent: b, halfWidth: hw, halfHeight: hh } = quad;
+  const u0 = quad.uv?.u ?? 0;
+  const v0 = quad.uv?.v ?? 0;
+  const span = quad.uv?.repeat ?? 1;
   const corners: ReadonlyArray<readonly [number, number, number, number]> = [
-    [-hw, -hh, 0, 0],
-    [hw, -hh, 1, 0],
-    [hw, hh, 1, 1],
-    [-hw, hh, 0, 1],
+    [-hw, -hh, u0, v0],
+    [hw, -hh, u0 + span, v0],
+    [hw, hh, u0 + span, v0 + span],
+    [-hw, hh, u0, v0 + span],
   ];
   const base = acc.positions.length / 3;
   for (const [du, dv, u, v] of corners) {
@@ -1433,8 +1452,42 @@ export function buildCrownFringePrototype(
 }
 
 /**
- * 12–18 foliage quads on a short multi-stem skeleton (3–5 stems), with the
- * same baked sky occlusion as tree crowns.
+ * How many times a bush's leaf layer repeats across one card. The layers were
+ * drawn for a card that shows them once, and a hazel leaf is then two fifths
+ * of the card: 20 cm on a bush 1.5 m tall, a plant with a few huge leaves.
+ * Repeated twice the same card holds four times the leaves at half the size.
+ * No leaf of these layers reaches the layer's edge, so the repeat has no seam.
+ */
+export const SHRUB_CARD_LAYER_REPEAT = 2;
+/** A card's edge against the species' authored one: more cards, each smaller. */
+const SHRUB_CARD_SIZE_SHARE = 0.78;
+/**
+ * A typical bush's radius over its height (`scatterShrubs` authors 0.51 to
+ * 0.81). The cards are laid out for a bush of this shape, so that on it a card
+ * is square and stands off the body evenly; a wider or narrower bush
+ * stretches them with itself.
+ */
+const SHRUB_CARD_TYPICAL_RADIUS_OVER_HEIGHT = 0.65;
+
+/**
+ * A bush's leaves: 26 to 32 cards standing on the bush's body
+ * (`buildShrubBodyPrototype`), with the same baked sky occlusion as tree
+ * crowns.
+ *
+ * The cards used to hang on a few bare stems, a dozen of them at the species'
+ * full card size. Up close that was a dark mound with a few huge leaves round
+ * it. They now cover the body the way a crown's cards cover its hull: each
+ * stands just off the body's surface, tilted against it so its far edge
+ * breaks the body's outline, and shows its layer twice over so a leaf is a
+ * leaf's size.
+ *
+ * The body and the cards are separate records with one position, yaw and
+ * tint. The body is `SHRUB_BODY_HEIGHT_SHARE` of the bush's height and
+ * `SHRUB_BODY_RADIUS_SHARE` of its radius, so the cards are built in the
+ * body's own units and declare the body's radius over that share as their
+ * radial unit (`radialUnit`, as a tree's parts share one envelope): a point
+ * of the body and the card standing on it land on the same spot whatever the
+ * bush's size. Cards reach a little past the bush's radius, as leaves do.
  */
 export function buildShrubPrototype(
   species: ShrubSpecies,
@@ -1444,62 +1497,378 @@ export function buildShrubPrototype(
   const spec = SHRUB_SPECIES_SPECS[species];
   const variantIndex = wrapVariant(variant, SHRUB_VARIANT_COUNTS[species]);
   const rng = createRandom(`shrub/${species}/${variantIndex}/${seed}`);
+  const body = buildShrubBodyPrototype(seed);
+  const radialUnit = body.boundingRadius / SHRUB_BODY_RADIUS_SHARE;
+  // Work in a frame where one unit is the bush's height along every axis, for
+  // the typical bush: the body's y times its height share, and its x and z
+  // times `across`. Card sizes, offsets and tilts are then what they look
+  // like, and x and z go back to the body's units at the end.
+  const across = SHRUB_CARD_TYPICAL_RADIUS_OVER_HEIGHT / radialUnit;
+  const bodyPoint = (vertex: number): Vec3 => ({
+    x: body.positions[vertex * 3]! * across,
+    y: body.positions[vertex * 3 + 1]! * SHRUB_BODY_HEIGHT_SHARE,
+    z: body.positions[vertex * 3 + 2]! * across,
+  });
+  // A normal goes through the inverse of that stretch.
+  const bodyNormal = (vertex: number): Vec3 => norm3(
+    body.normals[vertex * 3]! / across,
+    body.normals[vertex * 3 + 1]! / SHRUB_BODY_HEIGHT_SHARE,
+    body.normals[vertex * 3 + 2]! / across,
+  );
 
-  const stemCount = spec.stemsMin + Math.floor(rng() * (spec.stemsMax - spec.stemsMin + 1));
-  const quadTotal = 12 + Math.floor(rng() * 7);
+  // Where cards may stand: the body's faces above the ground, by area, the
+  // upper ones somewhat more (a bush carries its leaves where the light is).
+  const faces: { readonly a: number; readonly b: number; readonly c: number; readonly weight: number }[] = [];
+  let totalWeight = 0;
+  for (let index = 0; index < body.indices.length; index += 3) {
+    const a = body.indices[index]!;
+    const b = body.indices[index + 1]!;
+    const c = body.indices[index + 2]!;
+    const pa = bodyPoint(a);
+    const pb = bodyPoint(b);
+    const pc = bodyPoint(c);
+    const centreY = (pa.y + pb.y + pc.y) / 3;
+    if (centreY < 0.1) continue;
+    const area = 0.5 * length3(cross3(
+      { x: pb.x - pa.x, y: pb.y - pa.y, z: pb.z - pa.z },
+      { x: pc.x - pa.x, y: pc.y - pa.y, z: pc.z - pa.z },
+    ));
+    const weight = area * (0.6 + centreY);
+    faces.push({ a, b, c, weight });
+    totalWeight += weight;
+  }
+
+  const quadTotal = 26 + Math.floor(rng() * 7);
   const acc = createAccumulator();
   const quads: FoliageQuad[] = [];
+  const shading: Vec3[] = [];
   const owners: number[] = [];
-
   for (let q = 0; q < quadTotal; q += 1) {
-    const stem = q % stemCount;
-    const azimuth = (stem / stemCount) * TWO_PI + (rng() - 0.5) * 0.8;
-    const tilt = spec.tiltMin + rng() * (spec.tiltMax - spec.tiltMin);
-    const direction = norm3(
-      Math.sin(tilt) * Math.cos(azimuth),
-      Math.cos(tilt),
-      Math.sin(tilt) * Math.sin(azimuth),
+    // Stratified over the faces' weight, so the cards cover the body evenly.
+    let pick = ((q + rng()) / quadTotal) * totalWeight;
+    let face = faces[faces.length - 1]!;
+    for (const candidate of faces) {
+      if (pick < candidate.weight) {
+        face = candidate;
+        break;
+      }
+      pick -= candidate.weight;
+    }
+    let wa = rng();
+    let wb = rng();
+    if (wa + wb > 1) {
+      wa = 1 - wa;
+      wb = 1 - wb;
+    }
+    const wc = 1 - wa - wb;
+    const pa = bodyPoint(face.a);
+    const pb = bodyPoint(face.b);
+    const pc = bodyPoint(face.c);
+    const na = bodyNormal(face.a);
+    const nb = bodyNormal(face.b);
+    const nc = bodyNormal(face.c);
+    const outward = norm3(
+      na.x * wa + nb.x * wb + nc.x * wc,
+      na.y * wa + nb.y * wb + nc.y * wc,
+      na.z * wa + nb.z * wb + nc.z * wc,
     );
-    const baseX = (rng() - 0.5) * 0.12;
-    const baseZ = (rng() - 0.5) * 0.12;
-    const length = spec.height * (0.75 + rng() * 0.25);
-    const along = (0.3 + rng() * 0.65) * length;
-    const center: Vec3 = {
-      x: baseX + direction.x * along,
-      y: direction.y * along,
-      z: baseZ + direction.z * along,
-    };
-    const outward = norm3(center.x, center.y - spec.height * 0.35, center.z);
-    const normal = norm3(
-      outward.x * 0.4 + (rng() - 0.5) * 0.24,
-      outward.y * 0.4 + 0.6 + (rng() - 0.5) * 0.24,
-      outward.z * 0.4 + (rng() - 0.5) * 0.24,
+    // The card's own plane: the surface's, tilted by up to about 40 degrees
+    // any way and a little toward the sky. A card lying flat on the body
+    // would hide it and change nothing of its outline.
+    const tilt = 0.25 + rng() * 0.6;
+    const facing = norm3(
+      outward.x + (rng() * 2 - 1) * tilt,
+      outward.y + (rng() * 2 - 1) * tilt + 0.25,
+      outward.z + (rng() * 2 - 1) * tilt,
     );
-    let tangent = cross3(UP, normal);
-    const tangentLength = Math.hypot(tangent.x, tangent.y, tangent.z);
-    tangent = tangentLength > 1e-4
+    let tangent = cross3(UP, facing);
+    tangent = length3(tangent) > 1e-4
       ? norm3(tangent.x, tangent.y, tangent.z)
       : { x: 1, y: 0, z: 0 };
-    const bitangent = cross3(tangent, normal);
-    const size = spec.quadSize * (0.8 + rng() * 0.5);
+    // Turned about its own normal, so no two cards show the layer the same
+    // way up.
+    const roll = rng() * TWO_PI;
+    const side = cross3(facing, tangent);
+    tangent = norm3(
+      tangent.x * Math.cos(roll) + side.x * Math.sin(roll),
+      tangent.y * Math.cos(roll) + side.y * Math.sin(roll),
+      tangent.z * Math.cos(roll) + side.z * Math.sin(roll),
+    );
+    const bitangent = cross3(tangent, facing);
+    const size = spec.quadSize * SHRUB_CARD_SIZE_SHARE * (0.85 + rng() * 0.4);
+    const half = size * 0.5;
+    const standOff = 0.02 + size * 0.18;
+    let centerY = pa.y * wa + pb.y * wb + pc.y * wc + outward.y * standOff;
+    // No leaf above the bush's height (the body leaves its top share for
+    // them), and none far into the ground.
+    const reachUp = half * (Math.abs(tangent.y) + Math.abs(bitangent.y));
+    centerY = Math.max(Math.min(centerY, 1 - reachUp), reachUp - 0.08);
+    const center: Vec3 = {
+      x: pa.x * wa + pb.x * wb + pc.x * wc + outward.x * standOff,
+      y: centerY,
+      z: pa.z * wa + pb.z * wb + pc.z * wc + outward.z * standOff,
+    };
     quads.push({
-      center, normal, tangent, bitangent,
-      halfWidth: size * 0.5, halfHeight: size * 0.5,
+      center, normal: facing, tangent, bitangent,
+      halfWidth: half, halfHeight: half,
       layer: spec.layer,
+      uv: { u: rng(), v: rng(), repeat: SHRUB_CARD_LAYER_REPEAT },
     });
+    // Lit as part of one rounded mass, not as thirty flat plates: mostly the
+    // body's own normal, some of the card's, some of the sky.
+    shading.push(norm3(
+      outward.x * 0.55 + facing.x * 0.25,
+      outward.y * 0.55 + facing.y * 0.25 + 0.35,
+      outward.z * 0.55 + facing.z * 0.25,
+    ));
   }
   for (let i = 0; i < quads.length; i += 1) {
+    const base = acc.positions.length / 3;
     emitFoliageQuad(acc, quads[i]!, owners, i);
+    // The shading normal in place of the card's flat one, and the tangent
+    // squared up against it.
+    const normal = shading[i]!;
+    const along = dot3(quads[i]!.tangent, normal);
+    const tangent = norm3(
+      quads[i]!.tangent.x - normal.x * along,
+      quads[i]!.tangent.y - normal.y * along,
+      quads[i]!.tangent.z - normal.z * along,
+    );
+    for (let vertex = base; vertex < base + 4; vertex += 1) {
+      acc.normals[vertex * 3] = normal.x;
+      acc.normals[vertex * 3 + 1] = normal.y;
+      acc.normals[vertex * 3 + 2] = normal.z;
+      acc.tangents[vertex * 4] = tangent.x;
+      acc.tangents[vertex * 4 + 1] = tangent.y;
+      acc.tangents[vertex * 4 + 2] = tangent.z;
+    }
   }
   bakeSkyOcclusion(acc, quads.map(quadDisk), owners);
   let shrubTopY = 0;
   for (let i = 1; i < acc.positions.length; i += 3) {
     shrubTopY = Math.max(shrubTopY, acc.positions[i]!);
   }
-  if (shrubTopY > 1e-4) {
-    const k = 1 / shrubTopY;
-    for (let i = 0; i < acc.positions.length; i += 1) acc.positions[i]! *= k;
+  // The topmost leaf is the bush's height: a few percent of stretch at most.
+  const lift = shrubTopY > 1e-4 ? 1 / shrubTopY : 1;
+  for (let vertex = 0; vertex < acc.positions.length / 3; vertex += 1) {
+    const y = acc.positions[vertex * 3 + 1]! * lift;
+    acc.positions[vertex * 3] = acc.positions[vertex * 3]! / across;
+    acc.positions[vertex * 3 + 1] = y;
+    acc.positions[vertex * 3 + 2] = acc.positions[vertex * 3 + 2]! / across;
+    // The body shades the leaves near the ground, which the bake cannot see.
+    acc.colors[vertex * 4 + 3] = acc.colors[vertex * 4 + 3]! * clamp(0.62 + 0.5 * y, 0.62, 1);
   }
+  return { ...finalizeGeometry(acc), radialUnit };
+}
+
+/** One mound of the bush body: where it stands, how big, and how finely it is cut. */
+interface ShrubBodyLobe {
+  readonly offset: number;
+  readonly azimuth: number;
+  readonly radius: number;
+  readonly height: number;
+  readonly sides: number;
+  /** Rings from the skirt up, as shares of the lobe's height and radius. */
+  readonly rings: readonly { readonly y: number; readonly radius: number; readonly occlusion: number }[];
+  readonly apexOcclusion: number;
+}
+
+/** Emits one mound: its rings from the skirt up, twisted against each other, and an apex. */
+function emitShrubBodyLobe(
+  acc: GeometryAccumulator,
+  rng: () => number,
+  lobe: ShrubBodyLobe,
+): void {
+  const sides = lobe.sides;
+  const centreX = Math.cos(lobe.azimuth) * lobe.offset;
+  const centreZ = Math.sin(lobe.azimuth) * lobe.offset;
+  const phase = rng() * TWO_PI;
+  // A mound leans its mass to one side: its upper rings and apex are
+  // carried off its own axis, so no view of it is a symmetric dome.
+  const leanAzimuth = rng() * TWO_PI;
+  const lean = (0.16 + rng() * 0.12) * lobe.radius;
+  // Positions first (one per ring corner, plus the apex), so the normals
+  // can be smoothed over the final, jittered surface.
+  const corners: Vec3[] = [];
+  lobe.rings.forEach((ring, ringIndex) => {
+    const carried = lean * Math.max(0, ring.y);
+    for (let side = 0; side < sides; side += 1) {
+      const azimuth = phase + ((side + ringIndex * 0.5) / sides) * TWO_PI;
+      // Lumps: each corner stands in or out on its own, the upper ones most.
+      const radius = lobe.radius * ring.radius
+        * (ring.y > 0 ? 0.74 + rng() * 0.4 : 0.92 + rng() * 0.16);
+      corners.push({
+        x: centreX + Math.cos(azimuth) * radius + Math.cos(leanAzimuth) * carried,
+        y: lobe.height * (ring.y + (ring.y > 0 ? (rng() - 0.5) * 0.16 : 0)),
+        z: centreZ + Math.sin(azimuth) * radius + Math.sin(leanAzimuth) * carried,
+      });
+    }
+  });
+  const apexIndex = corners.length;
+  corners.push({
+    x: centreX + Math.cos(leanAzimuth) * lean * 1.1,
+    y: lobe.height,
+    z: centreZ + Math.sin(leanAzimuth) * lean * 1.1,
+  });
+  // Faces wound so cross(b - a, c - a) points outward; the index order is
+  // reversed on emission, as every closed prototype here does (see
+  // `emitBroadleafCrownHull`).
+  const faces: number[] = [];
+  for (let ring = 0; ring + 1 < lobe.rings.length; ring += 1) {
+    const lower = ring * sides;
+    const upper = (ring + 1) * sides;
+    for (let side = 0; side < sides; side += 1) {
+      const next = (side + 1) % sides;
+      // The upper ring is half a step ahead, so each lower edge takes the
+      // upper corner between its ends and each upper edge the lower corner
+      // after it.
+      faces.push(lower + side, upper + side, lower + next);
+      faces.push(lower + next, upper + side, upper + next);
+    }
+  }
+  const top = (lobe.rings.length - 1) * sides;
+  for (let side = 0; side < sides; side += 1) {
+    faces.push(top + side, apexIndex, top + ((side + 1) % sides));
+  }
+  const normals = smoothIndexedNormals(corners, faces);
+
+  // One vertex per corner, and a second copy of each ring's first corner at
+  // u = 1 so the texture closes without a mirrored strip.
+  const emit = (index: number, u: number, v: number, occlusion: number): number => {
+    const position = corners[index]!;
+    const normal = normals[index]!;
+    const east = norm3(-normal.z, 0, normal.x);
+    const tangent = Math.hypot(normal.x, normal.z) > 1e-4 ? east : { x: 1, y: 0, z: 0 };
+    return pushVertex(
+      acc,
+      position.x, position.y, position.z,
+      normal.x, normal.y, normal.z,
+      u, v,
+      tangent.x, tangent.y, tangent.z, 1,
+      FOLIAGE_LAYER_INDEX.crownBroadleafDense,
+      occlusion,
+    );
+  };
+  const vertexOf: number[][] = [];
+  lobe.rings.forEach((ring, ringIndex) => {
+    const row: number[] = [];
+    const v = 1 - (ringIndex + 0.5) / (lobe.rings.length + 1);
+    for (let side = 0; side <= sides; side += 1) {
+      // The twist is left out of u: it would carry the upper rings past 1.
+      row.push(emit(ringIndex * sides + (side % sides), side / sides, v, ring.occlusion));
+    }
+    vertexOf.push(row);
+  });
+  const apexVertex = emit(apexIndex, 0.5, 0, lobe.apexOcclusion);
+  for (let ring = 0; ring + 1 < lobe.rings.length; ring += 1) {
+    const lower = vertexOf[ring]!;
+    const upper = vertexOf[ring + 1]!;
+    for (let side = 0; side < sides; side += 1) {
+      acc.indices.push(lower[side]!, lower[side + 1]!, upper[side]!);
+      acc.indices.push(lower[side + 1]!, upper[side + 1]!, upper[side]!);
+    }
+  }
+  const topRow = vertexOf[lobe.rings.length - 1]!;
+  for (let side = 0; side < sides; side += 1) {
+    acc.indices.push(topRow[side]!, topRow[side + 1]!, apexVertex);
+  }
+}
+
+/**
+ * The solid body of a bush: a clump of three low mounds on the dense-crown
+ * layer, drawn on the opaque crown path. 60 triangles.
+ *
+ * A bush used to be leaf cards alone, which is a dozen quads with sky between
+ * them: see-through at arm's length and nothing at all past a couple of
+ * hundred metres. The body is what a bush is at range, and up close it is the
+ * dark interior the cards stand out from, the way a tree's core is.
+ *
+ * Three mounds, not one. A single dome, however lumpy, read as a mossy
+ * boulder from every side: one convex outline. A tall mound with two lower
+ * ones against it has a different outline from every direction, and the
+ * hollows between them are where a bush is dark.
+ *
+ * One body serves every species. Its colour is the instance tint, and inside
+ * the cards' reach the cards carry the species.
+ *
+ * Each skirt sits below the ground so no rim shows on a slope, and each
+ * mound's rings are twisted against each other so no edge runs straight from
+ * skirt to apex. Unit height; the radial contract is its own bound.
+ */
+export function buildShrubBodyPrototype(seed: number): PrototypeGeometry {
+  const rng = createRandom(`shrub-body/${seed}`);
+  const first = rng() * TWO_PI;
+  // The second mound stands anywhere but straight across from the first, so
+  // the three never line up into one ridge.
+  const second = first + (1.9 + rng() * 0.9) * (rng() < 0.5 ? 1 : -1);
+  const lobes: readonly ShrubBodyLobe[] = [
+    {
+      offset: 0.14,
+      azimuth: first + Math.PI,
+      radius: 0.7,
+      height: 1,
+      sides: 6,
+      rings: [
+        { y: -0.16, radius: 0.86, occlusion: 0.4 },
+        { y: 0.36, radius: 1, occlusion: 0.66 },
+        { y: 0.76, radius: 0.6, occlusion: 0.86 },
+      ],
+      apexOcclusion: 0.92,
+    },
+    {
+      offset: 0.52,
+      azimuth: first,
+      radius: 0.54,
+      height: 0.7,
+      sides: 5,
+      rings: [
+        { y: -0.22, radius: 0.9, occlusion: 0.36 },
+        { y: 0.5, radius: 0.92, occlusion: 0.7 },
+      ],
+      apexOcclusion: 0.86,
+    },
+    {
+      offset: 0.5,
+      azimuth: second,
+      radius: 0.48,
+      height: 0.54,
+      sides: 5,
+      rings: [
+        { y: -0.28, radius: 0.9, occlusion: 0.34 },
+        { y: 0.5, radius: 0.9, occlusion: 0.66 },
+      ],
+      apexOcclusion: 0.8,
+    },
+  ];
+
+  const acc = createAccumulator();
+  for (const lobe of lobes) emitShrubBodyLobe(acc, rng, lobe);
+  return finalizeGeometry(acc);
+}
+
+/**
+ * The bush body's stand-in for when the bush is a few pixels tall: one mound,
+ * four sides, 12 triangles. Its outline no longer matters there, only that
+ * something of the bush's size and colour stands on the ground; the instance
+ * yaw and the vertex stage's wobble keep a hillside of them from repeating.
+ */
+export function buildShrubBodyFarPrototype(seed: number): PrototypeGeometry {
+  const rng = createRandom(`shrub-body-far/${seed}`);
+  const acc = createAccumulator();
+  emitShrubBodyLobe(acc, rng, {
+    offset: 0,
+    azimuth: 0,
+    radius: 0.9,
+    height: 1,
+    sides: 4,
+    rings: [
+      { y: -0.16, radius: 0.92, occlusion: 0.42 },
+      // A high shoulder: with four sides and a low one the outline is a
+      // pyramid, and a hillside of them reads as young conifers.
+      { y: 0.6, radius: 0.96, occlusion: 0.74 },
+    ],
+    apexOcclusion: 0.9,
+  });
   return finalizeGeometry(acc);
 }
 

@@ -915,6 +915,11 @@ describe("WebGPU world-detail spatial presentation", () => {
     // These are the generator's real authored production counts, not a tiny
     // synthetic placement fixture. Pinning them prevents a future density
     // increase from silently invalidating the scheduler proof.
+    // 2026-11-12: shrubs 6,752 -> 7,066. Open-ground bushes now gather into
+    // thickets (`shrubThicketAt`), and this cell lies in scrub country where
+    // the thickets cover most of the ground between its stands. (7,817 with
+    // one stem to a subcell; a thicket's stems now stand unevenly, so more of
+    // them fall inside a stronger neighbour's spacing and yield.)
     expect({
       trees: sourceCell.trees.length,
       shrubs: sourceCell.shrubs.length,
@@ -923,7 +928,7 @@ describe("WebGPU world-detail spatial presentation", () => {
       groundCoverNodes: sourceCell.groundCover.length,
     }).toEqual({
       trees: 4_196,
-      shrubs: 6_752,
+      shrubs: 7_066,
       rocks: 8,
       clutter: 26,
       groundCoverNodes: 64,
