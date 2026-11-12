@@ -447,7 +447,16 @@ describe("6-6 ecology channels in generation", () => {
     // `a46e54b1` there and is `a46e54b1` here. The sentinel branches reproduce
     // the 2-15 expressions exactly, so the shipping analytic build does not
     // move a pixel for this item.
-    expect(ecologyRun({}).digest).toBe("a46e54b1");
+    //
+    // RE-PINNED `a46e54b1` -> `83d7f902` on 2026-11-12 for open ground's own
+    // trees (`openGroundTreeShare`), which is a change to the density field
+    // itself and not to 6-6's channels. Measured part by part against the
+    // tree before it: these nine cells go from 22 trees to 202 (0.9/ha), and
+    // the shade those trees add moves the coverage of 147 of the 576
+    // ground-cover nodes by at most 0.0076, with no node changing archetype.
+    // The clutter layer is identical in eight cells and gains one piece in
+    // the ninth.
+    expect(ecologyRun({}).digest).toBe("83d7f902");
     expect(ecologyRun({}).digest).toBe(ecologyRun({}).digest);
   });
 

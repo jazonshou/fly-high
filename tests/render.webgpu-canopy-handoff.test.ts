@@ -874,7 +874,13 @@ describe("6-8 moves analytic pixels BY DESIGN, and by a measured amount", () => 
     // for the same cause: 377 probes stand on moved terrain, 347 weight keys
     // change at or below 420 m (all on moved terrain), the dominant material
     // changes at 34 probes, all Rock -> Grass.
-    expect(live.digest).toBe("6b625191");
+    // RE-PINNED `6b625191` -> `3a96b6de` on 2026-11-12 for open ground's own
+    // trees (`openGroundTreeShare`). The terrain is unmoved. Tree density
+    // rises at 872 of the 4,096 probes, the weight key changes at exactly
+    // those 872, and the dominant material changes at none: mean crown
+    // cover goes from 0.0793 to 0.0815. The channel-absent digest above does
+    // not move, because that path never reads the density field.
+    expect(live.digest).toBe("3a96b6de");
     let changed = 0;
     for (let index = 0; index < dark.reference.length; index += 1) {
       if (dark.reference[index] !== live.reference[index]) changed += 1;

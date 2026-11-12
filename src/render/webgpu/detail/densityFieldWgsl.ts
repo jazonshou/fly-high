@@ -37,6 +37,17 @@ import {
   DRY_PROVINCE_PARKLAND_FULL,
   DRY_PROVINCE_PARKLAND_ONSET,
   DETAIL_FAR_CULL_FADE_METERS,
+  OPEN_GROUND_COPSE_FULL,
+  OPEN_GROUND_COPSE_ONSET,
+  OPEN_GROUND_COPSE_SHARE,
+  OPEN_GROUND_GROVE_FULL,
+  OPEN_GROUND_GROVE_ONSET,
+  OPEN_GROUND_GROVE_SHARE,
+  OPEN_GROUND_LONE_TREE_SHARE,
+  OPEN_GROUND_MOISTURE_FULL,
+  OPEN_GROUND_MOISTURE_ONSET,
+  OPEN_GROUND_WOODED_FULL,
+  OPEN_GROUND_WOODED_ONSET,
   PARKLAND_CLOSED_FOREST_KEEP,
   PARKLAND_OPEN_GROWN_EDGE,
   PARKLAND_SHRUB_SHARE,
@@ -363,12 +374,29 @@ fn vegetationShearedZ(localX: f32, localZ: f32, shear: f32) -> f32 {
   return localZ - localX * shear;
 }
 
-/** Multi-kilometre canopy gate: 0 is meadow, 1 is closed-forest province. */
-fn vegetationForestFraction(base: u32, localX: f32, localZ: f32, moisture: f32) -> f32 {
+/** densityField.ts's forestProvinceSignal: the province noise plus the climate's pull. */
+fn vegetationForestSignal(base: u32, localX: f32, localZ: f32, moisture: f32) -> f32 {
   let px = vegetationShearedX(localX, localZ, 0.21);
   let pz = vegetationShearedZ(localX, localZ, 0.21);
   let province = kFbm(base + ${vegetationLatticeBase("province")}u, 3u, px, pz);
-  return kSmoothstep(-0.22, 0.2, province + (moisture - 0.55) * 0.7);
+  return province + (moisture - 0.55) * 0.7;
+}
+
+/** Multi-kilometre canopy gate: 0 is meadow, 1 is closed-forest province. */
+fn vegetationForestFraction(base: u32, localX: f32, localZ: f32, moisture: f32) -> f32 {
+  return kSmoothstep(-0.22, 0.2, vegetationForestSignal(base, localX, localZ, moisture));
+}
+
+/** densityField.ts's openGroundTreeShare: lone trees, copses and groves, as a share of the tree base. */
+fn vegetationOpenGroundTreeShare(provinceSignal: f32, gladeRaw: f32) -> f32 {
+  let wooded = kSmoothstep(
+    ${wgslMeters(OPEN_GROUND_WOODED_ONSET)}, ${wgslMeters(OPEN_GROUND_WOODED_FULL)}, provinceSignal);
+  return wooded * (
+    ${wgslMeters(OPEN_GROUND_LONE_TREE_SHARE)}
+    + ${wgslMeters(OPEN_GROUND_COPSE_SHARE)} * kSmoothstep(
+      ${wgslMeters(OPEN_GROUND_COPSE_ONSET)}, ${wgslMeters(OPEN_GROUND_COPSE_FULL)}, gladeRaw)
+    + ${wgslMeters(OPEN_GROUND_GROVE_SHARE)} * kSmoothstep(
+      ${wgslMeters(OPEN_GROUND_GROVE_ONSET)}, ${wgslMeters(OPEN_GROUND_GROVE_FULL)}, gladeRaw));
 }
 
 fn vegetationDensity(
@@ -394,7 +422,8 @@ fn vegetationDensity(
     return result;
   }
 
-  let province = vegetationForestFraction(base, localX, localZ, drivers.moisture);
+  let provinceSignal = vegetationForestSignal(base, localX, localZ, drivers.moisture);
+  let province = kSmoothstep(-0.22, 0.2, provinceSignal);
   let gladeRaw = kFbm(base + ${vegetationLatticeBase("glade")}u, 2u, localX, localZ);
   let glade = 0.02 + 0.98 * kSmoothstep(-0.24, 0.02, gladeRaw);
   let successionRaw = kFbm(base + ${vegetationLatticeBase("succession")}u, 2u, localX, localZ);
@@ -463,9 +492,21 @@ fn vegetationDensity(
     * openStand * pinyonSlope * pinyonHeat * (0.3 + 0.7 * glade);
   let closedForestKeep = 1.0
     - (arid + VEG_PARKLAND_CLOSED_FOREST_CUT * parkland) * (1.0 - riparianBand);
+  let closedStems = VEG_BASE_TREE_STEMS * moistureFactor * habitat * closedForestKeep;
+  // Open ground's own trees, as the TS: the larger of the two stands, and the
+  // share of it that is open-grown.
+  let openGroundStems = VEG_BASE_TREE_STEMS
+    * vegetationOpenGroundTreeShare(provinceSignal, gladeRaw)
+    * kSmoothstep(
+      ${wgslMeters(OPEN_GROUND_MOISTURE_ONSET)}, ${wgslMeters(OPEN_GROUND_MOISTURE_FULL)},
+      drivers.moisture)
+    * openStand * slopeFactor * lapse * (1.0 - arid - parkland);
+  var openGrown = 0.0;
+  if (openGroundStems > closedStems) {
+    openGrown = (openGroundStems - closedStems) / openGroundStems;
+  }
   result.treeStemsPerSquareMeter = kSaturate(
-    VEG_BASE_TREE_STEMS * moistureFactor * habitat * closedForestKeep
-    + parklandStems + pinyonStems);
+    max(closedStems, openGroundStems) + parklandStems + pinyonStems);
 
   let shrubMoisture = kSmoothstep(0.2, 0.5, drivers.moisture);
   let shrubSlope = 1.0 - kSmoothstep(0.09, 0.26, drivers.slope);
@@ -490,7 +531,9 @@ fn vegetationDensity(
       * shrubSlope * shrubTreeline * openStand * (0.4 + 0.6 * glade),
   );
   // A lone tree is open-grown: the edge-stem form. max with 0 is the shipped edge.
-  let standEdge = max(forestEdge, parkland * VEG_PARKLAND_OPEN_GROWN_EDGE);
+  let standEdge = max(
+    forestEdge,
+    max(parkland, openGrown) * VEG_PARKLAND_OPEN_GROWN_EDGE);
   result.heightFactor = heightFactor * (1.0 - standEdge * 0.34);
   result.forestFraction = province;
   result.forestEdge = standEdge;

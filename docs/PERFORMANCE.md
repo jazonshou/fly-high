@@ -4100,6 +4100,101 @@ entry staged in `MEASURED_DRAW_DELTAS`. The visual gates still fail on every
 shot with trees near the camera until the baselines are promoted from the
 macOS capture, after Jason approves the look.
 
+## Open ground's own trees: lone trees, copses and groves (2026-11-12)
+
+Jason, 2026-11-12: "we either have terrain that's filled with trees or we
+have terrain that's fully based on the ground's skin". Measured, that is the
+density field: within 20 km of the start the closed-forest term read zero on
+43% of the default world's land (55% of the capture world's) and the
+rendered cap or more on 25% (18%), with little between. A tree stood in a
+forest or did not exist.
+
+**What changed.** `densityField.ts` and its shader twin
+`densityFieldWgsl.ts` gain a second, far thinner stand outside the closed
+forest, as the dry provinces' parkland is. As shares of the 800/ha tree
+base: lone trees (0.003, 2.4/ha, one every 65 m or so), copses (0.022 more,
+where the glade field runs high) and groves (0.045 more in a copse's core):
+56/ha at most, under the 60/ha the capture's forest shots search for. It
+needs far less water than a closed stand (moisture 0.16 to 0.36 against 0.3
+up) and takes the larger of itself and the closed forest, so nothing changes
+inside a stand. Its trees grow open: the stand's edge factor gives them the
+shorter, wider crown an edge stem has.
+
+It rides two channels the forest already samples, so it adds no noise to the
+field or to the bake:
+
+- the forest province's signal (`forestProvinceSignal`), below the forest's
+  own threshold of -0.22: full at -0.2, gone by -0.45. A forest is fringed
+  by a kilometre or two of parkland that thins into open steppe.
+- the glade field, raw: copses stand where a forest's dense stands would.
+
+**How much land it changes** (authored stems a hectare, share of land within
+20 km of the start, sampled every 125 m with the world's source seed):
+
+| stems / ha | default world before | after | capture world before | after |
+| --- | --- | --- | --- | --- |
+| none | 42.9% | 13.0% | 55.3% | 25.9% |
+| up to 1 | 7.8% | 8.1% | 7.1% | 10.2% |
+| 1 to 5 | 6.4% | 27.7% | 5.4% | 24.1% |
+| 5 to 20 | 11.4% | 16.5% | 8.6% | 13.5% |
+| 20 to 55 | 4.7% | 7.2% | 3.9% | 6.0% |
+| 55 to 78 | 1.9% | 2.6% | 1.5% | 2.1% |
+| over 78 | 24.9% | 24.9% | 18.1% | 18.1% |
+
+Mean stems rise 2.3% and 2.7%. No sample lost a tree. Over six seeds, 14% to
+29% of the open land that could grow these trees grows none at the -0.45
+onset; -0.35 would keep 28% to 43% of it bare.
+
+**Cost.**
+
+- Records: none on the budget rows. `detailInstanceBudget` is sized for
+  closed forest at the near cap in every cell, which a 56/ha grove cannot
+  exceed.
+- Draws: a presentation chunk that held no tree had no tree batches, and
+  now it carries its cohort's. On Medium in SwiftShader, on the default
+  world, an open plain 3.5 km from the start draws 112 → 133 calls from
+  120 m up (vegetation batches 15 → 36), 115 → 136 at eye level and
+  103 → 118 from 400 m; greener hills 11 km out draw 88 → 101, 91 → 104 and
+  84 → 97. That is what a frame at a forest's edge already draws, inside the
+  vegetation draw row, which is modelled on every chunk carrying every
+  prototype.
+- Frame time: a cloud A/B against the tree ground shadow commit `1a7f1d3`
+  (Medium / balanced, SwiftShader, 4 CPUs, 16 rounds, the gate is 5%) on two
+  capture shots over country the term changes:
+
+| shot | GPU time | CPU time (guard) | draw calls | vegetation batches | pixels |
+| --- | --- | --- | --- | --- | --- |
+| `cruise-horizon` | same -0.9% (-3.0% to +1.3%) | inconclusive +7.7% (-4.2% to +25.0%) | 202 → 202 | unchanged | 4.8% differ |
+| `hamlet-300ft` | same +0.3% (-2.3% to +2.5%) | same -4.5% (-11.1% to +2.4%) | 233 → 246 | 17 → 30 | 23.7% differ |
+
+  The hamlet stands on an open plain that gains trees all round it (visible
+  instances 35.5 k → 47.2 k). Frame time on a real GPU is not measured.
+
+**What does not move.** All 51 capture shots and the four car sites resolve
+to the same placements (`resolveShotPlacement`, `resolveCarShotSite`,
+compared before and after): the forest searches ask for 60/ha, which the new
+term cannot reach. No probe of the land-cover bake changes its dominant
+material (872 of 4,096 move a weight; mean crown cover 0.0793 → 0.0815).
+Trees keep off runways, roads and buildings, because every stem passes the
+same clearances as before.
+
+**Tests.** `tests/render.webgpu-forest-pattern.test.ts` gains the law (seven
+tests: the share, the 60/ha ceiling, the range between no tree and forest,
+whole 2 km stretches left bare, the open-grown form, the dry provinces left
+to their own stands, the shader twin). The ecology digest and the live splat
+digest are re-pinned with what moved. The GPU bake parity tests pass
+unchanged.
+
+**Known limits.**
+
+- A lone tree is a forest tree's model with the edge form, not a
+  spreading open-grown tree of its own.
+- Species come from the province's cohort, so a plain beside a conifer
+  forest grows the same conifers.
+- Shots over open country gain draws and change their pictures, so their
+  ceilings and baselines move with this change, as the tree ground shadow's
+  did.
+
 ## In-app benchmark (?bench=1)
 
 `?bench=1` turns the game into a benchmark anyone can run in their own
