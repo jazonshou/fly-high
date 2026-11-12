@@ -4083,20 +4083,22 @@ arms show how far that runner moves on its own.
 - The fall of contrast with range uses a constant haze (4e-5 per metre), not
   the atmosphere's.
 
-**Draw ceilings and baselines.** Every capture shot with trees inside the
-range gains one draw per chunk the range touches, and the per-shot ceilings
-are exact measured counts, so the capture's draw gate and the A/B's ceiling
-check fail until they are re-pinned from three macOS captures that agree,
-under a `DRAW_CALL_RAISES` entry of its own. The first two captures (gpu-tests
-run 43204262725 at `1a7f1d3`, attempts 1 and 2) agree on every shot's count
-and read 21 of the 32 shots that carry a ceiling above
-it: sixteen by 1, four by 2 (`ground-2m-lowsun`, `runway-on-approach`,
-`grove-meadow-2m`, `horizon-shadow-far-annulus`) and `canopy-backlit-lowsun`
-by 3. The other eleven have no tree inside the range and did not move. Those
-deltas are staged in `MEASURED_DRAW_DELTAS` as `tree-ground-shadows`. The
-visual gates fail on every shot with trees near the camera until the
-baselines are promoted from the macOS capture, after Jason approves the
-look. Both are pending.
+**Draw ceilings re-pinned; baselines pending.** Every capture shot with trees
+inside the range gains one draw per chunk the range touches, and the per-shot
+ceilings are exact measured counts, so they are re-pinned from three macOS
+captures: gpu-tests run 43204262725 at `1a7f1d3` (attempts 1 and 2) and run
+43218894856 at `8ded9e1`. The three agree on all 32 shots that carry a
+ceiling and read 21 of them above the old one: sixteen by 1, four by 2
+(`ground-2m-lowsun`, `runway-on-approach`, `grove-meadow-2m`,
+`horizon-shadow-far-annulus`) and `canopy-backlit-lowsun` by 3. The other
+eleven have no tree inside the range and did not move. Of the 19 shots with
+no ceiling, one differs between captures: `car-clearing-chase` read 151, 151
+and 149 with the same 27 vegetation batches. The thirteen
+re-pinned shots that sit in the ratchet's snapshot are declared as the
+per-shot `DRAW_CALL_RAISES` entry `tree-ground-shadows`, which replaces the
+entry staged in `MEASURED_DRAW_DELTAS`. The visual gates still fail on every
+shot with trees near the camera until the baselines are promoted from the
+macOS capture, after Jason approves the look.
 
 ## In-app benchmark (?bench=1)
 

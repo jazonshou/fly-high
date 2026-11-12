@@ -656,41 +656,48 @@ export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Ob
   // shells and their shadow casters are in range it is four. Fourteen shots
   // sat exactly at their ceilings after #37, so these moved. See
   // DRAW_CALL_RAISES, "generated-buildings", for the seven in the snapshot.
+  // TWENTY-ONE RE-PINNED 2026-11-12 for PR #47's tree ground shadows, from three
+  // full macOS captures that agree on all 32 ceilinged shots (gpu-tests run
+  // 43204262725 at 1a7f1d3, attempts 1 and 2, and run 43218894856 at 8ded9e1). The
+  // decal is one draw per presentation chunk that holds shadow records: +1 on
+  // sixteen shots, +2 on four and +3 on canopy-backlit-lowsun. The eleven with
+  // no tree inside the decal's range did not move. See DRAW_CALL_RAISES,
+  // "tree-ground-shadows", for the thirteen in the snapshot.
   // ALL 32 RE-PINNED +1 2026-10-12 for PR #20's final sharpen, from three full
   // macOS captures that agree on every shot (see DRAW_CALL_RAISES,
   // "final-sharpen"). The twelve shots outside PREVIOUS_DRAW_CALL_CEILINGS
   // moved by the same +1; they sit outside the raise mechanism, as above.
-  "approach-500ft":              [248, 248, 248],
+  "approach-500ft":              [249, 249, 249],
   "slant-10km":                  [210, 210, 210], // 2026-09-14 tree-lod-residency-lead: 222 -> 223, identical across six runs
   "high-10000ft-down":           [73, 73, 73],
-  "reference-viewport":          [249, 249, 249],
+  "reference-viewport":          [250, 250, 250],
   "cruise-horizon":              [202, 202, 202],
-  "winter-noon":                 [248, 248, 248],
-  "night":                       [250, 250, 250],
-  "night-moonlit":               [250, 250, 250],
-  "dusk-mesopic":                [249, 249, 249],
-  "motion-banked-turn":          [256, 256, 256],
-  "page-thrash-turn":            [258, 258, 258],
+  "winter-noon":                 [249, 249, 249],
+  "night":                       [251, 251, 251],
+  "night-moonlit":               [251, 251, 251],
+  "dusk-mesopic":                [250, 250, 250],
+  "motion-banked-turn":          [257, 257, 257],
+  "page-thrash-turn":            [259, 259, 259],
   "cdlod-transition":            [196, 196, 196], // 2026-09-14 tree-lod-residency-lead: 208 -> 209, identical across four runs
   "cruise-sun-30":               [227, 227, 227],
-  "forest-500ft-sunbehind":      [250, 250, 250],
+  "forest-500ft-sunbehind":      [251, 251, 251],
   "coast-10km-lowsun":           [220, 220, 220],
-  "ground-2m-lowsun":            [123, 123, 123],
-  "canopy-1200ft":               [115, 115, 115],
-  "runway-on-approach":          [257, 257, 257],
+  "ground-2m-lowsun":            [125, 125, 125],
+  "canopy-1200ft":               [116, 116, 116],
+  "runway-on-approach":          [259, 259, 259],
   "water-25ft":                  [225, 225, 225],
-  "grove-forest-2m":             [122, 122, 122],
-  "grove-meadow-2m":             [139, 139, 139],
-  "hills-dusk-glint":            [246, 246, 246],
+  "grove-forest-2m":             [123, 123, 123],
+  "grove-meadow-2m":             [141, 141, 141],
+  "hills-dusk-glint":            [247, 247, 247],
   "mountain-close":              [231, 231, 231],
-  "forest-line-highsun":         [246, 246, 246],
-  "cliff-60m":                   [238, 238, 238],
+  "forest-line-highsun":         [247, 247, 247],
+  "cliff-60m":                   [239, 239, 239],
   "water-3m":                    [91, 91, 91],
-  "veg-seam-1600ft-oblique":     [110, 110, 110],
-  "veg-seam-near-500ft":         [118, 118, 118],
+  "veg-seam-1600ft-oblique":     [111, 111, 111],
+  "veg-seam-near-500ft":         [119, 119, 119],
   "terrain-material-1600ft-down":[88, 88, 88],
-  "horizon-shadow-far-annulus":  [96, 96, 96],
-  "canopy-backlit-lowsun":       [103, 103, 103],
+  "horizon-shadow-far-annulus":  [98, 98, 98],
+  "canopy-backlit-lowsun":       [106, 106, 106],
   // W-11, 2026-09-19. FIVE identical readings rather than three, and they span
   // both arms of the W-11 A/B -- two on the branch, two on House-Keeping with
   // src/render/webgpu/water reverted, and the full candidate. A count that does
@@ -870,6 +877,41 @@ export const DRAW_CALL_RAISES: readonly DrawCallRaise[] = Object.freeze([
       "runway-on-approach": 1,
       "hills-dusk-glint": 1,
       "forest-line-highsun": 1,
+    }),
+  }),
+  Object.freeze({
+    kind: "per-shot",
+    feature: "tree-ground-shadows",
+    commit: "1a7f1d3",
+    reason:
+      "PR #47's tree ground shadow (`TreeGroundShadowMaterial`) is one batch, so one draw, "
+      + "per 4,096 m presentation chunk that holds a shadow record, whatever the number of "
+      + "trees. Predicted from the construction (`estimateVegetationDrawCalls` adds 2.4 at "
+      + "tier 1), then measured by three full macOS captures that agree on all 32 ceilinged "
+      + "shots (gpu-tests run 43204262725 at 1a7f1d3, attempts 1 and 2, and run 43218894856 at "
+      + "8ded9e1) against the ceilings, which were main's exact counts at b20d758. The cloud "
+      + "A/B and the macOS runner's A/B of the same pair read the same three deltas with "
+      + "the vegetation batch count rising in step. Promoted out of MEASURED_DRAW_DELTAS, "
+      + "where it was staged at 8ded9e1.",
+    whyNonUniform:
+      "What varies is how many presentation chunks with trees in them the decal's range "
+      + "(1,100 m at tier 1) reaches from the shot's camera: one on twelve of these, two on "
+      + "runway-on-approach. Shots with no tree inside the range (open water, high altitude, "
+      + "bare mountain) did not move and are not named.",
+    deltas: Object.freeze({
+      "approach-500ft": 1,
+      "reference-viewport": 1,
+      "winter-noon": 1,
+      "night": 1,
+      "night-moonlit": 1,
+      "dusk-mesopic": 1,
+      "motion-banked-turn": 1,
+      "page-thrash-turn": 1,
+      "forest-500ft-sunbehind": 1,
+      "hills-dusk-glint": 1,
+      "forest-line-highsun": 1,
+      "cliff-60m": 1,
+      "runway-on-approach": 2,
     }),
   }),
 ]);
@@ -1078,40 +1120,6 @@ export const MEASURED_DRAW_DELTAS: readonly MeasuredDrawDelta[] = Object.freeze(
       + "signage 2. PREDICTED from construction before measuring, then measured "
       + "uniform on 34 of 34. Its uniformity is what eliminated furniture as the "
       + "cause of the +24/+12 split.",
-  }),
-  Object.freeze({
-    owner: "terrain realism / tree ground shadows (PR #47)",
-    feature: "tree-ground-shadows",
-    baseRef: "b20d758", headRef: "1a7f1d3",
-    shotsMeasured: 32,
-    delta: Object.freeze({
-      // +1: the decal's range (1,100 m at tier 1) reaches one presentation chunk that holds shadows.
-      "approach-500ft": 1, "reference-viewport": 1, "winter-noon": 1, "night": 1,
-      "night-moonlit": 1, "dusk-mesopic": 1, "motion-banked-turn": 1, "page-thrash-turn": 1,
-      "forest-500ft-sunbehind": 1, "canopy-1200ft": 1, "grove-forest-2m": 1,
-      "hills-dusk-glint": 1, "forest-line-highsun": 1, "cliff-60m": 1,
-      "veg-seam-1600ft-oblique": 1, "veg-seam-near-500ft": 1,
-      // +2 and +3: it reaches two and three.
-      "ground-2m-lowsun": 2, "runway-on-approach": 2, "grove-meadow-2m": 2,
-      "horizon-shadow-far-annulus": 2,
-      "canopy-backlit-lowsun": 3,
-    }),
-    note:
-      "The tree ground shadow (`TreeGroundShadowMaterial`) is one batch, so one draw, per "
-      + "4,096 m presentation chunk that holds a shadow record: PREDICTED from the "
-      + "construction, +1.5 to +3.9 by `estimateVegetationDrawCalls`, before measuring. "
-      + "Measured against the committed ceilings, which are main's exact counts at "
-      + "b20d758, on all 32 shots that carry one, by the two macOS captures of gpu-tests "
-      + "run 43204262725 at 1a7f1d3 (attempts 1 and 2, which agree on the draw and batch "
-      + "counts of all 51 shots): 21 moved by the amounts above and 11 did not move "
-      + "(slant-10km, high-10000ft-down, cruise-horizon, cdlod-transition, cruise-sun-30, "
-      + "coast-10km-lowsun, water-25ft, mountain-close, water-3m, "
-      + "terrain-material-1600ft-down, water-400ft-glitter: no tree inside the range). "
-      + "The cloud A/B and the macOS runner's A/B of the same pair agree on the three they "
-      + "share (approach-500ft 248 to 249, forest-500ft-sunbehind 250 to 251, "
-      + "ground-2m-lowsun 123 to 125), with the vegetation batch count rising by the same "
-      + "1, 1 and 2. TWO captures so far: the ceilings move, and this becomes a per-shot "
-      + "DRAW_CALL_RAISES entry, when three agree.",
   }),
 ]);
 
