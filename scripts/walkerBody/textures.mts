@@ -20,20 +20,27 @@ import { BIND_POSITIONS, SIDES } from "../../src/render/webgpu/person/skeleton";
 import type { ExportedMesh, PartKind } from "./parts.mts";
 import type { OcclusionTracer } from "./ao.mts";
 import { cellular, fbm, noise3 } from "./noise.mts";
-import { HAIR_SHELL_FROM, OUTFIT } from "./clothes.mts";
+import { OUTFIT } from "./clothes.mts";
 import { BOOT } from "./boots.mts";
+import { LOOK } from "./design.mts";
+import { HAIR_SHELL_FROM, locks, type Hair } from "./hair.mts";
+import { IRIS_RADIUS, type LidOpening } from "./landmarks.mts";
 
 type V3 = [number, number, number];
 
 export interface Landmarks {
-  /** Per eye: its middle, half-sizes and the way it looks. */
-  readonly eyes: readonly { readonly center: V3; readonly axes: V3; readonly forward: V3 }[];
+  /**
+   * Per eye: its middle, half-sizes and the way it looks; where the iris's
+   * middle sits on its front against the eyeball's own (up, and across toward
+   * +Z), and the opening between its lids.
+   */
+  readonly eyes: readonly { readonly center: V3; readonly axes: V3; readonly forward: V3; readonly gaze: readonly [number, number]; readonly opening: LidOpening }[];
   /** The middle of the lips' parting line. */
   readonly mouth: V3;
   readonly mouthHalfWidth: number;
   readonly noseTip: V3;
-  /** How much hair a point on the head carries, 0 to 1. */
-  readonly hair: (q: V3) => number;
+  /** Where the hair grows, how long, which way it is combed and how grey. */
+  readonly hair: Hair;
   /** Per finger and thumb, its tip and the back of the hand's direction there. */
   readonly fingertips: readonly { readonly tip: V3; readonly dorsal: V3 }[];
   /** Per side, the direction the palm faces. */
@@ -62,6 +69,7 @@ const mix = (a: number, b: number, t: number) => a + (b - a) * t;
 const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 const gauss = (d: number, sigma: number) => Math.exp(-(d * d) / (2 * sigma * sigma));
 const srgb = (r: number, g: number, b: number): V3 => [r / 255, g / 255, b / 255];
+const rgb = (c: readonly number[]): V3 => [c[0]! / 255, c[1]! / 255, c[2]! / 255];
 /** Fabric folds: ridged noise, sharp crests between soft hollows, centred on zero. */
 const fold = (a: number, b: number, seed: number) => {
   const r = 1 - Math.abs(noise3(a, b, seed));
@@ -284,9 +292,10 @@ export function bakeTextures(mesh: ExportedMesh, kinds: readonly PartKind[], tra
     const w1 = baryB[i]!;
     const w2 = 1 - w0 - w1;
     const [a, b, c] = [I[t * 3]!, I[t * 3 + 1]!, I[t * 3 + 2]!];
-    // Never quite black: light bounces into the deepest creases too.
-    const ao = 0.15 + 0.85 * occlusionAt(UV[a * 2]! * w0 + UV[b * 2]! * w1 + UV[c * 2]! * w2, UV[a * 2 + 1]! * w0 + UV[b * 2 + 1]! * w1 + UV[c * 2 + 1]! * w2);
     const kind = kinds[trianglePart[t]!]!;
+    // Never quite black: light bounces into the deepest creases too.
+    const traced = 0.15 + 0.85 * occlusionAt(UV[a * 2]! * w0 + UV[b * 2]! * w1 + UV[c * 2]! * w2, UV[a * 2 + 1]! * w0 + UV[b * 2 + 1]! * w1 + UV[c * 2 + 1]! * w2);
+    const ao = mix(traced, 1, painter.occlusionLift(kind, p));
     const ts = texelSize[t]!;
     painter.shade(kind, p, n, ts, shade);
 
@@ -433,55 +442,96 @@ class Painter {
     return { side, eye, dz: Math.abs(p[2]), dy: p[1] - m.mouth[1] };
   }
 
-  /** The stubble's cover: the moustache, the chin and the jaw, the cheeks below the beard line, the throat. */
-  private beard(p: V3, n: V3): number {
-    const m = this.marks;
-    if (p[1] < m.mouth[1] - 0.1 || p[1] > m.mouth[1] + 0.06 || p[0] < 0.0) return 0;
-    const dz = Math.abs(p[2]);
-    // The upper edge: under the nose over the moustache, down to the mouth's corners, then up the cheek line to the sideburn.
-    const top =
-      dz < 0.018
-        ? m.mouth[1] + 0.021
-        : dz < 0.032
-          ? m.mouth[1] + mix(0.021, 0.008, smoothstep(0.018, 0.032, dz))
-          : m.mouth[1] + 0.008 + (dz - 0.032) * 1.0;
-    // The lower edge: down the throat under the jaw.
-    const bottom = m.mouth[1] - 0.088;
-    const inBand = smoothstep(top + 0.003, top - 0.005, p[1]) * smoothstep(bottom - 0.012, bottom + 0.012, p[1]);
-    // Not on the lips, not round to the back of the neck.
-    const front = smoothstep(-0.01, 0.04, p[0] - 0.02 + (0.07 - dz) * 0.4);
-    return inBand * (1 - this.lips(p, n)) * front;
+  /** Hairs as noise drawn out along one coordinate, about -1 to 1: streaks `long` metres along `a` and `wide` across `b`, and finer ones among them. */
+  private streaks(a: number, b: number, long: number, wide: number, seed: number): number {
+    return 0.6 * noise3(a / long, b / wide, seed) + 0.4 * noise3(a / (long * 0.4), b / (wide * 0.42), seed + 5);
   }
 
-  /** How much of a point is lip (the vermilion), 0 to 1. */
+  /** The beard's hairs: down the face and forward under the chin, in a frame wrapped round the jaw (one frame, so they never curl). */
+  private beardHairs(p: V3): number {
+    const axis = this.marks.eyes[0]!.center[0] - 0.095;
+    return this.streaks(p[1] - 0.25 * p[0], Math.atan2(p[2], p[0] - axis) * 0.08, 0.007, 0.00055, 11);
+  }
+
+  /** The brows' hairs: leaning up and out along the brow. */
+  private browHairs(p: V3): number {
+    const out = Math.abs(p[2]);
+    return this.streaks(out * 0.9 + p[1] * 0.44, p[1] * 0.9 - out * 0.44, 0.005, 0.00045, 17);
+  }
+
+  /**
+   * The beard's cover, 0 to 1: a short full beard. The moustache from under
+   * the nose down round the mouth's corners, the chin and the jaw, up the
+   * cheeks to a line from the mouth's corner to the sideburn, down under the
+   * jaw to a neckline two fingers over the Adam's apple. Its edges thin out
+   * raggedly; a little barer either side of the tuft under the lower lip.
+   */
+  private beard(p: V3, n: V3): number {
+    const m = this.marks;
+    if (p[1] < m.mouth[1] - 0.1 || p[1] > m.mouth[1] + 0.075 || p[0] < 0.0) return 0;
+    const dz = Math.abs(p[2]);
+    const w = m.mouthHalfWidth;
+    const ragged = 0.0025 * noise3(p[2] / 0.006, p[1] / 0.006, p[0] / 0.006 + 3);
+    // The upper edge: under the nose over the moustache, out and down to past the mouth's corners, then up
+    // the cheek (low across its hollow, steeper at the ear) to the sideburn.
+    const underNose = m.noseTip[1] - 0.0135;
+    const cheekFrom = w + 0.01;
+    const out = dz - cheekFrom;
+    const top =
+      dz < 0.012
+        ? underNose
+        : dz < cheekFrom
+          ? mix(underNose, m.mouth[1] + 0.01, smoothstep(0.012, cheekFrom, dz))
+          : m.mouth[1] + 0.01 + out * 0.5 + 16 * out * out + 0.022 * smoothstep(0.02, 0.034, out);
+    // The lower edge: the neckline, rising from under the chin to the jaw's corner.
+    const bottom = m.mouth[1] - 0.074 + 0.03 * smoothstep(0.03, 0.075, dz);
+    const inBand = smoothstep(top + 0.007 + ragged, top - 0.013 + ragged, p[1]) * smoothstep(bottom - 0.009 + ragged, bottom + 0.012 + ragged, p[1]);
+    // Thickest on the chin, the lip and along the jaw; thinner up the cheeks.
+    const thick = mix(0.72, 1, Math.max(smoothstep(m.mouth[1] - 0.012, m.mouth[1] - 0.03, p[1]), smoothstep(cheekFrom + 0.006, cheekFrom - 0.006, dz)));
+    // Not on the ears, nor round to the back of the neck: it ends in front of the ear and at the jaw's corner.
+    const eyeX = m.eyes[0]!.center[0];
+    const front = smoothstep(eyeX - 0.078, eyeX - 0.056, p[0] + Math.max(0, m.mouth[1] - 0.03 - p[1]) * 0.5);
+    // Thinner in the two hollows under the lower lip's corners.
+    const hollow = gauss(Math.hypot(dz - w * 0.62, p[1] - (m.mouth[1] - 0.017)), 0.0055);
+    return inBand * thick * (1 - this.lips(p, n)) * front * (1 - 0.45 * hollow);
+  }
+
+  /** How much of a point is lip (the vermilion), 0 to 1, and which lip (+ upper, - lower). */
   private lips(p: V3, n: V3): number {
     const m = this.marks;
     if (n[0] < -0.2) return 0;
     const across = Math.abs(p[2] - m.mouth[2]) / m.mouthHalfWidth;
-    if (across > 1.2 || p[0] < m.mouth[0] - 0.014) return 0;
+    if (across > 1.2 || p[0] < m.mouth[0] - 0.016) return 0;
     const dy = p[1] - m.mouth[1];
     // The vermilion's height over and under the parting: the upper lip with its Cupid's bow, the fuller lower lip, both narrowing to the corners.
     const bow = 0.0009 * gauss(across - 0.3, 0.13) - 0.0007 * gauss(across, 0.1);
-    const upper = (0.0098 + bow) * Math.pow(Math.max(0, 1 - across * across), 0.55) + 0.0004;
-    const lower = 0.0105 * Math.pow(Math.max(0, 1 - Math.pow(across, 2.2)), 0.65) + 0.0004;
-    const edge = 0.0011;
+    const upper = (0.0078 + bow) * Math.pow(Math.max(0, 1 - across * across), 0.6) + 0.0004;
+    const lower = 0.0102 * Math.pow(Math.max(0, 1 - Math.pow(across, 2.2)), 0.65) + 0.0004;
+    const edge = 0.0016;
     const inUpper = smoothstep(upper + edge, upper - edge, dy) * smoothstep(-0.0015, 0, dy);
     const inLower = smoothstep(-lower - edge, -lower + edge, dy) * smoothstep(0.0015, 0, dy);
     return clamp01(Math.max(inUpper, inLower)) * smoothstep(1.2, 0.9, across);
   }
 
+  /**
+   * The brows: heavy and nearly level over the inner half, the peak two
+   * thirds of the way out, the tail thinner and falling. `along` runs 0 at
+   * the nose's end to 1 at the tail.
+   */
   private brow(p: V3): { amount: number; along: number } {
-    const { eye, dz } = this.face(p);
+    const { eye, dz, side } = this.face(p);
     // Across from the eye's middle outward (+) and in toward the nose (-).
     const out = dz - Math.abs(eye[2]);
-    if (out < -0.024 || out > 0.03 || p[0] < eye[0] - 0.02) return { amount: 0, along: 0 };
-    const t = clamp01((out + 0.02) / 0.047);
-    // Over the brow ridge, arching a little a third of the way out, the tail lower.
-    const centre = eye[1] + 0.021 + 0.005 * Math.sin(Math.PI * Math.min(1, t * 1.3)) - 0.005 * t * t;
-    const half = 0.0034 * (1 - 0.6 * t) + 0.0009;
+    if (out < -0.029 || out > 0.036 || p[0] < eye[0] - 0.025) return { amount: 0, along: 0 };
+    const t = clamp01((out + 0.026) / 0.059);
+    // His left brow sits a millimetre higher than his right.
+    const lift = side === 0 ? 0.001 : 0;
+    const centre = eye[1] + 0.0195 + lift + 0.0045 * Math.sin(Math.PI * Math.min(1, t * 1.1)) - 0.0025 * t * t;
+    const half = 0.0036 * (1 - 0.6 * t * t) * smoothstep(-0.02, 0.2, t) + 0.0007;
     const dy = Math.abs(p[1] - centre);
-    const fadeEnds = smoothstep(0, 0.16, t) * smoothstep(1.02, 0.8, t);
-    return { amount: smoothstep(half + 0.0018, half - 0.0006, dy) * fadeEnds, along: t };
+    const ragged = 0.0009 * noise3(p[2] / 0.0018, p[1] / 0.0018, 4);
+    const fadeEnds = smoothstep(0, 0.1, t) * smoothstep(1.02, 0.86, t);
+    return { amount: smoothstep(half + 0.0022 + ragged, half - 0.0014 + ragged, dy) * fadeEnds, along: t };
   }
 
   /** The lids' edges, where the lashes grow: skin resting on the eyeball. */
@@ -489,8 +539,24 @@ class Painter {
     const e = this.marks.eyes[p[2] < 0 ? 0 : 1]!;
     if (p[0] < e.center[0]) return 0;
     const rho = Math.hypot((p[0] - e.center[0]) / e.axes[0], (p[1] - e.center[1]) / e.axes[1], (p[2] - e.center[2]) / e.axes[2]);
-    const upper = p[1] > e.center[1] - 0.001 ? 1 : 0.35;
+    const upper = p[1] > e.center[1] - 0.001 ? 1 : 0.18;
     return smoothstep(1.2, 1.06, rho) * upper;
+  }
+
+  /**
+   * How much of the baked occlusion to lift at a point of the skin: the eyes'
+   * sockets are deep, and their whole occlusion multiplied in drew a dark
+   * ring round each eye.
+   */
+  occlusionLift(kind: PartKind, p: V3): number {
+    if ((kind !== "skin" && kind !== "eyes") || p[1] < 1.45) return 0;
+    const { eye, dz } = this.face(p);
+    const d = Math.hypot(p[1] - eye[1], dz - Math.abs(eye[2]));
+    const socket = (kind === "eyes" ? 0.75 : 0.65) * gauss(d, 0.021) * smoothstep(eye[0] - 0.03, eye[0], p[0]);
+    // And between the lips, which are closed: the crease's own occlusion painted a black, open mouth.
+    const m = this.marks;
+    const crease = 0.8 * gauss(p[1] - m.mouth[1], 0.004) * smoothstep(1.25, 0.9, dz / m.mouthHalfWidth) * smoothstep(m.mouth[0] - 0.03, m.mouth[0] - 0.012, p[0]);
+    return Math.max(socket, crease);
   }
 
   private nail(p: V3, n: V3): number {
@@ -506,66 +572,95 @@ class Painter {
 
   private skin(p: V3, n: V3, ts: number, out: Shade): void {
     const m = this.marks;
-    let c = srgb(196, 146, 118);
+    let c = rgb(LOOK.skin);
     // Tone that varies over the body, and a fine mottle.
     const tone = fbm(p[0], p[1], p[2], 0.05, 3, ts);
     const mottle = fbm(p[0] + 3, p[1], p[2], 0.004, 3, ts);
-    c = c.map((x, k) => x * (1 + 0.05 * tone + 0.025 * mottle - (k === 2 ? 0.01 * tone : 0))) as V3;
-    let rough = 0.55 + 0.05 * mottle;
+    c = c.map((x, k) => x * (1 + 0.05 * tone + 0.03 * mottle - (k === 2 ? 0.01 * tone : 0))) as V3;
+    let rough = 0.56 + 0.05 * mottle;
     const onHead = p[1] > 1.45;
     if (onHead) {
       const { eye, dz } = this.face(p);
-      // Redder: cheeks, the nose's tip, the ears.
-      const cheek = gauss(dist(p, [eye[0] - 0.005, eye[1] - 0.033, Math.sign(p[2]) * (Math.abs(eye[2]) + 0.014)]), 0.016);
-      const nose = gauss(dist(p, m.noseTip), 0.011);
+      const frontal = smoothstep(eye[0] - 0.09, eye[0] - 0.03, p[0]);
+      // A face has three bands of colour: the forehead yellower, the middle (cheeks, nose, ears) redder, the
+      // jaw cooler. And this one has been out in the sun: redder still over the cheekbones and down the nose.
+      const forehead = smoothstep(eye[1] + 0.022, eye[1] + 0.04, p[1]) * frontal;
+      c = [c[0] * (1 + 0.025 * forehead), c[1] * (1 + 0.012 * forehead), c[2] * (1 - 0.05 * forehead)];
+      const cheek = gauss(dist(p, [eye[0] - 0.008, eye[1] - 0.034, Math.sign(p[2]) * (Math.abs(eye[2]) + 0.016)]), 0.02);
+      const bridge = gauss(dz, 0.011) * smoothstep(m.noseTip[1] - 0.004, m.noseTip[1] + 0.012, p[1]) * smoothstep(eye[1] + 0.004, eye[1] - 0.012, p[1]) * smoothstep(eye[0] - 0.005, eye[0] + 0.012, p[0]);
+      const nose = gauss(dist(p, m.noseTip), 0.012);
       const ear = dz > 0.07 && p[0] < eye[0] - 0.06 ? smoothstep(0.07, 0.085, dz) : 0;
-      const red = 0.4 * cheek + 0.35 * nose + 0.35 * ear;
-      c = [mix(c[0], 0.77, red * 0.6), mix(c[1], 0.47, red * 0.6), mix(c[2], 0.42, red * 0.6)];
-      // A shade under the eyes and in the lids' creases.
-      const under = gauss(Math.hypot(p[1] - (eye[1] - 0.013), dz - Math.abs(eye[2])), 0.008) * smoothstep(eye[0] - 0.02, eye[0] + 0.01, p[0]);
-      const lid = gauss(Math.hypot(p[1] - (eye[1] + 0.011), dz - Math.abs(eye[2])), 0.009) * smoothstep(eye[0] - 0.02, eye[0] + 0.01, p[0]);
-      c = c.map((x, k) => x * (1 - 0.1 * under - 0.08 * lid + (k === 2 ? 0.03 * under : 0))) as V3;
+      const red = Math.min(1, 0.4 * cheek + 0.28 * bridge + 0.36 * nose + 0.4 * ear);
+      c = [mix(c[0], 0.76, red * 0.6), mix(c[1], 0.44, red * 0.6), mix(c[2], 0.38, red * 0.6)];
+      // Sun freckles over the nose and the cheekbones: few, small, faint.
+      const sunned = Math.max(cheek, bridge, 0.6 * forehead) * frontal;
+      if (sunned > 0.05 && ts < 0.0009) {
+        const spot = smoothstep(0.22, 0.1, cellular(p[0] / 0.0034, p[1] / 0.0034, p[2] / 0.0034)) * smoothstep(0.1, 0.5, noise3(p[0] / 0.012, p[1] / 0.012, p[2] / 0.012) + 0.25);
+        c = [c[0] * (1 - 0.1 * spot * sunned), c[1] * (1 - 0.16 * spot * sunned), c[2] * (1 - 0.2 * spot * sunned)];
+      }
+      // The lids: a soft shade in the crease over the eye, the faintest warmth under it (no grey rings).
+      const under = gauss(Math.hypot(p[1] - (eye[1] - 0.014), dz - Math.abs(eye[2])), 0.008) * smoothstep(eye[0] - 0.02, eye[0] + 0.01, p[0]);
+      const lid = gauss(Math.hypot((p[1] - (eye[1] + 0.012)) * 1.5, dz - Math.abs(eye[2])), 0.011) * smoothstep(eye[0] - 0.02, eye[0] + 0.01, p[0]);
+      c = [c[0] * (1 - 0.02 * under - 0.06 * lid), c[1] * (1 - 0.05 * under - 0.08 * lid), c[2] * (1 - 0.04 * under - 0.08 * lid)];
       // An oilier T-zone.
       const tzone = (smoothstep(0.03, 0.0, dz) * smoothstep(m.mouth[1] + 0.01, m.mouth[1] + 0.03, p[1])) * smoothstep(0.5, 0.9, n[0]);
-      rough -= 0.1 * tzone;
-      // Lips: a deeper, browner pink than the skin round them, and the dark line where they meet.
+      rough -= 0.08 * tzone;
+      // Lips: a muted brown-rose, the upper lip darker (it faces down), and a soft line where they meet.
       const lips = this.lips(p, n);
       if (lips > 0) {
-        const lipColor = srgb(176, 112, 100);
+        const lipColor = rgb(LOOK.lips);
         const lines = 0.035 * noise3(p[2] / 0.0007, p[1] / 0.004, 0);
-        c = c.map((x, k) => mix(x, lipColor[k]! * (1 + lines), lips * 0.7)) as V3;
-        rough = mix(rough, 0.4, lips);
+        const upperLip = p[1] > m.mouth[1] ? 0.88 : 1.04;
+        c = c.map((x, k) => mix(x, lipColor[k]! * upperLip * (1 + lines), lips * 0.7)) as V3;
+        rough = mix(rough, 0.5, lips);
       }
       {
         const across = Math.abs(p[2]) / m.mouthHalfWidth;
-        const line = gauss(p[1] - m.mouth[1], 0.0007) * smoothstep(1.15, 0.8, across) * smoothstep(m.mouth[0] - 0.012, m.mouth[0] - 0.004, p[0]);
-        c = c.map((x) => x * (1 - 0.45 * line)) as V3;
+        // Inside the parting the lips' own colour, darker, so nothing black shows between them.
+        const inside = smoothstep(m.mouth[0] - 0.004, m.mouth[0] - 0.009, p[0]) * smoothstep(1.2, 0.9, across) * gauss(p[1] - m.mouth[1], 0.005);
+        const lipColor = rgb(LOOK.lips);
+        c = c.map((x, k) => mix(x, lipColor[k]! * 0.7, inside)) as V3;
+        const line = gauss(p[1] - m.mouth[1], 0.0008) * smoothstep(1.1, 0.75, across) * smoothstep(m.mouth[0] - 0.014, m.mouth[0] - 0.004, p[0]);
+        c = [c[0] * (1 - 0.22 * line), c[1] * (1 - 0.3 * line), c[2] * (1 - 0.3 * line)];
       }
-      // Stubble: a faint grey-blue shadow over the beard, the follicles barely there.
+      // The beard: hairs lying down and a little out from the middle, close enough to hide most of the skin,
+      // thinning to single hairs at its edges; greyer either side of the chin.
       const beard = this.beard(p, n);
       if (beard > 0) {
-        const cell = cellular(p[0] / 0.0007, p[1] / 0.0007, p[2] / 0.0007);
-        const dot = smoothstep(0.4, 0.2, cell) * smoothstep(0.0012, 0.0004, ts);
-        const shadow = 0.13 + 0.1 * dot;
-        const hairColor = srgb(78, 66, 62);
-        c = c.map((x, k) => mix(x, hairColor[k]!, shadow * beard)) as V3;
-        rough = mix(rough, 0.6, beard * 0.5);
+        const hairs = this.beardHairs(p);
+        // Where the texels are too coarse to hold a hair, its average.
+        const detail = smoothstep(0.0012, 0.0004, ts);
+        const strand = mix(0.5, clamp01(0.5 + 0.9 * hairs), detail);
+        const thin = smoothstep(0.0, 0.8, beard);
+        // Short enough that the skin shows between the hairs, more of it toward the edges.
+        const cover = clamp01(thin * mix(0.7, 0.42 + 0.62 * strand, detail) * smoothstep(1 - beard * 1.6, 1.25 - beard * 1.6, strand + 0.5));
+        const chin = gauss(Math.hypot(dz - 0.013, p[1] - (m.mouth[1] - 0.03)), 0.014);
+        const greyShare = LOOK.beard.grey + LOOK.beard.greyChin * chin;
+        const isGrey = smoothstep(1 - greyShare - 0.06, 1 - greyShare + 0.06, 0.5 + 0.5 * noise3(p[2] / 0.0006 + 31, p[1] / 0.009, p[0] / 0.0012));
+        const dark = rgb(LOOK.beard.color);
+        const grey = rgb(LOOK.beard.greyColor);
+        const shade = 0.78 + 0.45 * strand;
+        const hairColor = dark.map((x, k) => mix(x * shade, grey[k]! * (0.75 + 0.3 * strand), mix(greyShare * 0.8, isGrey, detail))) as V3;
+        c = c.map((x, k) => mix(x, hairColor[k]!, cover)) as V3;
+        rough = mix(rough, 0.62, cover);
       }
-      // Brows: short hairs along the brow, thinning at the ends.
+      // Brows: hairs leaning up and out along the brow.
       const brow = this.brow(p);
       if (brow.amount > 0) {
-        const strands = noise3(p[1] / 0.0005 + brow.along * 6, (p[2] * Math.sign(p[2]) - p[1] * 0.6) / 0.0035, p[0] / 0.002);
-        const cover = clamp01(brow.amount * (0.6 + 0.55 * strands));
-        const browColor = srgb(58, 45, 35);
+        const hairs = this.browHairs(p);
+        const detail = smoothstep(0.001, 0.0004, ts);
+        const cover = clamp01(brow.amount * mix(0.82, 0.62 + 0.55 * hairs, detail));
+        const browColor = rgb(LOOK.brows.color).map((x) => x * (0.85 + 0.3 * hairs)) as V3;
         c = c.map((x, k) => mix(x, browColor[k]!, cover * 0.85)) as V3;
+        rough = mix(rough, 0.6, cover);
       }
-      // Lashes: a dark line along the upper lid's edge, a fainter one under the eye.
+      // Lashes: a dark line along the upper lid's edge, the faintest under the eye.
       const lash = this.lashes(p);
       c = c.map((x) => x * (1 - 0.6 * lash)) as V3;
       // The hairline: short hairs thinning out at the edge of the cut.
-      const hair = m.hair(p);
+      const hair = m.hair.amount(p);
       if (hair > 0) {
-        // Sparse dots at the edge, closing to the hair shell's own look where the cut is thick, so the shell's
+        // Sparse dots at the edge, closing to the hair's own look where the cut is thick, so the mesh's
         // edge (stepped along the body's faces) meets the skin with nothing to tell them apart.
         const dots = smoothstep(0.45, 0.2, cellular(p[0] / 0.0008, p[1] / 0.0008, p[2] / 0.0008));
         const cover = clamp01(smoothstep(0, 0.8, hair) * mix(0.75 + 0.25 * dots, 1, smoothstep(0.5, 0.9, hair)));
@@ -605,10 +700,25 @@ class Painter {
       // The lips' fine vertical lines.
       const lips = this.lips(p, n);
       if (lips > 0) h += lips * 0.00003 * Math.sin(p[2] / 0.0009 * Math.PI * 2 + 2 * noise3(p[2] / 0.002, p[1] / 0.002, 0));
-      // Faint lines across the forehead.
       const m = this.marks;
-      const forehead = smoothstep(m.eyes[0]!.center[1] + 0.03, m.eyes[0]!.center[1] + 0.04, p[1]) * smoothstep(0.05, 0.02, Math.abs(p[2])) * smoothstep(0.6, 0.9, n[0]);
+      const { eye, dz } = this.face(p);
+      // Lines across the forehead, and the two between the brows.
+      const forehead = smoothstep(eye[1] + 0.03, eye[1] + 0.04, p[1]) * smoothstep(0.055, 0.02, dz) * smoothstep(0.6, 0.9, n[0]);
       if (forehead > 0) h += forehead * 0.00004 * Math.sin(p[1] / 0.0095 * Math.PI * 2 + 1.5 * noise3(p[2] / 0.02, p[1] / 0.02, 1));
+      const frown = gauss(dz - 0.0045, 0.0009) * smoothstep(eye[1] + 0.012, eye[1] + 0.018, p[1]) * smoothstep(eye[1] + 0.034, eye[1] + 0.026, p[1]) * smoothstep(0.5, 0.8, n[0]);
+      h -= 0.00009 * frown;
+      // Crow's feet from the eyes' outer corners, and the fold from the nose's wing past the mouth's corner.
+      const corner = dz - Math.abs(eye[2]) - 0.017;
+      if (corner > 0 && corner < 0.016 && Math.abs(p[1] - eye[1]) < 0.012) {
+        const fan = Math.atan2(p[1] - eye[1], corner + 0.004);
+        h -= 0.00006 * smoothstep(0, 0.004, corner) * smoothstep(0.016, 0.008, corner) * Math.max(0, Math.sin(fan * 7 + 0.4)) * smoothstep(0.012, 0.006, Math.abs(p[1] - eye[1]));
+      }
+      // The beard's and the brows' hairs stand off the skin.
+      const beard = this.beard(p, n);
+      if (beard > 0 && ts < 0.0012) h += beard * 0.00028 * this.beardHairs(p);
+      const brow = this.brow(p);
+      if (brow.amount > 0 && ts < 0.001) h += brow.amount * 0.0002 * this.browHairs(p);
+      void m;
     } else {
       h += 0.000025 * fbm(p[0], p[1], p[2], 0.002, 2, ts);
       // Knuckle creases: rings round the fingers near their joints, on the back.
@@ -629,26 +739,32 @@ class Painter {
     const e = this.marks.eyes[p[2] < 0 ? 0 : 1]!;
     const d: V3 = [p[0] - e.center[0], p[1] - e.center[1], p[2] - e.center[2]];
     // How far off the line of sight, in metres, and round it (periodic, so the iris has no seam).
-    const r = d[0] > 0 ? Math.hypot(d[1], d[2]) : 1;
-    const around = Math.atan2(d[1], d[2] * Math.sign(p[2] || 1));
+    const g: V3 = [d[0], d[1] - e.gaze[0], d[2] - e.gaze[1]];
+    const r = d[0] > 0 ? Math.hypot(g[1], g[2]) : 1;
+    const around = Math.atan2(g[1], g[2] * Math.sign(p[2] || 1));
     const ca = Math.cos(around);
     const sa = Math.sin(around);
-    const IRIS = 0.0059;
+    const IRIS = IRIS_RADIUS;
     const PUPIL = 0.0019;
     const iris = smoothstep(IRIS + 0.00035, IRIS - 0.00025, r);
     const pupil = smoothstep(PUPIL + 0.0002, PUPIL - 0.00015, r);
-    // Across the iris, 0 at the pupil to 1 at its rim: radial fibres, a lighter ring round the pupil, a dark rim.
+    // Across the iris, 0 at the pupil to 1 at its rim: radial fibres, an amber ring round the pupil, a dark rim.
     const t = clamp01((r - PUPIL) / (IRIS - PUPIL));
     const fibre = 0.55 * noise3(ca * 9, sa * 9, t * 2.2) + 0.35 * noise3(ca * 26, sa * 26, t * 4 + 3) + 0.2 * noise3(ca * 60, sa * 60, t * 6 + 7);
-    const collarette = gauss(t - 0.28, 0.1);
-    const rim = smoothstep(0.78, 1, t);
-    const tone = clamp01(0.5 + fibre);
-    const irisColor: V3 = [mix(0.16, 0.36, tone), mix(0.09, 0.21, tone), mix(0.045, 0.1, tone)].map((x, k) => x * (1 + (k === 2 ? 0.3 : 0.55) * collarette) * (1 - 0.55 * rim)) as V3;
+    const collarette = gauss(t - 0.26, 0.12);
+    const rim = smoothstep(0.76, 1, t);
+    const tone = clamp01(0.55 + 0.6 * fibre);
+    const outer = rgb(LOOK.iris.rim);
+    const middle = rgb(LOOK.iris.middle);
+    const ring = rgb(LOOK.iris.ring);
+    const irisColor = [0, 1, 2].map((k) => mix(mix(outer[k]!, middle[k]!, tone), ring[k]!, 0.7 * collarette) * (1 - 0.6 * rim)) as V3;
     // The white: warm, a few veins and a pinker cast toward the corners.
     const vein = smoothstep(0.93, 0.985, 1 - Math.abs(noise3(ca * 5, sa * 5, r / 0.004))) * smoothstep(0.008, 0.013, r);
     const pink = smoothstep(0.009, 0.014, r);
-    const sclera: V3 = [mix(0.85, 0.78, vein) * (1 - 0.03 * pink), mix(0.81, 0.55, vein) * (1 - 0.09 * pink), mix(0.76, 0.52, vein) * (1 - 0.1 * pink)];
-    out.color = [0, 1, 2].map((k) => mix(mix(sclera[k]!, irisColor[k]!, iris), 0.02, pupil)) as V3;
+    const sclera: V3 = [mix(0.8, 0.74, vein) * (1 - 0.03 * pink), mix(0.76, 0.52, vein) * (1 - 0.09 * pink), mix(0.71, 0.49, vein) * (1 - 0.1 * pink)];
+    // The upper lid and its lashes shade the top of the eye; without that an eye looks stuck on.
+    const lidShade = 1 - 0.5 * smoothstep(-0.001, 0.0065, d[1]);
+    out.color = [0, 1, 2].map((k) => mix(mix(sclera[k]!, irisColor[k]!, iris), 0.02, pupil) * lidShade) as V3;
     out.rough = 0.05;
     out.metal = 0;
   }
@@ -965,39 +1081,35 @@ class Painter {
 
   // ---------- hair
 
-  private flow(p: V3, n: V3): V3 {
-    // From the crown out and down, combed a little forward at the front.
-    const crown: V3 = [-0.015, 1.77, 0];
-    const d: V3 = [p[0] - crown[0] + 0.02, p[1] - crown[1], p[2] - crown[2]];
-    const dn = d[0] * n[0] + d[1] * n[1] + d[2] * n[2];
-    const t: V3 = [d[0] - n[0] * dn, d[1] - n[1] * dn, d[2] - n[2] * dn];
-    const l = Math.hypot(t[0], t[1], t[2]) || 1;
-    return [t[0] / l, t[1] / l, t[2] / l];
-  }
-
   private strands(p: V3, n: V3): number {
-    const d = this.flow(p, n);
-    const across: V3 = [n[1] * d[2] - n[2] * d[1], n[2] * d[0] - n[0] * d[2], n[0] * d[1] - n[1] * d[0]];
-    const a = p[0] * d[0] + p[1] * d[1] + p[2] * d[2];
-    const b = p[0] * across[0] + p[1] * across[1] + p[2] * across[2];
-    return 0.6 * noise3(a / 0.01, b / 0.0006, 0) + 0.4 * noise3(a / 0.004, b / 0.00025, 5);
+    const hair = this.marks.hair;
+    return 0.6 * hair.grain(p, n, 0.012, 0.0006, 0) + 0.4 * hair.grain(p, n, 0.005, 0.00025, 5);
   }
 
   /** The skin under the hair, where the cut thins out over it. */
   private readonly underHair: Shade = { color: [0, 0, 0], rough: 0, metal: 0 };
 
-  /** The hair's colour and roughness, wherever it grows: strands combed from the crown. */
+  /** The hair's colour and roughness, wherever it grows: strands along the combing, darker down between the locks, some of them grey. */
   private hairLook(p: V3, n: V3, ts: number): { color: V3; rough: number } {
-    const base = srgb(46, 35, 27);
+    const hair = this.marks.hair;
+    const base = rgb(LOOK.hair.color);
+    const grey = rgb(LOOK.hair.greyColor);
     const s = this.strands(p, n);
     const tone = fbm(p[0], p[1], p[2], 0.03, 2, ts);
-    return { color: base.map((x) => x * (1 + 0.45 * s + 0.1 * tone)) as V3, rough: 0.48 + 0.1 * s };
+    const lock = locks(hair, p, n);
+    const share = hair.grey(p);
+    // Each strand is one colour or the other; where the texels are too coarse to tell them apart, their mix.
+    const which = 0.5 + 0.5 * hair.grain(p, n, 0.02, 0.00045, 23);
+    const detail = smoothstep(0.0012, 0.0004, ts);
+    const isGrey = mix(share * 0.8, smoothstep(1 - share - 0.05, 1 - share + 0.05, which), detail);
+    const dark = base.map((x) => x * (1 + 0.4 * s + 0.1 * tone + 0.35 * lock)) as V3;
+    return { color: dark.map((x, k) => mix(x, grey[k]! * (0.8 + 0.25 * s), isGrey)) as V3, rough: 0.6 + 0.1 * s };
   }
 
   private hair(p: V3, n: V3, ts: number, out: Shade): void {
-    // At the shell's edge exactly the skin's own shade (its painted hairline included), so the shell meets the
+    // At the mesh's edge exactly the skin's own shade (its painted hairline included), so it meets the
     // skin's faces with no seam; all the hair's own look only where the cut is thick.
-    const density = smoothstep(HAIR_SHELL_FROM, 0.95, this.marks.hair(p));
+    const density = smoothstep(HAIR_SHELL_FROM, 0.95, this.marks.hair.amount(p));
     this.skin(p, n, ts, this.underHair);
     const look = this.hairLook(p, n, ts);
     out.color = look.color.map((x, k) => mix(this.underHair.color[k]!, x, density)) as V3;
@@ -1006,7 +1118,10 @@ class Painter {
   }
 
   private hairHeight(p: V3, n: V3, ts: number): number {
-    const hair = this.marks.hair(p);
-    return mix(this.skinHeight(p, n, ts), 0.00025 * this.strands(p, n), smoothstep(HAIR_SHELL_FROM, 0.95, hair));
+    const hair = this.marks.hair;
+    const amount = hair.amount(p);
+    // Strands, and the locks they gather into (the mesh carries the large ones; these are the ones between).
+    const fine = 0.0003 * this.strands(p, n) + 0.0009 * hair.grain(p, n, 0.03, 0.0035, 41);
+    return mix(this.skinHeight(p, n, ts), fine, smoothstep(HAIR_SHELL_FROM, 0.95, amount));
   }
 }

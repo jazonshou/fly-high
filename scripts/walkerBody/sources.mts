@@ -1,6 +1,7 @@
 /**
- * The walker body's sources: MakeHuman's base mesh, three of its macro
- * targets, its default skeleton and skin weights, and its high-poly eyes.
+ * The walker body's sources: MakeHuman's base mesh, the targets that shape it
+ * into the walker (`design.mts`), its default skeleton and skin weights, and
+ * its high-poly eyes.
  *
  * LICENCE. Every asset bundled with MakeHuman (the base mesh and proxies,
  * targets and modifiers, textures, clothes, poses) is released under CC0 1.0
@@ -14,24 +15,26 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { SHAPE } from "./design.mts";
 
 /** MakeHuman's master as of 2026-11-02, pinned so a later change upstream cannot change the bake. */
 export const MAKEHUMAN_COMMIT = "a8bc2d54ff0ac92e78ff71431b1023eda42bf482";
 export const MAKEHUMAN_RAW = `https://raw.githubusercontent.com/makehumancommunity/makehuman/${MAKEHUMAN_COMMIT}`;
 
-export const SOURCE_FILES = [
+/** A path in the MakeHuman repository. */
+export type SourceFile = string;
+
+export const SOURCE_FILES: readonly SourceFile[] = [
   "LICENSE.md",
   "makehuman/data/3dobjs/base.obj",
-  "makehuman/data/targets/macrodetails/african-male-young.target",
-  "makehuman/data/targets/macrodetails/asian-male-young.target",
-  "makehuman/data/targets/macrodetails/caucasian-male-young.target",
+  ...Object.keys(SHAPE),
   "makehuman/data/rigs/default.mhskel",
   "makehuman/data/rigs/default_weights.mhw",
   "makehuman/data/eyes/high-poly/high-poly.obj",
   "makehuman/data/eyes/high-poly/high-poly.mhclo",
-] as const;
+];
 
-export async function fetchSources(cacheDir: string): Promise<(path: (typeof SOURCE_FILES)[number]) => string> {
+export async function fetchSources(cacheDir: string): Promise<(path: SourceFile) => string> {
   for (const file of SOURCE_FILES) {
     const local = join(cacheDir, file);
     if (existsSync(local)) continue;

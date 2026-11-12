@@ -1,8 +1,7 @@
 /**
- * The walker's body: MakeHuman's base mesh shaped to a young adult man (a
- * third each of its African, Asian and Caucasian young-male targets, so no
- * one population's averages and no one person), turned into the walker's
- * frame and metres, and fitted onto the walker's skeleton.
+ * The walker's body: MakeHuman's base mesh shaped to one particular man (the
+ * targets and weights of `design.mts`), turned into the walker's frame and
+ * metres, and fitted onto the walker's skeleton.
  *
  * The base mesh carries, besides the skin ("body"), helper shells MakeHuman
  * fits its proxies to: a skin-tight suit over the torso and legs
@@ -12,12 +11,13 @@
  */
 import { BONE, BONE_COUNT } from "../../src/render/webgpu/person/skeleton";
 import { PROPORTIONS } from "../../src/render/webgpu/person/figureProportions";
-import { applyTarget, parseObj, parseSkeleton, parseWeights, type ObjFace, type SOURCE_FILES } from "./sources.mts";
+import { applyTarget, parseObj, parseSkeleton, parseWeights, type ObjFace, type SourceFile } from "./sources.mts";
+import { SHAPE } from "./design.mts";
 import { applyMap, fitMaps, retarget, skeletonJoints, walkerWeights, type FitReport, type VertexWeights } from "./retarget.mts";
 import type { V3 } from "./math.mts";
 import { relaxHands, type HandReport } from "./hands.mts";
 
-type Read = (path: (typeof SOURCE_FILES)[number]) => string;
+type Read = (path: SourceFile) => string;
 
 export interface FittedBody {
   /** Every base-mesh vertex (helpers too), fitted, walker frame, metres. */
@@ -38,16 +38,10 @@ export interface FittedBody {
   readonly headPoint: (mh: V3) => V3;
 }
 
-export const TARGET_WEIGHTS = Object.freeze({
-  "makehuman/data/targets/macrodetails/african-male-young.target": 1 / 3,
-  "makehuman/data/targets/macrodetails/asian-male-young.target": 1 / 3,
-  "makehuman/data/targets/macrodetails/caucasian-male-young.target": 1 / 3,
-} as const);
-
-export function buildBody(read: Read): FittedBody {
+export function buildBody(read: Read, targets: Readonly<Record<string, number>> = SHAPE): FittedBody {
   const obj = parseObj(read("makehuman/data/3dobjs/base.obj"));
   const mh = Float64Array.from(obj.positions);
-  for (const [path, weight] of Object.entries(TARGET_WEIGHTS)) applyTarget(mh, read(path as keyof typeof TARGET_WEIGHTS), weight);
+  for (const [path, weight] of Object.entries(targets)) applyTarget(mh, read(path), weight);
 
   // Into the walker's frame: +X forward (MakeHuman's +Z), +Y up, +Z right (MakeHuman's -X), metres (MakeHuman's are decimetres).
   const n = mh.length / 3;

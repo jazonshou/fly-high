@@ -93,6 +93,7 @@ const mesh = exportParts(parts);
 report.push(`exported: ${mesh.positions.length / 3} vertices, ${mesh.indices.length / 3} triangles`);
 const marks = findLandmarks(body, eyes.fits, boots.part);
 const fmt = (v: readonly number[]) => v.map((x) => x.toFixed(3)).join(", ");
+report.push(`lid openings (mm; across, lower, upper, width): ${marks.eyes.map((e) => [e.opening.across, e.opening.lower, e.opening.upper, e.opening.width].map((x) => (x * 1000).toFixed(1)).join(", ")).join(" / ")}; irises ${marks.eyes.map((e) => e.gaze.map((x) => (x * 1000).toFixed(1)).join(", ")).join(" / ")}; mouth half width ${(marks.mouthHalfWidth * 1000).toFixed(1)}`);
 report.push(`landmarks: eyes ${marks.eyes.map((e) => fmt(e.center)).join(" / ")}; mouth ${fmt(marks.mouth)}; nose ${fmt(marks.noseTip)}; toes ${marks.toes.map((t) => `${t.x.toFixed(3)}, ${t.z.toFixed(3)}`).join(" / ")}`);
 console.log(report.join("\n"));
 let clock = performance.now();

@@ -28,10 +28,10 @@ const deg = (d: number) => (d * Math.PI) / 180;
 
 /** Per finger (index, middle, ring, little): how much of its fan toward the middle finger to close, and each joint's curl, degrees. */
 const FINGERS = Object.freeze([
-  { n: 2, close: 0.7, curl: [8, 14, 8] },
-  { n: 3, close: 0, curl: [12, 20, 10] },
-  { n: 4, close: 0.75, curl: [15, 26, 12] },
-  { n: 5, close: 0.75, curl: [20, 32, 14] },
+  { n: 2, close: 0.7, curl: [12, 26, 12] },
+  { n: 3, close: 0, curl: [16, 32, 14] },
+  { n: 4, close: 0.75, curl: [20, 37, 16] },
+  { n: 5, close: 0.75, curl: [24, 42, 18] },
 ]);
 
 export interface HandReport {
@@ -76,10 +76,10 @@ export function relaxHands(positions: Float64Array, mhWeights: Readonly<Record<s
     const c1 = j("finger1-1");
     const thumbDir = normalize(sub(j("finger1-3", "tail"), c1));
     const towardIndex = Math.atan2(dot(cross(inPalm(thumbDir), axis), normal), dot(inPalm(thumbDir), axis));
-    const base = about(normal, towardIndex * 0.35, c1);
+    const base = about(normal, towardIndex * 0.6, c1);
     const thumbCurl = normalize(cross(thumbDir, normal));
-    const t2 = compose(base, about(thumbCurl, deg(10), j("finger1-2")));
-    const t3 = compose(t2, about(thumbCurl, deg(12), j("finger1-3")));
+    const t2 = compose(base, about(thumbCurl, deg(14), j("finger1-2")));
+    const t3 = compose(t2, about(thumbCurl, deg(18), j("finger1-3")));
     motions.set(`finger1-1.${L}`, base);
     motions.set(`finger1-2.${L}`, t2);
     motions.set(`finger1-3.${L}`, t3);

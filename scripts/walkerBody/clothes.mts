@@ -8,15 +8,15 @@
  * garment has a thickness and no gap shows into it. The skin they hide is
  * removed, but for a margin under each edge.
  *
- * The outfit (the old figure's, kept): an olive-grey soft-shell jacket with a
- * stand-up collar, closed; stone trousers; brown leather boots (`boots.mts`);
- * short dark-brown hair.
+ * The outfit: an olive-grey soft-shell jacket with a stand-up collar, closed;
+ * stone trousers; brown leather boots (`boots.mts`). The hair is `hair.mts`'s.
  */
 import { BIND_POSITIONS, BONE, SIDES } from "../../src/render/webgpu/person/skeleton";
 import { dot, normalize, scale, sub, type V3 } from "./math.mts";
 import type { FittedBody } from "./body.mts";
 import { adjacency, boundaryLoops, vertexNormals, vertexOf, type Part, type PartKind } from "./parts.mts";
 import { SWATCH, type SwatchCursor } from "./swatches.mts";
+import { buildHair } from "./hair.mts";
 
 const bind = (bone: number): V3 => [BIND_POSITIONS[bone * 3]!, BIND_POSITIONS[bone * 3 + 1]!, BIND_POSITIONS[bone * 3 + 2]!];
 const smoothstep = (a: number, b: number, x: number) => {
@@ -169,11 +169,11 @@ export function buildGarments(body: FittedBody, swatches: SwatchCursor): Garment
   const jacketRegion = select((f) => f.every(inJacket));
   const jacket = shell("jacket", "jacket", jacketRegion, P, N, W, {
     ease: (v) => {
-      if (isArm(v)) return 0.014;
+      if (isArm(v)) return 0.011;
       const q = p(v);
       // Light on the shoulders, where the fabric rests.
       const shoulder = smoothstep(1.36, 1.42, q[1]);
-      return 0.016 - 0.008 * shoulder;
+      return 0.014 - 0.007 * shoulder;
     },
     minEase: (v) => (isArm(v) ? 0.008 : 0.006),
     hang: (v) => {
@@ -183,9 +183,10 @@ export function buildGarments(body: FittedBody, swatches: SwatchCursor): Garment
         // A sleeve hangs from the elbow to the cuff, loose round the forearm, snug at the cuff.
         const elbow = bind(side.forearm);
         const wrist = bind(side.hand);
-        return { origin: elbow, axis: normalize(sub(wrist, elbow)), start: -0.02, taper: 0.993, group: side.sign < 0 ? 1 : 2 };
+        return { origin: elbow, axis: normalize(sub(wrist, elbow)), start: -0.02, taper: 0.988, group: side.sign < 0 ? 1 : 2 };
       }
-      return { origin: [torsoAxis[0], 1.3, 0], axis: [0, -1, 0], start: 0, taper: 0.9985, group: 0 };
+      // From the chest it falls nearly straight, in a little to the hem: cut to a man's shape, not a box.
+      return { origin: [torsoAxis[0], 1.3, 0], axis: [0, -1, 0], start: 0, taper: 0.997, group: 0 };
     },
     iterations: 24,
   });
@@ -233,27 +234,8 @@ export function buildGarments(body: FittedBody, swatches: SwatchCursor): Garment
   report.push(`trousers: ${trousers.part.faces.length} faces, ${trousers.loops} edges banded`);
 
   // --- the hair
-  // The shell stands up only where the hair is thick: the thin edge of the cut is painted on the skin (the
-  // texture bake's hairline), so the shell's edge, stepped along the body's faces, rises from where both
-  // already show the same hair and casts no line of shadow on the skin.
-  const hairFactor = hairline(body);
-  const hairRegion = select((f) => f.every((v) => hairFactor(v) > HAIR_SHELL_FROM));
-  // And it rises over the three rings of vertices in from its edge, wherever along the edge the cut is thick.
-  const fromEdge = ringsFromEdge(hairRegion.faces);
-  const thick = (v: number) => smoothstep(HAIR_SHELL_FROM, 1, hairFactor(v)) * Math.min(1, (fromEdge.get(v) ?? 0) / 3);
-  const hair = shell("hair", "hair", hairRegion, P, N, W, {
-    ease: (v) => {
-      const n: V3 = [N[v * 3]!, N[v * 3 + 1]!, N[v * 3 + 2]!];
-      // Longer on top, short at the sides and the nape (a short taper cut).
-      const top = smoothstep(0.2, 0.85, n[1]);
-      return 0.0005 + thick(v) * (0.005 + 0.007 * top);
-    },
-    minEase: (v) => 0.0004 + thick(v) * 0.004,
-    hang: () => null,
-    iterations: 6,
-    fixBoundary: true,
-  });
-  report.push(`hair: ${hair.part.faces.length} faces`);
+  const hair = buildHair(body, bodyFaces, bodyUvs, N);
+  report.push(hair.report);
 
   // --- the skin that shows
   const skinRegion = select((f) => f.some(skinShows));
@@ -552,115 +534,4 @@ function addBands(target: Shell, P: Float64Array, N: Float64Array, swatches: Swa
     }
   }
   target.loops = loops.length;
-}
-
-/** The hair shell covers the faces whose every corner carries more hair than this (`hairlineAt`). */
-export const HAIR_SHELL_FROM = 0.4;
-
-/** Per vertex of a region, how many edges in it is from its open edge (0 on the edge). */
-function ringsFromEdge(faces: readonly number[][]): Map<number, number> {
-  const edges = new Map<string, number>();
-  const neighbours = new Map<number, Set<number>>();
-  for (const f of faces)
-    for (let k = 0; k < f.length; k += 1) {
-      const a = f[k]!;
-      const b = f[(k + 1) % f.length]!;
-      const key = a < b ? `${a},${b}` : `${b},${a}`;
-      edges.set(key, (edges.get(key) ?? 0) + 1);
-      if (!neighbours.has(a)) neighbours.set(a, new Set());
-      if (!neighbours.has(b)) neighbours.set(b, new Set());
-      neighbours.get(a)!.add(b);
-      neighbours.get(b)!.add(a);
-    }
-  const rings = new Map<number, number>();
-  let front: number[] = [];
-  for (const [key, count] of edges) {
-    if (count !== 1) continue;
-    for (const v of key.split(",").map(Number)) {
-      if (rings.has(v)) continue;
-      rings.set(v, 0);
-      front.push(v);
-    }
-  }
-  for (let ring = 1; front.length > 0; ring += 1) {
-    const next: number[] = [];
-    for (const v of front)
-      for (const w of neighbours.get(v)!) {
-        if (rings.has(w)) continue;
-        rings.set(w, ring);
-        next.push(w);
-      }
-    front = next;
-  }
-  return rings;
-}
-
-/**
- * How much hair a scalp vertex carries, 0 to 1: a short man's cut, the
- * hairline across the top of the forehead, receding a little at the temples,
- * sideburns down to the middle of the ear, round above the ears and down to
- * the nape.
- */
-function hairline(body: FittedBody): (v: number) => number {
-  const at = hairlineAt(body);
-  return (v) => at(vertexOf(body.positions, v));
-}
-
-/** The same for any point on the head. */
-export function hairlineAt(body: FittedBody): (q: V3) => number {
-  const P = body.positions;
-  const eyes = ["helper-l-eye", "helper-r-eye"].map((g) => {
-    const seen = new Set<number>();
-    for (const f of body.faces) if (f.group === g) for (const v of f.vertices) seen.add(v);
-    const c: V3 = [0, 0, 0];
-    for (const v of seen) for (let a = 0; a < 3; a += 1) c[a]! += P[v * 3 + a]! / seen.size;
-    return c;
-  });
-  const eyeY = (eyes[0]![1] + eyes[1]![1]) / 2;
-  const eyeX = (eyes[0]![0] + eyes[1]![0]) / 2;
-  // The head's vertical axis, over the ears.
-  const cx = eyeX - 0.095;
-  // (azimuth from the front, degrees; hairline height above the eyes, metres)
-  const line: [number, number][] = [
-    [0, 0.054],
-    [22, 0.056],
-    [40, 0.05],
-    [58, 0.032],
-    // The sideburn, in front of the ear (which spans about 70 to 95 degrees round, up to 12 mm over the eyes).
-    [65, 0.006],
-    [70, -0.014],
-    [75, -0.008],
-    // Round over the ear, close above it.
-    [82, 0.012],
-    [92, 0.018],
-    [104, 0.014],
-    [118, -0.012],
-    [134, -0.044],
-    [150, -0.066],
-    [165, -0.076],
-    [180, -0.079],
-  ];
-  const heightAt = (azimuth: number) => {
-    const a = Math.min(180, Math.abs(azimuth));
-    for (let k = 1; k < line.length; k += 1) {
-      if (a <= line[k]![0]) {
-        const [a0, h0] = line[k - 1]!;
-        const [a1, h1] = line[k]!;
-        const t = (a - a0) / (a1 - a0);
-        return h0 + (h1 - h0) * (0.5 - 0.5 * Math.cos(Math.PI * t));
-      }
-    }
-    return line[line.length - 1]![1];
-  };
-  const headBone = bind(BONE.head);
-  return (q) => {
-    if (q[1] < headBone[1] - 0.06) return 0;
-    const azimuth = (Math.atan2(Math.abs(q[2]), q[0] - cx) * 180) / Math.PI;
-    // The ear itself carries none: it stands off the skull's side (the skull's 73 to 76 mm out from the axis
-    // there, the ear's rim 79 to 87).
-    const out = Math.hypot(q[0] - cx, q[2]);
-    const ear = smoothstep(66, 72, azimuth) * smoothstep(128, 122, azimuth) * smoothstep(0.0765, 0.0785, out) * smoothstep(eyeY + 0.018, eyeY + 0.012, q[1]) * smoothstep(eyeY - 0.056, eyeY - 0.046, q[1]);
-    const h = eyeY + heightAt(azimuth);
-    return smoothstep(h - 0.002, h + 0.012, q[1]) * (1 - ear);
-  };
 }
