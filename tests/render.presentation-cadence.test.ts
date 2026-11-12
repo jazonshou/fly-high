@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   cadenceDisplayHz,
   cadenceFloorMs,
+  fallbackDivisorFor,
+  fallbackDivisorRange,
   PRESENTATION_HEADROOM_MS,
   sameCadence,
   type FrameRateCap,
@@ -14,9 +16,12 @@ import {
 
 /**
  * The presentation cadence is the contract between the frame pacer and the
- * renderer (PR B). Its one rule: a slow machine can never relax its own
- * target. Only the 30 fps setting, or a divisor of 2 or more on a period
- * measured on idle ticks, raises the floor and the hitch threshold.
+ * renderer (PR B). Its one rule: a period measured from slow frames can never
+ * relax the target. Only a cadence slower than the tier's target raises the
+ * floor and the hitch threshold: the 30 fps setting, or a divisor of 2 or
+ * more on a period measured on idle ticks. Under "60 fps" only the
+ * governor's even fallback draws that slowly (part 2b): an exhausted tier 0
+ * asks for it, and the pacer applies it only on a trusted, confirmed period.
  */
 
 function cadence(
@@ -24,8 +29,15 @@ function cadence(
   divisor: number,
   hz: number | null,
   periodConfirmed: boolean,
+  fallbackHz?: number,
 ): PresentationCadence {
-  return { frameCapHz, divisor, displayPeriodMs: hz === null ? null : 1_000 / hz, periodConfirmed };
+  return {
+    frameCapHz,
+    divisor,
+    displayPeriodMs: hz === null ? null : 1_000 / hz,
+    periodConfirmed,
+    ...(fallbackHz !== undefined ? { fallbackHz } : {}),
+  };
 }
 
 const medium = resolveWebGpuQualityProfile("medium", "balanced");
@@ -126,9 +138,128 @@ describe("the cadence identity", () => {
     expect(sameCadence(base, { ...base, periodConfirmed: false })).toBe(false);
   });
 
+  it("tells the governor's fallback rate from its absence (PR B part 2b, G6)", () => {
+    const sixty = cadence(60, 1, 60, true);
+    const fallingBack = cadence(60, 2, 60, true, 30);
+    expect(sameCadence(fallingBack, cadence(60, 2, 60, true, 30))).toBe(true);
+    expect(sameCadence(fallingBack, cadence(60, 2, 60, true))).toBe(false);
+    expect(sameCadence(cadence(60, 2, 60, true), fallingBack)).toBe(false);
+    expect(sameCadence(fallingBack, cadence(60, 2, 60, true, 25))).toBe(false);
+    // A cadence without a fallback omits the field, so part 1's literals still deep-equal.
+    expect(Object.keys(sixty)).not.toContain("fallbackHz");
+    expect(sixty).toEqual({ frameCapHz: 60, divisor: 1, displayPeriodMs: 1_000 / 60, periodConfirmed: true });
+  });
+
   it("reads the nominal display rate back from the period", () => {
     expect(cadenceDisplayHz(cadence(60, 2, 120, true))).toBeCloseTo(120, 9);
     expect(cadenceDisplayHz(cadence(60, 1, null, false))).toBeNull();
     expect(cadenceDisplayHz(null)).toBeNull();
+  });
+});
+
+/**
+ * PR B part 2b (G6): the even fallback's divisors, design §21.5's table.
+ * [refresh Hz, the 60 setting's divisor, range or null, divisor for a host
+ * whose mean fits the faster neighbour, divisor for one whose mean does not].
+ */
+const FALLBACK_TABLE: readonly [number, number, readonly [number, number] | null, number | null, number | null][] = [
+  [60, 1, [2, 2], 2, 2],
+  [75, 1, [2, 3], 2, 3],
+  [90, 1, [3, 3], 3, 3],
+  [100, 1, [3, 3], 3, 3],
+  [120, 2, [4, 4], 4, 4],
+  [144, 2, [4, 5], 4, 5],
+  [165, 2, [5, 6], 5, 6],
+  [240, 4, [8, 8], 8, 8],
+  // The range exists; the governor's gate refuses the untrusted period.
+  [50, 1, [2, 2], 2, 2],
+  [30, 1, null, null, null],
+];
+
+describe("the even fallback's divisor (PR B part 2b, G6)", () => {
+  for (const [hz, paced, range, fits, doesNot] of FALLBACK_TABLE) {
+    it(`${hz} Hz: ${range === null ? "none" : `[${range[0]}, ${range[1]}]`}`, () => {
+      const found = fallbackDivisorRange(hz, 30, paced);
+      expect(found).toEqual(range);
+      if (found === null) return;
+      expect(Object.isFrozen(found)).toBe(true);
+      const periodMs = 1_000 / hz;
+      // A mean that fits the faster neighbour's interval exactly, and one 1 ms over it.
+      const fasterMs = found[0] * periodMs;
+      expect(fallbackDivisorFor(found, periodMs, fasterMs)).toBe(fits);
+      expect(fallbackDivisorFor(found, periodMs, fasterMs + 1)).toBe(doesNot);
+      // Never faster than the range, nor slower: a request of 0 takes the fastest, a huge one the slowest.
+      expect(fallbackDivisorFor(found, periodMs, 0)).toBe(found[0]);
+      expect(fallbackDivisorFor(found, periodMs, 1_000)).toBe(found[1]);
+    });
+  }
+
+  it("takes the rates design §21.5 lists", () => {
+    const rate = (hz: number, paced: number, meanMs: number): number => {
+      const range = fallbackDivisorRange(hz, 30, paced)!;
+      return hz / fallbackDivisorFor(range, 1_000 / hz, meanMs);
+    };
+    expect(rate(60, 1, 25)).toBeCloseTo(30, 9);
+    expect(rate(75, 1, 22)).toBeCloseTo(37.5, 9);
+    expect(rate(75, 1, 30)).toBeCloseTo(25, 9);
+    expect(rate(100, 1, 25)).toBeCloseTo(100 / 3, 9);
+    expect(rate(144, 2, 27)).toBeCloseTo(36, 9);
+    expect(rate(144, 2, 30)).toBeCloseTo(28.8, 9);
+    expect(rate(165, 2, 30)).toBeCloseTo(33, 9);
+    expect(rate(165, 2, 32)).toBeCloseTo(27.5, 9);
+  });
+
+  it("fits a mean on the lattice whatever its timestamps' noise, and up to 5% of frames a refresh longer (K4)", () => {
+    for (const [hz, paced] of [[75, 1], [144, 2], [165, 2]] as const) {
+      const range = fallbackDivisorRange(hz, 30, paced)!;
+      const periodMs = 1_000 / hz;
+      const fasterMs = range[0] * periodMs;
+      // Every frame on the faster neighbour's interval, its mean a few µs either side.
+      for (const noiseMs of [-0.01, -0.001, 0.001, 0.01]) {
+        expect(fallbackDivisorFor(range, periodMs, fasterMs + noiseMs), `${hz} Hz, ${noiseMs} ms`).toBe(range[0]);
+      }
+      // 6 frames of 120 a refresh longer: late at the faster divisor, but within the 5% a window on cadence may hold.
+      expect(fallbackDivisorFor(range, periodMs, fasterMs + (6 / 120) * periodMs), `${hz} Hz, 6 late`).toBe(range[0]);
+      // 7 of 120: off cadence there, so the slower divisor.
+      expect(fallbackDivisorFor(range, periodMs, fasterMs + (7 / 120) * periodMs), `${hz} Hz, 7 late`).toBe(range[0] + 1);
+    }
+  });
+
+  it("holds only divisors above the paced one, so the setting's own cadence is never a fallback", () => {
+    for (const [hz, paced, range] of FALLBACK_TABLE) {
+      if (range !== null) expect(range[0], `${hz} Hz`).toBeGreaterThan(paced);
+    }
+    // 60 Hz with a divisor already at 2 has nothing left to fall back to.
+    expect(fallbackDivisorRange(60, 30, 2)).toBeNull();
+  });
+
+  it("absorbs a measured rate a little off its nominal value", () => {
+    expect(fallbackDivisorRange(59.94, 30, 1)).toEqual([2, 2]);
+    expect(fallbackDivisorRange(119.88, 30, 2)).toEqual([4, 4]);
+    expect(fallbackDivisorRange(143.86, 30, 2)).toEqual([4, 5]);
+  });
+});
+
+describe("the cadence floor under the fallback (PR B part 2b, G6)", () => {
+  it("is the interval drawn: the fallback's divisor times the period", () => {
+    expect(cadenceFloorMs(cadence(60, 2, 60, true, 30))).toBeCloseTo(1_000 / 30, 9);
+    expect(cadenceFloorMs(cadence(60, 2, 75, true, 37.5))).toBeCloseTo(26.667, 3);
+    expect(cadenceFloorMs(cadence(60, 3, 75, true, 25))).toBeCloseTo(40, 9);
+    expect(cadenceFloorMs(cadence(60, 3, 100, true, 100 / 3))).toBeCloseTo(30, 9);
+    expect(cadenceFloorMs(cadence(60, 4, 144, true, 36))).toBeCloseTo(27.778, 3);
+    expect(cadenceFloorMs(cadence(60, 5, 144, true, 28.8))).toBeCloseTo(34.722, 3);
+    expect(cadenceFloorMs(cadence(60, 8, 240, true, 30))).toBeCloseTo(1_000 / 30, 9);
+  });
+
+  it("puts the hitch threshold on that interval: 60 ms at 60 Hz", () => {
+    expect(hitchThresholdMilliseconds(medium, cadence(60, 2, 60, true, 30))).toBeCloseTo(60, 9);
+    expect(hitchThresholdMilliseconds(medium, cadence(60, 2, 75, true, 37.5))).toBeCloseTo(2 * (2_000 / 75 - 10 / 3), 9);
+  });
+
+  it("still relaxes nothing on a period the floor does not trust", () => {
+    // The pacer never applies a fallback on one; were it to, the target stays.
+    expect(cadenceFloorMs(cadence(60, 2, 60, false, 30))).toBe(0);
+    expect(cadenceFloorMs(cadence(60, 2, 50, true, 25))).toBe(0);
+    expect(cadenceFloorMs(cadence(60, 2, null, false, 30))).toBe(0);
   });
 });

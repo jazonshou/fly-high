@@ -118,6 +118,12 @@ export interface WebGpuQualityProfile {
    * capped pixels; the render-scale floor is renderScale × sqrt(ratio).
    */
   readonly governorPixelFloorRatio: number;
+  /**
+   * PR B part 2b (G6): the even rate an exhausted governor may fall back to
+   * under the 60 fps setting; the pacer draws at the even divisor nearest it
+   * that the host can hold. 0 = never.
+   */
+  readonly cadenceFallbackHz: number;
   /** Per-tier ceiling on the device pixel ratio entering the scale product (1A-6a). */
   readonly maxDevicePixelRatio: number;
   /**
@@ -594,6 +600,11 @@ function resolveBaseQualityProfile(
       shadowRefreshFrames: 2,
       cloudDepthRefreshFrames: 2,
       governorPixelFloorRatio: 0.6,
+      // PR B part 2b (T0d): under the 60 fps setting, an exhausted governor
+      // whose frames still average under 50 fps falls back to the even rate
+      // nearest 30 fps that the machine can hold (30 at 60 Hz) and recovers
+      // quality there. Jason said yes to D5 on 2026-11-01.
+      cadenceFallbackHz: 30,
       maxDevicePixelRatio: 1,
       bloomEnabled: false,
       msaaSamples: 1,
@@ -700,6 +711,7 @@ function resolveBaseQualityProfile(
       shadowRefreshFrames: 1,
       cloudDepthRefreshFrames: 1,
       governorPixelFloorRatio: 0.6,
+      cadenceFallbackHz: 0,
       maxDevicePixelRatio: 1.5,
       // Tier 1 is the strict playability contract. Closed opaque crowns make
       // early-Z useful, but a 2× multisampled half-float beauty target still
@@ -824,6 +836,7 @@ function resolveBaseQualityProfile(
       cloudDepthRefreshFrames: 1,
       // 0.75², so tiers 2 and 3 keep the 0.75 render-scale floor they have always had.
       governorPixelFloorRatio: 0.5625,
+      cadenceFallbackHz: 0,
       maxDevicePixelRatio: 2,
       // `4-8b` restores 4×, which the `1B-11` decision in ARCHITECTURE.md
       // explicitly deferred to this item: Phase 1's full-distance 4096² CSM
@@ -938,6 +951,7 @@ function resolveBaseQualityProfile(
     shadowRefreshFrames: 1,
     cloudDepthRefreshFrames: 1,
     governorPixelFloorRatio: 0.5625,
+    cadenceFallbackHz: 0,
     maxDevicePixelRatio: 2,
     bloomEnabled: false,
     msaaSamples: 4,
@@ -1129,8 +1143,11 @@ export function standaloneSharpen(
  * A hitch is a frame slower than twice the tier's controllable target: 27.4
  * ms, or 60 ms on Ultra. The presentation cadence raises it only where the
  * cadence itself is slower than that target, which is the 30 fps setting or
- * a divisor of 2 or more on a confirmed display period (presentationCadence.ts);
- * a slow workload never moves it. Captures and perf:ab pass no cadence.
+ * a divisor of 2 or more on a confirmed display period (presentationCadence.ts).
+ * Under "60 fps" only the governor's even fallback draws that slowly (60 ms
+ * at 60 Hz): an exhausted tier 0 asks for it, and the pacer applies it only
+ * on a trusted, confirmed period. A period measured from slow frames never
+ * moves it. Captures and perf:ab pass no cadence.
  */
 export function hitchThresholdMilliseconds(
   profile: Pick<WebGpuQualityProfile, "frameTargetMs">,

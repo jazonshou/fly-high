@@ -339,6 +339,8 @@ export type RenderGovernorMode =
   | "on-cadence"
   | "holding"
   | "no-gpu-timing"
+  // PR B part 2b (G6): a window judged only for the even fallback's trial.
+  | "fallback-trial"
   | "pinned";
 
 /** One frame-graph pass's aggregated CPU cost (1A-1). */
@@ -450,13 +452,20 @@ export interface RenderDiagnostics {
    */
   maxFrameMs: number | null;
   p999FrameMs: number | null;
-  /** Frames in the rolling window slower than 2× the tier's frame target. */
+  /**
+   * Frames in the rolling window slower than the hitch threshold, each
+   * judged against the threshold in force when it was drawn, so a change of
+   * cadence never counts the window again.
+   */
   hitchCount: number;
   /**
-   * PR B: what `hitchCount` counts against: 27.4 ms, 60 ms on Ultra. Only
-   * the 30 fps setting raises it, to twice its GPU target (the paced
-   * interval less 3.33 ms: 60 ms where 30 divides the refresh rate, 62.8 ms
-   * at 144 Hz), never frames being slow.
+   * PR B: the hitch threshold now: 27.4 ms, 60 ms on Ultra. Only a cadence
+   * slower than the tier's target raises it, to twice its GPU target (the
+   * paced interval less 3.33 ms): the 30 fps setting (60 ms where 30 divides
+   * the refresh rate, 62.8 ms at 144 Hz) or the governor's even fallback (60
+   * ms at 60 Hz), which an exhausted tier 0 asks for and the pacer applies
+   * only on a trusted, confirmed period. A period measured from slow frames
+   * never raises it.
    */
   hitchThresholdMs: number;
   /** Governor B ladder index and the lever that moved most recently. */
@@ -482,14 +491,33 @@ export interface RenderDiagnostics {
   governorUrgent: boolean;
   /** PR B part 2 (G6): judged windows in a row with nothing left to shed, each over 1.2× that reference. */
   governorSpentWindows: number;
-  /** PR B part 2 (G6): four spent windows in a row; what Auto will read. */
+  /**
+   * PR B part 2 (G6): four spent windows in a row, or (part 2b) running on
+   * the even fallback that answered them; what Auto will read.
+   */
   governorExhausted: boolean;
+  /**
+   * PR B part 2b (G6): the even fallback where the governor may ask for one;
+   * null while pinned, at a tier without a fallback rate, under a setting
+   * other than "60 fps", and without a confirmed display period it trusts.
+   */
+  cadenceFallback: {
+    phase: "off" | "engaged" | "trial" | "settled";
+    /** Failed trials not yet forgiven. */
+    failedTrials: number;
+    /** Seconds of judged windows before the next trial at the setting's cadence may start (engaged or settled); a settled retry of the faster divisor keeps its own clock. */
+    trialDueInS: number;
+    /** The shortest interval the pacer may draw at under the fallback; 0 while off. */
+    minIntervalMs: number;
+  } | null;
   /** PR B: the frame pacer's cadence as the renderer last heard it; null when nothing paces. */
   presentationCadence: {
     frameCapHz: 60 | 30 | null;
     divisor: number;
     displayHz: number | null;
     confirmed: boolean;
+    /** PR B part 2b (G6): the even rate drawn while the pacer applies the fallback; null otherwise. */
+    fallbackHz: number | null;
   } | null;
   /** Pixels actually rasterised after the DPR ceiling, scale, and pixel cap. */
   renderPixels: number;

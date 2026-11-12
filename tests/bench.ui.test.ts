@@ -483,6 +483,27 @@ describe("the report dialog", () => {
     expect(/\.bench-table td\.bench-table__result \{[^}]*white-space: normal;/.exec(css)).not.toBeNull();
   });
 
+  it("lists a check flight that fell back alone under Things to know, under a valid banner (G6)", () => {
+    const record = benchRunRecord({ steps: [{ tierIndex: 0 }, { tierIndex: 0 }] });
+    const last = record.steps[1]!;
+    const pacing = last.result!.pacing;
+    const fallbackFrames = Math.round(pacing.renderedFrames * 0.02);
+    const value = report({
+      ...record,
+      steps: [
+        record.steps[0]!,
+        { ...last, result: { ...last.result!, pacing: { ...pacing, fallbackFrames, fallbackShare: fallbackFrames / pacing.renderedFrames } } },
+      ],
+    });
+    const markup = reportDialog(value);
+    expect(markup).toContain(`<p class="bench-verdict bench-verdict--valid">${html(verdictText(value.run))}</p>`);
+    expect(markup).toMatch(/<summary>Things to know \(\d+\)<\/summary>/);
+    expect(markup).toContain(
+      "<li>Flight 2 (Low), the last check flight, fell back to an even rate near 30 fps for 2.0% of its frames "
+      + "and the first did not, so its fps mixes two cadences.</li>",
+    );
+  });
+
   it("lists the buttons in order, the download first and the issue as a new-tab link", () => {
     const markup = reportDialog(valid);
     expect(actions(markup)).toEqual([

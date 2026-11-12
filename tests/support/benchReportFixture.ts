@@ -159,6 +159,9 @@ export function benchStepResult(options: StepFixtureOptions): BenchStepResult {
   };
   // The renderer's rule: G4's step on the capped frame, or 1A-6a when pinned.
   const ceiling = mode === "pinned" ? null : config.scaleCeiling;
+  // Every frame is drawn under the one cadence, logged as the controller logs it.
+  const frameDivisor = cadence?.divisor ?? 1;
+  const frameHitchMs = hitchThresholdMilliseconds(profile, cadence);
 
   // Frames: whole refresh periods with a little jitter, a share of doubled
   // ones that brings the mean to the target, and a long frame now and then.
@@ -201,7 +204,10 @@ export function benchStepResult(options: StepFixtureOptions): BenchStepResult {
       signals = { gpuP95Ms: mode === "pinned" ? 10 + next() * 8 : null, cpuP95Ms: 4 + next() * 6, intervalP95Ms: refreshMs + next() * 10 };
     }
     const renderMs = 2.5 + next() * 5 + compileCount * 6;
-    recordFrame(log, time, time + 0.3, renderMs, compileCount, decide, mode === "pinned" ? interval * 0.7 : null);
+    recordFrame(
+      log, time, time + 0.3, renderMs, compileCount, decide, mode === "pinned" ? interval * 0.7 : null,
+      frameDivisor, frameHitchMs,
+    );
     recordOverhead(log, 0.02 + next() * 0.05);
     trace.observe(tS, {
       governorState: state,
@@ -273,6 +279,8 @@ export function benchStepResult(options: StepFixtureOptions): BenchStepResult {
       rafTicks: Math.round(flightS * refreshHz),
       renderedFrames: intervals.length,
       pacedHz: pacedHz(cadence),
+      fallbackFrames: 0,
+      fallbackShare: intervals.length > 0 ? 0 : null,
       governorConfigAtFlightStart: config,
     },
     timer: timerReport(granularityMs),

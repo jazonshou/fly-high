@@ -28,14 +28,18 @@ import type {
  */
 
 /**
- * `/3` adds urgency, spent windows and exhaustion, and judges the pixel cap
- * at G4's semantics; its governor sheds faster (G6a urgency), so `/2` steps
- * are not comparable. `/2` recorded the frame-rate setting and each step's
- * pacing; a `/1` report had no frame cap.
+ * `/4` adds the even fallback and per-frame cadence (PR B part 2b, G6): each
+ * frame is judged against the cadence that paced it, and the governor's
+ * decisions and events carry the fallback's phase. A tier-0 governor may now
+ * fall back, so `/3` steps are not comparable at tier 0. `/3` added urgency,
+ * spent windows and exhaustion, and judged the pixel cap at G4's semantics;
+ * its governor shed faster (G6a urgency), so `/2` steps are not comparable
+ * with it. `/2` recorded the frame-rate setting and each step's pacing; a
+ * `/1` report had no frame cap.
  */
-export const BENCH_SCHEMA = "fly-high.bench/3";
+export const BENCH_SCHEMA = "fly-high.bench/4";
 /** Bump when what a step measures, or how, changes. */
-export const BENCH_VERSION = 3;
+export const BENCH_VERSION = 4;
 /** FlightGame's placeholder seed (`00762m`), which has a home airport to roll from. */
 export const BENCH_SEED = 0x51a7e;
 /** Bump with any change to the route in path.ts, and pin the new fingerprint below. */

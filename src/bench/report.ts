@@ -30,7 +30,7 @@ import type {
 } from "./types";
 
 /**
- * The `fly-high.bench/3` report: built from the run store, then written as
+ * The `fly-high.bench/4` report: built from the run store, then written as
  * the downloadable JSON, a compact clipboard copy, a short summary for chat,
  * a prefilled GitHub issue link and the table the report page shows. Pure:
  * the page does the copying, downloading and opening.
@@ -60,19 +60,22 @@ const DEFINITIONS: Readonly<Record<string, string>> = Object.freeze({
   renderMs: "Main-thread time inside the renderer's render(), including any render-scale step it applies first.",
   gpuMs: "GPU frame time from timestamp queries; pinned mode only, where the renderer measures it.",
   over27_4: "Frames slower than 27.4 ms (twice the 13.7 ms frame target), per 240 frames and per minute.",
-  hitch: "Frames slower than the tier's hitch threshold for the cadence at the flight's first frame: 27.4 ms; 60 ms on "
-    + "Ultra and at the 30 fps setting, more where that setting draws below 30 fps (a 75 Hz panel draws 25).",
-  missedRefresh: "Intervals longer than the paced cadence plus half a refresh period of the step's idle refresh probe: "
-    + "1.5 periods when every refresh is drawn. At 165 Hz paced to every 2nd refresh that is 15.2 ms, so the bench counts "
-    + "every missed slot, including ones the governor lets pass.",
-  vsyncBuckets: "Intervals in paced slots (divisor refresh periods each), within the tolerance: x1 kept up, x2 to x4plus "
-    + "took whole slots, offSlot missed its slot by a whole refresh or more, irregular is neither (a variable-rate panel).",
+  hitch: "Frames slower than the tier's hitch threshold for the cadence that paced them: 27.4 ms, 60 ms on Ultra, or, at "
+    + "the 30 fps setting and under the even fallback, twice the paced interval less 3.33 ms where that is more: 60 ms "
+    + "at 60 Hz, 73.3 ms at the 30 fps setting on a 75 Hz panel (which draws 25). thresholdMs is the largest in the window.",
+  missedRefresh: "Intervals longer than the cadence that paced them plus half a refresh period of the step's idle refresh "
+    + "probe: 1.5 periods when every refresh is drawn, 2.5 under the even fallback at 60 Hz. At 165 Hz paced to every "
+    + "2nd refresh that is 15.2 ms, so the bench counts every missed slot, including ones the governor lets pass.",
+  vsyncBuckets: "Intervals in paced slots (the divisor of the cadence that paced each, in refresh periods), within the "
+    + "tolerance: x1 kept up, x2 to x4plus took whole slots, offSlot missed its slot by a whole refresh or more, "
+    + "irregular is neither (a variable-rate panel). divisor is the one at the flight's first frame.",
   frameCap: "The fps= setting the run flew, and what this build does with it: 60 fps draws every Nth refresh, or "
     + "every refresh on a build with 60 fps pacing switched off. Shipped mode defaults to the players' setting, pinned "
     + "mode to Match display; a run that behaves otherwise is non-standard.",
   pacing: "The frame pacer's cadence at the flight's first and last frames (it draws every divisor-th refresh of displayHz; "
     + "confirmed when measured on ticks that drew nothing or on drawn ticks faster than the rate held before, which "
-    + "render cost cannot make), and the bench's rAF ticks against the frames rendered.",
+    + "render cost cannot make; fallbackHz while it draws the governor's even fallback), the bench's rAF ticks against "
+    + "the frames rendered, and the frames drawn under the fallback (fallbackFrames, and fallbackShare of those rendered).",
   spread: "|a - b| / min(a, b) of the first and last flights' mean fps on the same tier, over the air window, or over the early check's stretch when either stopped early. Over 10% voids the run.",
   rafHz: "The browser's frame rate with nothing to draw, which is not always the panel's refresh rate.",
   heap: "performance.memory, coarse outside a flagged Chromium; null and stale when it never changed.",
@@ -265,7 +268,8 @@ const FINISHED: ReadonlySet<BenchStepStatus> = new Set<BenchStepStatus>(["ok", "
 /**
  * Valid, void, incomplete or unchecked. Only the check flights' spread over
  * 10%, or the window changing size between them, voids a run; data is kept
- * whatever the verdict.
+ * whatever the verdict. The even fallback in one check flight and not the
+ * other is a warning (`fallbackInOneCheck`), not a third rule.
  */
 export function computeVerdict(
   run: Pick<BenchRunRecord, "status" | "steps">,
@@ -301,6 +305,31 @@ export function computeVerdict(
 
 function warning(code: BenchWarning["code"], stepIndex: number | null, message: string): BenchWarning {
   return { code, stepIndex, message };
+}
+
+/**
+ * PR B part 2b (G6): the check flight that drew frames under the even
+ * fallback when the other drew none, so its fps mixes two cadences. A
+ * warning, not a void: on Low the fallback can engage in the last second
+ * of a flight, and whether it does can depend only on how long the settle
+ * ran, so the same machine may or may not show it, with the two fps within
+ * 1% either way; "close other programs and run it again" would be the wrong
+ * remedy. A share large enough to move the fps more than 10% voids the run
+ * by the spread rule. Null when the plan does not check itself, when a
+ * check flight has no result, and on a run before `/4`, which has no count.
+ */
+function fallbackInOneCheck(steps: readonly BenchStepRecord[]): BenchWarning | null {
+  const first = steps[0];
+  const last = steps[steps.length - 1];
+  if (!first?.result || !last?.result || steps.length < 2 || first.tierIndex !== last.tierIndex) return null;
+  const fellBack = (step: BenchStepRecord) => (step.result?.pacing.fallbackFrames ?? 0) > 0;
+  if (fellBack(first) === fellBack(last)) return null;
+  const [step, which, other] = fellBack(first) ? [first, "first", "last"] : [last, "last", "first"];
+  const percent = (step.result!.pacing.fallbackShare ?? 0) * 100;
+  const share = percent.toFixed(1) === "0.0" ? "under 0.1%" : `${percent.toFixed(1)}%`;
+  return warning("fallback-in-one-check", step.index,
+    `Flight ${step.index + 1} (${benchTierName(step.tierIndex)}), the ${which} check flight, fell back to an even `
+    + `rate near 30 fps for ${share} of its frames and the ${other} did not, so its fps mixes two cadences.`);
 }
 
 /** Everything worth knowing that does not void the run. */
@@ -379,6 +408,8 @@ export function collectWarnings(run: BenchRunRecord): BenchWarning[] {
         `${name}: the browser's clock steps ${result.timer.granularityMs} ms; render times are coarse.`));
     }
   }
+  const fallback = fallbackInOneCheck(run.steps);
+  if (fallback) warnings.push(fallback);
   return warnings;
 }
 

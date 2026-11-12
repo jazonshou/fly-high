@@ -32,6 +32,7 @@ function state(x: number): FlightVisualState {
 function fakeRenderer() {
   const canvas = { id: "flight-canvas" } as unknown as HTMLCanvasElement;
   const diagnostics = { fps: 60 } as unknown as RenderDiagnostics;
+  const fallbackRequest = Object.freeze({ hz: 30, minIntervalMs: 22 });
   let frameIndex = 0;
   const calls: string[] = [];
   const inner = {
@@ -46,6 +47,7 @@ function fakeRenderer() {
     setAirports: vi.fn(),
     setPresentationCadence: vi.fn(),
     setGovernorHold: vi.fn(),
+    cadenceFallbackRequest: vi.fn(() => fallbackRequest),
     discardNextFrameInterval: vi.fn(),
     projectWorldPointToRef: vi.fn(() => true),
     readHudCameraToRef: vi.fn(() => true),
@@ -68,7 +70,7 @@ function fakeRenderer() {
       calls.push("readBenchProbe");
     }),
   };
-  return { inner, canvas, diagnostics, calls };
+  return { inner, canvas, diagnostics, fallbackRequest, calls };
 }
 
 function fakePort(scripted: FlightVisualState | null = null) {
@@ -101,7 +103,7 @@ function steppingClock() {
 
 describe("the bench renderer decorator", () => {
   it("passes every member of the game's renderer interface through before the first frame", () => {
-    const { inner, canvas, diagnostics } = fakeRenderer();
+    const { inner, canvas, diagnostics, fallbackRequest } = fakeRenderer();
     const bench = new BenchRenderer(inner as BenchProbedRenderer, fakePort().port);
     const point: ScreenPoint = { x: 0, y: 0, inFront: false, width: 0, height: 0 };
     const hudCamera = createHudCamera();
@@ -122,6 +124,7 @@ describe("the bench renderer decorator", () => {
       setAirports: () => bench.setAirports([]),
       setPresentationCadence: () => bench.setPresentationCadence(cadence),
       setGovernorHold: () => bench.setGovernorHold(true),
+      cadenceFallbackRequest: () => expect(bench.cadenceFallbackRequest()).toBe(fallbackRequest),
       discardNextFrameInterval: () => bench.discardNextFrameInterval(),
       projectWorldPointToRef: () => expect(bench.projectWorldPointToRef(1, 2, 3, point)).toBe(true),
       readHudCameraToRef: () => expect(bench.readHudCameraToRef(hudCamera)).toBe(true),
@@ -144,6 +147,7 @@ describe("the bench renderer decorator", () => {
     expect(inner.setAirports).toHaveBeenCalledWith([]);
     expect(inner.setPresentationCadence).toHaveBeenCalledWith(cadence);
     expect(inner.setGovernorHold).toHaveBeenCalledWith(true);
+    expect(inner.cadenceFallbackRequest).toHaveBeenCalledOnce();
     expect(inner.discardNextFrameInterval).toHaveBeenCalledOnce();
     expect(inner.projectWorldPointToRef).toHaveBeenCalledWith(1, 2, 3, point);
     expect(inner.readHudCameraToRef).toHaveBeenCalledWith(hudCamera);
@@ -212,7 +216,7 @@ describe("the bench renderer decorator", () => {
   });
 
   it("drops and counts calls that would change the work once the first frame has started", () => {
-    const { inner } = fakeRenderer();
+    const { inner, fallbackRequest } = fakeRenderer();
     const bench = new BenchRenderer(inner as BenchProbedRenderer, fakePort().port);
     bench.setQuality("medium");
     bench.render(state(0), 1 / 60);
@@ -227,6 +231,7 @@ describe("the bench renderer decorator", () => {
     bench.cutCamera();
     bench.setAirports([]);
     bench.setPresentationCadence(null);
+    const asked = bench.cadenceFallbackRequest();
 
     expect(inner.setQuality).toHaveBeenCalledExactlyOnceWith("medium");
     expect(inner.setRenderingMode).not.toHaveBeenCalled();
@@ -238,6 +243,9 @@ describe("the bench renderer decorator", () => {
     expect(inner.setAirports).toHaveBeenCalledOnce();
     // The pacer's cadence is what a player's game does: never swallowed.
     expect(inner.setPresentationCadence).toHaveBeenCalledExactlyOnceWith(null);
+    // So is the governor's fallback request (PR B part 2b, G6).
+    expect(asked).toBe(fallbackRequest);
+    expect(inner.cadenceFallbackRequest).toHaveBeenCalledOnce();
     expect(bench.ignoredRendererCalls).toBe(6);
     expect(bench.ignoredCalls).toEqual({
       setQuality: 1,

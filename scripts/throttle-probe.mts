@@ -586,6 +586,20 @@ async function installStateSampler(): Promise<boolean> {
         // PR B part 2 (G6a): urgency, the spent count and exhaustion; null before it.
         urgent: d.governorUrgent ?? null, spent: d.governorSpentWindows ?? null,
         exhausted: d.governorExhausted ?? null,
+        // PR B part 2b (G6): the even fallback's phase, failed trials, time to
+        // the next trial and shortest interval; null before it, while pinned,
+        // and wherever the governor may not ask for one. The rate it draws is
+        // the cadence's fallbackHz.
+        fallback: d.cadenceFallback ?? null,
+        // What was drawn, to set beside the rate asked for: the renderer
+        // renders only on the ticks the pacer draws, so its numbers count
+        // drawn frames. fps is Babylon's mean over the last 30 drawn frames
+        // (about 1 s at 30 fps); intervalP95 is the start-to-start p95 over
+        // the 600-frame diagnostics window (10 s at 60 fps, 20 s at 30), so
+        // it holds one cadence's frames only that long after a switch. Like
+        // the governor's own, it leaves out intervals over 250 ms, so on a
+        // host that slow it reads far below its max frame.
+        fps: d.fps ?? null, intervalP95: d.frameIntervalP95Ms ?? null,
         pendingTerrainPages: d.pendingTerrainPages, pendingDetailWork: d.pendingDetailWork,
         residentTerrainPages: d.residentTerrainPages, drawCalls: d.drawCalls,
         hydrology: h ? {
