@@ -57,6 +57,8 @@ export interface DetailWorkerPresentationBuildInput {
    * which is the CPU-only path CI's hosted runner always takes.
    */
   readonly groundCoverFieldRadiusMeters?: number;
+  /** Metres inside which each drawn tree also emits a ground shadow record; 0 or absent emits none. */
+  readonly treeGroundShadowRangeMeters?: number;
   readonly observerX: number;
   readonly observerZ: number;
 }

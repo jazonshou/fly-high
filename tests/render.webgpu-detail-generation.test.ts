@@ -58,6 +58,40 @@ describe("WebGPU paged world-detail generation", () => {
     expect(detailCellKey(-3, 5)).toBe(first.key);
   });
 
+  it("gives every tree the slope of the ground it stands on", () => {
+    // A tilted plane: the height climbs 0.06 m per metre east and falls 0.04
+    // per metre north. The scatter grid is bilinear, so it holds a plane
+    // exactly, and every stem must report that plane's slope: it is what
+    // lays the tree's ground shadow on the hillside (`treeGroundShadow.ts`).
+    const plane: DetailTerrainSampler = (x, z) => ({
+      height: 160 + 0.06 * x - 0.04 * z,
+      slope: 0.07,
+      moisture: 0.6,
+      biome: TerrainBiome.FOREST,
+    });
+    const cell = generateDetailCell({
+      worldSeed: "slope-seed", cellX: 1, cellZ: -2, terrainSample: plane,
+    });
+    expect(cell.trees.length).toBeGreaterThan(20);
+    for (const tree of cell.trees) {
+      expect(tree.groundSlopeX).toBeCloseTo(0.06, 6);
+      expect(tree.groundSlopeZ).toBeCloseTo(-0.04, 6);
+      expect(tree.y).toBeCloseTo(160 + 0.06 * tree.x - 0.04 * tree.z, 3);
+    }
+    // Reading the slope takes no roll: the stand is the one a level world
+    // of the same seed grows, stem for stem.
+    const level: DetailTerrainSampler = (x, z) => ({ ...plane(x, z), height: 160 });
+    const flat = generateDetailCell({
+      worldSeed: "slope-seed", cellX: 1, cellZ: -2, terrainSample: level,
+    });
+    expect(flat.trees.map((tree) => [tree.x, tree.z, tree.species, tree.selection]))
+      .toEqual(cell.trees.map((tree) => [tree.x, tree.z, tree.species, tree.selection]));
+    for (const tree of flat.trees) {
+      expect(tree.groundSlopeX).toBeCloseTo(0, 9);
+      expect(tree.groundSlopeZ).toBeCloseTo(0, 9);
+    }
+  });
+
   it("uses biome, moisture, and slope rather than uniform scattering", () => {
     const shared = { worldSeed: "biome-comparison", cellX: 2, cellZ: -1 } as const;
     const forest = generateDetailCell({

@@ -122,6 +122,7 @@ audit is why it now carries all four tiers):
 | Shadow cascades (`4-8b`, D15, `7-CSM`) | 2 | 2 | 2 | 2 |
 | Shadow distance (`4-8b`) | 900 m | 1.4 km | 1.8 km | 2.4 km |
 | Vegetation casts shadows (`4.5-C1`) | no | no | yes | yes |
+| Tree ground shadow range (`treeGroundShadowRangeMeters`; a decal under every drawn tree inside it, 0 = none) | 450 m | 1,100 m | 1,200 m | 2,000 m |
 | Ocean FFT resolution per cascade | 128² | 128² | 256² | 256² |
 | Active ocean cascades | 3 | 4 | 5 | 5 |
 | Cloud resolution-scale profile value | 0.25 | 0.45 | 0.60 | 0.70 |
@@ -3959,6 +3960,119 @@ other two brighten: their forests come up out of near-black, and the glow on
 
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
 delivery.
+
+## Tree ground shadows: a decal under every drawn tree (2026-11-12)
+
+Jason, 2026-11-12: open ground "looks fake and plasticy". One measured cause
+is that a tree shaded nothing. Trees cast a real shadow only as near shells
+and only where `vegetationCastsShadows` is on: nowhere on Low and Medium, and
+out to the near switch on High and Ultra (120 m and 190 m). Everywhere else a
+tree stood on evenly lit ground, so open ground with a few trees on it read as
+a painted sheet with models set on top.
+
+**What changed.**
+
+- `treeGroundShadow.ts`, `presentationBuild.ts`: every stem that has a tree
+  record inside the tier's range emits one more 32-byte record, its shadow,
+  under the prototype key `tree-ground-shadow`: the stem's base, the tilt of
+  the ground it stands on, its height and crown radius, its species' crown
+  shape and opacity (scaled by the leaf fraction, so a bare crown throws 30%),
+  its trunk radius and its stem key. One batch per presentation chunk, like
+  every other vegetation prototype.
+- `generation.ts`: each surviving stem carries the ground's slope, from four
+  reads of the 16 m scatter grid that already set its height.
+- `TreeGroundShadowMaterial.ts`: one unit quad per record, on the tyre tracks'
+  blend (`ALPHA_MULTIPLY`, no depth write, opaque group, ahead of water). The
+  vertex stage lays the quad on the stem's ground plane along the sun and
+  works out, per stem, what share of the ground's light is direct sun right
+  now: the sun's strength and colour against the sky's, the sun's angle to
+  that ground, the cloud shadow over the stem and the terrain's own shadow
+  (the horizon field). The fragment stage removes that share inside the
+  crown's ellipse and the trunk's strip, plus up to a fifth of the light in
+  a round patch under the crown that stays when the sun is hidden. In a closed stand
+  the shadows overlap, so each is raised to one over the expected overlap.
+- A shadow draws exactly while its tree does: the vertex stage runs the tree's
+  own test, the stem key against the law's drawn share at the live range. On
+  High and Ultra the crown's shadow hands over to the real one across 4 m at
+  the near switch.
+- The decal is drawn on its plane and depth-tested as if it lay 0.15 m plus
+  0.5% of the range higher (never more than a quarter of the eye's height
+  above the plane), so the coarser terrain mesh of the distance does not cut
+  it. Lifting the quad itself would slide the shadow toward the camera by
+  tens of metres at a kilometre.
+
+**Range by tier** (`treeGroundShadowRangeMeters`): 450 m / 1,100 m / 1,200 m /
+2,000 m, fading over the last fifth. Tiers 1 and 3 run to the mid radius,
+past which a stem's record set no longer depends on the observer. Tier 0
+stops at 450 m, the widest its vegetation draw row has room for. Tier 2 stops
+at 1,200 m for GPU memory headroom.
+
+**Calibration.** On High in SwiftShader, forest soil in a near tree's real
+shadow keeps 0.19 / 0.27 / 0.44 of its sunlit red / green / blue (linear)
+with the sun 57° up and 0.17 / 0.31 / 0.51 at 20°. `TREE_GROUND_SHADOW_DIRECT_TO_SKY`
+(6) and `TREE_GROUND_SHADOW_SKY_COLOUR` (1, 1.5, 2.4) give a solid crown's
+decal 0.17 / 0.24 / 0.36 and 0.21 / 0.36 / 0.61. `tests/gpu/tree-ground-shadow.test.ts`
+checks the drawn pixels against that model.
+
+**Cost.**
+
+- Records: 2 k / 13 k / 18 k / 50 k over closed forest at the near cap
+  (`estimateTreeGroundShadowRecords`). `detailInstanceBudget` moves from
+  150 k / 260 k / 560 k to 155 k / 265 k / 590 k on tiers 1 to 3 (+0.15 /
+  +0.15 / +0.92 MiB); tier 0's 60 k row already held it. On the Medium A/B
+  below the estimate moved 404.20 → 404.37 MiB.
+- Draws: one per presentation chunk the range touches. The model
+  (`estimateVegetationDrawCalls`, new `groundShadowRangeMeters` input) adds
+  1.5 / 2.4 / 2.5 / 3.9 draws. It also stops counting the grass-card batch,
+  which has drawn nothing since the blade field took grass over (-1.1 to
+  -1.2). Modelled totals 46.1 / 54.6 / 435.1 / 511.3 against unchanged
+  ceilings of 50 / 58 / 440 / 515; submission ratios re-pinned to 0.999 /
+  0.788 / 5.954 / 3.693.
+- Triangles: two per shadow in view.
+- Main thread: nothing per frame beyond a handful of uniform writes. The worker pays
+  four height reads per surviving stem at generation and one record per
+  admitted stem at packing.
+
+**A/B** on Medium / balanced, working tree against `b20d758`, cloud
+SwiftShader (4 CPUs, 16 rounds; GPU time is the Hodges-Lehmann estimate and
+its 95% interval, the gate is 5%):
+
+| shot | GPU time | CPU time (guard) | draw calls | vegetation batches | pixels |
+| --- | --- | --- | --- | --- | --- |
+| `approach-500ft` | same +0.3% (-1.1% to +1.9%) | same +0.5% | 248 → 249 | 20 → 21 | 7.2% differ |
+| `forest-500ft-sunbehind` | same +1.1% (+0.2% to +1.9%) | inconclusive +3.0% (-7.1% to +18.4%) | 250 → 251 | 21 → 22 | 7.9% differ |
+| `ground-2m-lowsun` | same +2.5% (+0.8% to +3.7%) | same -3.9% | 123 → 125 | 31 → 33 | 36.0% differ |
+
+`ground-2m-lowsun` is the worst case for fill: the camera stands in a grove
+with the sun low, so the longest shadows the decal draws cover most of the
+ground in frame, several deep. Frame time on a real GPU is not measured here;
+the macOS runner's advisory A/B is the first reading of it.
+
+**Known limits.**
+
+- No shadow past the tier's range, so from high altitude the far forest
+  edge still has none.
+- The shape is an ellipse with a lumpy edge, not the crown's silhouette. At
+  the High and Ultra handover the real shadows are sharper and a little
+  darker than the decals beyond them.
+- The decal lies on one plane. Where the ground curves sharply within a
+  shadow's length (a ridge line, a gully), part of it is hidden or sits a
+  little off.
+- Shadows stop growing below a sun 21.8° up and fade out as it nears the
+  horizon.
+- Only the ground and whatever stands less than the depth slack above it
+  take the shadow. Grass blades taller than that stay sunlit inside a
+  shadow, and so do shrubs, cars and the walker.
+- The fall of contrast with range uses a constant haze (4e-5 per metre), not
+  the atmosphere's.
+
+**Draw ceilings and baselines.** Every capture shot with trees inside the
+range gains one draw per chunk the range touches (1 or 2 on the three shots
+above), and the per-shot ceilings are exact measured counts, so the capture's
+draw gate fails until they are re-pinned from three macOS captures that
+agree, under a `DRAW_CALL_RAISES` entry of its own. The visual gates fail on
+every shot with trees near the camera until the baselines are promoted from
+the macOS capture, after Jason approves the look. Both are pending.
 
 ## In-app benchmark (?bench=1)
 

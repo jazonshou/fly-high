@@ -11,6 +11,10 @@ import {
   renderedShareAtDistance,
   type RenderedDensityLaw,
 } from "./renderedDensity";
+import {
+  TREE_GROUND_SHADOW_PROTOTYPE_KEY,
+  treeGroundShadowRecord,
+} from "./treeGroundShadow";
 import type {
   DetailFloatingOrigin,
   DetailLod,
@@ -205,6 +209,14 @@ export interface DetailPresentationBuildInput {
    * tier retune from moving one half of the handoff without the other.
    */
   readonly groundCoverFieldRadiusMeters?: number;
+  /**
+   * Metres inside which every drawn tree also emits a ground shadow record
+   * (`treeGroundShadow.ts`). Absent or 0 emits none. Capped at the law's mid
+   * radius: past it a stem's record set no longer depends on the observer
+   * (`detailFadeBandMemberships`), and a shadow edge out there would make
+   * those chunks rebuild as the observer moves.
+   */
+  readonly treeGroundShadowRangeMeters?: number;
   readonly observerX: number;
   readonly observerZ: number;
 }
@@ -387,6 +399,73 @@ export function detailFadeBandMemberships(
   return DETAIL_FADE_MEMBERSHIPS_BY_MASK[membershipMask]!;
 }
 
+/**
+ * How far from the observer a stem still gets a ground shadow record: the
+ * tier's shadow range, never past the mid band, plus the membership slack
+ * that keeps a record resident while its chunk's rebuild is in flight. 0 when
+ * the tier draws no ground shadows.
+ */
+export function treeGroundShadowReachMeters(
+  rangeMeters: number | undefined,
+  law: RenderedDensityLaw,
+): number {
+  if (rangeMeters === undefined || !Number.isFinite(rangeMeters) || rangeMeters <= 0) return 0;
+  return Math.min(rangeMeters, law.mid.outerRadiusMeters) + DETAIL_MEMBERSHIP_SLACK_METERS;
+}
+
+/**
+ * Whether a stem at this range needs a ground shadow record.
+ *
+ * The shader draws a shadow exactly while it draws the tree: while the stem's
+ * key is within the law's drawn share at the live range. The CPU keeps a
+ * superset resident, the way it does for the tree's own records: the share at
+ * the nearest range the observer can reach before this chunk is rebuilt (one
+ * membership slack closer), plus the admission margin.
+ */
+export function treeGroundShadowAdmitted(
+  stemDistanceMeters: number,
+  stemKey: number,
+  law: RenderedDensityLaw,
+  reachMeters: number,
+): boolean {
+  if (!(reachMeters > 0) || !(stemDistanceMeters <= reachMeters)) return false;
+  return stemKey <= treeGroundShadowAdmittedShare(stemDistanceMeters, law);
+}
+
+/** The share of stem keys `treeGroundShadowAdmitted` lets through at a range inside the reach. */
+function treeGroundShadowAdmittedShare(stemDistanceMeters: number, law: RenderedDensityLaw): number {
+  const nearestRange = Math.max(0, stemDistanceMeters - DETAIL_MEMBERSHIP_SLACK_METERS);
+  return Math.min(
+    1,
+    drawnShareAtDistance(law, nearestRange) + DETAIL_DENSITY_ADMISSION_MARGIN_SHARE,
+  );
+}
+
+/**
+ * Ground shadow records resident over closed forest at the near cap: the
+ * admitted share, integrated over the disc out to the reach. This is what
+ * `DYNAMIC_ALLOCATIONS.detailInstanceBudget` books for them, on top of the
+ * tree records (`estimateRenderedWoodyLoad`); the rendered-density suite pins
+ * the sum under the row.
+ */
+export function estimateTreeGroundShadowRecords(
+  rangeMeters: number | undefined,
+  law: RenderedDensityLaw,
+): number {
+  const reach = treeGroundShadowReachMeters(rangeMeters, law);
+  if (!(reach > 0)) return 0;
+  const steps = 2_048;
+  const ring = reach / steps;
+  let records = 0;
+  for (let index = 0; index < steps; index += 1) {
+    const r = (index + 0.5) * ring;
+    records += 2 * Math.PI * r * ring
+      * (law.nearStemsPerHectare / 10_000)
+      * treeGroundShadowAdmittedShare(r, law);
+  }
+  return records;
+}
+
 /** Impostor-only stems are cheap records; charge them to the scheduler in blocks. */
 const DETAIL_PRESENTATION_IMPOSTOR_BLOCK_SIZE = 8;
 
@@ -442,6 +521,10 @@ export function* buildPresentationChunk(
     observerX,
     observerZ,
   } = input;
+  const treeGroundShadowReach = treeGroundShadowReachMeters(
+    input.treeGroundShadowRangeMeters,
+    densityLaw,
+  );
   const statistics: MutableDetailPresentationChunkStatistics = {
     nearCells: 0,
     midCells: 0,
@@ -460,6 +543,13 @@ export function* buildPresentationChunk(
 
     const cellHectares = (resident.cell.cellSizeMeters * resident.cell.cellSizeMeters) / 10_000;
     const stemsPerHa = resident.cell.trees.length / Math.max(cellHectares, 1e-6);
+    // The stand's authored density over the near cap: what the ground shadow
+    // reads to keep a closed stand's overlapping shadows from multiplying
+    // down to black.
+    const standDensityShare = Math.min(
+      1,
+      stemsPerHa / Math.max(densityLaw.nearStemsPerHectare, 1e-6),
+    );
     // 2026-09-13: the CPU decides which tree records EXIST; the GPU decides
     // which one draws, per stem and per frame, against the live camera range
     // (`DetailInstanceMaterialPlugin`'s band windows compare the stem's key —
@@ -750,7 +840,18 @@ export function* buildPresentationChunk(
           });
         }
       }
-      if (emittedRecord) statistics.treeInstances += 1;
+      if (!emittedRecord) continue;
+      statistics.treeInstances += 1;
+      // One ground shadow per stem that has a record, whichever representation
+      // draws it. Only this path can be inside the shadow's reach: the
+      // impostor-only path above starts where the reach ends, at the mid
+      // radius plus the slack.
+      if (treeGroundShadowAdmitted(stemDistance, stemKey, densityLaw, treeGroundShadowReach)) {
+        sink.appendInstance(
+          TREE_GROUND_SHADOW_PROTOTYPE_KEY,
+          treeGroundShadowRecord(tree, stemKey, standDensityShare, floatingOrigin),
+        );
+      }
     }
 
     let rejectedShrubCandidates = 0;

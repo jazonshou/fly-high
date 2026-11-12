@@ -877,6 +877,33 @@ function gridHeight(grid: ScatterTerrainGrid, x: number, z: number): number {
   return top * (1 - fz) + bottom * fz;
 }
 
+/** Half the span the ground slope under a stem is measured over, in metres. */
+const SCATTER_SLOPE_HALF_SPAN_METERS = SCATTER_TERRAIN_GRID_METERS / 2;
+
+/**
+ * The ground's slope at a point, dh/dx and dh/dz, by central differences of
+ * the same bilinear surface `gridHeight` reads. Measured across one whole
+ * grid pitch rather than as the patch's own tangent, because a tree's ground
+ * shadow reaches 10 to 30 m and should lie on the slope at that scale, not
+ * on one 16 m patch's twist.
+ */
+function gridSlope(grid: ScatterTerrainGrid, x: number, z: number): readonly [number, number] {
+  const half = SCATTER_SLOPE_HALF_SPAN_METERS;
+  return [
+    (gridHeight(grid, x + half, z) - gridHeight(grid, x - half, z)) / (2 * half),
+    (gridHeight(grid, x, z + half) - gridHeight(grid, x, z - half)) / (2 * half),
+  ];
+}
+
+function groundSlopeFields(
+  grid: ScatterTerrainGrid,
+  x: number,
+  z: number,
+): { readonly groundSlopeX: number; readonly groundSlopeZ: number } {
+  const [groundSlopeX, groundSlopeZ] = gridSlope(grid, x, z);
+  return { groundSlopeX, groundSlopeZ };
+}
+
 /**
  * Sand seas: the most sand cover at the four grid nodes round a point. The
  * MOST, not an interpolation: a dune's edge is near straight over 16 m, and a
@@ -1361,6 +1388,9 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       ),
       standAge: stand.standAge,
       selection: random(),
+      // After every roll, so the stem's random stream is what it was. Only
+      // stems that survive thinning pay for the four height reads.
+      ...groundSlopeFields(context.grid, x, z),
     }));
   }) as readonly DetailTreePlacement[];
 }

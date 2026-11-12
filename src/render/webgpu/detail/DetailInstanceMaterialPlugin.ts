@@ -14,6 +14,7 @@ import {
 // terrain's canopy ramp fades in over exactly the window the impostors fade
 // out over, and two literals cannot be made to agree by inspection.
 import { DETAIL_FAR_CULL_FADE_METERS } from "./densityField";
+import { DETAIL_NEAR_SWITCH_INSET_METERS } from "./renderedDensity";
 import { HORIZON_FIELD_LOOKUP_WGSL } from "@/src/render/webgpu/terrain/HorizonField";
 import {
   TREE_BARK_LAYER_MIN,
@@ -220,7 +221,7 @@ fn detailBandWindowEmpty(
   geometryCoexists: bool,
 ) -> bool {
   let bandRange = distance(instancePosition.xz, scene.vEyePosition.xz);
-  let nearSwitch = uniforms.detailBandRadii.x - 50.0;
+  let nearSwitch = uniforms.detailBandRadii.x - ${DETAIL_NEAR_SWITCH_INSET_METERS.toFixed(1)};
   let farSwitchHash = detailStemHash(stemKey);
   let farSwitch = uniforms.detailBandRadii.y - 100.0 + farSwitchHash * 100.0;
   // Code 4: the MID-band leaf-card shell (wave T). Lives between the near
@@ -865,7 +866,7 @@ fn detailBandWindow(bandCode: f32, positionW: vec3f, pixel: vec2f, tintRgb: vec3
   // far edge is the vertex window's per-stem hashed switch, same as mid bark.
   if (bandCode > 3.5) {
     let cardRange = distance(positionW.xz, scene.vEyePosition.xz);
-    let nearEdge = uniforms.detailBandRadii.x - 50.0;
+    let nearEdge = uniforms.detailBandRadii.x - ${DETAIL_NEAR_SWITCH_INSET_METERS.toFixed(1)};
     let inFade = clamp((nearEdge - cardRange) / 50.0, 0.0, 1.0);
     let cardHash = fract(dot(tintRgb, vec3f(12.9898, 78.233, 37.719)) * 43758.5453);
     let cardOffset = vec2u(u32(cardHash * 5.0), u32(fract(cardHash * 7.0) * 5.0));
@@ -881,7 +882,7 @@ fn detailBandWindow(bandCode: f32, positionW: vec3f, pixel: vec2f, tintRgb: vec3
   // switch radius (the reported "trees jump").
   if (bandCode > 2.5) {
     let fringeRange = distance(positionW.xz, scene.vEyePosition.xz);
-    let fringeEdge = uniforms.detailBandRadii.x - 50.0;
+    let fringeEdge = uniforms.detailBandRadii.x - ${DETAIL_NEAR_SWITCH_INSET_METERS.toFixed(1)};
     let fringeFade = clamp((fringeEdge - fringeRange) / 50.0, 0.0, 1.0);
     if (fringeFade >= 1.0) { return true; }
     if (fringeFade <= 0.0) { return false; }

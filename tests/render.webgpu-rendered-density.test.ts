@@ -12,7 +12,10 @@ import {
   renderedShareAtDistance,
 } from "../src/render/webgpu/detail/renderedDensity";
 import { DYNAMIC_ALLOCATIONS, FRAME_BUDGET_MS } from "../src/render/webgpu/core/PerformanceBudget";
-import { DETAIL_CULL_FADE_MARGIN_METERS } from "../src/render/webgpu/detail/presentationBuild";
+import {
+  DETAIL_CULL_FADE_MARGIN_METERS,
+  estimateTreeGroundShadowRecords,
+} from "../src/render/webgpu/detail/presentationBuild";
 import { DETAIL_PRESENTATION_CHUNK_CELL_SPAN } from "../src/render/webgpu/detail/spatialChunks";
 import { DEFAULT_DETAIL_CELL_SIZE_METERS } from "../src/render/webgpu/detail/types";
 import { IMPOSTOR_SPECIES } from "../src/render/webgpu/detail/ImpostorAtlas";
@@ -217,8 +220,25 @@ describe("impostor fill (2026-09-13)", () => {
     // resident cell (residency radius plus a cell diagonal). Those rows are
     // never drawn (the shader culls them live); they are what lets a far
     // chunk's record set ignore the observer.
+    // 2026-11-12: every stem with a tree record inside the tier's ground
+    // shadow range packs one more, its shadow (`treeGroundShadow.ts`).
+    const shadowRangeByTier = new Map<number, number>();
+    for (const [quality, mode] of [
+      ["low", "performance"], ["medium", "balanced"], ["high", "balanced"], ["high", "ultra"],
+    ] as const) {
+      const profile = resolveWebGpuQualityProfile(quality, mode);
+      shadowRangeByTier.set(profile.tier, profile.treeGroundShadowRangeMeters);
+    }
+    expect([...shadowRangeByTier.keys()].sort()).toEqual([0, 1, 2, 3]);
     RENDERED_DENSITY_LAWS.forEach((law, tier) => {
       const estimate = estimateRenderedWoodyLoad(law);
+      const shadowRecords = estimateTreeGroundShadowRecords(shadowRangeByTier.get(tier), law);
+      // Non-vacuous: the term is live at every tier, and never more than one
+      // record per stem inside the mid band.
+      expect(shadowRecords, `tier ${tier} shadow records`).toBeGreaterThan(0);
+      expect(shadowRecords, `tier ${tier} shadow records`).toBeLessThan(
+        estimate.nearStems + estimate.midStems + estimate.impostorStems,
+      );
       const farRadius = law.far.outerRadiusMeters;
       const residencyReach = farRadius + DETAIL_CULL_FADE_MARGIN_METERS
         + DEFAULT_DETAIL_CELL_SIZE_METERS * Math.SQRT2;
@@ -227,7 +247,8 @@ describe("impostor fill (2026-09-13)", () => {
       const records = estimate.nearStems * 7
         + estimate.midStems * 4
         + estimate.impostorStems
-        + beyondCullStems;
+        + beyondCullStems
+        + shadowRecords;
       const row = DYNAMIC_ALLOCATIONS.detailInstanceBudget[tier as 0 | 1 | 2 | 3];
       expect(records, `tier ${tier}`).toBeLessThanOrEqual(row);
       // Non-vacuous: the row is a ceiling being approached, not a formality.
@@ -281,9 +302,13 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
       near: nearVariants * 3,
       mid: midVariants * 3,
       far: 1,
-      // Shrub variants + three rock lithologies + four clutter kinds + four
-      // ground-cover archetypes, all near-band only.
-      understory: shrubMeshes + 3 + 4 + 4,
+      // Shrub variants + three rock lithologies + four clutter kinds + three
+      // ground-cover card archetypes (fern, heather, reed), all near-band
+      // only. 2026-11-12: this counted four. The grass cards retired with
+      // wave G's blade field: `buildPresentationChunk` emits no grass card
+      // wherever the blades are live, which is every device with compute
+      // shaders, so that batch has had no records and no draw since.
+      understory: shrubMeshes + 3 + 4 + 3,
     };
   }
 
@@ -326,6 +351,7 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
         // false in the runtime itself.
         shadowMeshesPerChunk: profile.vegetationCastsShadows ? counts.near : 0,
         shadowCascades: profile.shadowCascades,
+        groundShadowRangeMeters: profile.treeGroundShadowRangeMeters,
       }),
     };
   }
@@ -411,6 +437,7 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
       understoryMeshesPerChunk: counts.understory,
       shadowMeshesPerChunk: profile.vegetationCastsShadows ? (counts.near * 2) / 3 : 0,
       shadowCascades: profile.shadowCascades,
+      groundShadowRangeMeters: profile.treeGroundShadowRangeMeters,
     });
     expect(merged.total).toBeLessThan(estimate.total);
     // Prototype-family batching closes tier 1 without moving opaque trunks
@@ -443,6 +470,7 @@ describe("vegetation draw-call budget (perf-debt pass)", () => {
       understoryMeshesPerChunk: counts.understory,
       shadowMeshesPerChunk: profile.vegetationCastsShadows ? counts.near : 0,
       shadowCascades: profile.shadowCascades,
+      groundShadowRangeMeters: profile.treeGroundShadowRangeMeters,
     };
     const merged = estimateVegetationDrawCalls({ ...shared, farMeshesPerChunk: 1 });
     const perSpecies = estimateVegetationDrawCalls({

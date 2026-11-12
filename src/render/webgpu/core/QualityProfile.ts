@@ -409,6 +409,27 @@ export interface WebGpuQualityProfile {
    * Data, not a `profile.tier` branch, per the tier rule.
    */
   readonly vegetationCastsShadows: boolean;
+  /**
+   * Metres inside which every drawn tree lays a ground shadow decal
+   * (`treeGroundShadow.ts`); 0 draws none.
+   *
+   * This is the shadow trees have where they cast no real one, which is
+   * everywhere `vegetationCastsShadows` is off and everything past the near
+   * band where it is on. One quad per drawn stem and one draw per presentation
+   * chunk in range, so it costs a fraction of what the casters above do.
+   *
+   * At most `renderedDensityLaw.mid.outerRadiusMeters`: a shadow record exists
+   * only where the stem's records already depend on the observer, so the range
+   * adds no rebuild traffic. Tiers 1 and 3 run it to the mid radius. Tier 0
+   * stops at 450 m, the widest its vegetation draw row has room for (the
+   * decal is one more draw per chunk in range, and that row sat at 99.1%:
+   * `VEGETATION_DRAW_SUBMISSION_RATIO`). Tier 2 stops at 1,200 m because its
+   * GPU memory estimate has 2.0 MiB of headroom and each 100 m out there
+   * costs about 0.1 MiB of instance records.
+   *
+   * Data, not a `profile.tier` branch, per the tier rule.
+   */
+  readonly treeGroundShadowRangeMeters: number;
   readonly activeAnimalBudget: number;
   /**
    * Volcanic phase 5: the instance cap on steam wisps over vents within 15 km
@@ -671,6 +692,7 @@ function resolveBaseQualityProfile(
       // `4.5-C1`: off below tier 2. At tier 0 the shadow term is 106 of 257
       // modelled draws.
       vegetationCastsShadows: false,
+      treeGroundShadowRangeMeters: 450,
       activeAnimalBudget: 16,
       volcanicSteamMaxWisps: 0,
       boatSprayParticleCap: 256,
@@ -795,6 +817,7 @@ function resolveBaseQualityProfile(
       // `4.5-C1`: OFF at the G-C tier. 148 of 347 modelled draws, 3.85 of the
       // 9.02 ms row.
       vegetationCastsShadows: false,
+      treeGroundShadowRangeMeters: 1_100,
       activeAnimalBudget: 48,
       volcanicSteamMaxWisps: 128,
       boatSprayParticleCap: 1_024,
@@ -909,6 +932,7 @@ function resolveBaseQualityProfile(
       // High and Ultra keep tree shadows: their frame targets are met by
       // spending pixels, and D15 already cut this tier's cascade count once.
       vegetationCastsShadows: true,
+      treeGroundShadowRangeMeters: 1_200,
       activeAnimalBudget: 128,
       volcanicSteamMaxWisps: 192,
       boatSprayParticleCap: 4_096,
@@ -1024,6 +1048,7 @@ function resolveBaseQualityProfile(
     vegetationDistance: 6_000,
     vegetationDensity: 1,
     vegetationCastsShadows: true,
+    treeGroundShadowRangeMeters: 2_000,
     activeAnimalBudget: 128,
     volcanicSteamMaxWisps: 256,
     boatSprayParticleCap: 4_096,

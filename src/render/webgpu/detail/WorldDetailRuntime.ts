@@ -13,6 +13,7 @@ import type { PipelineWarmUp } from "@/src/render/webgpu/core/AsyncPipelineCompi
 import { createGuardedShadowDepthWrapper } from "@/src/render/webgpu/core/guardedShadowDepthWrapper";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
+  DETAIL_NEAR_SWITCH_INSET_METERS,
   RENDERED_DENSITY_LAWS,
   renderedShareAtDistance,
   type RenderedDensityLaw,
@@ -108,6 +109,12 @@ import {
   type DetailPresentationChunkStatistics,
 } from "./presentationBuild";
 import { groundCoverHandoffRadiusMeters } from "./groundCoverLaw";
+import type { CloudShadowProjection } from "@/src/render/webgpu/clouds/CloudShadowReceiver";
+import {
+  TREE_GROUND_SHADOW_PROTOTYPE_BOUNDS,
+  TREE_GROUND_SHADOW_PROTOTYPE_KEY,
+} from "./treeGroundShadow";
+import { TreeGroundShadowMaterial } from "./TreeGroundShadowMaterial";
 import {
   CANOPY_SURFACE_AMBIENT,
   CANOPY_SURFACE_SPECULAR,
@@ -300,7 +307,8 @@ interface PooledInstanceBuffers {
 
 interface DetailPrototype {
   readonly mesh: Mesh;
-  readonly material: PBRMaterial;
+  /** A PBR material for everything that is lit; the ground shadow's is a blend-only shader. */
+  readonly material: Material;
   readonly castsShadows: boolean;
   readonly boundKernel: DetailPrototypeBoundKernel;
 }
@@ -913,6 +921,14 @@ export class WorldDetailRuntime {
    * signatures so a tier change rebuilds the chunks the handoff moved.
    */
   private groundCoverFieldRadiusMeters = 0;
+  /**
+   * The ground shadow every drawn tree lays (`treeGroundShadow.ts`): one
+   * material for all of its per-chunk batches, fed the frame's light and the
+   * tier's law here. Its batches ride the ordinary record pipeline.
+   */
+  private treeGroundShadow: TreeGroundShadowMaterial | null = null;
+  /** The tier's shadow range the resident shadow records were built for. */
+  private treeGroundShadowRangeMeters = 0;
   /** Far impostors are baked from species variant 0 near geometry. */
   private readonly impostorRadialUnits = new Map<TreeSpecies, number>();
   /** Per-species shader frame for the one shared camera-facing impostor quad. */
@@ -1703,6 +1719,21 @@ export class WorldDetailRuntime {
     for (const plugin of this.instancePlugins) {
       plugin.setKeyLight(directionX, directionY, directionZ, radiance, strength);
     }
+    this.treeGroundShadow?.setSun(directionX, directionY, directionZ, radiance, strength);
+  }
+
+  /**
+   * The sky light's strength beside the key light's (both 1 at clear noon):
+   * the ground shadow removes the direct share of the ground's light, and
+   * that share is one against the other.
+   */
+  setSkylight(strength: number): void {
+    this.treeGroundShadow?.setSkylight(strength);
+  }
+
+  /** The cloud map the terrain reads: a crown under a cloud throws no shadow. */
+  setCloudShadow(projection: CloudShadowProjection | null): void {
+    this.treeGroundShadow?.setCloudShadow(projection);
   }
 
   /** Wave Q: forward the frame's CSM snapshot to the far-band receiver. */
@@ -1730,6 +1761,7 @@ export class WorldDetailRuntime {
     for (const plugin of this.instancePlugins) {
       plugin.setHorizonField(layerA, layerB, originX, originZ, spanMeters);
     }
+    this.treeGroundShadow?.setHorizonField(layerA, layerB, originX, originZ, spanMeters);
   }
 
   get statistics(): WorldDetailStatistics {
@@ -1927,6 +1959,7 @@ export class WorldDetailRuntime {
     for (const plugin of this.instancePlugins) {
       plugin.setWorldOrigin(floatingOrigin.x, floatingOrigin.z);
     }
+    this.treeGroundShadow?.setWorldOrigin(floatingOrigin.x, floatingOrigin.z);
     if (!Number.isFinite(profile.vegetationDistance) || profile.vegetationDistance <= 0) {
       throw new RangeError("Vegetation distance must be finite and greater than zero");
     }
@@ -2194,6 +2227,32 @@ export class WorldDetailRuntime {
         profile.renderedDensityLaw.impostorFloorShare,
       );
     }
+    const treeGroundShadowRangeMeters = this.treeGroundShadow
+      ? Math.max(0, profile.treeGroundShadowRangeMeters)
+      : 0;
+    if (treeGroundShadowRangeMeters !== this.treeGroundShadowRangeMeters) {
+      // The range decides which stems carry a shadow record at all.
+      this.treeGroundShadowRangeMeters = treeGroundShadowRangeMeters;
+      this.batchesDirty = true;
+    }
+    this.treeGroundShadow?.setLaw({
+      nearRadiusMeters: profile.renderedDensityLaw.near.outerRadiusMeters,
+      rangeMeters: Math.min(
+        treeGroundShadowRangeMeters,
+        profile.renderedDensityLaw.mid.outerRadiusMeters,
+      ),
+      geometryFloorShare: profile.renderedDensityLaw.farFloorShare,
+      drawnFloorShare: profile.renderedDensityLaw.impostorFloorShare,
+      nearStemsPerHectare: profile.renderedDensityLaw.nearStemsPerHectare,
+      // Near trees cast real shadows out to where the near shells stop
+      // drawing (`detailBandWindowEmpty`'s near switch).
+      realShadowEdgeMeters: profile.vegetationCastsShadows
+        ? Math.max(
+            0,
+            profile.renderedDensityLaw.near.outerRadiusMeters - DETAIL_NEAR_SWITCH_INSET_METERS,
+          )
+        : 0,
+    });
     if (this.batchesDirty) {
       // Stays dirty while the amortized sweep has a backlog.
       this.batchesDirty = this.rebuildBatches(floatingOrigin, profile);
@@ -2418,6 +2477,8 @@ export class WorldDetailRuntime {
     this.impostorAtlas = null;
     for (const material of this.materials) material.dispose(true, true);
     this.materials.clear();
+    this.treeGroundShadow?.dispose();
+    this.treeGroundShadow = null;
     this.statisticsValue = ZERO_STATISTICS;
   }
 
@@ -2596,6 +2657,7 @@ export class WorldDetailRuntime {
       profile.treePrototypeMode,
       profile.grassRadiusMeters,
       this.groundCoverFieldRadiusMeters,
+      this.treeGroundShadowRangeMeters,
     ].join(":");
     const targets = new Map<string, DetailChunkBuildTarget>();
 
@@ -2616,6 +2678,7 @@ export class WorldDetailRuntime {
         profile.treePrototypeMode,
         profile.grassRadiusMeters,
         this.groundCoverFieldRadiusMeters,
+        this.treeGroundShadowRangeMeters,
         // 2-17 close: the observer term applies ONLY to FRONTIER chunks —
         // those straddling a band or population edge, where memberships and
         // single-edge baked fades actually change with camera range. An
@@ -2955,6 +3018,7 @@ export class WorldDetailRuntime {
           grassRadiusMeters,
           groundCoverBladesActive: this.groundCoverBladesActive,
           groundCoverFieldRadiusMeters: this.groundCoverFieldRadiusMeters,
+          treeGroundShadowRangeMeters: this.treeGroundShadowRangeMeters,
           observerX: this.observerX,
           observerZ: this.observerZ,
         },
@@ -3017,6 +3081,7 @@ export class WorldDetailRuntime {
           grassRadiusMeters,
           groundCoverBladesActive: this.groundCoverBladesActive,
           groundCoverFieldRadiusMeters: this.groundCoverFieldRadiusMeters,
+          treeGroundShadowRangeMeters: this.treeGroundShadowRangeMeters,
           observerX: this.observerX,
           observerZ: this.observerZ,
         },
@@ -3215,9 +3280,10 @@ export class WorldDetailRuntime {
       + statistics.rockInstances
       + statistics.clutterInstances
       + statistics.groundCoverInstances;
-    // A stem carries at most seven records: three near parts, three mid
-    // parts, and (2026-09-13) one impostor coexisting with either.
-    const maximumPackedRecords = statistics.treeInstances * 7
+    // A stem carries at most eight records: three near parts, three mid
+    // parts, (2026-09-13) one impostor coexisting with either, and its
+    // ground shadow.
+    const maximumPackedRecords = statistics.treeInstances * 8
       + statistics.shrubInstances
       + statistics.rockInstances
       + statistics.clutterInstances
@@ -4085,6 +4151,9 @@ export class WorldDetailRuntime {
     // poisons the whole render bundle to a black frame.
     mesh.receiveShadows = prototype.mesh.receiveShadows;
     mesh.alwaysSelectAsActiveMesh = false;
+    if (prototypeKey === TREE_GROUND_SHADOW_PROTOTYPE_KEY) {
+      this.treeGroundShadow?.configureBatchMesh(mesh);
+    }
     mesh.setEnabled(false);
     mesh.metadata = {
       detailBatch: prototypeKey,
@@ -4560,6 +4629,20 @@ export class WorldDetailRuntime {
       );
     }
 
+    // The ground shadow every drawn tree lays. Registered directly rather
+    // than through `registerBatch`: its material is a blend-only shader, not
+    // PBR, and its quad neither receives shadows nor carries vertex colours.
+    this.treeGroundShadow = new TreeGroundShadowMaterial(this.scene);
+    const shadowQuad = this.treeGroundShadow.createPrototypeMesh();
+    shadowQuad.metadata = { detailPrototype: TREE_GROUND_SHADOW_PROTOTYPE_KEY };
+    // The record's radial lane is the crown radius over the tree's height.
+    this.prototypeRadialUnits.set(TREE_GROUND_SHADOW_PROTOTYPE_KEY, 1);
+    this.prototypes.set(TREE_GROUND_SHADOW_PROTOTYPE_KEY, {
+      mesh: shadowQuad,
+      material: this.treeGroundShadow.material,
+      castsShadows: false,
+      boundKernel: detailPrototypeBoundKernel(TREE_GROUND_SHADOW_PROTOTYPE_BOUNDS),
+    });
   }
 
 

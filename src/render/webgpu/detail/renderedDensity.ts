@@ -158,6 +158,14 @@ export const RENDERED_DENSITY_LAWS: readonly RenderedDensityLaw[] = Object.freez
   }),
 ]);
 
+/**
+ * How far inside the near radius the near shells stop drawing and the mid
+ * band takes over: `DetailInstanceMaterialPlugin`'s near switch. The ground
+ * shadow reads it too, because near shells are the only trees that cast a
+ * real shadow, so this is also where real tree shadows end.
+ */
+export const DETAIL_NEAR_SWITCH_INSET_METERS = 50;
+
 /** Rendered share of the near cap at range d (the law's falloff curve). */
 export function renderedShareAtDistance(law: RenderedDensityLaw, distanceMeters: number): number {
   if (!Number.isFinite(distanceMeters) || distanceMeters < 0) {
@@ -393,6 +401,13 @@ export interface VegetationDrawModelInput {
    */
   readonly shadowMeshesPerChunk: number;
   readonly shadowCascades: number;
+  /**
+   * 2026-11-12: how far tree ground shadows draw (`treeGroundShadow.ts`),
+   * the profile's `treeGroundShadowRangeMeters`. ONE blended decal mesh per
+   * chunk the range touches, in the beauty pass only: a decal casts nothing.
+   * Zero draws none.
+   */
+  readonly groundShadowRangeMeters: number;
 }
 
 export interface VegetationDrawEstimate {
@@ -401,6 +416,8 @@ export interface VegetationDrawEstimate {
   readonly far: number;
   readonly understory: number;
   readonly shadow: number;
+  /** Tree ground shadow decals (not the shadow PASS, which is `shadow`). */
+  readonly groundShadow: number;
   readonly total: number;
   readonly estimatedMs: number;
 }
@@ -433,13 +450,20 @@ export function estimateVegetationDrawCalls(
   const far = farChunks * input.farMeshesPerChunk;
   const understory = nearChunks * input.understoryMeshesPerChunk;
   const shadow = nearChunks * input.shadowMeshesPerChunk * input.shadowCascades;
-  const total = near + mid + far + understory + shadow;
+  // Records stop at the mid radius whatever the profile asks for
+  // (`treeGroundShadowReachMeters`), so the decal's chunks do too.
+  const groundShadowRange = Math.min(input.groundShadowRangeMeters, law.mid.outerRadiusMeters);
+  const groundShadow = groundShadowRange > 0
+    ? chunksTouchedByDisc(groundShadowRange, chunkEdgeMeters)
+    : 0;
+  const total = near + mid + far + understory + shadow + groundShadow;
   return Object.freeze({
     near,
     mid,
     far,
     understory,
     shadow,
+    groundShadow,
     total,
     estimatedMs: total * VEGETATION_DRAW_COST_MS,
   });
@@ -479,12 +503,18 @@ export function estimateVegetationDrawCalls(
  */
 export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
   // Wave T: each tree band submits THREE parts (bark skeleton, interior
-  // core, leaf-cluster card shell). Modelled 45.7 draws at tier 0.
+  // core, leaf-cluster card shell). Modelled 46.1 draws at tier 0.
   50,
-  // Modelled 53.3 draws at the medium/balanced contract tier.
+  // Modelled 54.6 draws at the medium/balanced contract tier.
   58,
-  // Species mode models 433.8 draws at tier 2 and 508.6 at tier 3 with the
+  // Species mode models 435.1 draws at tier 2 and 511.3 at tier 3 with the
   // third tree part; re-pinned as the regression guard the renderer meets.
+  //
+  // 2026-11-12: the four figures above were 45.7 / 53.3 / 433.8 / 508.6. Two
+  // terms moved them and no ceiling: the tree ground shadow adds one decal
+  // draw per chunk its range touches (+1.5 / +2.4 / +2.5 / +3.9), and the
+  // grass-card batch the model still counted, which has drawn nothing since
+  // the blade field took grass over, comes out (-1.1 to -1.2).
   //
   // `7-CSM`: down from 507.6 / 665.9. `estimateVegetationDrawCalls` counts the
   // near band once per cascade, and tiers 2 and 3 fell from 3 and 4 cascades to
@@ -503,8 +533,11 @@ export const VEGETATION_DRAW_CEILING: readonly number[] = Object.freeze([
  * term small. Tier 0/1 being below one means submissions fit, not vegetation.
  */
 export const VEGETATION_DRAW_SUBMISSION_RATIO: readonly number[] = Object.freeze([
-  0.991,
-  0.77,
+  // 2026-11-12: 0.991 / 0.77 before the tree ground shadow's decal draw (and
+  // without the retired grass-card batch). Tier 0 has no room left: its
+  // shadow range, 450 m, is the widest that keeps this under one.
+  0.999,
+  0.788,
   // The third tree part raises the species-mode submission model; these
   // tiers remain well above the vegetation frame row. The strict capture,
   // not this draw-only model, decides whether skeletal trees close frame
@@ -514,6 +547,8 @@ export const VEGETATION_DRAW_SUBMISSION_RATIO: readonly number[] = Object.freeze
   // Still far above 1.0 — the cascade cut did not close the vegetation row and
   // is not claimed to. MEASURED separately at tier 3, the cut costs nothing
   // resolvable in fps, so this ratio moving is not itself evidence of a win.
-  5.936,
-  3.674,
+  //
+  // 2026-11-12: 5.936 / 3.674 before the ground shadow's decal draw.
+  5.954,
+  3.693,
 ]);

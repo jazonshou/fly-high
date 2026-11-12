@@ -9,12 +9,17 @@ import {
   type DetailBillboardFrameBounds,
 } from "../src/render/webgpu/detail/instanceFormat";
 import {
+  DETAIL_MEMBERSHIP_SLACK_METERS,
   buildPresentationChunk,
   detailCellMinimumDistanceMeters,
   type DetailPresentationBuildCatalog,
   type DetailPresentationBuildInput,
   type DetailPresentationChunkStatistics,
 } from "../src/render/webgpu/detail/presentationBuild";
+import {
+  TREE_GROUND_SHADOW_PROTOTYPE_BOUNDS,
+  TREE_GROUND_SHADOW_PROTOTYPE_KEY,
+} from "../src/render/webgpu/detail/treeGroundShadow";
 import type {
   ClutterKind,
   GeneratedDetailCell,
@@ -644,5 +649,195 @@ describe("pure detail presentation build", () => {
         },
       ]
     `);
+  });
+});
+
+/**
+ * 2026-11-12 — the tree ground shadow (`treeGroundShadow.ts`). One more record
+ * per stem that has a tree record inside the tier's shadow range, in a batch
+ * of its own, and nothing else in the build may move for it.
+ */
+describe("tree ground shadow records", () => {
+  const law = RENDERED_DENSITY_LAWS[1]!;
+  const STRIDE = 32;
+
+  function shadowCatalog(): DetailPresentationBuildCatalog {
+    const catalog = buildCatalog(true);
+    return {
+      ...catalog,
+      prototypes: {
+        ...catalog.prototypes,
+        [TREE_GROUND_SHADOW_PROTOTYPE_KEY]: {
+          radialUnits: 1,
+          boundKernel: detailPrototypeBoundKernel(TREE_GROUND_SHADOW_PROTOTYPE_BOUNDS),
+        },
+      },
+    };
+  }
+
+  /** A stand past the near cap: forty stems in the fixture's 0.41 ha cell. */
+  function denseCell(): GeneratedDetailCell {
+    const cell = fixtureCell(0, 0);
+    const trees = Array.from({ length: 40 }, (_, index) => {
+      const template = cell.trees[index % cell.trees.length]!;
+      return {
+        ...template,
+        id: `tree-${index}`,
+        x: cell.minX + 4 + (index % 8) * 7,
+        z: cell.minZ + 6 + Math.floor(index / 8) * 11,
+        selection: (index * 0.137) % 1,
+      };
+    });
+    return { ...cell, trees };
+  }
+
+  function input(
+    cell: GeneratedDetailCell,
+    observerX: number,
+    observerZ: number,
+    treeGroundShadowRangeMeters: number | undefined,
+  ): DetailPresentationBuildInput {
+    const count = cell.trees.length;
+    const distance = detailCellMinimumDistanceMeters(
+      observerX, observerZ, cell.cellX, cell.cellZ, cell.cellSizeMeters,
+    );
+    return {
+      residents: [{
+        cell,
+        treeCanopyRank: Float32Array.from({ length: count }, (_, index) => index / count),
+        lod: distance <= law.near.outerRadiusMeters ? "near" : "mid",
+        distance,
+      }],
+      floatingOrigin: { x: 16, y: 80, z: -16 },
+      densityLaw: law,
+      treeVariantCap: 3,
+      treePrototypeMode: "species",
+      grassRadiusMeters: 64,
+      observerX,
+      observerZ,
+      ...(treeGroundShadowRangeMeters === undefined ? {} : { treeGroundShadowRangeMeters }),
+    };
+  }
+
+  function batch(result: BuildResult, key: string): PackedBatch | undefined {
+    return result.batches.find((entry) => entry.key === key);
+  }
+
+  /** The key-lane codes of a batch's records, one per record. */
+  function keyCodes(packed: PackedBatch | undefined): number[] {
+    if (!packed) return [];
+    return Array.from({ length: packed.bytes.byteLength / STRIDE }, (_, index) =>
+      packed.bytes[index * STRIDE + 30]!);
+  }
+
+  function treeKeyCodes(result: BuildResult): Set<number> {
+    const codes = new Set<number>();
+    for (const packed of result.batches) {
+      if (!packed.key.startsWith("tree-")) continue;
+      if (packed.key === TREE_GROUND_SHADOW_PROTOTYPE_KEY) continue;
+      for (const code of keyCodes(packed)) codes.add(code);
+    }
+    return codes;
+  }
+
+  it("emits none unless the tier asks, and moves no other byte when it does", () => {
+    const cell = denseCell();
+    const catalog = shadowCatalog();
+    const at = [cell.minX + 32, cell.minZ + 32] as const;
+    const without = runBuild(input(cell, at[0], at[1], undefined), catalog, Number.MAX_SAFE_INTEGER);
+    const zero = runBuild(input(cell, at[0], at[1], 0), catalog, Number.MAX_SAFE_INTEGER);
+    const withShadows = runBuild(
+      input(cell, at[0], at[1], law.mid.outerRadiusMeters), catalog, Number.MAX_SAFE_INTEGER,
+    );
+    expect(batch(without, TREE_GROUND_SHADOW_PROTOTYPE_KEY)).toBeUndefined();
+    expect(batch(zero, TREE_GROUND_SHADOW_PROTOTYPE_KEY)).toBeUndefined();
+    expect(packedBuildFingerprint(zero.batches)).toBe(packedBuildFingerprint(without.batches));
+    expect(batch(withShadows, TREE_GROUND_SHADOW_PROTOTYPE_KEY)).toBeDefined();
+    // Every other batch is byte for byte what it was, in the same order.
+    const others = withShadows.batches.filter(
+      (entry) => entry.key !== TREE_GROUND_SHADOW_PROTOTYPE_KEY,
+    );
+    expect(packedBuildFingerprint(others)).toBe(packedBuildFingerprint(without.batches));
+    expect(withShadows.statistics).toEqual(without.statistics);
+  });
+
+  it("lays one under every stem that draws inside the near band, and only those", () => {
+    const cell = denseCell();
+    const result = runBuild(
+      input(cell, cell.minX + 32, cell.minZ + 32, law.mid.outerRadiusMeters),
+      shadowCatalog(),
+      Number.MAX_SAFE_INTEGER,
+    );
+    const shadows = keyCodes(batch(result, TREE_GROUND_SHADOW_PROTOTYPE_KEY));
+    // Inside the near radius the law draws the near cap: every stem whose key
+    // is a drawable one has records, and each of those has one shadow.
+    expect(shadows.length).toBe(result.statistics.treeInstances);
+    // The stand is denser than the cap, so some stems never draw at all: 40
+    // stems on 0.4096 ha is 97.7 per hectare against a cap of 78, a key is
+    // the rank times 1.252, and the 32 lowest ranks keep theirs at or under 1.
+    expect(shadows.length).toBe(32);
+    // A shadow's key is its tree's: the lane the shader thins both on.
+    const trees = treeKeyCodes(result);
+    for (const code of shadows) expect(trees.has(code)).toBe(true);
+    expect(new Set(shadows).size).toBe(shadows.length);
+  });
+
+  it("thins with the drawn share out in the mid band", () => {
+    const cell = denseCell();
+    const catalog = shadowCatalog();
+    const near = runBuild(
+      input(cell, cell.minX + 32, cell.minZ + 32, law.mid.outerRadiusMeters),
+      catalog,
+      Number.MAX_SAFE_INTEGER,
+    );
+    const mid = runBuild(
+      input(cell, cell.minX + 32 + 600, cell.minZ + 32, law.mid.outerRadiusMeters),
+      catalog,
+      Number.MAX_SAFE_INTEGER,
+    );
+    const nearShadows = keyCodes(batch(near, TREE_GROUND_SHADOW_PROTOTYPE_KEY));
+    const midShadows = keyCodes(batch(mid, TREE_GROUND_SHADOW_PROTOTYPE_KEY));
+    // 600 m out the drawn share is the impostor floor, 0.3, and a record
+    // exists up to the admission margin above it: keys to 0.34, eleven stems.
+    expect(nearShadows.length).toBe(32);
+    expect(midShadows.length).toBe(11);
+    expect(midShadows.length).toBeLessThanOrEqual(mid.statistics.treeInstances);
+    // The stems kept are the lowest keys, the ones the shader still draws.
+    const kept = Math.max(...midShadows);
+    expect(nearShadows.filter((code) => code <= kept).length).toBe(midShadows.length);
+    const trees = treeKeyCodes(mid);
+    for (const code of midShadows) expect(trees.has(code)).toBe(true);
+  });
+
+  it("stops at the range, and at the mid band whatever the range", () => {
+    const cell = denseCell();
+    const catalog = shadowCatalog();
+    const count = (observerOffset: number, range: number): number => keyCodes(batch(
+      runBuild(
+        input(cell, cell.minX + 32 + observerOffset, cell.minZ + 32, range),
+        catalog,
+        Number.MAX_SAFE_INTEGER,
+      ),
+      TREE_GROUND_SHADOW_PROTOTYPE_KEY,
+    )).length;
+    // A 400 m range reaches its slack further and no more.
+    expect(count(400, 400)).toBeGreaterThan(0);
+    expect(count(400 + DETAIL_MEMBERSHIP_SLACK_METERS + 40, 400)).toBe(0);
+    // A range past the mid band is the mid band.
+    const pastMid = law.mid.outerRadiusMeters + DETAIL_MEMBERSHIP_SLACK_METERS + 40;
+    expect(count(pastMid, 50_000)).toBe(0);
+    expect(count(law.mid.outerRadiusMeters - 40, 50_000)).toBeGreaterThan(0);
+  });
+
+  it("packs the same bytes however the build is sliced", () => {
+    const cell = denseCell();
+    const catalog = shadowCatalog();
+    const build = input(cell, cell.minX + 200, cell.minZ - 90, law.mid.outerRadiusMeters);
+    const whole = runBuild(build, catalog, Number.MAX_SAFE_INTEGER);
+    for (const sliceWidth of [1, 3, 17]) {
+      expect(packedBuildFingerprint(runBuild(build, catalog, sliceWidth).batches))
+        .toBe(packedBuildFingerprint(whole.batches));
+    }
+    expect(() => structuredClone(build)).not.toThrow();
   });
 });

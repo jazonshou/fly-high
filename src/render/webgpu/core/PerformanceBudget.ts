@@ -340,11 +340,17 @@ export const DYNAMIC_ALLOCATIONS: DynamicAllocationInputs = Object.freeze({
   // 2026-09-13 rows), inside the memory ceiling the budget test holds them
   // to. `tests/render.webgpu-rendered-density.test.ts` pins the record
   // estimate under these rows so the row moves when the law moves.
+  // 2026-11-12: every drawn stem inside the tier's ground shadow range packs
+  // one more record, its shadow (`treeGroundShadow.ts`,
+  // `estimateTreeGroundShadowRecords`): 2 k / 13 k / 18 k / 50 k at ranges
+  // 450 / 1,100 / 1,200 / 2,000 m, so 40 k / 151 k / 264 k / 587 k in all.
+  // Tier 0's row already held it; tiers 1-3 move to 155 k / 265 k / 590 k
+  // (+0.15 / +0.15 / +0.92 MiB).
   detailInstanceBudget: Object.freeze({
     0: 60_000,
-    1: 150_000,
-    2: 260_000,
-    3: 560_000,
+    1: 155_000,
+    2: 265_000,
+    3: 590_000,
   }),
   // Card/bark layers plus broadleaf/conifer opaque near-crown layers and the
   // palm's frond and bark, with complete mip chains:
