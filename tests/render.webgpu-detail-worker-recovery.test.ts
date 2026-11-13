@@ -16,7 +16,9 @@ import {
   canGenerateNextDetailCell,
   createInlineCellCredit,
   recordInlineCellAfterWorkerFailure,
+  resolveDetailGenerationBudget,
   type DetailGenerationBudget,
+  type InlineCellCredit,
 } from "../src/render/webgpu/detail/generationBudget";
 import type { DetailInstanceWriter } from "../src/render/webgpu/detail/instanceFormat";
 import type { DetailWorkerCommand, DetailWorkerEvent } from "../src/workers/detailProtocol";
@@ -28,6 +30,19 @@ import {
   withAirports,
   type WorldDefinition,
 } from "../src/world";
+
+/** Lets a test run code inside `packDetailCell`; packing is otherwise untouched. */
+const packing = vi.hoisted(() => ({ onPack: null as (() => void) | null }));
+vi.mock("../src/render/webgpu/detail/packedCell", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/render/webgpu/detail/packedCell")>();
+  return {
+    ...actual,
+    packDetailCell: (...args: Parameters<typeof actual.packDetailCell>) => {
+      packing.onPack?.();
+      return actual.packDetailCell(...args);
+    },
+  };
+});
 
 /**
  * A detail worker that fails — reports an error, or goes silent past a
@@ -755,6 +770,46 @@ describe("inline generation after a worker failure", () => {
       // A later update still made a cell: one was missing while it waited.
       expect(generatedPerUpdate.slice(waited).some((cells) => cells > 0)).toBe(true);
     } finally {
+      scene.dispose();
+    }
+  });
+
+  it("charges an inline cell for its packing as well as its generation", () => {
+    const scene = fixture("detail-runtime-worker-respawn-budget", {
+      respawnLimit: 0,
+      reportWorkerHealth: () => undefined,
+    });
+    const PACK_MILLISECONDS = 40;
+    try {
+      scene.settle();
+      scene.latest().fail();
+      // A clock that only packing moves: on it, generating and ranking a
+      // cell are free, so the charge is the packing alone.
+      let clock = 0;
+      vi.spyOn(scene.runtime as unknown as { nowMilliseconds(): number }, "nowMilliseconds")
+        .mockImplementation(() => clock);
+      packing.onPack = () => {
+        clock += PACK_MILLISECONDS;
+      };
+      const runtime = scene.runtime as unknown as { inlineCellCredit: InlineCellCredit | null };
+      const budget = resolveDetailGenerationBudget(scene.quality);
+      let made = 0;
+      let expected: InlineCellCredit | null = null;
+      for (let pass = 0; pass < 64 && made === 0; pass += 1) {
+        expected = runtime.inlineCellCredit === null
+          ? createInlineCellCredit(budget)
+          : { ...runtime.inlineCellCredit };
+        const before = scene.runtime.statistics.generatedCells;
+        scene.update();
+        made = scene.runtime.statistics.generatedCells - before;
+      }
+      // One cell: past the slice after it, the update stops.
+      expect(made).toBe(1);
+      admitInlineCellAfterWorkerFailure(expected!, budget);
+      recordInlineCellAfterWorkerFailure(expected!, PACK_MILLISECONDS);
+      expect(runtime.inlineCellCredit).toEqual(expected);
+    } finally {
+      packing.onPack = null;
       scene.dispose();
     }
   });
