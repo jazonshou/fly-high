@@ -4196,6 +4196,92 @@ unchanged.
 - Shots over open country gain draws and change their pictures, so their
   ceilings and baselines move with this change, as the tree ground shadow's
   did.
+- Past about two and a half near radii a thin stand's tree is its impostor
+  (2026-11-13, below). The draw counts and the A/B above were taken before
+  that, when it was a mesh to the mid radius.
+
+### Thin stands hand to their impostors early (2026-11-13)
+
+The first frame time read on a GPU for these trees was the pull request's
+own A/B on the macOS runner (`perf-ab` run 43375101895, `df3d430` against
+main `3ad6c3c`; Apple M1, virtual; 640 rounds a shot; the frame timed from
+`render()` to GPU idle):
+
+| shot | frame wall time | draw calls | vegetation batches |
+| --- | --- | --- | --- |
+| `approach-500ft` | same +2.5% (+0.4% to +4.6%) | 248 → 251 | 20 → 23 |
+| `cruise-horizon` | same +0.7% (-1.0% to +2.4%) | 202 → 202 | unchanged |
+| `forest-500ft-sunbehind` | same +1.4% (+0.4% to +2.4%) | 250 → 251 | 21 → 22 |
+| `ground-2m-lowsun` | same +0.7% (-0.1% to +1.4%) | 123 → 122 | 31 → 30 |
+| `water-25ft` | **slower +6.0%** (+5.1% to +6.9%) | 225 → 232 | 3 → 10 |
+
+`water-25ft` went 44.1 → 47.0 ms a frame with 0.69% of its pixels changed.
+Counted step by step (`perf:ab --rounds 0`), all seven draws arrive with the
+open-ground trees (`2305224` → `110b6f6`: 225 → 232) and none with the
+bushes, the boulders or the ground (`548af49` → `df3d430`: 232 → 232, GPU
+work identical). They are thirteen lone trees, eleven oak and two pine, on a
+shore 900 to 1,250 m from the camera: three mid meshes a species and the
+ground shadow batch under them. That adapter pays about 0.4 ms for each
+(it is slow for every draw: 225 of them in 44 ms), against the 26 µs
+`VEGETATION_DRAW_COST_MS` was measured at. SwiftShader read the same shot
++2.5% (+1.8% to +3.1%), inside its gate.
+
+**Why a far lone tree was a mesh.** A stem's LOD key is its canopy rank
+times its stand's density over the near cap (`detailTreeStemKey`), and
+geometry draws a stem while the key is within the geometry share at its
+range. In a forest that thins the meshes by the inverse square and leaves
+the widest 4.5% (`farFloorShare`) as meshes to the mid radius. In a stand of
+2.4 stems a hectare every key is under 0.04, so every tree was a mesh to the
+mid radius (640 m to 2 km by tier): nothing in triangles, and three draws a
+(species, variant) for each presentation chunk the trees stand in.
+
+**What changed.** `detailSparseStandStemKey` (`presentationBuild.ts`) lifts
+the keys of a thin stand into a band, `DETAIL_SPARSE_STAND_KEYS`: 0.14 to
+0.19, whole where the cell holds a tenth of the near cap or less (7.8/ha on
+Medium), tapering to nothing at a quarter of it. The band is above anything
+the geometry floor admits (0.045 plus the 0.04 admission margin) and under
+every tier's impostor floor (0.2 at the least), so a lifted stem is always
+drawn: as a mesh while the inverse-square share covers its key, as its
+impostor from there out, through the per-stem handoff every forest stem
+already takes.
+
+| tier | near radius | mesh to | no mesh record past | mid radius |
+| --- | --- | --- | --- | --- |
+| Low | 110 m | 254 to 293 m | 346 m | 640 m |
+| Medium | 150 m | 346 to 399 m | 472 m | 1,100 m |
+| High | 170 m | 392 to 452 m | 534 m | 1,500 m |
+| Ultra | 240 m | 553 to 639 m | 755 m | 2,000 m |
+
+A forest hands most of its stems to impostors from 274 m on Medium
+(`impostorFillStartMeters`), so a lone tree is a mesh for longer than most
+of a forest's are. Past the third column a cell admits no geometry record,
+and a chunk whose only mid-band trees are thin stands has no mid batch.
+
+The band is spread by a hash of the stem, not by rank. A lone tree is rank 0
+of one, so every lone tree carried key 0: one wind phase and one silhouette
+wobble for all of them (`detailStemHash` reads the key lane), and by rank
+they would all have changed representation on one ring.
+
+**Counts** (Medium, SwiftShader): `water-25ft` draws 232 → 226 and
+vegetation batches 10 → 4. The one draw left over main's 225 is the shore
+trees' ground shadow batch, which still reaches the mid radius.
+
+**What it looks like.** The same shore from 1 km (the shot), 600 m and
+400 m, before and after: every tree stands where it stood. Past the handoff
+a lone tree is its species' impostor, a little rounder and a little
+brighter than the mesh, and at the 8 to 12 pixels it stands on the capture
+frame the two are hard to tell apart.
+
+**What does not move.** A stand at a quarter of the near cap or more: a
+forest's widest crowns are meshes to the mid radius as before. Inside the
+handoff range every tree is the mesh it was; its wind phase and wobble
+change with its key.
+
+**Tests.** `tests/render.webgpu-detail-presentation-build.test.ts`, "a thin
+stand's trees" (four: the band against every tier's floors, meshes close by
+and impostors alone further out, a key of its own for each tree, a forest
+left as it was). Four of its packed fingerprints move: the fixture's cell
+holds seven trees, 17 a hectare.
 
 ## Bushes and boulders: what stands between a tree and the ground (2026-11-12)
 

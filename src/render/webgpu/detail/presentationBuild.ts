@@ -397,6 +397,68 @@ export function detailTreeStemKey(
 }
 
 /**
+ * A thin stand hands its trees to their impostors early (2026-11-13).
+ *
+ * A stem's key is its canopy rank scaled by its stand's density over the near
+ * cap, so in a thin stand every key is close to zero, under the law's geometry
+ * floor, and every tree stays a mesh out to the mid radius. That floor was
+ * written for a forest's widest crowns. It costs a thin stand nothing in
+ * triangles and a great deal in draws: a mid tree is three meshes a (species,
+ * variant) a presentation chunk whether the chunk holds a forest or one tree.
+ * Open ground's own trees put a handful of stems into chunks that had none,
+ * and the first frame time read on a GPU (the macOS runner's A/B) called
+ * `water-25ft` 6.0% slower for thirteen trees on a far shore: seven draws at
+ * about 0.4 ms each on that adapter.
+ *
+ * So a thin stand's keys are lifted into a band above anything the geometry
+ * floor admits and under every tier's impostor floor. A lifted stem is a mesh
+ * while the inverse-square share at its range is at least its key (to
+ * `near / sqrt(key)`: 2.3 to 2.7 near radii) and its impostor from there out,
+ * through the per-stem handoff every forest stem already takes, and past
+ * `near / sqrt(lowKey - margin)` (3.2 near radii) its cell admits no geometry
+ * record at all, so a chunk of far lone trees has no mid batch to draw. The
+ * stem is never undrawn: its key stays inside the drawn share at every range.
+ *
+ * The band is spread by a per-stem hash, not by rank. A lone tree is rank 0 of
+ * one, so by rank every lone tree would carry the same key, change
+ * representation on one ring and sway in one phase (`detailStemHash` reads
+ * this lane); order inside a thin stand means nothing, because all of it is
+ * drawn.
+ */
+export const DETAIL_SPARSE_STAND_KEYS = Object.freeze({
+  /** Stand density over the near cap at and under which every key is lifted whole. */
+  fullAtDensityShare: 0.1,
+  /** Stand density over the near cap from which no key is lifted. */
+  noneAtDensityShare: 0.25,
+  /** The band a whole lift spreads its keys over. */
+  lowKey: 0.14,
+  highKey: 0.19,
+});
+
+/**
+ * `detailTreeStemKey`'s key after the thin-stand lift, on the unorm8 lane.
+ * `spread` is the stem's own hash in [0, 1). A key at or above its lift, and
+ * a never-drawn key, come back unchanged.
+ */
+export function detailSparseStandStemKey(
+  stemKey: number,
+  standDensityShare: number,
+  spread: number,
+): number {
+  const { fullAtDensityShare, noneAtDensityShare, lowKey, highKey } = DETAIL_SPARSE_STAND_KEYS;
+  const weight = clamp(
+    (noneAtDensityShare - standDensityShare) / (noneAtDensityShare - fullAtDensityShare),
+    0,
+    1,
+  );
+  if (!(weight > 0)) return stemKey;
+  const lifted = Math.round(
+    weight * (lowKey + (highKey - lowKey) * clamp(spread, 0, 1)) * 255,
+  ) / 255;
+  return lifted > stemKey ? lifted : stemKey;
+}
+
+/**
  * Render bands whose padded residency envelope contains a stem.
  *
  * 2026-09-13: the far (impostor) membership begins where the MID band does,
@@ -774,10 +836,14 @@ export function* buildPresentationChunk(
     let impostorOnlyRecords = 0;
     for (let treeIndex = 0; treeIndex < treeCount; treeIndex += 1) {
       const tree = resident.cell.trees[treeIndex]!;
-      const stemKey = detailTreeStemKey(
-        resident.treeCanopyRank[treeIndex] ?? 1,
-        stemsPerHa,
-        densityLaw.nearStemsPerHectare,
+      const stemKey = detailSparseStandStemKey(
+        detailTreeStemKey(
+          resident.treeCanopyRank[treeIndex] ?? 1,
+          stemsPerHa,
+          densityLaw.nearStemsPerHectare,
+        ),
+        standDensityShare,
+        (tree.selection * 61.7) % 1,
       );
       const geometryAdmitted = stemKey <= geometryShareCeiling;
       // A zero threshold means no geometry owns anything in this cell, so

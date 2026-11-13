@@ -27,9 +27,14 @@ import {
   shrubOpenDrawnPerHectare,
 } from "../src/render/webgpu/detail/groundObjects";
 import {
+  DETAIL_DENSITY_ADMISSION_MARGIN_SHARE,
   DETAIL_MEMBERSHIP_SLACK_METERS,
+  DETAIL_SPARSE_STAND_KEYS,
+  DETAIL_TREE_STEM_KEY_NEVER_DRAWN,
+  TREE_IMPOSTOR_PROTOTYPE_KEY,
   buildPresentationChunk,
   detailCellMinimumDistanceMeters,
+  detailSparseStandStemKey,
   groundObjectRangeCapMeters,
   shrubDrawnShares,
   type DetailPresentationBuildCatalog,
@@ -555,7 +560,7 @@ describe("pure detail presentation build", () => {
             "clutter-stump",
           ],
           "name": "family prototypes at the near/mid boundary",
-          "packedFingerprint": "bc30fe370a52435c3d7f8b8118889fc4007f43cedefe41b0fe9f1b9cdaf0189d",
+          "packedFingerprint": "74d64e467c47469fa16c1b27901e97672bd61867259fc7174a38ebd13d790416",
           "statistics": {
             "clutterInstances": 2,
             "groundCoverInstances": 0,
@@ -571,6 +576,7 @@ describe("pure detail presentation build", () => {
           "batchKeys": [
             "tree-pine-v0-crown-mid",
             "tree-pine-v0-trunk-mid",
+            "tree-pine-v0-crown-far",
             "tree-cedar-v2-crown-mid",
             "tree-cedar-v2-trunk-mid",
             "tree-cedar-v0-crown-far",
@@ -583,7 +589,7 @@ describe("pure detail presentation build", () => {
             "tree-willow-v0-crown-far",
           ],
           "name": "species prototypes at the mid/far boundary with a shifted origin",
-          "packedFingerprint": "70b3dbcd4e69c3ec0a0685b1ebd77a0d66514847024f869f2384cd575640cd67",
+          "packedFingerprint": "f726d7281bd17a2f2298c256817964ec590a337e46261590fa500de0ce29e1bb",
           "statistics": {
             "clutterInstances": 0,
             "groundCoverInstances": 0,
@@ -600,7 +606,7 @@ describe("pure detail presentation build", () => {
             "tree-impostor",
           ],
           "name": "impostors at the far cull boundary in signed world space",
-          "packedFingerprint": "f179d5f68d44046aff1983b9ad8ab414c18a5805167737cb99fa1a833ef76c96",
+          "packedFingerprint": "8f0cf0438ed3210f3146a29d1218b3a7ae3174d530d46ee494b8bc398a0b9b79",
           "statistics": {
             "clutterInstances": 0,
             "groundCoverInstances": 0,
@@ -660,7 +666,7 @@ describe("pure detail presentation build", () => {
             "ground-fern",
           ],
           "name": "ground-cover candidate bounds across a negative cell edge",
-          "packedFingerprint": "0ab3ce84ddb159ef2751d5b3fc4ea284ee0623c52483cb16335760d71c622978",
+          "packedFingerprint": "34cdd808a228fcdc8892fa50ae9ec499f246f36f0880ef82938489d175f916b5",
           "statistics": {
             "clutterInstances": 4,
             "groundCoverInstances": 93,
@@ -882,6 +888,140 @@ describe("tree ground shadow records", () => {
  * and a boulder two; how far each is kept resident is its own reach, not a
  * band.
  */
+describe("a thin stand's trees", () => {
+  const law = RENDERED_DENSITY_LAWS[1]!;
+  const STRIDE = 32;
+  const { fullAtDensityShare, noneAtDensityShare, lowKey, highKey } = DETAIL_SPARSE_STAND_KEYS;
+  const lane = (key: number): number => Math.round(key * 255) / 255;
+
+  /** `count` trees in the fixture's 0.41 ha cell, each with a selection of its own. */
+  function stand(count: number): GeneratedDetailCell {
+    const cell = fixtureCell(0, 0);
+    const trees = Array.from({ length: count }, (_, index) => {
+      const template = cell.trees[index % cell.trees.length]!;
+      return {
+        ...template,
+        id: `tree-${index}`,
+        x: cell.minX + 4 + (index % 8) * 7,
+        z: cell.minZ + 6 + Math.floor(index / 8) * 11,
+        selection: (0.07 + index * 0.137) % 1,
+      };
+    });
+    return { ...cell, trees };
+  }
+
+  /** The build of one cell seen from `range` metres off its edge. */
+  function seenFrom(cell: GeneratedDetailCell, range: number): BuildResult {
+    const observerX = cell.minX - range;
+    const observerZ = cell.minZ + 32;
+    const count = cell.trees.length;
+    const distance = detailCellMinimumDistanceMeters(
+      observerX, observerZ, cell.cellX, cell.cellZ, cell.cellSizeMeters,
+    );
+    return runBuild({
+      residents: [{
+        cell,
+        treeCanopyRank: Float32Array.from({ length: count }, (_, index) => index / count),
+        lod: distance <= law.near.outerRadiusMeters ? "near" : "mid",
+        distance,
+      }],
+      floatingOrigin: { x: 16, y: 80, z: -16 },
+      densityLaw: law,
+      treeVariantCap: 3,
+      treePrototypeMode: "species",
+      grassRadiusMeters: 64,
+      observerX,
+      observerZ,
+    }, buildCatalog(true), Number.MAX_SAFE_INTEGER);
+  }
+
+  const records = (packed: PackedBatch | undefined): number =>
+    packed ? packed.bytes.byteLength / STRIDE : 0;
+  /** The mid band's crown records: one a stem that has a mid mesh. */
+  const midCrowns = (result: BuildResult): number => result.batches
+    .filter((entry) => /^tree-.*-crown-mid$/u.test(entry.key))
+    .reduce((sum, entry) => sum + records(entry), 0);
+  const impostors = (result: BuildResult): PackedBatch | undefined =>
+    result.batches.find((entry) => entry.key === TREE_IMPOSTOR_PROTOTYPE_KEY);
+
+  it("lifts a thin stand's keys over what the geometry floor admits and under every impostor floor", () => {
+    expect(lowKey).toBeLessThan(highKey);
+    expect(fullAtDensityShare).toBeLessThan(noneAtDensityShare);
+    for (const tierLaw of RENDERED_DENSITY_LAWS) {
+      // Far enough out the cell admits no geometry record: the floor and the
+      // admission margin together stay under the band.
+      expect(lowKey).toBeGreaterThan(tierLaw.farFloorShare + DETAIL_DENSITY_ADMISSION_MARGIN_SHARE);
+      // And the stem is never undrawn: the band stays inside the drawn share.
+      expect(lane(highKey)).toBeLessThan(tierLaw.impostorFloorShare);
+    }
+    // A whole lift spreads the stand over the band by each stem's own hash,
+    // on the unorm8 lane the key travels in.
+    expect(detailSparseStandStemKey(0, fullAtDensityShare, 0)).toBe(lane(lowKey));
+    expect(detailSparseStandStemKey(0.01, 0.02, 1)).toBe(lane(highKey));
+    const middle = detailSparseStandStemKey(0, 0.02, 0.5);
+    expect(middle).toBeGreaterThan(lane(lowKey));
+    expect(middle).toBeLessThan(lane(highKey));
+    expect(middle * 255).toBeCloseTo(Math.round(middle * 255), 9);
+    // Between the two densities the lift tapers, so no stand sits on an edge.
+    const tapered = detailSparseStandStemKey(0, (fullAtDensityShare + noneAtDensityShare) / 2, 0);
+    expect(tapered).toBeGreaterThan(0);
+    expect(tapered).toBeLessThan(lane(lowKey));
+    // A forest's keys are its own, a key is never lowered, and a stem the
+    // near cap never draws stays that way.
+    for (const key of [0, 0.02, 0.5, 254 / 255, DETAIL_TREE_STEM_KEY_NEVER_DRAWN]) {
+      expect(detailSparseStandStemKey(key, noneAtDensityShare, 0.5)).toBe(key);
+      expect(detailSparseStandStemKey(key, 1, 0.5)).toBe(key);
+    }
+    expect(detailSparseStandStemKey(0.3, 0.02, 0.5)).toBe(0.3);
+    expect(detailSparseStandStemKey(DETAIL_TREE_STEM_KEY_NEVER_DRAWN, 0.02, 0.5))
+      .toBe(DETAIL_TREE_STEM_KEY_NEVER_DRAWN);
+  });
+
+  it("draws a thin stand as meshes close by and as impostors alone further out", () => {
+    // Three trees on 0.4096 ha: 7.3 a hectare, under a tenth of the near cap.
+    const cell = stand(3);
+    expect(cell.trees.length / 0.4096 / law.nearStemsPerHectare).toBeLessThan(fullAtDensityShare);
+    // 200 m out every lifted key is inside the geometry share (0.56), so
+    // every tree has its mid mesh.
+    const close = seenFrom(cell, 200);
+    expect(midCrowns(close)).toBe(3);
+    // 700 m out the share is the floor, 0.045, and with the admission margin
+    // it stays under the band: no mesh record of any band, so no mesh batch
+    // to draw, and one impostor a tree.
+    const far = seenFrom(cell, 700);
+    expect(far.batchKeys.filter((key) => key.startsWith("tree-"))).toEqual([TREE_IMPOSTOR_PROTOTYPE_KEY]);
+    expect(records(impostors(far))).toBe(3);
+    expect(far.statistics.treeInstances).toBe(3);
+    // The range it turns at: no geometry is admitted once the inverse-square
+    // share plus the margin is under the band's low key.
+    const turn = law.near.outerRadiusMeters
+      / Math.sqrt(lane(lowKey) - DETAIL_DENSITY_ADMISSION_MARGIN_SHARE);
+    expect(turn).toBeGreaterThan(law.near.outerRadiusMeters * 3);
+    expect(turn).toBeLessThan(law.mid.outerRadiusMeters / 2);
+    expect(midCrowns(seenFrom(cell, Math.ceil(turn) + 1))).toBe(0);
+  });
+
+  it("gives every tree of a thin stand a key of its own inside the band", () => {
+    const far = seenFrom(stand(3), 700);
+    const packed = impostors(far)!;
+    const codes = Array.from({ length: records(packed) }, (_, index) => packed.bytes[index * STRIDE + 30]!);
+    expect(new Set(codes).size).toBe(3);
+    for (const code of codes) {
+      expect(code).toBeGreaterThanOrEqual(Math.round(lowKey * 255));
+      expect(code).toBeLessThanOrEqual(Math.round(highKey * 255));
+    }
+  });
+
+  it("leaves a forest's widest crowns as meshes out to the mid radius", () => {
+    // Forty stems on 0.4096 ha is past the near cap: nothing is lifted, and
+    // 700 m out the three lowest keys (to the floor plus the margin, 0.085,
+    // at 1.252 a rank) still carry a mid mesh beside their impostor.
+    const far = seenFrom(stand(40), 700);
+    expect(midCrowns(far)).toBe(3);
+    expect(records(impostors(far))).toBeGreaterThan(3);
+  });
+});
+
 describe("bush and boulder records", () => {
   const law = RENDERED_DENSITY_LAWS[1]!;
   const RANGE = law.mid.outerRadiusMeters;
