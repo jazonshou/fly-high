@@ -104,10 +104,16 @@ function woody(cell: GeneratedDetailCell): Placed {
 
 /** The same, read from the packed columns an inline resident keeps. */
 function packedWoody(cell: PackedDetailCell): Placed {
-  return [cell.trees, cell.shrubs, cell.clutter, cell.rocks].flatMap((columns) => Array.from(
-    { length: columns.count },
-    (_, index) => ({ x: columns.x[index]!, z: columns.z[index]! }),
-  ));
+  return [cell.trees, cell.shrubs, cell.clutter, cell.rocks].flatMap((columns) => {
+    // A resident of another shape would read as no placements and pass.
+    if (!(columns.x instanceof Float64Array) || columns.x.length !== columns.count) {
+      throw new Error("Not a packed detail cell");
+    }
+    return Array.from(
+      { length: columns.count },
+      (_, index) => ({ x: columns.x[index]!, z: columns.z[index]! }),
+    );
+  });
 }
 
 /** Stems, rocks and logs on any of the exclusions' cleared ground. */
@@ -406,9 +412,13 @@ describe("WorldDetailRuntime.infrastructureChanged", () => {
         if (reach > SLACK) expect(regenerated.has(key), `${key} out of reach`).toBe(false);
       }
       expect(reached).toBeGreaterThan(0);
+      let placed = 0;
       for (const key of regenerated) {
-        expect(onCleared(packedWoody(residents(runtime).get(key)!.cell!), roadExclusions), key).toBe(0);
+        const cellPlacements = packedWoody(residents(runtime).get(key)!.cell!);
+        placed += cellPlacements.length;
+        expect(onCleared(cellPlacements, roadExclusions), key).toBe(0);
       }
+      expect(placed, "no placements read: the test is not armed").toBeGreaterThan(0);
       // The kept cells nearest the roads are the same cells built on or not.
       const kept = [...before.keys()].filter((key) => !regenerated.has(key))
         .sort((a, b) => clearance(a) - clearance(b)).slice(0, 4);

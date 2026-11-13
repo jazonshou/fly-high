@@ -108,10 +108,16 @@ function woody(cell: GeneratedDetailCell): Placed {
 
 /** The same, read from the packed columns an inline resident keeps. */
 function packedWoody(cell: PackedDetailCell): Placed {
-  return [cell.trees, cell.shrubs, cell.clutter, cell.rocks].flatMap((columns) => Array.from(
-    { length: columns.count },
-    (_, index) => ({ x: columns.x[index]!, z: columns.z[index]! }),
-  ));
+  return [cell.trees, cell.shrubs, cell.clutter, cell.rocks].flatMap((columns) => {
+    // A resident of another shape would read as no placements and pass.
+    if (!(columns.x instanceof Float64Array) || columns.x.length !== columns.count) {
+      throw new Error("Not a packed detail cell");
+    }
+    return Array.from(
+      { length: columns.count },
+      (_, index) => ({ x: columns.x[index]!, z: columns.z[index]! }),
+    );
+  });
 }
 
 function count(placed: Placed, test: (x: number, z: number) => boolean): number {
