@@ -4859,8 +4859,9 @@ agree on the draw count of all 51 shots: gpu-tests runs 43417533903 (the
 pull request's), 43417542941 and 43422970097 (dispatched on the branch). The
 ceilings were each shot's exact count at `2305224`, with the tree shadows
 and before the open-ground trees, the bushes and the boulders. With all of
-those in, 27 of the 32 shots that carry a ceiling read under it, none over
-and five on it:
+those in, 27 of the 32 shots that carried a ceiling read under it, none over
+and five on it (`motion-banked-turn` has since lost its ceiling: "The banked
+turn has no draw ceiling", below):
 
 | shot | pinned at `2305224` | `fa7889c` | `7beb285` | vegetation batches |
 | --- | --- | --- | --- | --- |
@@ -4903,7 +4904,8 @@ ceiling read 3,176 and 3,116 (`car-ford-chase` 142 to 119), and the three
 captures agree on those too, which captures of the code before did not
 (`car-clearing-chase` read 150 and 148).
 
-The 27 ceilings take the measured counts. In the ratchet
+The ceilings take the measured counts: 26 of the 27, the other being
+`motion-banked-turn`. In the ratchet
 (`scripts/deliveryFloors.mts`) a lower count takes no raise, but a raise
 entry must equal what its shots moved from the snapshot, and seven of the
 snapshot's twenty now read under it and eight on it. So
@@ -4911,7 +4913,94 @@ snapshot's twenty now read under it and eight on it. So
 entries that named only those twenty are spent, as at the 2026-09-23 re-pin:
 `final-sharpen`, `generated-buildings` and `tree-ground-shadows`. Their
 draws are inside the snapshot now, with the open-ground vegetation's, whose
-staged record of `fa7889c` in `MEASURED_DRAW_DELTAS` is removed.
+staged record of `fa7889c` in `MEASURED_DRAW_DELTAS` is removed. The
+snapshot holds nineteen shots once `motion-banked-turn` leaves it.
+
+**The banked turn has no draw ceiling.** The commit that lowered the ceilings,
+`873e3a0`, changed no rendering code, and its capture (gpu-tests run
+43430044853) failed one gate of them: `motion-banked-turn` read 249 draws
+with 14 vegetation batches, against 247 with 12 in all three captures of
+`7beb285`. The other 50 counts were the same as theirs and every visual gate
+passed against the new baselines.
+
+The count is read at the pose the turn ends on, and the vegetation drawn
+there is not a function of that pose. A presentation chunk that straddles a
+band edge carries the observer in its signature, quantised to 64 m
+(`DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS`), so that it re-bakes its
+band memberships as the edge sweeps over it. The build takes the observer's
+position at the frame it starts (`createPendingPresentationBuild`), which is
+wherever the aircraft has got to when the worker is free, and nothing bakes
+it again inside the same 64 m or after the aircraft stops. The 45° turn
+flies 273 m in its 264 frames and enters its last quantum at frame 221, 43 m
+before the end; the 600 held frames that follow drain the queue and leave
+the records as they were baked. So the final pose holds a near band centred
+somewhere in those 43 m, and where is the worker's timing.
+
+Measured in the picture harness (SwiftShader, Medium): the frontier chunks
+baked at a chosen frame of the turn, then the turn's final pose held and its
+camera, the same to the centimetre in all five, counted:
+
+| records baked at | metres back along the track | vegetation batches | draw calls |
+| --- | --- | --- | --- |
+| frame 221, entering the last quantum | 43 | 12 | 247 |
+| frame 232 | 32 | 15 | 250 |
+| frame 243 | 21 | 17 | 252 |
+| frame 254 | 9 | 18 | 253 |
+| the final pose | 0 | 18 | 253 |
+
+The six batches that come and go are five of the six the near band's trees
+have (crown, fringe and trunk, of the oak and of the pine) and the near
+bushes', all in the chunk under the aircraft: the frame's lower edge meets
+the ground about where the near band ends, so whether one of that band's
+256 m blocks touches the frustum turns on where the band was centred. The
+other 235 draws are the same at all five and in all seven macOS captures,
+old code and new. The runner's 12 batches are the bake from the start of the
+quantum, and its 14 fall between the first two rows.
+
+Block culling did not make the final pose depend on its history; it made
+the draw count show it. Before, a batch drew whenever its chunk's box was in
+view, wherever in the chunk its band lay, and the count read 257 in all
+three captures of that code. The final frame was already not one picture: in
+each of the seven pairs compared, among the old code's three captures and
+the new code's four, it differs in 3,034 to 3,614 of its 921,600 pixels. No
+motion shot compares its last frame with a baseline.
+
+So `motion-banked-turn` carries no `drawCallCeiling` now. An exact ceiling on
+a count that timing chooses fails a pull request that changed nothing, and
+the ratchet refuses such samples by design (`drawCallCeilingFrom`: "Do not
+take the maximum: find out why it varies"). It leaves `DRAW_CALL_SAMPLES`
+and the snapshot, and `tests/delivery-floors.test.ts` names it: a shot is
+outside draw coverage if and only if it is an unpinned probe or declared
+there, and only a motion shot can be declared. What gates the shot is
+unchanged: the consecutive-frame SSIM of its 24 frames in motion (0.7897
+lowest in all four captures) and its delivery floors. The other 31 ceilings
+stand, 29 of them on still shots, each of which streams and settles at the
+pose it is read at, so its bake is that pose's.
+
+The other two motion shots keep exact ceilings, measured the same way, and
+each for its own reason:
+
+| shot | enters its last quantum | bakes tried | vegetation batches | draw calls on the runner |
+| --- | --- | --- | --- | --- |
+| `motion-banked-turn` | frame 221, 43 m before it stops | 221, 232, 243, 254, 263 | 12, 15, 17, 18, 18 | 247, 247, 247, 249 |
+| `page-thrash-turn` | frame 260, 4 m before it stops | 260, 261, 262, 263 | 19 at each | 257 in all four |
+| `cdlod-transition` | frame 247, 26 m before it stops | 247, 251, 255, 259, 263 | 1 at each | 196 in all four |
+
+The 60° turn's track pins its bake: every bake it can end on is within 4 m
+of where it stops. The level shot's bake is free over 26 m and does not
+matter: the one vegetation batch in its frame from 900 m is a far impostor
+chunk, and impostor records have no band edge to move. Both hold by where a
+track ends and what a frame shows, not by construction: a change to a motion
+shot's speed, start or frame count, or to the 64 m quantum, is a reason to
+measure it again, and a motion shot that disagrees with itself after one
+should lose its ceiling the same way.
+
+Two repairs were not taken. Pinning the largest count seen would be a margin
+on a field defined as the measurement, and 253 is one harness's reading at
+one end of the range, not a bound. Re-baking the frontier when the observer
+comes to rest would make the final pose a function of itself, but it is a
+re-bake every time a walker or a car stops, added to the game so that a test
+could count, or a capture-only hook pinning a state the game never reaches.
 
 **All thirty-nine baselines promoted 2026-11-13** from the pull request's
 capture of `7beb285` (gpu-tests run 43417533903, artifact

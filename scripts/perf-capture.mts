@@ -644,6 +644,30 @@ export interface PerfCaptureShotDefinition {
    * outside the nullable delivery row and is asserted hard on every host —
    * real draw growth the rendered-density model cannot see (conservative
    * shadow-pass draws, new water meshes) fails here.
+   *
+   * **Host-independent because a still shot streams and settles at the pose
+   * it is read at. A `kind: "motion"` shot is read at the pose its motion
+   * ENDS on, and that is only sometimes the same thing (2026-11-13).** A
+   * presentation chunk that straddles a band edge re-bakes its records once
+   * per 64 m of observer travel, for wherever the observer is when the worker
+   * takes the build, and nothing bakes it again after the observer stops. So
+   * the final pose holds records baked somewhere in its last quantum, and
+   * frame and worker timing decide where. A band's batch draws when one of
+   * its 256 m blocks touches the frustum, so where the band was centred can
+   * decide a draw. Each motion shot therefore owes this field a reason:
+   * - `motion-banked-turn` carries NO ceiling. It enters its last quantum
+   *   43 m before it stops with the near band's edge on the frame's lower
+   *   edge: at its final camera a bake 43, 32, 21 or 0 m back draws 12, 15,
+   *   17 or 18 vegetation batches, and four macOS captures of one rendering
+   *   read 247, 247, 247 and 249.
+   * - `page-thrash-turn` keeps one because its track pins the bake: it enters
+   *   its last quantum three frames, 4 m, before it stops.
+   * - `cdlod-transition` keeps one because the one vegetation batch in its
+   *   frame from 900 m is a far impostor chunk, whose records have no band
+   *   edge to move: the same count at any bake in its last 26 m.
+   * A change to a motion shot's speed, start or frame count, or to the
+   * quantum, moves all of this. docs/PERFORMANCE.md, "The banked turn has no
+   * draw ceiling", has the measurements.
    */
   readonly drawCallCeiling?: number;
   /**
@@ -1088,7 +1112,11 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 20, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.4 },
-    drawCallCeiling: 247,
+    // NO `drawCallCeiling` since 2026-11-13: this shot's count is not a
+    // function of its final pose (see the field). 247 in three captures of
+    // 7beb285 and 249 in the capture of 873e3a0, whose rendering code is the
+    // same; 257 in every capture before block culling, when a batch drew
+    // wherever in its chunk its band lay.
   },
   {
     // 4-10: the PAGE-THRASH scene. A sustained 60° turn at 500 ft forces the
@@ -1167,6 +1195,11 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // R4 floors: derived from three runs at 29fd611, ratcheted against the
     // previous pin so none loosened. See scripts/deliveryFloors.mts.
     ceilings: { maxFrameMs: 50, p999FrameMs: 19, hitchCount: 3, minFps: 103, minWallClockFps: 101, maxFrameIntervalMsP95: 11.9 },
+    // A motion shot's count follows the bake its track ends on (see the
+    // field). This one is a number because the track pins that bake: the
+    // observer enters its last 64 m quantum at frame 260 of 264, 4 m before it
+    // stops. 257 in four macOS captures; 19 vegetation batches for a bake at
+    // frame 260, 261, 262 or 263 in the picture harness, the runner's 19.
     drawCallCeiling: 257,
   },
   {
@@ -1213,6 +1246,12 @@ export const PERF_CAPTURE_SHOTS: readonly PerfCaptureShotDefinition[] = Object.f
     // still generating. Static shots are unchanged (impostor batches rebuild
     // their bounds from in-cull cells only). Measured identically across every
     // run on the M2 Pro (209).
+    // 2026-11-13: a motion shot's count follows the bake its track ends on
+    // (see the field), and this one's does not care which: the one vegetation
+    // batch in frame from 900 m is a far impostor chunk, whose records have no
+    // band edge to move. That batch and 196 draws for a bake at frame 247, 251,
+    // 255, 259 or 263 in the picture harness, across the whole of its last
+    // quantum, and 196 in four macOS captures.
     drawCallCeiling: 196,
   },
   {

@@ -657,9 +657,26 @@ export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Ob
   // sat exactly at their ceilings after #37, so these moved. See
   // DRAW_CALL_RAISES, "generated-buildings", for the seven in the snapshot
   // (spent 2026-11-13).
+  // motion-banked-turn LEFT THIS TABLE 2026-11-13. The capture of 873e3a0, the
+  // commit that lowered the ceilings below, read it at 249 against the 247 of
+  // the three captures those ceilings came from, with the same rendering code
+  // (gpu-tests run 43430044853). This table's rule for samples that disagree
+  // is "find out why it varies", and the reason is that this shot's count is
+  // not a function of the pose it is read at: the chunk that straddles the
+  // near band's edge re-bakes once per 64 m of travel, for wherever the
+  // observer is when the worker takes the build, and the pose the turn ends
+  // on keeps whichever bake it ended with. At its final camera a bake 43, 32,
+  // 21, 9 or 0 m back along the track draws 12, 15, 17, 18 or 18 vegetation
+  // batches, 247 to 253 draws (docs/PERFORMANCE.md, "The banked turn has no
+  // draw ceiling"). No count of it is "the measured count", so
+  // `drawCallCeiling` is absent there. The other two motion shots stay,
+  // measured the same way: page-thrash-turn's track pins its bake to its last
+  // 4 m, and cdlod-transition has no band edge in frame. Thirty-one remain.
   // TWENTY-SEVEN RE-PINNED DOWN 2026-11-13 for PR #47's block culling, from three
   // full macOS captures of 7beb285 that agree on the draw count of all 51 shots
-  // (gpu-tests runs 43417533903, 43417542941 and 43422970097). A vegetation batch
+  // (gpu-tests runs 43417533903, 43417542941 and 43422970097; a fourth capture
+  // did not, at motion-banked-turn, one of the twenty-seven: the note above is
+  // what came of it, and twenty-six stand). A vegetation batch
   // is now drawn only when one of its 256 m blocks touches the frustum, not
   // whenever the box over its whole 4,096 m chunk does, so batches with no
   // instance in view are gone: 6 shots fell by 1, 8 by 2, 8 by 3 to 7 and
@@ -690,7 +707,6 @@ export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Ob
   "night":                       [249, 249, 249],
   "night-moonlit":               [249, 249, 249],
   "dusk-mesopic":                [248, 248, 248],
-  "motion-banked-turn":          [247, 247, 247],
   "page-thrash-turn":            [257, 257, 257],
   "cdlod-transition":            [196, 196, 196], // 2026-09-14 tree-lod-residency-lead: 208 -> 209, identical across four runs
   "cruise-sun-30":               [224, 224, 224],
@@ -764,6 +780,8 @@ export const PREVIOUS_DRAW_CALL_CEILINGS: Readonly<Record<string, number>> = Obj
   // still draw what their entries said; their draws are inside this snapshot
   // now, with the open-ground vegetation's, not an allowance on top of an old
   // one. A snapshot that no longer ships constrains nothing.
+  // NINETEEN SINCE 2026-11-13: motion-banked-turn left with its ceiling (see
+  // DRAW_CALL_SAMPLES). A name here with no ceiling is compared with nothing.
   "night-moonlit":                249,
   "dusk-mesopic":                 248,
   "approach-500ft":               247,
@@ -772,7 +790,6 @@ export const PREVIOUS_DRAW_CALL_CEILINGS: Readonly<Record<string, number>> = Obj
   "cruise-horizon":               201,
   "winter-noon":                  247,
   "night":                        249,
-  "motion-banked-turn":           247,
   "page-thrash-turn":             257,
   "cdlod-transition":             196,
   "cruise-sun-30":                224,
