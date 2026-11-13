@@ -1121,6 +1121,52 @@ export const MEASURED_DRAW_DELTAS: readonly MeasuredDrawDelta[] = Object.freeze(
       + "uniform on 34 of 34. Its uniformity is what eliminated furniture as the "
       + "cause of the +24/+12 split.",
   }),
+  Object.freeze({
+    owner: "terrain realism / open-ground trees, bushes and boulders (PR #47)",
+    feature: "open-ground-vegetation",
+    baseRef: "2305224", headRef: "fa7889c",
+    shotsMeasured: 32,
+    delta: Object.freeze({
+      // Up: a lone tree, a copse, a thicket or a boulder is a new batch in each
+      // presentation chunk the frustum touches.
+      "slant-10km": 1, "cdlod-transition": 1, "cruise-sun-30": 1, "runway-on-approach": 1,
+      "water-25ft": 1, "water-3m": 1, "water-400ft-glitter": 1,
+      "approach-500ft": 2, "reference-viewport": 2, "winter-noon": 2, "night": 2,
+      "night-moonlit": 2, "dusk-mesopic": 2,
+      "hills-dusk-glint": 3, "forest-line-highsun": 3,
+      "horizon-shadow-far-annulus": 5,
+      // The mountain slope: an oak grove beside the pines, thickets of three bush
+      // species and boulders, seen across a chunk edge.
+      "terrain-material-1600ft-down": 13,
+      "mountain-close": 27,
+      // Down: one leaf-card model a bush species on Low and Medium.
+      "high-10000ft-down": -1, "grove-forest-2m": -1, "veg-seam-1600ft-oblique": -1,
+      "veg-seam-near-500ft": -1, "grove-meadow-2m": -2, "ground-2m-lowsun": -3,
+    }),
+    note:
+      "PR #47's steps after the tree ground shadow: open ground's own trees (110b6f6, "
+      + "with the thin-stand handover of fa7889c), bushes with bodies and far stand-ins "
+      + "and boulders that reach by size (548af49). The ground up close (df3d430) adds no "
+      + "draw. Measured against the committed ceilings, which are the exact counts at "
+      + "2305224, on all 32 shots that carry one, by the two macOS captures of gpu-tests "
+      + "run 43388245668 at fa7889c (attempts 1 and 2, which agree on the draw and batch "
+      + "counts of 50 of the 51 shots; car-clearing-chase, which carries no ceiling, read "
+      + "150 and 148): 18 rose, 6 fell and 8 did not move (cruise-horizon, "
+      + "motion-banked-turn, page-thrash-turn, forest-500ft-sunbehind, coast-10km-lowsun, "
+      + "canopy-1200ft, cliff-60m, canopy-backlit-lowsun). A batch is a (prototype, "
+      + "4,096 m chunk), so each new KIND of thing in view is a draw in every chunk the "
+      + "frustum touches: three meshes a (species, variant) for a tree near enough to be "
+      + "one, a batch each for bush bodies, their far stand-ins, each species' leaves and "
+      + "each boulder lithology, and the shadow and impostor batches of a chunk that had "
+      + "no tree. mountain-close is 12 vegetation batches at 2305224 and 39 now. The six "
+      + "that fell are what the cap on bush leaf-card models removes (`treeVariantCap` "
+      + "applies to bushes on Low and Medium from 548af49: one model a species, not two). "
+      + "The macOS runner's A/B reads "
+      + "the cost in frame time, about a third of a millisecond a draw on that adapter: "
+      + "docs/PERFORMANCE.md, \"Terrain realism on the macOS runner\". TWO captures so "
+      + "far: the ceilings move, and this becomes a per-shot DRAW_CALL_RAISES entry, when "
+      + "three agree.",
+  }),
 ]);
 
 /**

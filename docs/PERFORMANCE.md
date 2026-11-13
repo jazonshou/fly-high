@@ -4627,6 +4627,106 @@ three far-sward reads with the micro read in them, and
   against a 1,168-triangle mesh for the test tree, before and after); only
   the flare's own share of it is tested.
 
+## Terrain realism on the macOS runner: what the added draws cost (2026-11-13)
+
+The four steps above are one pull request (#47). This is what it reads on the
+only GPU the cloud has, the macOS runner's (Apple M1, virtual; `perf-ab`,
+640 rounds a shot, the frame timed from `render()` to GPU idle), against
+main.
+
+**The gate's five shots** (run 43388245753, `fa7889c` against `3ad6c3c`),
+all inside the 5% gate once thin stands hand to their impostors:
+
+| shot | frame wall time | draw calls | vegetation batches |
+| --- | --- | --- | --- |
+| `approach-500ft` | same +2.2% (+0.8% to +3.5%) | 248 → 251 | 20 → 23 |
+| `cruise-horizon` | same +0.5% (-1.0% to +2.1%) | 202 → 202 | unchanged |
+| `forest-500ft-sunbehind` | same +1.8% (+0.8% to +2.8%) | 250 → 251 | 21 → 22 |
+| `ground-2m-lowsun` | same +0.5% (-0.3% to +1.2%) | 123 → 122 | 31 → 30 |
+| `water-25ft` | same +3.1% (+2.1% to +4.1%) | 225 → 226 | 3 → 4 |
+
+SwiftShader read `water-25ft` +0.9% (+0.4% to +1.5%) on the same commit; it
+was +2.5% before the handover.
+
+**Four shots chosen for how much they gained** (the same workflow dispatched
+with `shots`, run 43395172324, `fa7889c` against the merge base `b20d758`):
+
+| shot | frame wall time | ms a frame | draw calls | vegetation batches | ms an added draw |
+| --- | --- | --- | --- | --- | --- |
+| `mountain-close` | **slower +22.2%** (+19.7% to +24.7%) | 76.0 → 96.6 | 225 → 252 | 12 → 39 | 0.76 |
+| `terrain-material-1600ft-down` | **slower +10.6%** (+8.5% to +12.8%) | 70.5 → 76.9 | 88 → 101 | 9 → 22 | 0.49 |
+| `horizon-shadow-far-annulus` | **slower +7.3%** (+6.2% to +8.3%) | 53.4 → 57.7 | 96 → 103 | 19 → 26 | 0.61 |
+| `hamlet-300ft` | inconclusive +4.8% (+3.8% to +5.8%) | 55.6 → 58.4 | 232 → 236 | 16 → 20 | 0.70 |
+
+SwiftShader read the look-down shot +4.5% (+4.0% to +5.0%) in GPU time.
+
+**That adapter is bound by draw calls.** Its frame is its draw count times
+about a third of a millisecond whatever is drawn: 225 draws in 76 ms on the
+mountain, 225 in 44 ms over water, 248 in 58 ms on the approach. So its
+frame time follows the draw count, and the gate's 5% is five to eleven draws
+on a 225-draw shot. It is not an upload cost: the renderer makes about 117
+`writeBuffer` calls a frame (one a material, one an aircraft part) and none
+a vegetation batch. Each batch is one replayed render bundle.
+
+**What the mountain's 27 are.** The two mountain shots look at one slope.
+On main it was grass with a pine stand: 12 batches. It now holds an oak
+grove beside the pines, thickets of three bush species and thirteen
+boulders, and the camera stands 130 m from a presentation chunk's edge, so
+most kinds are drawn for two chunks: 15 tree mesh batches (oak near and mid,
+pine near and mid, pine mid again in the next chunk), 4 impostor batches,
+4 ground shadow batches, 10 bush batches (bodies, far stand-ins and three
+species' leaves, twice) and 4 boulder batches (granite and limestone,
+twice), with 2 of heather. A batch is a (prototype, 4,096 m chunk), so a new
+kind of thing is a new draw in every chunk the frustum touches, however few
+of it stand there; the look-down shot draws 13 more for bushes and oaks
+that are almost all below its frame.
+
+**What it is on a GPU that is not virtual.** `VEGETATION_DRAW_COST_MS`, 26 µs
+a vegetation draw, was measured on the reference Mac, where `Δgpu` followed
+`Δdraws` across the capture set: 27 draws are about 0.7 ms there, and the
+one to seven most shots gained are 0.03 to 0.2 ms, under that host's 0.8 ms
+noise floor. No capture shot draws more vegetation batches than the heaviest
+did before these steps (`car-ford-chase`: 52 with the tree shadows alone, 46
+now); the mountain's 39 is the most any shot gained.
+
+**What is declared.** The pull request does cost draws where it puts things
+on ground that was bare, and on a draw-bound adapter that is frame time one
+for one: up to 22% at the richest site measured.
+
+**Draw ceilings.** The capture's ceilings are each shot's exact count, pinned
+at `2305224` with the tree shadows. Two full macOS captures of `fa7889c`
+(gpu-tests run 43388245668, attempts 1 and 2) agree on all 32 shots that
+carry one: 18 rose, 6 fell and 8 did not move.
+
+| moved by | shots |
+| --- | --- |
+| +27 | `mountain-close` (231 → 258) |
+| +13 | `terrain-material-1600ft-down` (88 → 101) |
+| +5 | `horizon-shadow-far-annulus` |
+| +3 | `hills-dusk-glint`, `forest-line-highsun` |
+| +2 | `approach-500ft`, `reference-viewport`, `winter-noon`, `night`, `night-moonlit`, `dusk-mesopic` |
+| +1 | `slant-10km`, `cdlod-transition`, `cruise-sun-30`, `runway-on-approach`, `water-25ft`, `water-3m`, `water-400ft-glitter` |
+| -1 | `high-10000ft-down`, `grove-forest-2m`, `veg-seam-1600ft-oblique`, `veg-seam-near-500ft` |
+| -2 | `grove-meadow-2m` |
+| -3 | `ground-2m-lowsun` |
+
+The six that fell are the second leaf-card model of a bush species, which
+Low and Medium no longer draw. The deltas are staged in
+`MEASURED_DRAW_DELTAS` (`scripts/deliveryFloors.mts`, "open-ground-vegetation");
+the ceilings move when a third capture agrees.
+
+**What would take it back.** Nothing small: lighter rules recover perhaps a
+third of the mountain's 27 (one leaf batch for the three bush species, one
+boulder batch for the three lithologies, bushes and boulders ranged by slant
+distance so an aircraft does not draw them beneath itself). The rest is the
+shape of the batching itself, which main's trees share: one batch a
+prototype across chunks in place of one a chunk, a tree's three parts in
+fewer draws, and LOD by slant range in place of ground range (every
+distance in `presentationBuild.ts` and in the shader's band window is
+horizontal, so near-band meshes are drawn under an aircraft at any height).
+That is a change to how all vegetation is drawn, and it is not in this pull
+request.
+
 ## In-app benchmark (?bench=1)
 
 `?bench=1` turns the game into a benchmark anyone can run in their own
