@@ -3943,6 +3943,65 @@ door stand (`boardingWalkSeconds`, 0.45 s plus the distance at 1.25 m/s)
 and then 2.4 s (2.0 s in all before); getting out is 2.4 s (1.6 s). GPU
 time is for the macOS runner's walker shots, as before.
 
+## The walker's arms and clothes (2026-11-13): the same draws and maps
+
+Round two of the redesign: getting in and out, each hand holds only what its
+arm reaches (`armReach.ts`), and the bake dresses him in a leather flight
+jacket, a T-shirt and jeans cut along their own edges (docs/WALKER_FIGURE.md,
+"The body" and "The motion"). Nothing a frame costs moves:
+
+- Draws: unchanged, one mesh plus the tier's cascades
+  (`tests/gpu/person-figure.test.ts`: 2 on Low, 3 on Medium, High and Ultra).
+  The collar is a part of the one mesh, not a draw.
+- Maps: the same three at the same sizes, so `personFigureMiB` and the
+  memory estimate read what they did (259.3 of Low's 260 MiB, 698.0 of
+  High's 700, 992.0 of Ultra's 1,000). No estimate row is added.
+- Triangles: 33,978 / 9,999 / 3,000 / 1,000 at the four levels (33,928 /
+  9,999 / 3,000 / 999). Vertices 19,558 / 6,483 / 2,323 / 1,018 (19,449 /
+  6,459 / 2,323 / 1,012): the garments' cut edges and the collar.
+- Load: 757 KB of mesh (754) and 172 KB (Low, High; 138), 564 KB (Medium;
+  443) or 2.1 MB (Ultra; 1.6) of JPEG maps: stitching, grain, ribs and
+  denim compress less well than plain cloth. The decoded textures are the
+  same size.
+- The arm solver is arithmetic on the CPU, run only for a hand with a hold
+  (getting in and out, and seated). `PersonMotion.update` MEASURED about
+  8 us a frame before and after in the cloud container (the least of nine
+  laps of the course, three runs each: 7.2 to 8.4 before, 7.8 to 8.6 after),
+  inside the 80 us the budget test holds it to, with garbage of the same
+  order (209 to 256 B a frame of boxed doubles before, 68 to 411 after).
+
+`npm run perf:ab -- --base d37c2bd --rounds 0` (round one's head) on
+SwiftShader, 2026-11-13:
+
+| Shot | Draws | Work counts | Pixels |
+| --- | --- | --- | --- |
+| approach-500ft | 248 -> 248 | identical | identical |
+| car-clearing-chase | 148 -> 148 | identical | identical |
+| walk-door-chase | 143 -> 143 | identical | the new clothes (5.22% differ, SSIM 0.9915) |
+| walk-clearing-chase | 151 -> 151 | identical | the new clothes (5.85% differ, SSIM 0.9851) |
+
+The only renderer diagnostics that differ: the two walker frames draw 150
+more triangles (2,377,052 -> 2,377,202 and 2,297,754 -> 2,297,904: the
+finest level's 50 more, in the colour pass and two shadow cascades), and the
+inventoried GPU memory of the car and walker shots is 0.01 MiB up (331.85 ->
+331.86; the mesh's 9 KB more of vertex and index data). The memory estimate
+is the same number on both arms (422.6 MiB at the A/B's settings).
+
+The three car and walker rows are a second run. In the first the base arm's
+road stream never delivered (no ribbon or rail in any of its three frames: 2
+draws, 0.16 MiB and about 5,400 triangles short of round one's count for the
+same commit), and the A/B's settle does not wait for roads, so that run's
+car rows compared a world with roads against one without. Run alone, both
+arms had them.
+
+As before, no aircraft, boat or scenery frame draws the walker, so the 39
+reference pictures in `tests/perf/baseline` do not move, and no walker shot
+has a baseline or a draw ceiling yet, so nothing is re-pinned. The walker
+shots' pictures change (his clothes). The front doors open to 50 degrees
+where they opened to 65 (`FRONT_DOOR_HINGE.openRadians`); getting in and out
+take what they did (2.4 s each after the walk to the door). GPU time is for
+the macOS runner's walker shots, as before.
+
 ## Generated buildings (2026-11, PR #41)
 
 The settlements that stream with the roads now carry buildings: about 100
