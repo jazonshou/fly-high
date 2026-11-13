@@ -117,13 +117,40 @@ cross-fades from the last drawn pose:
   4.5 m/s). Both PUBLISHED; the curves between the running keys and their
   frontal and transverse channels are ESTIMATES. Walk and run switch at the
   sim's 2.0 m/s: double support walking, a flight phase running.
+- **The body behind the root.** The sim's walker is a point that reaches
+  walking speed in a sixth of a second, stops in an eighth and turns at 540
+  degrees a second. A body drawn rigidly on it starts, stops and turns like a
+  chess piece. The drawn body follows the root instead, as a critically
+  damped spring does (`BODY_RESPONSE`, `TURN_RESPONSE`; each stepped exactly
+  for the frame, so a long frame cannot overshoot): it trails a steady walk
+  by about 15 cm, picks its speed up and loses it over a step, and turns over
+  a tenth of a second. The gait plays at the body's own speed, so the legs
+  finish the step they are in as he comes to rest, and the step he pulls up
+  in is cut short (`BRAKING_SHORTENS`). His lean into a start, a stop and a
+  turn is eased twice over, and a turn's lean is no more than his speed
+  earns. ESTIMATES, set by eye and by the accelerations of the pelvis, head,
+  hands and feet over a course of starts, stops and turns.
+- **Turning about.** Thrown the other way, the body's speed passes through
+  nothing on its way round. That is not a stop: the gait's speed is held up
+  through it (`gaitSpeed`). The foot that then comes down behind the other,
+  the way he is now going, is the stride's back foot; the stride changes
+  halves there (`matchStride`) and the rest of him fades into it, so he
+  pivots on the foot under him and steps off with the one left behind.
 - **Planted feet** (`footPlant.ts`): a stance foot holds its world point and
   the ground's height and slope; the pelvis drops so the leg reaches, and the
   heel lifts when it cannot. Slip is under 1 cm on flat ground and on 10 and
   20 degree slopes at the sim's Tobler speeds. The figure's ground is the
   drawn terrain; where the sim's feet stand more than 12 cm off it (a pontoon,
   a ledge, the colliders it does not draw) the motion stands on a flat plane
-  at the root instead.
+  at the root instead. A foot leaves the ground from where it stood at the
+  speed it had (its offset from the gait's path dies away, carried on at its
+  speed against the path's), so neither jumps at toe-off, and one let go of
+  far behind comes on no faster than `RELEASE_SPEED`. A foot comes down
+  where it is drawn. Coming to a stand with a foot in the air, it steps to
+  where it will stand and is not put there. A standing foot too far from
+  under its hip, or turned too far, steps back, one foot at a time. The
+  first flight of a run, which does not yet know where it comes down, goes
+  no lower than puts a foot on the ground.
 - **Air, landings, roll**: a jump's tuck and reach, a crouch after landings
   at 5 m/s or more (`PERSON.landingHardSeconds`) deepening with speed, and a
   roll at 8 m/s or more (`landingRollSeconds`). ESTIMATES.
@@ -141,10 +168,21 @@ cross-fades from the last drawn pose:
   standing. The climb's height is read from the root's rise, and the hands
   are placed on the top by IK. ESTIMATES fitted to the sim's path (up over
   the first 60%, over in the last 70%).
-- **Car** (`carSeat.ts`): walking to the door, stepping up, sitting and
-  swinging the legs in, the reverse, and seated with the hands on the rim
-  (each re-gripping a third of a turn back as the wheel turns) and the feet
-  on the pedals. ESTIMATES.
+- **Car** (`carSeat.ts`): the walk to the door, getting in, getting out,
+  and seated with the hands on the rim (each re-gripping a third of a turn
+  back as the wheel turns) and the feet on the pedals. Getting in is one
+  move from wherever he stood within reach: he walks to the door stand at a
+  walking pace (`boardingWalkSeconds`, carrying on from the velocity he had),
+  opens the door as he arrives, steps into its opening with the near foot,
+  puts the other up on the step, hoists himself by the pillar's handle, ducks
+  in, sits and draws the door shut (2.4 s after the walk). Getting out is
+  the reverse (2.4 s). His feet are the planter's throughout: the step into
+  the opening is a step to a place asked for, a foot going up to the step is
+  picked up from rest, and neither foot leaves the ground while the other is
+  in the air. A hand reaching for a hold straightens its arm only
+  asymptotically (`softReach`), so it does not lock in a frame. The sim's
+  door, the drawn door and the hands read one opening
+  (`boardingDoorOpening`). ESTIMATES.
 - **Look**: the head and neck turn toward the camera's aim (up to 70
   degrees either way, 40 up, 45 down, the neck taking 40%); looking back past
   100 degrees eases the head to the front.

@@ -1,6 +1,7 @@
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import type { PersonVisualState } from "@/src/game/types";
+import type { BoardingFrom } from "./carSeat";
 
 /**
  * What the walker's figure reads each frame, besides the pose the renderer
@@ -35,11 +36,12 @@ export interface PersonAnimationInput {
   /**
    * Getting in: where the walker stood when it began, in the seat frame the
    * root is posed at while boarding (metres along the car's forward, up and
-   * right axes from the driver's hip point), and its facing relative to the
-   * car's (radians, positive turned right). The figure walks from there to
-   * the door over progress 0..0.25. Null otherwise.
+   * right axes from the driver's hip point), its facing relative to the
+   * car's (radians, positive turned right) and how it was moving. The figure
+   * walks from there to the door over the progress's `walkShare`. Null
+   * otherwise.
    */
-  readonly boardingFrom?: { readonly forward: number; readonly up: number; readonly right: number; readonly facing: number } | null;
+  readonly boardingFrom?: BoardingFrom | null;
   /** How far the boarding door stands open as drawn, 0 shut .. 1 (`FRONT_DOOR_HINGE.openRadians`), for the hands. 0 otherwise. */
   readonly boardingDoor?: number;
 }

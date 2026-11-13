@@ -124,6 +124,12 @@ export interface PersonBoardingState {
   progress: number;
   /** The door used: the driver's (right, right-hand drive) unless it was blocked. */
   side: CarDoorSide;
+  /**
+   * Getting in: the share of the progress the walk from where the walker
+   * stood to the door stand takes (`boardingWalkShare`); the rest is the
+   * getting in itself. Absent: none (the walker is at the stand).
+   */
+  walkShare?: number;
 }
 
 /**

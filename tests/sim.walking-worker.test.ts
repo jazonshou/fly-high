@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ControlState, FlightVisualState, PersonControlState } from "@/src/game/types";
 import { WORLD_PAGE_BASE_EXTENT_METERS, WORLD_PAGE_HEIGHT_CORE } from "@/src/render/webgpu/world/pageGeometry";
 import { NEUTRAL_CAR_CONTROLS, NEUTRAL_PERSON_CONTROLS } from "@/src/sim/surface/types";
-import { PERSON } from "@/src/vehicles/person";
+import { boardingWalkSeconds, PERSON } from "@/src/vehicles/person";
 import { clearInfrastructureRegions } from "@/src/world/infrastructure";
 import { InfrastructureRegionsForwarder, packInfrastructureRegionsUpdate } from "@/src/world/infrastructureSync";
 import { createWorld } from "@/src/world/world";
@@ -144,7 +144,7 @@ describe("a walk in the simulation worker", () => {
     expect(realm.latest().walking?.prompt).toEqual({ action: "getIn", ready: true, reason: null });
     const startsBefore = realm.starts;
     realm.send({ type: "controls", controls: onFoot({}, 1) });
-    vi.advanceTimersByTime(Math.ceil(PERSON.getInSeconds * 1_000) + 500);
+    vi.advanceTimersByTime(Math.ceil((boardingWalkSeconds(PERSON.doorReach) + PERSON.getInSeconds) * 1_000) + 500);
     state = realm.latest();
     expect(state.walking?.driven).toBe("car");
     expect(state.vehicle?.kind).toBe("car");

@@ -7,7 +7,7 @@ import type {
   WalkingPrompt,
   WalkingVisualState,
 } from "@/src/game/types";
-import { CAR_SEATING, PERSON } from "@/src/vehicles/person";
+import { boardingDoorOpening, boardingWalkSeconds, CAR_SEATING, PERSON } from "@/src/vehicles/person";
 import type { TerrainCollisionSample } from "@/src/world/types";
 import { createColliderContact } from "../colliders";
 import { clamp, rotateVectorInto } from "../math";
@@ -48,6 +48,7 @@ export interface WalkingCar extends SurfaceVehicleSimulator {
 }
 
 interface Boarding extends PersonBoardingState {
+  walkShare: number;
   /** Seconds the whole move takes. */
   duration: number;
   /** World pose at the start (feet or hip point) and the standing spot, and the hip point. */
@@ -394,11 +395,14 @@ export class WalkingSession {
     const person = this.person.state;
     const carHeading = this.carHeading();
     const stand = this.doorStandPoint(side, { x: 0, y: 0, z: 0 });
+    // The walk to the door stand at a walking pace, then the getting in itself.
+    const walk = boardingWalkSeconds(Math.hypot(stand.x - person.position.x, stand.z - person.position.z));
     this.boarding = {
       action: "getIn",
       progress: 0,
       side,
-      duration: PERSON.getInSeconds,
+      walkShare: walk / (walk + PERSON.getInSeconds),
+      duration: walk + PERSON.getInSeconds,
       from: { ...person.position },
       fromHeading: flightAnglesOf(person.orientation).heading,
       stand,
@@ -418,6 +422,7 @@ export class WalkingSession {
       action: "getOut",
       progress: 0,
       side,
+      walkShare: 0,
       duration: PERSON.getOutSeconds,
       from: hip,
       fromHeading: carHeading,
@@ -461,11 +466,8 @@ export class WalkingSession {
       this.doors[1] = 0;
       return;
     }
-    const p = boarding.progress;
-    // The figure's hand times itself to these (the figure build's timing).
-    const open = boarding.action === "getIn"
-      ? Math.min(ramp(p, 0, 0.25), 1 - ramp(p, 0.8, 1))
-      : Math.min(ramp(p, 0, 0.2), 1 - ramp(p, 0.75, 1));
+    // The figure's hands time themselves to the same opening.
+    const open = boardingDoorOpening(boarding.action, boarding.progress, boarding.walkShare);
     this.doors[0] = boarding.side === "right" ? open : 0;
     this.doors[1] = boarding.side === "left" ? open : 0;
   }
@@ -476,19 +478,21 @@ export class WalkingSession {
     const p = boarding.progress;
     const position = state.position;
     let heading: number;
+    // The feet point follows the figure's own moves (`render/webgpu/person/carSeat.ts`), for the camera.
     if (boarding.action === "getIn") {
-      if (p < 0.25) {
-        const t = smooth(p / 0.25);
+      const walk = boarding.walkShare;
+      if (p < walk) {
+        const t = smooth(p / walk);
         lerpInto(position, boarding.from, boarding.stand, t);
         heading = lerpHeading(boarding.fromHeading, boarding.standHeading, t);
       } else {
         // Facing into the car at the door, then forward in the seat.
-        const t = smooth(clamp((p - 0.25) / 0.5, 0, 1));
+        const t = smooth(clamp(((p - walk) / (1 - walk) - 0.16) / 0.6, 0, 1));
         lerpInto(position, boarding.stand, boarding.hip, t);
         heading = lerpHeading(boarding.standHeading, boarding.hipHeading, t);
       }
     } else {
-      const t = smooth(clamp((p - 0.2) / 0.5, 0, 1));
+      const t = smooth(clamp((p - 0.22) / 0.64, 0, 1));
       lerpInto(position, boarding.hip, boarding.stand, t);
       heading = lerpHeading(boarding.hipHeading, boarding.standHeading, t);
     }
@@ -503,7 +507,7 @@ export class WalkingSession {
     const payload = state.vehicle as PersonVisualState;
     payload.mode = "board";
     payload.speed = 0;
-    payload.boarding = { action: boarding.action, progress: p, side: boarding.side };
+    payload.boarding = { action: boarding.action, progress: p, side: boarding.side, walkShare: boarding.walkShare };
   }
 
   /** Before the terrain at a foot start answers: stand by the door at the car's footing. */
@@ -515,10 +519,6 @@ export class WalkingSession {
     state.heading = (heading * 180) / Math.PI;
     state.altitude = state.position.y;
   }
-}
-
-function ramp(value: number, start: number, end: number): number {
-  return smooth(clamp((value - start) / (end - start), 0, 1));
 }
 
 function smooth(t: number): number {

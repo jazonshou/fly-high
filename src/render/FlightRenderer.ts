@@ -96,7 +96,7 @@ import { infrastructureChangeTouches, infrastructurePlantExclusionsIn } from "@/
 import { RoadStreamRuntime } from "./roads/RoadStreamRuntime";
 import { createWebGpuAircraft, type AircraftVisual } from "./webgpu/aircraft";
 import { createSurfaceVehicleVisual, type VehicleVisual } from "./webgpu/vehicle";
-import { createPersonVisual, loadWalkerBody, type PersonAnimationInput, type PersonVisual } from "./webgpu/person";
+import { createPersonVisual, loadWalkerBody, type PersonAnimationInput, type PersonBoardingFrom, type PersonVisual } from "./webgpu/person";
 import {
   CharacterCamera,
   characterCameraBelowWater,
@@ -912,8 +912,8 @@ export class FlightRenderer implements FlightRenderingSystem {
   private readonly seatedPerson = seatedPersonState();
   private readonly seatPosition = Vector3.Zero();
   private readonly seatScratch = Vector3.Zero();
-  /** Where the walker last stood on foot, world, for the figure's walk to the door. */
-  private readonly lastFootPose = { x: 0, y: 0, z: 0, heading: 0, sine: 0, cosine: 1, valid: false };
+  /** Where the walker last stood on foot and how fast he was moving, world, for the figure's walk to the door. */
+  private readonly lastFootPose = { x: 0, y: 0, z: 0, heading: 0, sine: 0, cosine: 1, velocityX: 0, velocityZ: 0, valid: false };
   /**
    * The drawn ground beside the walker's feet (`lastFootPose`), forward and
    * right of them, above the feet: one closure for the renderer's life
@@ -929,7 +929,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     ) - pose.y;
   };
   private readonly flatGroundOffset = (): number => 0;
-  private boardingFrom: { forward: number; up: number; right: number; facing: number } | null = null;
+  private boardingFrom: PersonBoardingFrom | null = null;
   /**
    * The water the character camera keeps a side of (the underwater view's
    * camera sampler), and the side: the walker's head's, changed only once the
@@ -967,7 +967,7 @@ export class FlightRenderer implements FlightRenderingSystem {
     steeringWheel: number;
     lookYaw: number;
     lookPitch: number;
-    boardingFrom: { forward: number; up: number; right: number; facing: number } | null;
+    boardingFrom: PersonBoardingFrom | null;
     boardingDoor: number;
     groundOffset(forward: number, right: number): number;
   } = {
@@ -4422,6 +4422,8 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       this.lastFootPose.heading = heading;
       this.lastFootPose.sine = Math.sin(heading);
       this.lastFootPose.cosine = Math.cos(heading);
+      this.lastFootPose.velocityX = state.velocity.x;
+      this.lastFootPose.velocityZ = state.velocity.z;
       this.lastFootPose.valid = true;
       animation.groundOffset = ground ? this.walkerGroundOffset : this.flatGroundOffset;
     } else if (carRoot?.rotationQuaternion) {
@@ -4444,12 +4446,20 @@ private texelBytes(type: number | undefined, format: number | undefined): number
           1 - 2 * (carQuaternion.y * carQuaternion.y + carQuaternion.z * carQuaternion.z),
           2 * (carQuaternion.x * carQuaternion.z - carQuaternion.w * carQuaternion.y),
         );
+        const forward = this.seatPosition.x;
+        const up = this.seatPosition.y;
+        const right = this.seatPosition.z;
+        // How he was moving as he pressed the key, in the same frame: the walk to the door carries on from it.
+        this.seatScratch.set(this.lastFootPose.velocityX, 0, this.lastFootPose.velocityZ);
+        this.seatScratch.rotateByQuaternionToRef(inverse, this.seatPosition);
         this.boardingFrom = {
-          forward: this.seatPosition.x,
-          up: this.seatPosition.y,
-          right: this.seatPosition.z,
+          forward,
+          up,
+          right,
           // Positive turned right: headings grow turning left.
           facing: Math.atan2(Math.sin(carHeading - this.lastFootPose.heading), Math.cos(carHeading - this.lastFootPose.heading)),
+          velocityForward: this.seatPosition.x,
+          velocityRight: this.seatPosition.z,
         };
       }
       if (!boarding) this.boardingFrom = null;

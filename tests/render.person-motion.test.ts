@@ -256,7 +256,8 @@ describe("landings", () => {
     const motion = new PersonMotion();
     const out = motionOutput();
     motion.update(motionInput(personState("air", { grounded: false, landingAge: 5 })), DT, out);
-    motion.update(motionInput(personState("walk", { speed: 1, landingSpeed: 3, landingAge: 0 })), DT, out);
+    // (Coming down at a walk: the root moves at the walker's speed.)
+    motion.update(motionInput(personState("walk", { speed: 1, landingSpeed: 3, landingAge: 0 }), { forward: 1 }), DT, out);
     expect(out.footStrikes).toBeGreaterThanOrEqual(1);
     expect(out.strikeStrength).toBeGreaterThan(0.3);
     expect(out.strikeStrength).toBeLessThanOrEqual(1);
@@ -316,7 +317,8 @@ describe("the climb onto a ledge from the feet", () => {
     };
     let x = 0;
     let y = 0;
-    const frames = Math.round(PERSON.mantleSeconds / DT) + 30;
+    // Then long enough on the top for both feet to step back under the body (two steps of 0.32 s).
+    const frames = Math.round(PERSON.mantleSeconds / DT) + 45;
     for (let frame = 1; frame <= frames; frame += 1) {
       const t = Math.min(1, (frame * DT) / PERSON.mantleSeconds);
       const nx = reach * smooth(0.3, 1, t);
