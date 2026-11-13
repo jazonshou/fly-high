@@ -1,12 +1,15 @@
+import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { ThinWebGPUEngine } from "@babylonjs/core/Engines/thinWebGPUEngine";
 import "@babylonjs/core/Engines/WebGPU/Extensions/engine.rawTexture";
 import { InternalTexture, InternalTextureSource } from "@babylonjs/core/Materials/Textures/internalTexture";
 import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture";
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Scene } from "@babylonjs/core/scene";
 import { afterEach, describe, expect, it } from "vitest";
 import { uploadDisplayAtlas, type DisplayAtlas } from "../src/render/webgpu/aircraft/cockpit/displays/displayAtlas";
+import { AtmosphereGpuResources } from "../src/render/webgpu/atmosphere/AtmosphereGpuResources";
 import { createRawTextureFromMipChain } from "../src/render/webgpu/core/MipChainUpload";
 import { planMippedTextureArray, uploadMippedTextureArrayPlan } from "../src/render/webgpu/core/TextureArrayMips";
 import { dropTextureCpuMirror } from "../src/render/webgpu/core/TextureCpuMirror";
@@ -181,6 +184,23 @@ describe("Babylon's CPU copy of hand-built mip chains", () => {
     expect(writes[0]!.source).toBe(pixels.buffer);
     expect(writes[0]!.bytes).toEqual(new Uint8Array(pixels.buffer));
     expect(mirrorOf(texture)).toEqual({ bufferView: null, bufferViewArray: null });
+  });
+
+  it("is dropped by the atmosphere's one-shot uploads (transmittance LUT, blue noise)", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    fixtures.push({ engine, scene });
+    const camera = new UniversalCamera("cpu-mirror-camera", Vector3.Zero(), scene);
+    const resources = new AtmosphereGpuResources(scene, camera);
+    try {
+      // CONTROL: this engine keeps the copy of a raw texture nothing drops.
+      const kept = new RawTexture(new Uint8Array(4), 1, 1, 5, scene, false);
+      expect(mirrorOf(kept).bufferView).not.toBeNull();
+      expect(mirrorOf(resources.transmittanceLut)).toEqual({ bufferView: null, bufferViewArray: null });
+      expect(mirrorOf(resources.blueNoise)).toEqual({ bufferView: null, bufferViewArray: null });
+    } finally {
+      resources.dispose();
+    }
   });
 
   it("tolerates a texture with no internal texture", () => {
