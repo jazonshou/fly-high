@@ -6,7 +6,7 @@
  */
 import { SIDES } from "../../src/render/webgpu/person/skeleton";
 import type { FittedBody } from "./body.mts";
-import { OUTFIT } from "./clothes.mts";
+import type { GarmentMarks } from "./clothes.mts";
 import { hairOf } from "./hair.mts";
 import { cross, dot, normalize, scale, sub, type V3 } from "./math.mts";
 import type { Part } from "./parts.mts";
@@ -92,7 +92,7 @@ export function lidOpening(body: FittedBody, eye: EyeFit): LidOpening {
   return { across, lower, upper, width: (widest + 1) * STEP };
 }
 
-export function findLandmarks(body: FittedBody, eyes: readonly EyeFit[], boots: Part): Landmarks {
+export function findLandmarks(body: FittedBody, eyes: readonly EyeFit[], boots: Part, garments: GarmentMarks): Landmarks {
   const openings = eyes.map((e) => lidOpening(body, e));
   // The irises sit where MakeHuman's own eyes look at rest (its eye bones: a little down and out from
   // the eyeballs' middles), which is where its lids were modelled to frame them: painted on the
@@ -187,9 +187,7 @@ export function findLandmarks(body: FittedBody, eyes: readonly EyeFit[], boots: 
     return { x, z, lacing: outline.slice(Math.max(0, start - 1)) };
   });
 
-  // The collar's top at the front: the neckline there (1.435) and the collar's height over it.
-  const collarTop = 1.47125 - 0.0175 - 0.01875 + OUTFIT.collarHeight + 0.006;
   // The mouth's corners: just inside where the muscles that lift them end.
   const mouthHalfWidth = 0.96 * (Math.abs(body.joint("levator05.L____tail")[2]) + Math.abs(body.joint("levator05.R____tail")[2])) / 2;
-  return { eyes: eyeMarks, mouth: [parting[0], parting[1], 0], mouthHalfWidth, noseTip, hair: hairOf(body), fingertips, palms, collarTop, toes };
+  return { eyes: eyeMarks, mouth: [parting[0], parting[1], 0], mouthHalfWidth, noseTip, hair: hairOf(body), fingertips, palms, garments, toes };
 }

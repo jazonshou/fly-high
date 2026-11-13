@@ -135,7 +135,8 @@ export const LOOK = Object.freeze({
   lips: [140, 86, 78],
   /** Hazel: green-brown at the rim, amber round the pupil. */
   iris: { rim: [74, 62, 34], middle: [122, 96, 48], ring: [150, 104, 44] },
-  jacket: [84, 92, 78],
-  trousers: [150, 137, 112],
+  /** A russet brown hide, and the indigo of jeans a few years old. */
+  jacket: [110, 68, 43],
+  trousers: [50, 64, 98],
   boots: [88, 58, 38],
 });

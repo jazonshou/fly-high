@@ -37,9 +37,19 @@ the ground between the heels (seated: the driver's hip point). The sim's
   folded onto our 27. Its high-poly eyes go in the sockets, the irises where
   MakeHuman's eye bones look, which is where its lids frame them. The hands
   are posed relaxed after the fit (`hands.mts`). Over the body the bake
-  builds the clothes as shells lifted off it (the skin they cover removed):
-  an olive-grey soft-shell jacket with a stand-up collar, zip, hem and cuff
-  bands; stone trousers; brown leather boots with laces. The hair is a mesh
+  builds the clothes as shells lifted off it (the skin they cover removed),
+  each cut along its own edges rather than the mesh's steps (`clip` in
+  `clothes.mts`), eased and draped. They are a man's own clothes, not a
+  uniform, and they give him his outline: a brown leather flight jacket cut
+  short, its shoulders built out a little, its knitted waistband and cuffs
+  drawn in snug so the leather blouses over them, its collar laid down (a
+  part of its own, standing up the back of the neck, folded over, its two
+  points lying either side of the throat) and its zip left open at the top
+  over a white T-shirt (painted on the skin there); straight-legged indigo
+  jeans that hang from the thigh; brown leather boots with laces. The first
+  outfit, a soft-shell zipped to the chin over slim trousers, made him a
+  barrel on thin legs, and its hem below the hip joints bent with every
+  step; the jacket's hem is now above them. The hair is a mesh
   of its own (`hair.mts`): the scalp's faces where the hair is thick, divided
   finer, cut along the hairline and lifted by the cut's length into locks,
   pushed up at the front and across; its thin edge is painted on the skin.
@@ -49,17 +59,24 @@ the ground between the heels (seated: the driver's hip point). The sim's
   Every asset bundled with MakeHuman is CC0 1.0 (its `LICENSE.md`, section
   C); the bake checks that text before using anything. Only the baked files
   are in the repository.
-- **Levels of detail**: MEASURED 33,928 triangles, then 9,999, 3,000 and
-  999, simplified with meshoptimizer keeping UV seams, normals and UVs
-  (errors 0.15%, 0.62% and 3.0% of the figure's size). The figure switches
+- **Levels of detail**: MEASURED 33,978 triangles, then 9,999, 3,000 and
+  1,000, simplified with meshoptimizer keeping UV seams, normals and UVs
+  (errors 0.15%, 0.68% and 3.5% of the figure's size). The figure switches
   at 10, 25 and 80 m (`FIGURE_LOD_DISTANCES`, with 1.5 m either side). Low
   tier starts at the second (`personFigureFinestLod`).
 - **Maps**: one atlas in MakeHuman's UV layout, painted by the bake from
   measured surface points: albedo (sun-browned skin and its mottle, redder
   cheeks, nose and ears, the beard and the heavy brows, greying hair, lips,
-  lashes, irises; the jacket's fabric, seams and folds; the trousers' twill;
-  leather with toe wear), a normal map from
-  the same painters' heights (pores, creases, weave, grain, laces), and
+  lashes, irises; the T-shirt; the jacket's hide, paler along every seam,
+  edge and fold and at the elbows, with its seams and topstitching, flap
+  pockets, shoulder straps, back yoke, brass zip and snaps, and the ribbed
+  knit of its waistband and cuffs; the jeans' indigo, faded on the thighs,
+  knees and seat and along every crease, with their seams, yoke, pockets,
+  fly, copper rivets and gold thread; the boots' leather with toe wear), a
+  normal map from the same painters' heights (pores, the leather's grain
+  and creases, the knit's ribs, the denim's twill, folds at the elbows, the
+  waist, the hips, behind the knees and stacked over the boots, seams,
+  stitches, the zip's teeth, laces), and
   occlusion, roughness and metalness. The occlusion is ray-traced against the
   whole figure (32 rays a texel at half size) and also darkens the albedo a
   little. Each is baked at 2,048 texels and halved for 1,024 and 512; the
@@ -69,8 +86,8 @@ the ground between the heels (seated: the driver's hip point). The sim's
   The figure builds the mip chains itself, in linear light,
   renormalising the normals and widening the roughness where they spread
   (Toksvig).
-- **Files** (`src/render/webgpu/person/assets/`, 3.0 MB): `walker-body.bin`
-  (754 KB: the shared vertices quantised to 16 bits, four bone indices and
+- **Files** (`src/render/webgpu/person/assets/`, 3.6 MB): `walker-body.bin`
+  (757 KB: the shared vertices quantised to 16 bits, four bone indices and
   weights in bytes, 16-bit triangles per level) and three JPEGs per size
   (albedo q90, normal q94 and occlusion-roughness-metal q92, 4:4:4 for the
   last two). The renderer loads only the tier's size, alongside the scene,
