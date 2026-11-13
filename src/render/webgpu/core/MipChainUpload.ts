@@ -3,6 +3,7 @@ import type { BaseTexture } from "@babylonjs/core/Materials/Textures/baseTexture
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
+import { dropTextureCpuMirror } from "./TextureCpuMirror";
 
 /**
  * UPLOADING A HAND-BUILT MIP CHAIN, and why Babylon must never record its own.
@@ -100,6 +101,8 @@ export function createRawTextureFromMipChain(
     for (let level = 0; level < levels.length; level += 1) {
       texture.updateMipLevel(levels[level]!, level);
     }
+    // Babylon would keep every level on the CPU for a restore this game never runs.
+    dropTextureCpuMirror(texture);
     return texture;
   } catch (error) {
     // The texture is allocated; ownership never reaches the caller, so
