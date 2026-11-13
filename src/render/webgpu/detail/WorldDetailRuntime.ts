@@ -479,9 +479,9 @@ export interface DetailPresentationRebuildDiagnostics {
   readonly cpuWriterPoolDrops: number;
   /**
    * Lifetime totals of inline staged writers moved to another writer (each
-   * also an allocation or a pool hit): one that filled, to one twice its
-   * records; one left with twice its records or more once they were known,
-   * to one that fits.
+   * also an allocation or a pool hit): one that filled, to one that holds
+   * twice its records; one left with four times its records or more once they
+   * were known, to one that fits.
    */
   readonly cpuWriterGrowths: number;
   readonly cpuWriterRefits: number;
@@ -703,23 +703,27 @@ export const DETAIL_INSTANCE_BUFFER_REUSE_GRACE_UPDATES = 8;
  * profile's cell budget, at most 16 MiB (8 MiB at Low's 128 cells, 16 MiB at
  * Medium's 384 and High's 896). The pool only holds what releases outrun
  * takes, so the cap is headroom rather than a size. Simulating the bench
- * route (75 s, in-process worker), Low's pool averaged 3.6 MiB and dropped
- * nothing, leaving 0.07 MiB/s of new long-lived writer bytes against 3.5 when
- * every transferred buffer was kept; a 4 MiB cap dropped 122 writers and left
- * 0.12. Medium's dropped nothing either (0.12 against 9.1 MiB/s).
+ * route (75 s, in-process worker), Low's pool averaged 3.2 MiB and dropped
+ * nothing, leaving 0.08 MiB/s of new long-lived writer bytes against 3.5 when
+ * every transferred buffer was kept; Medium's dropped nothing either (0.11
+ * against 9.1 MiB/s). Straight 60 s Low lines averaged 4.7-5.2 MiB; a 4 MiB
+ * cap kept 1.2-1.6 MiB less there but dropped 39-74 writers and made up to
+ * 0.016 MiB/s more, and at 3 MiB the bench route rose to 0.14.
  */
 export const DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL = 64 * 1_024;
 export const DETAIL_CPU_WRITER_POOL_MAX_BYTES = 16 * 1_024 * 1_024;
 /**
  * New writers hold a power of two of at least this many records, and a writer
- * serves a batch only while that batch fills more than half of it (batches
- * under the minimum count as the minimum), so no live writer holds twice its
- * records or more. On the simulated bench route, with a pool that dropped
- * nothing, this left Low's live writers 0.45 MiB smaller than a quarter did
- * and 0.07 rather than 0.08 MiB/s of new long-lived writer bytes.
+ * serves a batch only while that batch fills more than a quarter of it
+ * (batches under the minimum count as the minimum), so a small batch never
+ * keeps a large buffer alive. Requiring more than half made live writers
+ * smaller but moved the slack into the pool, as writers a batch no longer
+ * half filled sat there unused: within 0.1 MiB and 0.01 MiB/s on the
+ * simulated bench route, but 0.4-1.1 MiB more writer bytes retained and about
+ * 0.02 MiB/s more new long-lived ones on straight Low lines and on Medium.
  */
 const DETAIL_CPU_WRITER_MIN_RECORDS = 32;
-const DETAIL_CPU_WRITER_MAX_OVERSIZE = 2;
+const DETAIL_CPU_WRITER_MAX_OVERSIZE = 4;
 
 /**
  * 2-17 close: one chunk is rebuilt at a time, now across bounded update
@@ -3837,7 +3841,7 @@ export class WorldDetailRuntime {
     if (!prototype) throw new Error(`Missing detail prototype ${prototypeKey}`);
     // Size it like the live batch it will replace or, for a new batch, like
     // the prototype's latest; it grows through the pool if that was too few
-    // and is refit if it ends in twice its records (`createPendingPublication`).
+    // and is refit if it ends far too large (`createPendingPublication`).
     const live = this.batches.get(`${prototypeKey}@${chunkKey}`);
     const storage = this.acquireDetailBuildStorage(
       live?.writer.count ?? this.stagedRecordsByPrototype.get(prototypeKey) ?? 0,
@@ -3854,10 +3858,10 @@ export class WorldDetailRuntime {
 
   /**
    * Takes the idle writer/bounds pair that best fits `minimumRecords` — the
-   * smallest writer that holds them in less than twice their bytes, the oldest
-   * of equals — or makes one with a power-of-two capacity, so released writers
-   * come in few sizes and match later batches. Pooled pairs were reset when
-   * released.
+   * smallest writer that holds them in less than four times their bytes, the
+   * oldest of equals — or makes one with a power-of-two capacity, so released
+   * writers come in few sizes and match later batches. Pooled pairs were reset
+   * when released.
    */
   private acquireDetailBuildStorage(minimumRecords: number): PooledDetailBuildStorage {
     const pool = this.detailBuildStoragePool;
@@ -3902,8 +3906,8 @@ export class WorldDetailRuntime {
 
   /**
    * An inline build sizes its writers before it knows their records, so a
-   * batch that shrank can end in a writer twice its records or more; that one
-   * is swapped for a writer that fits, as a pool hit would, before it is
+   * batch that shrank can end in a writer four times its records or more; that
+   * one is swapped for a writer that fits, as a pool hit would, before it is
    * published, so no live writer keeps a large buffer for a few records. A
    * worker batch is copied into a fitting writer from the start.
    */

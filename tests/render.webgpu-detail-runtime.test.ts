@@ -2026,21 +2026,22 @@ describe("detail CPU writer pool", () => {
       expect(diagnostics().pooledCpuBatchStorageBytes).toBe(4 * mib);
       expect(pooled()).not.toContain(released[6]);
 
-      // A batch that fills more than half of a pooled writer takes it; a
-      // smaller one gets a new power-of-two writer of its own instead of
-      // pinning a megabyte.
-      const fits = pool.acquireDetailBuildStorage(recordsPerMiB / 2 + 1);
+      // A batch that fills more than a quarter of a pooled writer takes it;
+      // one that fills a quarter or less gets a new power-of-two writer of its
+      // own instead of pinning a megabyte.
+      expect(pool.acquireDetailBuildStorage(recordsPerMiB / 4).writer.capacityBytes).toBe(mib / 4);
+      const fits = pool.acquireDetailBuildStorage(recordsPerMiB / 4 + 1);
       expect(fits.writer).toBe(released[7]);
       expect(diagnostics().cpuWriterPoolHits).toBe(1);
       const small = pool.acquireDetailBuildStorage(100);
       expect(pooled()).not.toContain(small.writer);
       expect(small.writer.capacityBytes).toBe(128 * DETAIL_INSTANCE_STRIDE_BYTES);
-      expect(diagnostics().cpuWriterAllocations).toBe(1);
+      expect(diagnostics().cpuWriterAllocations).toBe(2);
       const tiny = pool.acquireDetailBuildStorage(3);
       expect(tiny.writer.capacityBytes).toBe(32 * DETAIL_INSTANCE_STRIDE_BYTES);
       pool.releaseDetailBuildStorage(tiny.writer, tiny.bounds);
       expect(pool.acquireDetailBuildStorage(0).writer).toBe(tiny.writer);
-      expect(diagnostics().cpuWriterAllocations).toBe(2);
+      expect(diagnostics().cpuWriterAllocations).toBe(3);
       expect(diagnostics().pooledCpuBatchStorage).toBe(3);
       expect(diagnostics().pooledCpuBatchStorageBytes).toBe(3 * mib);
 
@@ -2123,7 +2124,7 @@ describe("detail CPU writer pool", () => {
       expect(hinted.writer.capacityBytes).toBe(8_192 * DETAIL_INSTANCE_STRIDE_BYTES);
 
       // Ending far smaller, it is refit (here into the pooled 32-record
-      // writer) before it can go live in twice its records or more.
+      // writer) before it can go live in four times its records or more.
       push(hinted.writer, 10);
       const oversized = hinted.writer;
       const few = hinted.writer.finish().slice();
@@ -2132,7 +2133,7 @@ describe("detail CPU writer pool", () => {
       expect(hinted.writer.finish()).toEqual(few);
       expect(pooled()).toContain(oversized);
       expect(diagnostics().cpuWriterRefits).toBe(1);
-      // In less than twice its records it stays.
+      // In less than four times its records it stays.
       inline.refitStagedWriter(hinted);
       expect(hinted.writer).toBe(outgrown);
       expect(diagnostics().cpuWriterRefits).toBe(1);
