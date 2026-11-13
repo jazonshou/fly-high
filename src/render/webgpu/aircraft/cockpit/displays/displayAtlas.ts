@@ -377,6 +377,9 @@ export function createDisplayAtlas(build: AircraftBuildContext, layout: DisplayL
       mipmaps ? Texture.TRILINEAR_SAMPLINGMODE : Texture.BILINEAR_SAMPLINGMODE,
       Constants.TEXTURETYPE_UNSIGNED_BYTE,
     );
+    // The zero fill is on the GPU now. Without this, Babylon keeps it as the CPU copy until the
+    // first `uploadDisplayAtlas`, which only cockpit view triggers.
+    dropTextureCpuMirror(texture);
     texture.name = layout.name;
     texture.wrapU = Texture.CLAMP_ADDRESSMODE;
     texture.wrapV = Texture.CLAMP_ADDRESSMODE;
