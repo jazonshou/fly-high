@@ -18,6 +18,7 @@ import {
   renderedShareAtDistance,
   type RenderedDensityLaw,
 } from "./renderedDensity";
+import { DETAIL_NO_CULL_BLOCKS, installDetailBlockFrustumTest } from "./blockFrustumTest";
 import { DetailGenerationClient } from "./DetailGenerationClient";
 import {
   DetailInstanceMaterialPlugin,
@@ -271,6 +272,13 @@ interface DetailBatch {
   filledRevision: number;
   /** Floating origin encoded into the currently uploaded instance records. */
   builtOrigin: { x: number; y: number; z: number };
+  /**
+   * The published records' culling blocks (`DetailInstanceBounds.blockExtents`,
+   * in the records' coordinates), which the mesh's frustum test reads after
+   * its whole-batch box passes: see `installDetailBlockFrustumTest`. Empty
+   * when unknown, and then the whole box decides alone.
+   */
+  cullBlocks: Float64Array;
   /** The chunk's first cell and its cell span, for the occupancy grid below. */
   readonly chunkMinCellX: number;
   readonly chunkMinCellZ: number;
@@ -3475,7 +3483,7 @@ export class WorldDetailRuntime {
         stagedBatches.set(batch.prototypeKey, {
           prototypeKey: batch.prototypeKey,
           writer: DetailInstanceWriter.fromTransferredBytes(batch.bytes, batch.count),
-          bounds: DetailInstanceBounds.fromExtents(batch.minimum, batch.maximum),
+          bounds: DetailInstanceBounds.fromExtents(batch.minimum, batch.maximum, batch.blocks),
           prototypeBoundKernel: prototype.boundKernel,
         });
       }
@@ -3816,6 +3824,7 @@ export class WorldDetailRuntime {
     const count = batch.writer.count;
     batch.mesh.forcedInstanceCount = 0;
     this.refreshImpostorOccupancy(batch, recordOrigin);
+    batch.cullBlocks = count === 0 ? DETAIL_NO_CULL_BLOCKS : batch.bounds.blockExtents();
     if (count === 0 || batch.gpu === null) {
       batch.mesh.setEnabled(false);
       return;
@@ -4002,6 +4011,7 @@ export class WorldDetailRuntime {
     const count = batch.writer.count;
     batch.mesh.forcedInstanceCount = 0;
     this.refreshImpostorOccupancy(batch, recordOrigin);
+    batch.cullBlocks = count === 0 ? DETAIL_NO_CULL_BLOCKS : batch.bounds.blockExtents();
     if (count === 0) {
       batch.mesh.setEnabled(false);
       return;
@@ -4317,7 +4327,7 @@ export class WorldDetailRuntime {
       detailReveal: 1,
     };
     this.captureCreatedBatches = addDiagnosticCount(this.captureCreatedBatches);
-    return {
+    const batch: DetailBatch = {
       mesh,
       castsShadows: prototype.castsShadows,
       prototypeKey,
@@ -4333,7 +4343,10 @@ export class WorldDetailRuntime {
       impostorBoundsPadding: [0, 0, 0],
       filledRevision: 0,
       builtOrigin: { x: 0, y: 0, z: 0 },
+      cullBlocks: DETAIL_NO_CULL_BLOCKS,
     };
+    installDetailBlockFrustumTest(mesh, batch);
+    return batch;
   }
 
   private retireBatch(batchKey: string): void {

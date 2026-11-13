@@ -1163,9 +1163,12 @@ export const MEASURED_DRAW_DELTAS: readonly MeasuredDrawDelta[] = Object.freeze(
       + "applies to bushes on Low and Medium from 548af49: one model a species, not two). "
       + "The macOS runner's A/B reads "
       + "the cost in frame time, about a third of a millisecond a draw on that adapter: "
-      + "docs/PERFORMANCE.md, \"Terrain realism on the macOS runner\". TWO captures so "
-      + "far: the ceilings move, and this becomes a per-shot DRAW_CALL_RAISES entry, when "
-      + "three agree.",
+      + "docs/PERFORMANCE.md, \"Terrain realism on the macOS runner\". TWO captures, "
+      + "and the ceilings never moved to these counts: the commit after 05c8ccd culls a "
+      + "batch by its 256 m blocks (docs/PERFORMANCE.md, \"Culling a batch by blocks\"), "
+      + "which stops drawing most of what rose here and some of what 2305224 drew. This "
+      + "entry is the record of fa7889c. It is replaced, not promoted, when three "
+      + "captures of the block-culled head agree.",
   }),
 ]);
 

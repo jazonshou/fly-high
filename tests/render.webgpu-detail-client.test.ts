@@ -483,6 +483,7 @@ describe("detail generation client (1B-10)", () => {
         bytes: new Uint8Array(31),
         minimum: [0, 0, 0],
         maximum: [1, 1, 1],
+        blocks: new Float64Array([0, 0, 0, 1, 1, 1]),
       }],
       statistics,
     };
@@ -516,6 +517,7 @@ describe("detail generation client (1B-10)", () => {
     })).toBe(false);
 
     const bytes = new Uint8Array(32);
+    const blocks = new Float64Array([0, 0, 0, 1, 1, 1]);
     const valid: DetailWorkerEvent = {
       type: "presentation",
       buildId: 1,
@@ -525,11 +527,32 @@ describe("detail generation client (1B-10)", () => {
         bytes,
         minimum: [0, 0, 0],
         maximum: [1, 1, 1],
+        blocks,
       }],
       statistics,
     };
     expect(isDetailWorkerEvent(valid)).toBe(true);
-    expect(detailWorkerEventTransferables(valid)).toEqual([bytes.buffer]);
+    expect(detailWorkerEventTransferables(valid)).toEqual([bytes.buffer, blocks.buffer]);
+
+    // The culling blocks are part of the contract: a batch that arrives
+    // without them, or with boxes that cannot be the batch's, is refused
+    // rather than drawn with a frustum test that could hide it.
+    const withBlocks = (value: unknown) => ({
+      ...valid,
+      batches: [{ ...valid.batches[0], blocks: value }],
+    });
+    expect(isDetailWorkerEvent(withBlocks(undefined))).toBe(false);
+    expect(isDetailWorkerEvent(withBlocks(new Float64Array(0)))).toBe(false);
+    expect(isDetailWorkerEvent(withBlocks(new Float64Array(5)))).toBe(false);
+    expect(isDetailWorkerEvent(withBlocks([0, 0, 0, 1, 1, 1]))).toBe(false);
+    expect(isDetailWorkerEvent(withBlocks(new Float32Array([0, 0, 0, 1, 1, 1])))).toBe(false);
+    expect(isDetailWorkerEvent(withBlocks(new Float64Array([0, 0, 0, 1, 1, 2])))).toBe(false);
+    expect(isDetailWorkerEvent(withBlocks(new Float64Array([-1, 0, 0, 1, 1, 1])))).toBe(false);
+    expect(isDetailWorkerEvent(withBlocks(new Float64Array([0.6, 0, 0, 0.4, 1, 1])))).toBe(false);
+    expect(isDetailWorkerEvent(withBlocks(new Float64Array([0, Number.NaN, 0, 1, 1, 1])))).toBe(false);
+    expect(isDetailWorkerEvent(withBlocks(
+      new Float64Array([0, 0, 0, 0.5, 1, 1, 0.5, 0, 0, 1, 1, 1]),
+    ))).toBe(true);
   });
 
   it("fails closed and clears the generation queue on a malformed retained-cell event", () => {
@@ -624,6 +647,7 @@ describe("detail generation client (1B-10)", () => {
         bytes: new Uint8Array(31),
         minimum: [0, 0, 0],
         maximum: [1, 1, 1],
+        blocks: new Float64Array([0, 0, 0, 1, 1, 1]),
       }],
       statistics: {
         nearCells: 1,
@@ -939,7 +963,7 @@ describe("detail generation client (1B-10)", () => {
       }
       expect(isDetailWorkerEvent(workerPost.event)).toBe(true);
       expect(workerPost.transfers).toEqual(
-        workerPost.event.batches.map((batch) => batch.bytes.buffer),
+        workerPost.event.batches.flatMap((batch) => [batch.bytes.buffer, batch.blocks.buffer]),
       );
       for (const batch of workerPost.event.batches) {
         expect(batch.bytes.byteLength).toBe(batch.count * 32);
@@ -1007,6 +1031,8 @@ describe("detail generation client (1B-10)", () => {
         expect(workerBatch.bytes).toEqual(inline.writer.finish());
         expect(workerBatch.minimum).toEqual(inline.bounds.minimum());
         expect(workerBatch.maximum).toEqual(inline.bounds.maximum());
+        expect(workerBatch.blocks.length).toBeGreaterThan(0);
+        expect(workerBatch.blocks).toEqual(inline.bounds.blockExtents());
       }
 
       worker.handleCommand({ type: "buildPresentation", buildId: 8, input });

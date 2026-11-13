@@ -173,6 +173,7 @@ interface RuntimeInternals {
     readonly chunkKey: string;
     readonly writer: DetailInstanceWriter;
     readonly bounds: DetailInstanceBounds;
+    readonly cullBlocks: Float64Array;
     readonly mesh: { readonly position: { readonly x: number; readonly y: number; readonly z: number } };
   }>;
   readonly presentationChunks: Map<string, {
@@ -318,6 +319,7 @@ function publishedSnapshot(runtime: WorldDetailRuntime) {
       bytes: Uint8Array.from(batch.writer.finish()),
       minimum: batch.bounds.minimum(),
       maximum: batch.bounds.maximum(),
+      cullBlocks: Array.from(batch.cullBlocks),
     })),
     chunks: [...state.presentationChunks].map(([key, chunk]) => ({
       key,
@@ -414,6 +416,13 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       const inlineSnapshot = publishedSnapshot(inlineRuntime);
       expect(workerSnapshot.batchOrder).toEqual(inlineSnapshot.batchOrder);
       expect(workerSnapshot.batches).toEqual(inlineSnapshot.batches);
+      // Every published batch carries its culling blocks, whichever side
+      // accumulated them.
+      expect(workerSnapshot.batches.length).toBeGreaterThan(0);
+      for (const batch of workerSnapshot.batches) {
+        expect(batch.cullBlocks.length).toBeGreaterThan(0);
+        expect(batch.cullBlocks.length % 6).toBe(0);
+      }
       expect(workerSnapshot.chunks).toEqual(inlineSnapshot.chunks);
       expect(workerSnapshot.statistics).toEqual(inlineSnapshot.statistics);
       expect(workerSnapshot.statistics.treeInstances

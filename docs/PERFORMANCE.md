@@ -4689,43 +4689,114 @@ noise floor. No capture shot draws more vegetation batches than the heaviest
 did before these steps (`car-ford-chase`: 52 with the tree shadows alone, 46
 now); the mountain's 39 is the most any shot gained.
 
-**What is declared.** The pull request does cost draws where it puts things
-on ground that was bare, and on a draw-bound adapter that is frame time one
-for one: up to 22% at the richest site measured.
+**What that reading declared.** At `fa7889c` the pull request cost draws
+where it puts things on ground that was bare, and on a draw-bound adapter
+that is frame time one for one: up to 22% at the richest site measured.
 
-**Draw ceilings.** The capture's ceilings are each shot's exact count, pinned
-at `2305224` with the tree shadows. Two full macOS captures of `fa7889c`
-(gpu-tests run 43388245668, attempts 1 and 2) agree on all 32 shots that
-carry one: 18 rose, 6 fell and 8 did not move.
+**Draw ceilings at that commit.** The capture's ceilings are each shot's
+exact count, pinned at `2305224` with the tree shadows. Two full macOS
+captures of `fa7889c` (gpu-tests run 43388245668, attempts 1 and 2) agreed on
+all 32 shots that carry one: 18 rose (`mountain-close` by 27,
+`terrain-material-1600ft-down` by 13, `horizon-shadow-far-annulus` by 5,
+fifteen others by 1 to 3), 6 fell by 1 to 3 (the second leaf-card model of a
+bush species, which Low and Medium no longer draw) and 8 did not move. Those
+counts were never pinned: the next section stops most of the added draws, and
+the ceilings are pinned from captures of that.
 
-| moved by | shots |
-| --- | --- |
-| +27 | `mountain-close` (231 → 258) |
-| +13 | `terrain-material-1600ft-down` (88 → 101) |
-| +5 | `horizon-shadow-far-annulus` |
-| +3 | `hills-dusk-glint`, `forest-line-highsun` |
-| +2 | `approach-500ft`, `reference-viewport`, `winter-noon`, `night`, `night-moonlit`, `dusk-mesopic` |
-| +1 | `slant-10km`, `cdlod-transition`, `cruise-sun-30`, `runway-on-approach`, `water-25ft`, `water-3m`, `water-400ft-glitter` |
-| -1 | `high-10000ft-down`, `grove-forest-2m`, `veg-seam-1600ft-oblique`, `veg-seam-near-500ft` |
-| -2 | `grove-meadow-2m` |
-| -3 | `ground-2m-lowsun` |
+**What took it back.** Not lighter rules, which would have recovered perhaps
+a third of the mountain's 27 (one leaf batch for the three bush species, one
+boulder batch for the three lithologies), and not a rework of the batching
+(one batch a prototype across chunks, a tree's three parts in fewer draws).
+Most of the 27 were batches with nothing in view, and so were some of the
+225 main drew: see the next section. What is left for a rework is LOD by
+slant range in place of ground range. Every distance in
+`presentationBuild.ts` and in the shader's band window is horizontal, so
+near-band meshes are still built for the ground under an aircraft at any
+height; they are no longer drawn unless they are in view.
 
-The six that fell are the second leaf-card model of a bush species, which
-Low and Medium no longer draw. The deltas are staged in
-`MEASURED_DRAW_DELTAS` (`scripts/deliveryFloors.mts`, "open-ground-vegetation");
-the ceilings move when a third capture agrees.
+## Culling a batch by blocks: a draw only for what is in view (2026-11-13)
 
-**What would take it back.** Nothing small: lighter rules recover perhaps a
-third of the mountain's 27 (one leaf batch for the three bush species, one
-boulder batch for the three lithologies, bushes and boulders ranged by slant
-distance so an aircraft does not draw them beneath itself). The rest is the
-shape of the batching itself, which main's trees share: one batch a
-prototype across chunks in place of one a chunk, a tree's three parts in
-fewer draws, and LOD by slant range in place of ground range (every
-distance in `presentationBuild.ts` and in the shader's band window is
-horizontal, so near-band meshes are drawn under an aircraft at any height).
-That is a change to how all vegetation is drawn, and it is not in this pull
-request.
+Most of the draws above drew nothing. A vegetation batch is one prototype's
+instances over a 4,096 m presentation chunk, and its frustum test was one box
+over all of them: the chunk's width and the terrain's height. The chunk the
+camera stands in contains the eye, so every batch in it passed whichever way
+the camera looked, and a batch strung along a ridge passed with every
+instance off screen. At `mountain-close` 39 batches were drawn and seven had
+an instance whose bound touched the frustum. Main drew 12 there by the same
+test, and needed fewer.
+
+**The test.** `DetailInstanceBounds` keeps, beside the one box, a box a
+256 m block (`DETAIL_CULL_BLOCK_METERS`). Every instance's own bound goes
+into the block its position falls in, in the pass that packs the record, on
+the worker or inline, so there is no second walk over the records and each
+block's box is exactly as conservative as the whole one. The blocks cross
+the worker boundary with the batch (`DetailWorkerPresentationBatch.blocks`;
+a batch without them, or with a box outside its bounds, is refused). A batch
+mesh's `isInFrustum` answers Babylon's whole-box test first and then asks
+whether any block's box touches the frustum
+(`installDetailBlockFrustumTest`, `blockFrustumTest.ts`). It can only turn a
+yes into a no, and only for a batch with no instance whose bound touches the
+frustum, which had nothing to rasterise. Render-target lists (the shadow
+casters on High and Ultra) do not frustum-test their meshes, so a tree
+behind the camera still casts.
+
+The block lattice is the record origin's, not the chunk's, so the
+accumulator needs no chunk coordinates: a block's slot is its lattice index
+modulo 17 (`DETAIL_CULL_BLOCK_SLOTS`; a chunk is sixteen blocks wide and,
+unaligned, touches seventeen). A wider batch would only make two blocks
+share a slot, whose box is still a union of real instance bounds.
+
+**The same picture.** In the picture harness (SwiftShader, Medium) a session
+on the commit before and a session on this one, taking the same steps, wrote
+byte-identical frames at `mountain-close`, `terrain-material-1600ft-down`
+and `hamlet-300ft`, and a second pair run side by side wrote byte-identical
+frames at `water-25ft` twice, with 226 draws in one and 225 in the other.
+The harness does not reproduce the sea between sessions that are not run
+together: the first pair's water frames, taken 28 minutes apart, differ in
+one pixel of 680,900 by one level in one channel (a sun glint at the
+shoreline), and two sessions of this same commit differed over half the
+frame. So only pairs taken together are evidence, and the macOS capture's
+frames of this commit are compared with `fa7889c`'s when the ceilings are
+pinned.
+
+**What it draws.** The picture harness at five capture placements, Medium,
+SwiftShader, the commit before and this one; "in view" is a test of every
+instance, which the blocks cannot beat:
+
+| placement | draw calls | vegetation batches | with an instance in view |
+| --- | --- | --- | --- |
+| `mountain-close` | 252 → 220 | 39 → 7 | 7 |
+| `terrain-material-1600ft-down` | 101 → 88 | 22 → 9 | 7 |
+| `water-25ft` | 226 → 225 | 4 → 3 | 3 |
+| `approach-500ft` | 249 → 247 | 21 → 19 | 17 |
+| `hamlet-300ft` | 236 → 236 | 20 → 20 | 20 |
+
+Main draws 225, 88 and 225 at the first three (the macOS A/B's base, same
+placements), so the mountain is five draws under main with an oak grove,
+thickets and boulders on it, and the other two are level. The hamlet's 20
+batches each have something in view. What the mountain no longer submits is
+50,159 of 54,230 instances, none of which reached a pixel.
+
+Block size was chosen on seven placements. Looking straight down from
+1,600 ft, 512 m blocks left 16 batches where 256 m leave nine and an exact
+test seven; elsewhere the two tied. 128 m blocks bought one or two batches
+on three placements for four times the boxes, and 256 m is within two
+batches of the exact test on all seven.
+
+**What the test costs.** A batch whose whole box misses the frustum costs
+what it did. One whose box passes walks its blocks until one touches: at
+most 289 boxes, 144 to 198 for the widest impostor batch in these scenes and
+11 to 68 a batch on average. All enabled batches together (7 to 63 of them)
+took 2 to 35 µs a frame in the harness, on a loaded four-core cloud host,
+against 1 to 18 µs for the whole boxes alone. A draw it saves is 26 µs of GPU
+on the reference Mac (`VEGETATION_DRAW_COST_MS`) and a third of a
+millisecond on the macOS runner. The accumulator's grid is 14 KB while a
+batch builds, pooled, and a published batch keeps 48 bytes a block.
+
+**What is not changed.** Which records a batch holds, and so its triangles
+when it is drawn; the shadow casters; batches whose box already missed. A
+batch behind the camera is now first drawn when the camera turns to it
+rather than when it is published, so its bundle is recorded then.
 
 ## In-app benchmark (?bench=1)
 

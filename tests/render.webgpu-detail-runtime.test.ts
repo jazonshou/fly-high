@@ -1,6 +1,7 @@
 import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
 import { Buffer } from "@babylonjs/core/Buffers/buffer";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
+import { Frustum } from "@babylonjs/core/Maths/math.frustum";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { Scene } from "@babylonjs/core/scene";
@@ -480,6 +481,59 @@ describe("WebGPU world-detail spatial presentation", () => {
     expect(visibleInstances).toBeGreaterThan(0);
     expect(visibleInstances).toBeLessThan(totalInstances);
     expect(runtime.statistics.renderedThinInstances).toBe(visibleInstances);
+
+    // Culling blocks, end to end on the published batches. Turn the camera
+    // through sixteen headings: a batch's own test may say no only where its
+    // whole box said yes, never while one of its records stands inside the
+    // frustum, and over the turn it drops batches the whole box kept (the
+    // chunk the camera stands in contains the eye whichever way it looks).
+    const blockInternals = runtime as unknown as {
+      batches: Map<string, {
+        mesh: Mesh;
+        cullBlocks: Float64Array;
+        writer: { count: number; finish(): Uint8Array };
+      }>;
+    };
+    let keptByWholeBox = 0;
+    let droppedByBlocks = 0;
+    for (let heading = 0; heading < 16; heading += 1) {
+      const yaw = heading / 16 * Math.PI * 2;
+      camera.setTarget(new Vector3(Math.sin(yaw) * 1_500, 0, Math.cos(yaw) * 1_500));
+      camera.getViewMatrix(true);
+      const planes = Frustum.GetPlanes(camera.getTransformationMatrix());
+      for (const batch of blockInternals.batches.values()) {
+        const mesh = batch.mesh;
+        if (!mesh.isEnabled() || mesh.forcedInstanceCount <= 0) continue;
+        expect(Object.hasOwn(mesh, "isInFrustum")).toBe(true);
+        expect(batch.cullBlocks.length).toBeGreaterThan(0);
+        const whole = mesh.getBoundingInfo().isInFrustum(planes, mesh.cullingStrategy);
+        const verdict = mesh.isInFrustum(planes);
+        if (!whole) {
+          expect(verdict).toBe(false);
+          continue;
+        }
+        keptByWholeBox += 1;
+        if (verdict) continue;
+        droppedByBlocks += 1;
+        const world = mesh.getWorldMatrix().m;
+        const packed = batch.writer.finish();
+        const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
+        const point = new Vector3();
+        for (let record = 0; record < batch.writer.count; record += 1) {
+          const offset = record * DETAIL_INSTANCE_STRIDE_BYTES;
+          point.set(
+            view.getFloat32(offset, true) + world[12]!,
+            view.getFloat32(offset + 4, true) + world[13]!,
+            view.getFloat32(offset + 8, true) + world[14]!,
+          );
+          expect(planes.every((plane) => plane.dotCoordinate(point) >= 0)).toBe(false);
+        }
+      }
+    }
+    expect(keptByWholeBox).toBeGreaterThan(0);
+    expect(droppedByBlocks).toBeGreaterThan(0);
+    camera.setTarget(new Vector3(0, 0, 1_500));
+    camera.getViewMatrix(true);
 
     // `4.5-C1`: the tier's `vegetationCastsShadows` datum gates the whole
     // caster list, and it is FALSE at tier 1 — 148 of 347 modelled draws.

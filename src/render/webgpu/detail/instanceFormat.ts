@@ -546,10 +546,113 @@ export class DetailInstanceWriter {
 }
 
 /**
+ * Side of one culling block, metres: a sixteenth of a 4,096 m presentation
+ * chunk. One box over a whole batch is a poor frustum test — the chunk the
+ * camera stands in always contains the eye, so every batch in it passed
+ * whichever way the camera looked — and a draw call is the unit of cost on
+ * every adapter measured (docs/PERFORMANCE.md, "Culling a batch by blocks").
+ * On seven capture placements 256 m blocks leave within two batches of an
+ * exact per-instance test; 512 m left 16 where 256 m leave nine looking
+ * straight down from 1,600 ft, and 128 m bought one or two batches on
+ * three placements for four times the boxes.
+ */
+export const DETAIL_CULL_BLOCK_METERS = 256;
+
+/**
+ * Lattice slots a side. A batch's positions lie in one presentation chunk,
+ * sixteen blocks wide, but the lattice is the RECORD ORIGIN's — the floating
+ * origin the records are relative to, which is not chunk-aligned — so the
+ * chunk can touch seventeen lattice blocks a side. A block's slot is its
+ * lattice index modulo this, which needs no anchor and no chunk coordinates
+ * in the accumulator. A wider chunk only makes two blocks share a slot: the
+ * slot's box is still the union of real instance boxes, so the test stays
+ * conservative and merely culls less.
+ */
+export const DETAIL_CULL_BLOCK_SLOTS = 17;
+
+/** Numbers a block in `blockExtents()`: minimum x, y, z then maximum x, y, z. */
+export const DETAIL_CULL_BLOCK_STRIDE = 6;
+
+interface DetailCullBlockScratch {
+  /** One `DETAIL_CULL_BLOCK_STRIDE` row a slot; an untouched slot is inverted. */
+  readonly extents: Float64Array;
+  /** Slots written since the scratch was opened, in first-touch order. */
+  readonly touched: Uint16Array;
+  touchedCount: number;
+}
+
+const DETAIL_CULL_BLOCK_SLOT_COUNT = DETAIL_CULL_BLOCK_SLOTS * DETAIL_CULL_BLOCK_SLOTS;
+const DETAIL_CULL_BLOCK_SCRATCH_POOL_LIMIT = 96;
+const DETAIL_CULL_BLOCKS_UNKNOWN = new Float64Array(0);
+
+/**
+ * The dense slot grid is only needed while a batch accumulates (14 KB); a
+ * published batch keeps the compact list. A worker build opens one grid a
+ * prototype and a jet rebuilds several chunks a second, so the grids are
+ * recycled here rather than left to the collector. Per realm: the worker and
+ * the main thread each have their own.
+ */
+const detailCullBlockScratchPool: DetailCullBlockScratch[] = [];
+
+function openDetailCullBlockScratch(): DetailCullBlockScratch {
+  const pooled = detailCullBlockScratchPool.pop();
+  if (pooled) return pooled;
+  const extents = new Float64Array(DETAIL_CULL_BLOCK_SLOT_COUNT * DETAIL_CULL_BLOCK_STRIDE);
+  for (let base = 0; base < extents.length; base += DETAIL_CULL_BLOCK_STRIDE) {
+    extents[base] = Number.POSITIVE_INFINITY;
+    extents[base + 1] = Number.POSITIVE_INFINITY;
+    extents[base + 2] = Number.POSITIVE_INFINITY;
+    extents[base + 3] = Number.NEGATIVE_INFINITY;
+    extents[base + 4] = Number.NEGATIVE_INFINITY;
+    extents[base + 5] = Number.NEGATIVE_INFINITY;
+  }
+  return {
+    extents,
+    touched: new Uint16Array(DETAIL_CULL_BLOCK_SLOT_COUNT),
+    touchedCount: 0,
+  };
+}
+
+/** Copies the touched slots out (or drops them) and returns the grid clean. */
+function closeDetailCullBlockScratch(
+  scratch: DetailCullBlockScratch,
+  into: Float64Array | null,
+): void {
+  const extents = scratch.extents;
+  for (let index = 0; index < scratch.touchedCount; index += 1) {
+    const base = scratch.touched[index]! * DETAIL_CULL_BLOCK_STRIDE;
+    if (into !== null) {
+      const target = index * DETAIL_CULL_BLOCK_STRIDE;
+      into[target] = extents[base]!;
+      into[target + 1] = extents[base + 1]!;
+      into[target + 2] = extents[base + 2]!;
+      into[target + 3] = extents[base + 3]!;
+      into[target + 4] = extents[base + 4]!;
+      into[target + 5] = extents[base + 5]!;
+    }
+    extents[base] = Number.POSITIVE_INFINITY;
+    extents[base + 1] = Number.POSITIVE_INFINITY;
+    extents[base + 2] = Number.POSITIVE_INFINITY;
+    extents[base + 3] = Number.NEGATIVE_INFINITY;
+    extents[base + 4] = Number.NEGATIVE_INFINITY;
+    extents[base + 5] = Number.NEGATIVE_INFINITY;
+  }
+  scratch.touchedCount = 0;
+  if (detailCullBlockScratchPool.length < DETAIL_CULL_BLOCK_SCRATCH_POOL_LIMIT) {
+    detailCullBlockScratchPool.push(scratch);
+  }
+}
+
+/**
  * Generator-side AABB (the plan's named cost): with no CPU matrix buffer,
  * `thinInstanceRefreshBoundingInfo` has no input, so the generator — which
  * knows every position and extent — accumulates bounds itself, with the wind
  * sway as an EXPLICIT term instead of the old `scale(1.01)` fudge.
+ *
+ * Beside the one box over everything it keeps a box a culling BLOCK: every
+ * instance's own box goes into the block its position falls in, so each
+ * block's box is exactly as conservative as the whole one and their union is
+ * the whole one. See `DETAIL_CULL_BLOCK_METERS`.
  */
 export class DetailInstanceBounds {
   private minX = Number.POSITIVE_INFINITY;
@@ -558,11 +661,20 @@ export class DetailInstanceBounds {
   private maxX = Number.NEGATIVE_INFINITY;
   private maxY = Number.NEGATIVE_INFINITY;
   private maxZ = Number.NEGATIVE_INFINITY;
+  private blockScratch: DetailCullBlockScratch | null = null;
+  private blockList: Float64Array | null = null;
+  /** False once extents arrived with no blocks: the blocks cannot cover them. */
+  private blocksKnown = true;
 
-  /** Rehydrates a worker-computed finite AABB without replaying its records. */
+  /**
+   * Rehydrates a worker-computed finite AABB without replaying its records.
+   * `blocks` is the worker's `blockExtents()`; without it the bounds have no
+   * blocks and a block test must fall back to the whole box.
+   */
   static fromExtents(
     minimum: readonly [number, number, number],
     maximum: readonly [number, number, number],
+    blocks?: Float64Array,
   ): DetailInstanceBounds {
     for (let axis = 0; axis < 3; axis += 1) {
       if (
@@ -573,6 +685,9 @@ export class DetailInstanceBounds {
         throw new RangeError("Transferred detail instance bounds must be finite and ordered");
       }
     }
+    if (blocks !== undefined && !isDetailCullBlockList(blocks, minimum, maximum)) {
+      throw new RangeError("Transferred detail culling blocks must be ordered boxes inside the bounds");
+    }
     const bounds = new DetailInstanceBounds();
     bounds.minX = minimum[0];
     bounds.minY = minimum[1];
@@ -580,6 +695,8 @@ export class DetailInstanceBounds {
     bounds.maxX = maximum[0];
     bounds.maxY = maximum[1];
     bounds.maxZ = maximum[2];
+    if (blocks === undefined) bounds.blocksKnown = false;
+    else bounds.blockList = blocks;
     return bounds;
   }
 
@@ -590,6 +707,34 @@ export class DetailInstanceBounds {
     this.maxX = Number.NEGATIVE_INFINITY;
     this.maxY = Number.NEGATIVE_INFINITY;
     this.maxZ = Number.NEGATIVE_INFINITY;
+    if (this.blockScratch !== null) {
+      closeDetailCullBlockScratch(this.blockScratch, null);
+      this.blockScratch = null;
+    }
+    this.blockList = null;
+    this.blocksKnown = true;
+  }
+
+  /**
+   * The culling blocks: `DETAIL_CULL_BLOCK_STRIDE` numbers a block, in the
+   * records' own coordinates, in the order the blocks were first written.
+   * Every included instance's box lies inside one of them. EMPTY means
+   * unknown (nothing included, or extents rehydrated without blocks), never
+   * "nothing to draw": a caller with no blocks tests the whole box alone.
+   *
+   * The first call closes the accumulator's grid and keeps the compact list;
+   * the array is this object's until `reset()`, or until it is transferred.
+   */
+  blockExtents(): Float64Array {
+    if (!this.blocksKnown) return DETAIL_CULL_BLOCKS_UNKNOWN;
+    if (this.blockList !== null) return this.blockList;
+    const scratch = this.blockScratch;
+    if (scratch === null) return DETAIL_CULL_BLOCKS_UNKNOWN;
+    const list = new Float64Array(scratch.touchedCount * DETAIL_CULL_BLOCK_STRIDE);
+    closeDetailCullBlockScratch(scratch, list);
+    this.blockScratch = null;
+    this.blockList = list;
+    return list;
   }
 
   get isEmpty(): boolean {
@@ -661,6 +806,8 @@ export class DetailInstanceBounds {
     // the accumulated f32 arithmetic error at the renderer's 45 km far plane.
     const radius = Math.sqrt(localRadiusSquared) + windPadding + 0.01;
     this.include(
+      positionX,
+      positionZ,
       positionX - radius,
       positionY - radius,
       positionZ - radius,
@@ -678,6 +825,8 @@ export class DetailInstanceBounds {
     radius: number,
   ): void {
     this.include(
+      positionX,
+      positionZ,
       positionX - radius,
       positionY - radius,
       positionZ - radius,
@@ -702,6 +851,8 @@ export class DetailInstanceBounds {
     const minimumY = positionY + height * (frame.centerYUnit - extent);
     const maximumY = positionY + height * (frame.centerYUnit + extent);
     this.include(
+      positionX,
+      positionZ,
       positionX - horizontalRadius - 0.01,
       minimumY - 0.01,
       positionZ - horizontalRadius - 0.01,
@@ -728,6 +879,8 @@ export class DetailInstanceBounds {
     const minimumY = positionY + height * (frame.centerYUnit - extent);
     const maximumY = positionY + height * (frame.centerYUnit + extent);
     this.include(
+      positionX,
+      positionZ,
       positionX - horizontalRadius - 0.01,
       minimumY - 0.01,
       positionZ - horizontalRadius - 0.01,
@@ -737,7 +890,10 @@ export class DetailInstanceBounds {
     );
   }
 
+  /** `positionX`/`positionZ` choose the block; the box is the instance's own. */
   private include(
+    positionX: number,
+    positionZ: number,
     minimumX: number,
     minimumY: number,
     minimumZ: number,
@@ -751,6 +907,47 @@ export class DetailInstanceBounds {
     this.maxX = Math.max(this.maxX, maximumX);
     this.maxY = Math.max(this.maxY, maximumY);
     this.maxZ = Math.max(this.maxZ, maximumZ);
+    if (!this.blocksKnown) return;
+    const scratch = this.blockScratch ?? this.openBlockScratch();
+    includeDetailCullBlock(
+      scratch,
+      positionX,
+      positionZ,
+      minimumX,
+      minimumY,
+      minimumZ,
+      maximumX,
+      maximumY,
+      maximumZ,
+    );
+  }
+
+  /**
+   * Opens the grid for the first box — or for a box that arrives after the
+   * list was already taken, in which case the taken blocks go back in first
+   * so none of them is lost.
+   */
+  private openBlockScratch(): DetailCullBlockScratch {
+    const scratch = openDetailCullBlockScratch();
+    this.blockScratch = scratch;
+    const list = this.blockList;
+    this.blockList = null;
+    if (list !== null) {
+      for (let base = 0; base < list.length; base += DETAIL_CULL_BLOCK_STRIDE) {
+        includeDetailCullBlock(
+          scratch,
+          (list[base]! + list[base + 3]!) * 0.5,
+          (list[base + 2]! + list[base + 5]!) * 0.5,
+          list[base]!,
+          list[base + 1]!,
+          list[base + 2]!,
+          list[base + 3]!,
+          list[base + 4]!,
+          list[base + 5]!,
+        );
+      }
+    }
+    return scratch;
   }
 
   minimum(): [number, number, number] {
@@ -760,4 +957,108 @@ export class DetailInstanceBounds {
   maximum(): [number, number, number] {
     return [this.maxX, this.maxY, this.maxZ];
   }
+}
+
+function includeDetailCullBlock(
+  scratch: DetailCullBlockScratch,
+  positionX: number,
+  positionZ: number,
+  minimumX: number,
+  minimumY: number,
+  minimumZ: number,
+  maximumX: number,
+  maximumY: number,
+  maximumZ: number,
+): void {
+  let slotX = Math.floor(positionX / DETAIL_CULL_BLOCK_METERS) % DETAIL_CULL_BLOCK_SLOTS;
+  if (slotX < 0) slotX += DETAIL_CULL_BLOCK_SLOTS;
+  let slotZ = Math.floor(positionZ / DETAIL_CULL_BLOCK_METERS) % DETAIL_CULL_BLOCK_SLOTS;
+  if (slotZ < 0) slotZ += DETAIL_CULL_BLOCK_SLOTS;
+  // A position that is not a number has no slot. Slot 0 keeps its box inside
+  // SOME block, which is all the test needs; the whole bound is already
+  // poisoned and is refused where it is consumed.
+  const slot = slotX === slotX && slotZ === slotZ ? slotZ * DETAIL_CULL_BLOCK_SLOTS + slotX : 0;
+  const base = slot * DETAIL_CULL_BLOCK_STRIDE;
+  const extents = scratch.extents;
+  if (extents[base]! > extents[base + 3]!) {
+    scratch.touched[scratch.touchedCount] = slot;
+    scratch.touchedCount += 1;
+  }
+  if (minimumX < extents[base]!) extents[base] = minimumX;
+  if (minimumY < extents[base + 1]!) extents[base + 1] = minimumY;
+  if (minimumZ < extents[base + 2]!) extents[base + 2] = minimumZ;
+  if (maximumX > extents[base + 3]!) extents[base + 3] = maximumX;
+  if (maximumY > extents[base + 4]!) extents[base + 4] = maximumY;
+  if (maximumZ > extents[base + 5]!) extents[base + 5] = maximumZ;
+}
+
+/**
+ * Whether `blocks` is a well-formed block list for bounds of these extents:
+ * whole rows, every box finite and ordered, none reaching outside the whole
+ * box. The worker boundary and `fromExtents` share this one definition.
+ */
+export function isDetailCullBlockList(
+  blocks: unknown,
+  minimum: readonly [number, number, number],
+  maximum: readonly [number, number, number],
+): blocks is Float64Array {
+  if (!(blocks instanceof Float64Array)) return false;
+  if (blocks.length === 0 || blocks.length % DETAIL_CULL_BLOCK_STRIDE !== 0) return false;
+  for (let base = 0; base < blocks.length; base += DETAIL_CULL_BLOCK_STRIDE) {
+    for (let axis = 0; axis < 3; axis += 1) {
+      const low = blocks[base + axis]!;
+      const high = blocks[base + 3 + axis]!;
+      // Written so that a NaN fails every comparison it meets.
+      if (!(low <= high && low >= minimum[axis]! && high <= maximum[axis]!)) return false;
+    }
+  }
+  return true;
+}
+
+/** The six frustum planes as Babylon hands them to a culling test. */
+export interface DetailCullPlane {
+  readonly normal: { readonly x: number; readonly y: number; readonly z: number };
+  readonly d: number;
+}
+
+/**
+ * True when some block may be inside the frustum. `blocks` are in the
+ * records' coordinates and the offset is the batch mesh's world translation.
+ * A block is rejected only when it lies wholly behind one plane — Babylon's
+ * own box test, on a smaller box — so a batch this rejects has no instance
+ * whose bound touches the frustum and draws nothing it would have drawn.
+ */
+export function detailCullBlocksIntersectFrustum(
+  blocks: Float64Array,
+  planes: ArrayLike<DetailCullPlane>,
+  offsetX: number,
+  offsetY: number,
+  offsetZ: number,
+): boolean {
+  const planeCount = planes.length;
+  for (let base = 0; base < blocks.length; base += DETAIL_CULL_BLOCK_STRIDE) {
+    const minimumX = blocks[base]! + offsetX;
+    const minimumY = blocks[base + 1]! + offsetY;
+    const minimumZ = blocks[base + 2]! + offsetZ;
+    const maximumX = blocks[base + 3]! + offsetX;
+    const maximumY = blocks[base + 4]! + offsetY;
+    const maximumZ = blocks[base + 5]! + offsetZ;
+    let outside = false;
+    for (let index = 0; index < planeCount; index += 1) {
+      const plane = planes[index]!;
+      const normal = plane.normal;
+      // The corner furthest along the normal: if even that one is behind the
+      // plane, the whole box is.
+      const distance = normal.x * (normal.x >= 0 ? maximumX : minimumX)
+        + normal.y * (normal.y >= 0 ? maximumY : minimumY)
+        + normal.z * (normal.z >= 0 ? maximumZ : minimumZ)
+        + plane.d;
+      if (distance < 0) {
+        outside = true;
+        break;
+      }
+    }
+    if (!outside) return true;
+  }
+  return false;
 }

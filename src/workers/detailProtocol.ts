@@ -2,6 +2,7 @@ import type {
   DetailPresentationBuildCatalog,
   DetailPresentationChunkStatistics,
 } from "@/src/render/webgpu/detail/presentationBuild";
+import { isDetailCullBlockList } from "@/src/render/webgpu/detail/instanceFormat";
 import type { RenderedDensityLaw } from "@/src/render/webgpu/detail/renderedDensity";
 import type {
   DetailFloatingOrigin,
@@ -76,6 +77,11 @@ export interface DetailWorkerPresentationBatch {
   readonly bytes: Uint8Array;
   readonly minimum: readonly [number, number, number];
   readonly maximum: readonly [number, number, number];
+  /**
+   * `DetailInstanceBounds.blockExtents()`: the batch's culling blocks, six
+   * numbers a block, never empty. Its backing buffer transfers to main.
+   */
+  readonly blocks: Float64Array;
 }
 
 export interface DetailWorkerPresentationResult {
@@ -239,6 +245,7 @@ export function detailWorkerEventTransferables(event: DetailWorkerEvent): Transf
   const transfers = new Set<ArrayBuffer>();
   for (const batch of event.batches) {
     if (batch.bytes.buffer instanceof ArrayBuffer) transfers.add(batch.bytes.buffer);
+    if (batch.blocks.buffer instanceof ArrayBuffer) transfers.add(batch.blocks.buffer);
   }
   return [...transfers];
 }
@@ -309,7 +316,12 @@ function isPresentationBatch(value: unknown): value is DetailWorkerPresentationB
     && value.count > 0
     && value.bytes instanceof Uint8Array
     && value.bytes.byteLength === value.count * 32
-    && isOrderedBounds(value.minimum, value.maximum);
+    && isOrderedBounds(value.minimum, value.maximum)
+    && isDetailCullBlockList(
+      value.blocks,
+      value.minimum as readonly [number, number, number],
+      value.maximum as readonly [number, number, number],
+    );
 }
 
 /** Runtime guard for messages crossing the worker boundary. */
