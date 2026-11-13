@@ -267,7 +267,13 @@ export interface CloudRuntimeStatistics {
 /** Every compute-side resource, created only where compute exists (not NullEngine). */
 interface CloudComputePipeline {
   readonly raymarchCompute: ComputeShader;
-  readonly temporalCompute: ComputeShader;
+  /**
+   * The temporal resolve, one shader per parity: `[k]` reads the history in
+   * `resolved*[1 - k]` and writes `resolved*[k]`. Each keeps its bindings and
+   * so its bind group; one shader rebound every frame made a new GPU bind
+   * group every frame. Same WGSL, so both share one compiled pipeline.
+   */
+  readonly temporalCompute: readonly [ComputeShader, ComputeShader];
   readonly shadowCompute: ComputeShader;
   readonly raymarchParams: UniformBuffer;
   readonly temporalParams: UniformBuffer;
@@ -453,7 +459,10 @@ export class VolumetricCloudSystem {
     );
     const pipeline: CloudComputePipeline = {
       raymarchCompute: computeFromModule(scene, CLOUD_RAYMARCH_SHADER),
-      temporalCompute: computeFromModule(scene, CLOUD_TEMPORAL_RESOLVE_SHADER),
+      temporalCompute: [
+        computeFromModule(scene, CLOUD_TEMPORAL_RESOLVE_SHADER),
+        computeFromModule(scene, CLOUD_TEMPORAL_RESOLVE_SHADER),
+      ],
       shadowCompute: computeFromModule(scene, CLOUD_SHADOW_SHADER),
       raymarchParams: paramsBuffer(scene, "cloud-raymarch-params", RAYMARCH_PARAMS_VEC4S),
       temporalParams: paramsBuffer(scene, "cloud-temporal-params", TEMPORAL_PARAMS_VEC4S),
@@ -500,7 +509,9 @@ export class VolumetricCloudSystem {
       this.resources.transmittanceLut,
       false,
     );
-    pipeline.temporalCompute.setUniformBuffer("params", pipeline.temporalParams);
+    for (const temporal of pipeline.temporalCompute) {
+      temporal.setUniformBuffer("params", pipeline.temporalParams);
+    }
     pipeline.shadowCompute.setUniformBuffer("params", pipeline.shadowParams);
     pipeline.shadowCompute.setTextureSampler("linear_sampler", pipeline.linearSampler);
     pipeline.shadowCompute.setTexture("weather_texture", pipeline.bake.weatherMap, false);
@@ -510,14 +521,16 @@ export class VolumetricCloudSystem {
   private bindSizedComputeResources(pipeline: CloudComputePipeline): void {
     pipeline.raymarchCompute.setStorageTexture("raymarch_cloud", pipeline.raymarchCloud);
     pipeline.raymarchCompute.setStorageTexture("raymarch_aux", pipeline.raymarchAux);
-    pipeline.temporalCompute.setTexture("current_cloud", pipeline.raymarchCloud, false);
-    pipeline.temporalCompute.setTexture("current_aux", pipeline.raymarchAux, false);
-    // Initial ping-pong bindings: update() rebinds per frame, but isReady()
-    // requires every declared binding to hold a resource from the start.
-    pipeline.temporalCompute.setTexture("history_cloud", pipeline.resolvedCloud[0], false);
-    pipeline.temporalCompute.setTexture("history_aux", pipeline.resolvedAux[0], false);
-    pipeline.temporalCompute.setStorageTexture("resolved_cloud", pipeline.resolvedCloud[1]);
-    pipeline.temporalCompute.setStorageTexture("resolved_aux", pipeline.resolvedAux[1]);
+    for (const writeIndex of [0, 1] as const) {
+      const temporal = pipeline.temporalCompute[writeIndex];
+      const readIndex = (1 - writeIndex) as 0 | 1;
+      temporal.setTexture("current_cloud", pipeline.raymarchCloud, false);
+      temporal.setTexture("current_aux", pipeline.raymarchAux, false);
+      temporal.setTexture("history_cloud", pipeline.resolvedCloud[readIndex], false);
+      temporal.setTexture("history_aux", pipeline.resolvedAux[readIndex], false);
+      temporal.setStorageTexture("resolved_cloud", pipeline.resolvedCloud[writeIndex]);
+      temporal.setStorageTexture("resolved_aux", pipeline.resolvedAux[writeIndex]);
+    }
     pipeline.shadowCompute.setStorageTexture("cloud_shadow", pipeline.shadowMap);
   }
 
@@ -589,7 +602,7 @@ export class VolumetricCloudSystem {
           const detail = pipeline === null
             ? "no compute pipeline"
             : `raymarch=${pipeline.raymarchCompute.isReady()} `
-              + `temporal=${pipeline.temporalCompute.isReady()} `
+              + `temporal=${pipeline.temporalCompute.every((shader) => shader.isReady())} `
               + `shadow=${pipeline.shadowCompute.isReady()} `
               + `material=${this.material.isReady(this.shell)} `
               + `skyLut=${this.resources.skyAmbientLut.isReady()} `
@@ -604,7 +617,7 @@ export class VolumetricCloudSystem {
         }
         const computesReady = pipeline === null || (
           pipeline.raymarchCompute.isReady()
-          && pipeline.temporalCompute.isReady()
+          && pipeline.temporalCompute.every((shader) => shader.isReady())
           && pipeline.shadowCompute.isReady()
           && pipeline.bake.ready
         );
@@ -719,7 +732,7 @@ export class VolumetricCloudSystem {
     if (!pipeline) return;
     if (
       !pipeline.raymarchCompute.isReady()
-      || !pipeline.temporalCompute.isReady()
+      || !pipeline.temporalCompute.every((shader) => shader.isReady())
       || !pipeline.shadowCompute.isReady()
     ) {
       return;
@@ -820,25 +833,8 @@ export class VolumetricCloudSystem {
         this.cameraWorld.z - this.previousCameraWorld.z,
       ],
     }), TEMPORAL_PARAMS_VEC4S);
-    pipeline.temporalCompute.setTexture(
-      "history_cloud",
-      pipeline.resolvedCloud[this.historyReadIndex],
-      false,
-    );
-    pipeline.temporalCompute.setTexture(
-      "history_aux",
-      pipeline.resolvedAux[this.historyReadIndex],
-      false,
-    );
-    pipeline.temporalCompute.setStorageTexture(
-      "resolved_cloud",
-      pipeline.resolvedCloud[writeIndex],
-    );
-    pipeline.temporalCompute.setStorageTexture(
-      "resolved_aux",
-      pipeline.resolvedAux[writeIndex],
-    );
-    pipeline.temporalCompute.dispatch(groupsX, groupsY, 1);
+    // The parity's own shader is bound to read resolved*[historyReadIndex].
+    pipeline.temporalCompute[writeIndex].dispatch(groupsX, groupsY, 1);
     this.temporalResolveDispatchCount += 1;
     this.historyReadIndex = writeIndex;
     this.historyValid = true;
