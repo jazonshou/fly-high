@@ -2016,7 +2016,7 @@ describe("detail CPU writer pool", () => {
       expect(diagnostics().pooledCpuBatchStorageBytes).toBe(10 * mib);
       expect(diagnostics().cpuWriterPoolDrops).toBe(0);
 
-      // A 4 MiB cap (Low's) drops the six longest idle, and holds on release.
+      // A 4 MiB cap drops the six longest idle, and holds on release.
       pool.detailBuildStoragePoolByteCap = 4 * mib;
       pool.trimDetailBuildStoragePool();
       expect(diagnostics().pooledCpuBatchStorageBytes).toBe(4 * mib);
@@ -2026,10 +2026,10 @@ describe("detail CPU writer pool", () => {
       expect(diagnostics().pooledCpuBatchStorageBytes).toBe(4 * mib);
       expect(pooled()).not.toContain(released[6]);
 
-      // A batch that fills more than a quarter of a pooled writer takes it;
-      // a smaller one gets a new power-of-two writer of its own instead of
+      // A batch that fills more than half of a pooled writer takes it; a
+      // smaller one gets a new power-of-two writer of its own instead of
       // pinning a megabyte.
-      const fits = pool.acquireDetailBuildStorage(recordsPerMiB / 4 + 1);
+      const fits = pool.acquireDetailBuildStorage(recordsPerMiB / 2 + 1);
       expect(fits.writer).toBe(released[7]);
       expect(diagnostics().cpuWriterPoolHits).toBe(1);
       const small = pool.acquireDetailBuildStorage(100);
@@ -2051,10 +2051,91 @@ describe("detail CPU writer pool", () => {
         DETAIL_CPU_WRITER_POOL_MAX_BYTES,
         384 * DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL,
       ));
-      expect(pool.detailBuildStoragePoolByteCap).toBe(12 * mib);
+      expect(pool.detailBuildStoragePoolByteCap).toBe(16 * mib);
+      // Medium's idle writers past Low's cap are dropped at the switch.
+      for (let index = 0; index < 8; index += 1) {
+        pool.releaseDetailBuildStorage(new DetailInstanceWriter(recordsPerMiB), new DetailInstanceBounds());
+      }
+      expect(diagnostics().pooledCpuBatchStorageBytes).toBeGreaterThan(8 * mib);
+      const dropsBeforeLow = diagnostics().cpuWriterPoolDrops;
       runtime.update(observer, { x: 0, y: 0, z: 0 }, resolveWebGpuQualityProfile("low", "balanced"));
-      expect(pool.detailBuildStoragePoolByteCap).toBe(4 * mib);
-      expect(diagnostics().pooledCpuBatchStorageBytes).toBeLessThanOrEqual(4 * mib);
+      expect(pool.detailBuildStoragePoolByteCap).toBe(128 * DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL);
+      expect(pool.detailBuildStoragePoolByteCap).toBe(8 * mib);
+      expect(diagnostics().pooledCpuBatchStorageBytes).toBeLessThanOrEqual(8 * mib);
+      expect(diagnostics().cpuWriterPoolDrops).toBeGreaterThan(dropsBeforeLow);
+    } finally {
+      runtime.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it("sizes inline staged writers from the prototype's latest batch, grows and refits them through the pool", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const runtime = new WorldDetailRuntime(scene, {
+      worldSeed: "detail-writer-inline",
+      terrainSample: forestTerrain,
+    });
+    type Staged = { writer: DetailInstanceWriter; readonly bounds: DetailInstanceBounds };
+    const inline = runtime as unknown as {
+      readonly prototypes: Map<string, unknown>;
+      readonly detailBuildStoragePool: readonly { readonly writer: DetailInstanceWriter }[];
+      readonly stagedRecordsByPrototype: Map<string, number>;
+      getStagedBatch(prototypeKey: string, chunkKey: string, staged: Map<string, Staged>): Staged;
+      growStagedWriter(staged: Staged): void;
+      refitStagedWriter(staged: Staged): void;
+    };
+    const pooled = () => inline.detailBuildStoragePool.map((entry) => entry.writer);
+    const diagnostics = () => runtime.presentationRebuildDiagnostics;
+    const push = (writer: DetailInstanceWriter, records: number) => {
+      for (let index = 0; index < records; index += 1) {
+        writer.push({
+          x: index, y: 2, z: -index, quaternion: [0, 0, 0, 1], heightScaleMeters: 4, radialScale: 1,
+          tint: [1, 0.5, 0.25, 1], fade: 1, fadeIncoming: false, variant: index % 3, windPhase: 0.5,
+          windResponse: 0.25,
+        });
+      }
+    };
+    try {
+      const prototypeKey = [...inline.prototypes.keys()][0]!;
+      expect(prototypeKey).toBeDefined();
+
+      // A new batch with nothing to go by starts at the minimum. Once full,
+      // its records move unchanged into a writer twice the size and the
+      // outgrown one is pooled rather than dropped.
+      const fresh = inline.getStagedBatch(prototypeKey, "0:0", new Map());
+      expect(fresh.writer.capacityBytes).toBe(32 * DETAIL_INSTANCE_STRIDE_BYTES);
+      push(fresh.writer, 32);
+      expect(fresh.writer.full).toBe(true);
+      const outgrown = fresh.writer;
+      const records = fresh.writer.finish().slice();
+      inline.growStagedWriter(fresh);
+      expect(fresh.writer).not.toBe(outgrown);
+      expect(fresh.writer.capacityBytes).toBe(64 * DETAIL_INSTANCE_STRIDE_BYTES);
+      expect(fresh.writer.finish()).toEqual(records);
+      expect(pooled()).toContain(outgrown);
+      expect(diagnostics().cpuWriterGrowths).toBe(1);
+
+      // A new batch of a prototype seen before asks for its latest count.
+      inline.stagedRecordsByPrototype.set(prototypeKey, 5_000);
+      const hinted = inline.getStagedBatch(prototypeKey, "1:0", new Map());
+      expect(hinted.writer.capacityBytes).toBe(8_192 * DETAIL_INSTANCE_STRIDE_BYTES);
+
+      // Ending far smaller, it is refit (here into the pooled 32-record
+      // writer) before it can go live in twice its records or more.
+      push(hinted.writer, 10);
+      const oversized = hinted.writer;
+      const few = hinted.writer.finish().slice();
+      inline.refitStagedWriter(hinted);
+      expect(hinted.writer).toBe(outgrown);
+      expect(hinted.writer.finish()).toEqual(few);
+      expect(pooled()).toContain(oversized);
+      expect(diagnostics().cpuWriterRefits).toBe(1);
+      // In less than twice its records it stays.
+      inline.refitStagedWriter(hinted);
+      expect(hinted.writer).toBe(outgrown);
+      expect(diagnostics().cpuWriterRefits).toBe(1);
     } finally {
       runtime.dispose();
       scene.dispose();

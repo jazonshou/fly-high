@@ -337,7 +337,8 @@ interface DetailPresentationChunk {
 /** CPU-only batch assembled while the previously published chunk stays live. */
 interface StagedDetailBatch {
   readonly prototypeKey: string;
-  readonly writer: DetailInstanceWriter;
+  /** Replaced, through the pool, when an inline build outgrows it. */
+  writer: DetailInstanceWriter;
   readonly bounds: DetailInstanceBounds;
   readonly prototypeBoundKernel: DetailPrototypeBoundKernel;
 }
@@ -476,6 +477,14 @@ export interface DetailPresentationRebuildDiagnostics {
   readonly cpuWriterAllocations: number;
   readonly cpuWriterPoolHits: number;
   readonly cpuWriterPoolDrops: number;
+  /**
+   * Lifetime totals of inline staged writers moved to another writer (each
+   * also an allocation or a pool hit): one that filled, to one twice its
+   * records; one left with twice its records or more once they were known,
+   * to one that fits.
+   */
+  readonly cpuWriterGrowths: number;
+  readonly cpuWriterRefits: number;
   readonly cancellations: number;
   readonly publications: number;
   readonly backloggedChunks: number;
@@ -690,23 +699,27 @@ export interface WorldDetailRuntimeOptions {
 export const DETAIL_INSTANCE_BUFFER_REUSE_GRACE_UPDATES = 8;
 
 /**
- * Idle CPU writers kept for reuse are capped by bytes: 32 KiB per cell of the
- * profile's cell budget, at most 16 MiB (4 MiB at Low's 128 cells, 12 MiB at
- * Medium's and High's 384). On a simulated 60 s Low flight a 4 MiB cap left
- * 0.07-0.10 MiB/s of new long-lived writer bytes against 3.1-3.3 MiB/s when
- * every transferred buffer was kept; a cap that never dropped saved under
- * 0.02 MiB/s more.
+ * Idle CPU writers kept for reuse are capped by bytes: 64 KiB per cell of the
+ * profile's cell budget, at most 16 MiB (8 MiB at Low's 128 cells, 16 MiB at
+ * Medium's 384 and High's 896). The pool only holds what releases outrun
+ * takes, so the cap is headroom rather than a size. Simulating the bench
+ * route (75 s, in-process worker), Low's pool averaged 3.6 MiB and dropped
+ * nothing, leaving 0.07 MiB/s of new long-lived writer bytes against 3.5 when
+ * every transferred buffer was kept; a 4 MiB cap dropped 122 writers and left
+ * 0.12. Medium's dropped nothing either (0.12 against 9.1 MiB/s).
  */
-export const DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL = 32 * 1_024;
+export const DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL = 64 * 1_024;
 export const DETAIL_CPU_WRITER_POOL_MAX_BYTES = 16 * 1_024 * 1_024;
 /**
- * New writers hold a power of two of at least this many records, and a pooled
- * writer serves a batch only while that batch fills more than a quarter of it
- * (batches under the minimum count as the minimum), so a small batch never
- * keeps a large buffer alive.
+ * New writers hold a power of two of at least this many records, and a writer
+ * serves a batch only while that batch fills more than half of it (batches
+ * under the minimum count as the minimum), so no live writer holds twice its
+ * records or more. On the simulated bench route, with a pool that dropped
+ * nothing, this left Low's live writers 0.45 MiB smaller than a quarter did
+ * and 0.07 rather than 0.08 MiB/s of new long-lived writer bytes.
  */
 const DETAIL_CPU_WRITER_MIN_RECORDS = 32;
-const DETAIL_CPU_WRITER_MAX_OVERSIZE = 4;
+const DETAIL_CPU_WRITER_MAX_OVERSIZE = 2;
 
 /**
  * 2-17 close: one chunk is rebuilt at a time, now across bounded update
@@ -903,6 +916,13 @@ function detailCpuWriterCapacityRecords(records: number): number {
   return capacity;
 }
 
+/** Writers of this many bytes or more are too large to hold `records`. */
+function detailCpuWriterOversizeBytes(records: number): number {
+  return DETAIL_CPU_WRITER_MAX_OVERSIZE
+    * Math.max(records, DETAIL_CPU_WRITER_MIN_RECORDS)
+    * DETAIL_INSTANCE_STRIDE_BYTES;
+}
+
 /**
  * Paged natural/settlement detail built entirely from Babylon meshes and thin
  * instances. Generation is incremental; normal per-frame updates become no-ops
@@ -946,6 +966,14 @@ export class WorldDetailRuntime {
   private cpuWriterAllocations = 0;
   private cpuWriterPoolHits = 0;
   private cpuWriterPoolDrops = 0;
+  private cpuWriterGrowths = 0;
+  private cpuWriterRefits = 0;
+  /**
+   * Each prototype's record count in its latest staged batch: the size an
+   * inline build asks the pool for when the chunk has no live batch of that
+   * prototype to go by.
+   */
+  private readonly stagedRecordsByPrototype = new Map<string, number>();
   private readonly materials = new Set<PBRMaterial>();
   private readonly instancePlugins = new Set<DetailInstanceMaterialPlugin>();
   private readonly pluginByMaterial = new Map<PBRMaterial, DetailInstanceMaterialPlugin>();
@@ -1857,6 +1885,8 @@ export class WorldDetailRuntime {
       cpuWriterAllocations: this.cpuWriterAllocations,
       cpuWriterPoolHits: this.cpuWriterPoolHits,
       cpuWriterPoolDrops: this.cpuWriterPoolDrops,
+      cpuWriterGrowths: this.cpuWriterGrowths,
+      cpuWriterRefits: this.cpuWriterRefits,
       cancellations: this.presentationBuildCancellations,
       publications: this.presentationBuildPublications,
       backloggedChunks: this.presentationBacklogChunks,
@@ -2459,6 +2489,7 @@ export class WorldDetailRuntime {
     this.desiredKeys.clear();
     this.detailBuildStoragePool.length = 0;
     this.detailBuildStoragePoolBytes = 0;
+    this.stagedRecordsByPrototype.clear();
     for (const batch of this.batches.values()) {
       batch.mesh.dispose(false, false);
       batch.gpu?.shared.dispose();
@@ -3096,6 +3127,7 @@ export class WorldDetailRuntime {
               target.coordinates.key,
               stagedBatches,
             );
+            if (batch.writer.full) this.growStagedWriter(batch);
             batch.writer.pushBounded(
               record,
               batch.bounds,
@@ -3417,6 +3449,8 @@ export class WorldDetailRuntime {
     }
     const uploads: StagedDetailBatchUpload[] = [];
     for (const staged of build.stagedBatches.values()) {
+      this.refitStagedWriter(staged);
+      this.stagedRecordsByPrototype.set(staged.prototypeKey, staged.writer.count);
       const batchKey = `${staged.prototypeKey}@${build.coordinates.key}`;
       const live = this.batches.get(batchKey);
       const packed = staged.writer.finish();
@@ -3796,10 +3830,13 @@ export class WorldDetailRuntime {
     if (existing) return existing;
     const prototype = this.prototypes.get(prototypeKey);
     if (!prototype) throw new Error(`Missing detail prototype ${prototypeKey}`);
-    // Size it like the live batch it will replace; a new batch starts small
-    // and grows as records arrive.
+    // Size it like the live batch it will replace or, for a new batch, like
+    // the prototype's latest; it grows through the pool if that was too few
+    // and is refit if it ends in twice its records (`createPendingPublication`).
     const live = this.batches.get(`${prototypeKey}@${chunkKey}`);
-    const storage = this.acquireDetailBuildStorage(live?.writer.count ?? 0);
+    const storage = this.acquireDetailBuildStorage(
+      live?.writer.count ?? this.stagedRecordsByPrototype.get(prototypeKey) ?? 0,
+    );
     const staged: StagedDetailBatch = {
       prototypeKey,
       writer: storage.writer,
@@ -3812,19 +3849,16 @@ export class WorldDetailRuntime {
 
   /**
    * Takes the idle writer/bounds pair that best fits `minimumRecords` — the
-   * smallest writer that holds them with less than 4x spare, the oldest of
-   * equals — or makes one with a power-of-two capacity, so released writers
+   * smallest writer that holds them in less than twice their bytes, the oldest
+   * of equals — or makes one with a power-of-two capacity, so released writers
    * come in few sizes and match later batches. Pooled pairs were reset when
    * released.
    */
   private acquireDetailBuildStorage(minimumRecords: number): PooledDetailBuildStorage {
     const pool = this.detailBuildStoragePool;
     const minimumBytes = minimumRecords * DETAIL_INSTANCE_STRIDE_BYTES;
-    const limitBytes = DETAIL_CPU_WRITER_MAX_OVERSIZE
-      * Math.max(minimumRecords, DETAIL_CPU_WRITER_MIN_RECORDS)
-      * DETAIL_INSTANCE_STRIDE_BYTES;
     let bestIndex = -1;
-    let bestBytes = limitBytes;
+    let bestBytes = detailCpuWriterOversizeBytes(minimumRecords);
     for (let index = 0; index < pool.length; index += 1) {
       const bytes = pool[index]!.writer.capacityBytes;
       if (bytes < minimumBytes || bytes >= bestBytes) continue;
@@ -3843,6 +3877,40 @@ export class WorldDetailRuntime {
       writer: new DetailInstanceWriter(detailCpuWriterCapacityRecords(minimumRecords)),
       bounds: new DetailInstanceBounds(),
     };
+  }
+
+  /**
+   * Moves a full inline staged writer's records into a pooled writer that
+   * holds twice as many and returns the outgrown one to the pool.
+   * `pushBounded` would double it in place instead, and as an inline build
+   * spans updates the dropped buffer was often promoted before it died.
+   * Nothing but the build reads a staged writer, so the swap is invisible.
+   */
+  private growStagedWriter(staged: StagedDetailBatch): void {
+    const outgrown = staged.writer;
+    const larger = this.acquireDetailBuildStorage(2 * outgrown.count);
+    larger.writer.copyPackedFrom(outgrown.finish(), outgrown.count);
+    staged.writer = larger.writer;
+    this.releaseDetailBuildStorage(outgrown, larger.bounds);
+    this.cpuWriterGrowths = addDiagnosticCount(this.cpuWriterGrowths);
+  }
+
+  /**
+   * An inline build sizes its writers before it knows their records, so a
+   * batch that shrank can end in a writer twice its records or more; that one
+   * is swapped for a writer that fits, as a pool hit would, before it is
+   * published, so no live writer keeps a large buffer for a few records. A
+   * worker batch is copied into a fitting writer from the start.
+   */
+  private refitStagedWriter(staged: StagedDetailBatch): void {
+    const writer = staged.writer;
+    const count = writer.count;
+    if (count === 0 || writer.capacityBytes < detailCpuWriterOversizeBytes(count)) return;
+    const fitted = this.acquireDetailBuildStorage(count);
+    fitted.writer.copyPackedFrom(writer.finish(), count);
+    staged.writer = fitted.writer;
+    this.releaseDetailBuildStorage(writer, fitted.bounds);
+    this.cpuWriterRefits = addDiagnosticCount(this.cpuWriterRefits);
   }
 
   /** Returns a pair nothing reads any more (see `detailBuildStoragePool`). */

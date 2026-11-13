@@ -351,6 +351,11 @@ export class DetailInstanceWriter {
     return this.buffer.byteLength;
   }
 
+  /** True when the next push would have to grow the buffer. */
+  get full(): boolean {
+    return (this.countValue + 1) * DETAIL_INSTANCE_STRIDE_BYTES > this.buffer.byteLength;
+  }
+
   reset(): void {
     this.countValue = 0;
   }
