@@ -4397,6 +4397,150 @@ outward, held only where no two stems competed.
   ceilings and baselines move with this change. Frame time on a real GPU is
   not measured.
 
+## The ground up close: a sward in depth, a finer read, blades of the turf's colour, rooted trunks (2026-11-13)
+
+Jason, 2026-11-12: "the default "floor" of the terrain still looks very
+blurry, plasticy, and fake. I'm wondering if there's some way to improve the
+look, especially when up close, to look like there's greater texture/detail.
+Because, right now it still just looks like trees that are glued to this
+plastic skin."
+
+**What was measured** (Medium, a 1.7 m eye, world `open-skies`):
+
+- The Grass and DryGrass layers were flat paint: 10% and 6% luminance
+  contrast, one-texel blades on a base of their own colour.
+- Their texels are 4.5 and 5.7 mm (a 512 layer over a 2.3 and a 2.9 m tile).
+  A walker sees the ground at their feet at 1 to 2 mm a pixel, so the layer
+  is stretched two to four times and the filter smooths it exactly where the
+  eye is closest.
+- The standing blades took the mean colour of every material the classifier
+  had on the ground under them, and were lit about three times brighter than
+  the turf: tan sticks on a green sheet.
+- A trunk ended in a flat cut on the surface. The species presets carry a
+  `flare`, and nothing read it.
+
+**What changed.**
+
+- **The sward is drawn in depth** (`synthesizeSward`,
+  `MaterialArraySynthesis.ts`). Tufts in three storeys (`SWARD_STOREYS`) over
+  a thatch floor, with a height test between them, and the depth a texel is
+  left at becomes its shade and its cavity. Luminance contrast is 56 to 57%.
+  Each layer's mean albedo is still fitted to its reference, and its mean
+  cavity is held where it shipped (`SWARD_CAVITY_LIFT` 1.3: 0.653 and 0.652
+  against 0.652 and 0.658), because past a 10 m footprint the mip tail is
+  all that is read and a cavity dims sun and sky both. A first cut at 0.635
+  put every distant meadow 3.5% darker. `SWARD_TILING_BAND_KEEP` goes 0.3 to
+  0.1, which holds the tiling band's energy at or under what shipped with
+  nine times the contrast in the layer.
+- **Array A's mips average light, not bytes** (`SURFACE_ALBEDO_MIP_KERNEL`,
+  kind `gamma2`, `TextureArrayMipPlan.ts`). The rgb is a gamma-2.0 albedo.
+  Boxing its bytes was within 3% while the layers were nearly flat; with lit
+  blades over shaded gaps it took 10 to 15% off a meadow's albedo between
+  the ground at the camera's feet and the same ground at 30 m. The ground
+  grain layer's channels are fields centred on 0.5 and stay on the box.
+- **The micro read** (`TERRAIN_MICRO_DETAIL`, `terrainSurfaceMicro` in
+  `TerrainSurfacePlugin.ts`). The material a fragment shows most of is read
+  a second time, 3.3 times finer and rotated 37.4 degrees, only where its
+  first read is magnified (under 1.6 texels a pixel, whole under 0.7: about
+  five metres from a standing eye). Where the first read is stretched past
+  1.4 times (the takeover, 0.7 to 0.25 texels a pixel) every layer's first
+  read is fetched from a coarser mip and keeps its tone, and the micro read
+  draws the blades at a pixel each: a one-texel blade magnified three times
+  was a staircase, most of all looking straight down. No texture is added.
+- **Blades are their sward's colour** (`GroundCoverSystem.ts`,
+  `groundCoverWgsl.ts`, `GroundCoverMaterialPlugin.ts`). The attribute tile
+  takes the sward's own albedo where the ground has much of one
+  (`GROUND_COVER_SWARD_COLOUR_GAIN`), the blade compute composes the
+  ground's patchwork (`TERRAIN_GROUND_PATCHWORK_WGSL`) so a blade stands in
+  the same lush and dry patch as the turf under it, each blade and each tuft
+  is spread a little along the dry axis, green swards take a lush shift
+  (`GROUND_COVER_BLADE_LUSH_SHIFT`, matched by eye against the turf through
+  the tone curve, which shows a brighter thing less saturated), and a blade
+  runs from 0.45 of its albedo at the root to 1.05 at the tip, with less
+  gloss.
+- **Root flare** (`TRUNK_ROOT_FLARE_RINGS`, `treeSkeleton.ts`;
+  `sweepSkeletonBark`). On the near tree model the bole's first ring becomes
+  six: a concave flare with three lobes that goes on under the ground and is
+  shaded where it meets it. 80 triangles a near tree.
+
+**Cost.** Cloud A/B, Medium, SwiftShader, 16 rounds, against the bushes and
+boulders change (`548af49`):
+
+| Shot | GPU time | CPU time (guard) | Draw calls | Pixels |
+| --- | --- | --- | --- | --- |
+| `ground-2m-lowsun` | same +0.9% (-0.4% to +2.4%) | faster -18.2% (-27.1% to -10.0%) | 122 → 122 | 53.0% differ |
+| `cruise-horizon` | same +0.4% (-0.6% to +1.6%) | same +0.0% (-6.8% to +6.2%) | 202 → 202 | 0.03% differ |
+
+The first cut of the micro read measured **+13.6%** (+12.4% to +14.7%) on
+`ground-2m-lowsun`, all of it in the main scene pass (9,827 to 11,258 ms a
+frame). It read every layer a second time inside `terrainSurfaceSample`,
+through the arrays' 16x anisotropic sampler. A fragment's code calls that
+function from five places (three ground candidates and the runway painter's
+two), and SwiftShader runs both sides of every branch, so every ground pixel
+on screen paid for ten more anisotropic fetches, near or far. It is now one
+read a fragment, after the layers are blended, of the layer with the
+largest share, and one trilinear tap from each array at an explicit level,
+which is how the ground grain reads (`GROUND_GRAIN_ANISOTROPY_LIMIT`). On a
+GPU the branch is taken for the pixels within about five metres of the
+camera and skipped for the rest. The pictures did not change by eye between
+the two cuts.
+
+The ground shot's CPU reading (11.7 to 9.3 ms a frame) is the guard's and
+nothing here should make the main thread faster: read it as "not slower".
+
+The blade compute is heavier by the patchwork it now evaluates for each
+blade. `tests/gpu/ground-cover-compute.test.ts` timed its dispatch on
+SwiftShader at 8.8 ms before and 11.3 to 11.5 ms after, for 107,592 blades
+(three runs in all). That test's alarm is four times the reference host's
+0.06 ms seed, so on this host it fails before and after and passes with
+`VITE_PERF_UNPINNED_HOST=1`; a third more of the seed is well inside it,
+but the reference host has not measured it. The A/B above includes the
+dispatch.
+
+Inventoried GPU memory 301.53 to 301.65 MiB (the near trunk models' larger
+vertex buffers). No estimate row is added. Frame time on a real GPU is not
+measured.
+
+**What moves.** Every baseline with ground in it: ground-2m-lowsun differs
+on 53% of its pixels from the frame before. From 40, 120 and 300 m over a
+meadow the ground's mean is within 1% of what it was (0.992 to 1.000), and
+neither layer shows a repeat lattice from there.
+
+**Tests.** `tests/render.webgpu-ground-closeup.test.ts` (16: the sward's
+contrast with its mean albedo and cavity held, the `gamma2` reduction and
+the drift it removes, the micro read's constants, the blade colour law, the
+flare's geometry and its triangle cost).
+`tests/render.webgpu-terrain-surface.test.ts` pins the micro read's shape in
+the shader: one call, two explicit-level taps, and none inside
+`terrainSurfaceSample`. `tests/render.webgpu-prototype-geometry.test.ts`
+moves the near trunk's triangle bound to 1,230, and
+`tests/render.webgpu-ground-cover-blade-light.test.ts` the blade's root and
+tip. On the adapter (cloud, SwiftShader): `tests/gpu/terrain-surface-compile`
+compiles all twelve triplanar, material-cap and runway variants and the
+three far-sward reads with the micro read in them, and
+`terrain-shadow-depth-wrapper`, `terrain-sampler-budget`,
+`infrastructure-surface` and `road-surface-material` pass. The rest of
+`npm run test:gpu` was not run on this change.
+
+**Known limits.**
+
+- Ground 10 to 40 m away is still fairly smooth: the micro read ends at
+  about five metres and the blades thin out.
+- Only Grass and DryGrass were redrawn. Forest floor, rock, sand and the
+  rest take the micro read and keep their layers.
+- The micro read is the dominant material's alone. Where two materials
+  share a pixel evenly its pattern switches from one to the other; the tone
+  does not.
+- It is one tap, so at a low eye (a driver's, or lying down) the ground a
+  few metres off is a little softer across the line of sight than an
+  anisotropic read would draw it.
+- Within about half a metre the micro read's own texels show.
+- The runway painter's asphalt and concrete are read as they were.
+- DryGrass's mean roughness rose 0.814 to 0.854 with the new layer.
+- `estimateSkeletonTriangles` does not mirror the bark sweep exactly (1,336
+  against a 1,168-triangle mesh for the test tree, before and after); only
+  the flare's own share of it is tested.
+
 ## In-app benchmark (?bench=1)
 
 `?bench=1` turns the game into a benchmark anyone can run in their own

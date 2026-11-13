@@ -1024,6 +1024,7 @@ export class TerrainClipmapSystem {
       { albedoHeight: build.albedoHeight, normalMaterial: build.normalMaterial },
       this.world.seed,
       build.edge,
+      build.layerIds.indexOf(GROUND_GRAIN_LAYER),
     );
     const previous = this.materialArrays;
     this.materialArrays = replacement;

@@ -1,6 +1,11 @@
 import { TERRAIN_KERNEL_SCALAR_WGSL } from "../terrain/TerrainKernel";
+import { GROUND_DRYNESS_LOG_RATIO, TERRAIN_GROUND_PATCHWORK_WGSL } from "../terrain/GroundPatchwork";
+import { SURFACE_MATERIALS, SurfaceMaterial } from "../terrain/surfaceMaterials";
 import { VEGETATION_GROUND_COVER_LAW_WGSL } from "./densityFieldWgsl";
 import {
+  GROUND_COVER_BLADE_DRY_SPREAD,
+  GROUND_COVER_BLADE_LUSH_SHIFT,
+  GROUND_COVER_TUFT_DRY_SPREAD,
   GROUND_COVER_ARCHETYPE_SHAPES,
   GROUND_COVER_FIELD_ARCHETYPES,
 } from "./groundCoverLaw";
@@ -47,6 +52,12 @@ import {
  *    - with no count yet the draw takes the whole lattice, which is wave G's
  *      shipped behaviour. The cull degrades, it does not break.
  */
+
+/** Red over green of the two sward references: where a sward's colour sits between them. */
+const SWARD_GRASS_RED_GREEN = SURFACE_MATERIALS[SurfaceMaterial.Grass]!.referenceAlbedo[0]
+  / SURFACE_MATERIALS[SurfaceMaterial.Grass]!.referenceAlbedo[1];
+const SWARD_DRY_RED_GREEN = SURFACE_MATERIALS[SurfaceMaterial.DryGrass]!.referenceAlbedo[0]
+  / SURFACE_MATERIALS[SurfaceMaterial.DryGrass]!.referenceAlbedo[1];
 
 function wgslNumber(value: number): string {
   if (!Number.isFinite(value)) throw new RangeError("WGSL constants must be finite");
@@ -117,6 +128,9 @@ struct GroundBlade {
 
 ${TERRAIN_KERNEL_SCALAR_WGSL}
 ${VEGETATION_GROUND_COVER_LAW_WGSL}
+// The ground's patchwork, the block the terrain's own fragment composes: a
+// blade asks it what the ground under its root was asked.
+${TERRAIN_GROUND_PATCHWORK_WGSL}
 
 struct GroundArchetypeShape {
   heightScale: f32,
@@ -316,10 +330,40 @@ fn placeGroundCover(
         world.y - uniforms.origin.y,
         bladeHeight * rim * visible,
       );
+      // The sward's mean is not the tile's colour alone. The terrain moves
+      // its paint through lush and dry patches and through thin and rank ones
+      // (W-1), up to a third of its albedo either way, and a blade that kept
+      // the tile's flat colour stood pale on a dark patch and dark on a pale
+      // one. Same function, same world position, with the two inputs a blade
+      // lacks (how open the sky is, how far the page has resolved) at their
+      // open-ground values and a footprint of a centimetre.
+      let swardDryness = clamp(
+        (groundAttribute.r / max(groundAttribute.g, 0.004) - ${wgslNumber(SWARD_GRASS_RED_GREEN)})
+          * ${wgslNumber(1 / (SWARD_DRY_RED_GREEN - SWARD_GRASS_RED_GREEN))},
+        0.0, 1.0);
+      // A sward is not one colour: blade by blade and tuft by tuft it runs
+      // greener or strawier than its mean, along the same lush-to-dry axis
+      // the ground's patchwork moves its paint along, and over a green sward
+      // the standing blades are its living, greener part.
+      let dryShift = (groundHash2(worldCell, 14.0) - 0.5) * ${wgslNumber(GROUND_COVER_BLADE_DRY_SPREAD)}
+        + (groundHash2(clumpCell, 15.0) - 0.5) * ${wgslNumber(GROUND_COVER_TUFT_DRY_SPREAD)}
+        - ${wgslNumber(GROUND_COVER_BLADE_LUSH_SHIFT)} * (1.0 - swardDryness);
+      let groundPatch = terrainGroundPatchwork(
+        world,
+        world,
+        swardDryness,
+        clamp(clamp(slope - 0.10, 0.0, 0.30) * 0.5, -0.22, 0.18),
+        1.0,
+        clamp(clamp(slope - 0.08, 0.0, 0.35) * 0.95, -0.3, 0.32),
+        vec2f(0.01, 0.0),
+        vec2f(0.0, 0.01),
+        0.01);
+      let bladeAlbedo = groundAttribute.rgb * groundPatch.albedoScale * exp(vec3f(
+        ${GROUND_DRYNESS_LOG_RATIO.map((value) => wgslNumber(Math.round(value * 1e5) / 1e5)).join(", ")}) * dryShift);
       record.packed = vec4u(
         pack2x16float(vec2f(cos(facing), sin(facing))),
         pack2x16float(vec2f(bend, width * rim * visible)),
-        pack4x8unorm(vec4f(groundAttribute.rgb, archetypePhase)),
+        pack4x8unorm(vec4f(min(bladeAlbedo, vec3f(1.0)), archetypePhase)),
         pack2x16float(vec2f(normal.x, normal.z)),
       );
     }

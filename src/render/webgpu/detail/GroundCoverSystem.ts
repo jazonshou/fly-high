@@ -216,6 +216,32 @@ interface GroundCoverRingResources {
 }
 
 const NO_PLANT_EXCLUSIONS: readonly InfrastructurePlantExclusion[] = Object.freeze([]);
+/**
+ * How fast a blade's colour goes from the whole ground mix to the sward's own
+ * as the sward's share of the ground rises: whole at a share of 1 / gain.
+ */
+export const GROUND_COVER_SWARD_COLOUR_GAIN = 2.5;
+/**
+ * The dry sward's share of the two at which blades start to turn straw, and
+ * at which they are all straw: the terrain's height blend gives most of the
+ * ground to the larger share, so a meadow that is 30% dry grass by weight is
+ * drawn green (its tile came out 16% straw with an onset of 0.1, and that
+ * alone stood the blades olive over the turf).
+ */
+export const GROUND_COVER_SWARD_DRY_ONSET = 0.2;
+export const GROUND_COVER_SWARD_DRY_FULL = 0.9;
+
+function smoothstep01(value: number): number {
+  const t = Math.min(1, Math.max(0, value));
+  return t * t * (3 - 2 * t);
+}
+/**
+ * A blade's gloss. It was 0.72 rough at 0.55 specular against a sward the
+ * terrain draws 0.78 to 1.0 rough with most of its specular trimmed, so at a
+ * walker's grazing angles every blade wore a pale sky sheen its ground did not.
+ */
+export const GROUND_COVER_BLADE_ROUGHNESS = 0.84;
+export const GROUND_COVER_BLADE_SPECULAR = 0.25;
 const BLADE_BASE_HEIGHT_METERS = 0.42;
 const BLADE_BASE_WIDTH_METERS = 0.016;
 
@@ -440,10 +466,10 @@ export class GroundCoverSystem {
 
     prepareMaterialForClusteredLighting(material);
     material.metallic = 0;
-    material.roughness = 0.72;
+    material.roughness = GROUND_COVER_BLADE_ROUGHNESS;
     material.environmentIntensity = 1;
     material.directIntensity = 1.05;
-    material.specularIntensity = 0.55;
+    material.specularIntensity = GROUND_COVER_BLADE_SPECULAR;
     material.backFaceCulling = false;
     material.twoSidedLighting = true;
     material.transparencyMode = Material.MATERIAL_OPAQUE;
@@ -936,6 +962,7 @@ export class GroundCoverSystem {
       let albedoR = 0;
       let albedoG = 0;
       let albedoB = 0;
+      let dryWeight = 0;
       let grassWeight = 0;
       let weightTotal = 0;
       for (let index = 0; index < weights.ids.length; index += 1) {
@@ -948,16 +975,41 @@ export class GroundCoverSystem {
         weightTotal += weight;
         if (id === SurfaceMaterial.Grass || id === SurfaceMaterial.DryGrass) {
           grassWeight += weight;
+          if (id === SurfaceMaterial.DryGrass) dryWeight += weight;
         }
       }
       const normalize = weightTotal > 1e-6 ? 1 / weightTotal : 0;
+      // A blade is grass, so where the ground has a sward the blade takes the
+      // SWARD's colour and not the whole mix's. The mix was the blade's colour
+      // until 2026-11-12, and a meadow that is a quarter forest litter and a
+      // twentieth sand by weight then grew olive-tan blades (R/G 0.90) on
+      // ground the terrain draws green (R/G 0.50, its height blend letting
+      // the dominant layer win): pale sticks on a green sheet. Ground with
+      // little or no sward keeps the mix, which is what a fern over forest
+      // litter is tinted from. Between the two swards the larger share wins
+      // most of the ground, as it does in that blend.
+      const swardShare = Math.min(1, grassWeight * normalize * GROUND_COVER_SWARD_COLOUR_GAIN);
+      if (grassWeight > 1e-6) {
+        const dry = smoothstep01(
+          (dryWeight / grassWeight - GROUND_COVER_SWARD_DRY_ONSET)
+            / (GROUND_COVER_SWARD_DRY_FULL - GROUND_COVER_SWARD_DRY_ONSET),
+        );
+        const green = SURFACE_MATERIALS[SurfaceMaterial.Grass]!.referenceAlbedo;
+        const straw = SURFACE_MATERIALS[SurfaceMaterial.DryGrass]!.referenceAlbedo;
+        const rest = (1 - swardShare) * normalize;
+        albedoR = albedoR * rest + (green[0] + (straw[0] - green[0]) * dry) * swardShare;
+        albedoG = albedoG * rest + (green[1] + (straw[1] - green[1]) * dry) * swardShare;
+        albedoB = albedoB * rest + (green[2] + (straw[2] - green[2]) * dry) * swardShare;
+      } else {
+        albedoR *= normalize;
+        albedoG *= normalize;
+        albedoB *= normalize;
+      }
       // Airfield platform stays mown grass, but thin toward hard clearances.
       const clearance = 1 - Math.max(0, Math.min(1, sample.airportInfluence)) * 0.35;
-      this.backAttributes[at] = Math.round(
-        Math.min(1, albedoR * normalize) * 255,
-      );
-      this.backAttributes[at + 1] = Math.round(Math.min(1, albedoG * normalize) * 255);
-      this.backAttributes[at + 2] = Math.round(Math.min(1, albedoB * normalize) * 255);
+      this.backAttributes[at] = Math.round(Math.min(1, albedoR) * 255);
+      this.backAttributes[at + 1] = Math.round(Math.min(1, albedoG) * 255);
+      this.backAttributes[at + 2] = Math.round(Math.min(1, albedoB) * 255);
       // Unchanged from wave G, deliberately: this is the GRASS lane's density
       // and moving it would move shipped pixels for a reason 6-9 does not
       // have. The other three archetypes take the card path's coverage below.

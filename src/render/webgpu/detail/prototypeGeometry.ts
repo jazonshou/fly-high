@@ -12,6 +12,12 @@ import {
   palmFrondEdge,
   palmFrondKept,
   palmFrondPointIndices,
+  TRUNK_ROOT_FLARE_CONTACT_SHADE,
+  TRUNK_ROOT_FLARE_LOBES,
+  TRUNK_ROOT_FLARE_RINGS,
+  TRUNK_ROOT_FLARE_SEGMENT_SHARE,
+  TRUNK_ROOT_FLARE_TOP_RISE,
+  trunkRootFlared,
   type SkeletonMeshBudget,
   type TreeSkeleton,
 } from "./treeSkeleton";
@@ -486,6 +492,10 @@ interface TubeRing {
   readonly radius: number;
   /** uv v coordinate at this ring. */
   readonly v: number;
+  /** How far the outline runs in and out of round, as a share of the radius (a root flare's rings). */
+  readonly lobe?: number;
+  /** Where about the axis the lobes sit, in radians. */
+  readonly lobePhase?: number;
 }
 
 /**
@@ -542,11 +552,15 @@ function sweepTube(
         -u1.y * sinT + u2.y * cosT,
         -u1.z * sinT + u2.z * cosT,
       );
+      // The seam's two vertices take the same radius: the lobes close on a whole turn.
+      const radius = ring.lobe
+        ? ring.radius * (1 + ring.lobe * Math.cos(TRUNK_ROOT_FLARE_LOBES * theta + (ring.lobePhase ?? 0)))
+        : ring.radius;
       pushVertex(
         acc,
-        ring.center.x + rx * ring.radius,
-        ring.center.y + ry * ring.radius,
-        ring.center.z + rz * ring.radius,
+        ring.center.x + rx * radius,
+        ring.center.y + ry * radius,
+        ring.center.z + rz * radius,
         n.x, n.y, n.z,
         (s / sides) * uWrap, ring.v,
         t.x, t.y, t.z, 1,
@@ -717,6 +731,8 @@ function sweepSkeletonBark(
   barkLayer: number,
 ): void {
   let twigCounter = 0;
+  /** The root flare's foot, its reach about it and its height, where the bole has one. */
+  let flare: { origin: Vec3; reach: number; top: number } | null = null;
   for (const stem of skeleton.stems) {
     if (stem.radii[0]! < budget.minimumMeshRadius) continue;
     if (stem.level >= 2) {
@@ -737,6 +753,43 @@ function sweepSkeletonBark(
         arc += Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
       }
       if (index !== 0 && index !== last && (index - 1) % budget.ringStride !== 0) continue;
+      if (index === 0 && stem === skeleton.stems[0] && trunkRootFlared(skeleton, budget)) {
+        // The root flare: the bole swells into the ground and goes on below
+        // it, in place of a pole's flat cut on the surface.
+        const origin = stem.points[0]!;
+        const axis = stem.axes[0]!;
+        const base = stem.radii[0]!;
+        const next = stem.points[1]!;
+        const segment = Math.hypot(next.x - origin.x, next.y - origin.y, next.z - origin.z);
+        // Each tree's lobes sit where its own shape puts them, not at one bearing for a species.
+        const lobePhase = ((base * 37.7 + segment * 11.3 + next.x * 5.1 + next.z * 7.9) % 1) * TWO_PI;
+        flare = {
+          origin,
+          reach: base * (1 + (TRUNK_ROOT_FLARE_RINGS[0]![1] - 1) * skeleton.rootFlare) * 1.5,
+          top: Math.min(
+            TRUNK_ROOT_FLARE_TOP_RISE * base,
+            segment * TRUNK_ROOT_FLARE_SEGMENT_SHARE,
+          ),
+        };
+        for (const [rise, swell, lobe] of TRUNK_ROOT_FLARE_RINGS) {
+          const along = rise < 0
+            ? rise * base
+            : Math.min(rise * base, segment * TRUNK_ROOT_FLARE_SEGMENT_SHARE * (rise / TRUNK_ROOT_FLARE_TOP_RISE));
+          rings.push({
+            center: {
+              x: origin.x + axis.x * along,
+              y: origin.y + axis.y * along,
+              z: origin.z + axis.z * along,
+            },
+            axis,
+            radius: base * (1 + (swell - 1) * skeleton.rootFlare),
+            v: (stem.vStart + along) * 3,
+            lobe: lobe * Math.min(1, skeleton.rootFlare),
+            lobePhase,
+          });
+        }
+        continue;
+      }
       const collar = stem.level > 0 && index === 0 ? 1.28 : 1;
       rings.push({
         center: stem.points[index]!,
@@ -763,7 +816,15 @@ function sweepSkeletonBark(
       0,
       1,
     );
-    acc.colors[vertex * 4 + 3] = clamp(0.9 - inCanopy * interior * 0.42, 0.45, 0.92);
+    let shade = clamp(0.9 - inCanopy * interior * 0.42, 0.45, 0.92);
+    if (flare && py < flare.origin.y + flare.top
+      && Math.hypot(px - flare.origin.x, pz - flare.origin.z) < flare.reach) {
+      // Where the roots meet the ground each shades the other.
+      const lift = clamp((py - flare.origin.y) / Math.max(flare.top, 1e-3), 0, 1);
+      shade *= TRUNK_ROOT_FLARE_CONTACT_SHADE
+        + (1 - TRUNK_ROOT_FLARE_CONTACT_SHADE) * lift * (2 - lift);
+    }
+    acc.colors[vertex * 4 + 3] = shade;
   }
 }
 

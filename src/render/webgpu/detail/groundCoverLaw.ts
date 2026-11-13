@@ -310,6 +310,29 @@ export function groundCoverArchetypeAlbedoTint(
 }
 
 /**
+ * How far one blade, and one tuft, runs greener or strawier than the sward's
+ * mean, as a spread along the ground patchwork's lush-to-dry axis (1 is the
+ * whole way from the Grass reference to the DryGrass one). Zero mean, so the
+ * field's colour stays the sward's.
+ */
+export const GROUND_COVER_BLADE_DRY_SPREAD = 0.5;
+export const GROUND_COVER_TUFT_DRY_SPREAD = 0.35;
+
+/**
+ * How much greener than its sward's mean a standing blade over a green sward
+ * is, along the same axis. The mean a ground material is fitted to is a whole
+ * sward's, thatch and dead stems included, and a blade is the living part of
+ * it; it is also the brightest thing on the ground, and the tone curve shows
+ * a brighter colour less saturated. Measured on Medium at a 1.7 m eye over a
+ * meadow (2026-11-12): with the tile at the Grass reference itself (red over
+ * green 0.645) the blades stood olive over the turf, bright pixels at 0.55
+ * against the turf's own 0.48; a tile at 0.47 matched it exactly and one at
+ * 0.54 read as the same grass a shade paler, which is the one kept. Fades to
+ * nothing as the sward turns to straw, where standing blades ARE the straw.
+ */
+export const GROUND_COVER_BLADE_LUSH_SHIFT = 0.34;
+
+/**
  * Radius inside which the GPU field is the ground cover, in metres.
  *
  * The card path skips every archetype inside it and keeps them outside, so

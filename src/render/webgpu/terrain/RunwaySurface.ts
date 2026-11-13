@@ -311,9 +311,9 @@ fn terrainRunwaySurface(
   // perturbed normal back in would apply the ground's detail normal twice and
   // would give the projection a tangent frame that is not the surface's.
   let asphalt = terrainSurfaceSample(
-    ${SurfaceMaterial.Asphalt}, position, geometricNormal, worldDdx, worldDdy, detailWeight);
+    ${SurfaceMaterial.Asphalt}, position, geometricNormal, worldDdx, worldDdy, detailWeight, 0.0);
   let concrete = terrainSurfaceSample(
-    ${SurfaceMaterial.Concrete}, position, geometricNormal, worldDdx, worldDdy, detailWeight);
+    ${SurfaceMaterial.Concrete}, position, geometricNormal, worldDdx, worldDdy, detailWeight, 0.0);
 
   // Wheel paths polish the bitumen off and expose the aggregate: lighter,
   // matter, and only where tyres actually run.
