@@ -1,4 +1,5 @@
 import { DOUBLE_ZERO } from "@/src/sim/ground/doubleZero";
+import { ARM_HANG } from "./actions";
 import { CH, LIMB_OFFSET, SIDE_BASE } from "./channels";
 import {
   armChannel,
@@ -114,14 +115,15 @@ export class GaitChannels {
       const elbowWalk = armChannel("elbowFlexion", false, swing, basis);
       const shoulder = rb <= 0 ? shoulderWalk : shoulderWalk + (armChannel("shoulderFlexion", true, 1, basis) - shoulderWalk) * rb;
       const elbow = rb <= 0 ? elbowWalk : elbowWalk + (armChannel("elbowFlexion", true, 1, basis) - elbowWalk) * rb;
+      // (From the arm's hang, `ARM_HANG`; a runner's are bent up and out from the ribs, the hands half closed.)
       out[base + o.shFlex] = shoulder * a;
-      out[base + o.shAbd] = -3 + 3 * rb;
-      out[base + o.shRot] = 8 * rb;
-      out[base + o.elbow] = 12 + (elbow - 12) * Math.max(a, rb);
+      out[base + o.shAbd] = ARM_HANG.shAbd * (1 - rb);
+      out[base + o.shRot] = ARM_HANG.shRot + (8 - ARM_HANG.shRot) * rb;
+      out[base + o.elbow] = ARM_HANG.elbow + (elbow - ARM_HANG.elbow) * Math.max(a, rb);
       out[base + o.foreTwist] = 10 * rb;
-      out[base + o.wristFlex] = 5;
-      out[base + o.fingers] = 25 + 25 * rb;
-      out[base + o.thumb] = 15 + 15 * rb;
+      out[base + o.wristFlex] = ARM_HANG.wristFlex + (5 - ARM_HANG.wristFlex) * rb;
+      out[base + o.fingers] = ARM_HANG.fingers + (50 - ARM_HANG.fingers) * rb;
+      out[base + o.thumb] = ARM_HANG.thumb + (30 - ARM_HANG.thumb) * rb;
     }
   }
 

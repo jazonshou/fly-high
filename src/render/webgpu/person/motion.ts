@@ -98,6 +98,11 @@ const CAR_PICK_UP_SECONDS = 0.32;
 const CAR_FADE = 0.25;
 /** Seconds the body takes to come up from behind the root, where a walker's is drawn, as he turns to the car. */
 const CAR_CATCH_UP = 0.4;
+/**
+ * How fast he settles into standing at ease and comes out of it, 1/s: over a third of a second, where the gait
+ * takes hold in three frames of a start (and the stand is there at once out of the car or off a landing).
+ */
+const EASE_RESPONSE = 8;
 /** The share of a foot's swing after which the body starts down to its strike. */
 const LANDING_FROM = 0.4;
 /** A foot that comes down this far behind the other, the way the walker is going, is the stride's back foot (`matchStride`), metres. */
@@ -225,6 +230,10 @@ export class PersonMotion {
   private braking = DOUBLE_ZERO;
   /** The speed the gait plays at: the body's own, held up through a reversal (see `groundFamily`). */
   private gaitSpeed = DOUBLE_ZERO;
+  /** 0..1: how far he has settled into standing at ease (`ActionChannels.idle`), eased. */
+  private atEase = DOUBLE_ZERO;
+  /** How far the pelvis stands to the body's right, at ease on that leg, metres. */
+  private sway = DOUBLE_ZERO;
   /** Where the body was drawn off the root as he left the ground for the car (its lag, turn and lean): eased out there. */
   private leftLagX = DOUBLE_ZERO;
   private leftLagZ = DOUBLE_ZERO;
@@ -339,6 +348,8 @@ export class PersonMotion {
       this.braking = 0;
       this.gaitSpeed = 0;
       this.swapFade = 1;
+      this.atEase = 0;
+      this.sway = 0;
     }
     switch (family) {
       case "ground": {
@@ -348,7 +359,8 @@ export class PersonMotion {
         stanceL = result.stanceL;
         stanceR = result.stanceR;
         strikeStrength = result.strength;
-        this.setRoot(target, this.lagX, 0, this.lagZ, this.turnLag, 0, this.roll);
+        // (The pelvis over the leg he stands on: to his own right, as he faces.)
+        this.setRoot(target, this.lagX - Math.sin(this.turnLag) * this.sway, 0, this.lagZ + Math.cos(this.turnLag) * this.sway, this.turnLag, 0, this.roll);
         break;
       }
       case "air": {
@@ -594,8 +606,9 @@ export class PersonMotion {
     this.family = family;
     this.familyAge = 0;
     const walked = previous === "ground";
-    this.leftLagX = walked ? this.lagX : 0;
-    this.leftLagZ = walked ? this.lagZ : 0;
+    // (Where the body was drawn: behind the root, and over the leg he stood on.)
+    this.leftLagX = walked ? this.lagX - Math.sin(this.turnLag) * this.sway : 0;
+    this.leftLagZ = walked ? this.lagZ + Math.cos(this.turnLag) * this.sway : 0;
     this.leftTurn = walked ? this.turnLag : 0;
     this.leftRoll = walked ? this.roll : 0;
     this.feetKept = family === "ground" && this.feet.feet[0].planted && this.feet.feet[1].planted;
@@ -743,8 +756,9 @@ export class PersonMotion {
     const rollEase = 1 - Math.exp(-dt * TURN_LEAN_RESPONSE);
     this.rollFelt += (rollTarget - this.rollFelt) * rollEase;
     this.roll += (this.rollFelt - this.roll) * rollEase;
-    // Standing still: breathing and a slow weight shift.
-    this.actions.idle(this.time, 1 - amplitude, ch);
+    // Standing still: at ease on one leg, breathing.
+    this.atEase += (1 - amplitude - this.atEase) * (1 - Math.exp(-dt * EASE_RESPONSE));
+    this.sway = this.actions.idle(this.time, this.atEase, ch);
     // A soft landing still bends the knees a moment.
     const age = person.landingAge;
     if (age < 0.35 && person.landingSpeed > 1.5) {

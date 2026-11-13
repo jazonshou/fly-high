@@ -733,7 +733,8 @@ describe("the walker's top, front and cinematic framing, on the built figure sta
     expect(f.inFront).toBe(true);
     expect(f.width, f.width.toFixed(3)).toBeGreaterThan(0.21);
     expect(f.width, f.width.toFixed(3)).toBeLessThan(0.27);
-    expect(Math.abs((f.left + f.right) / 2 - 0.5)).toBeLessThan(0.01);
+    // (He stands at ease on one leg, his pelvis 3 cm to that side and his arms not a pair: `ActionChannels.idle`.)
+    expect(Math.abs((f.left + f.right) / 2 - 0.5)).toBeLessThan(0.02);
     expect(Math.abs((f.top + f.bottom) / 2 - 0.5)).toBeLessThan(0.02);
     // Facing up the screen, as the vehicles' noses do.
     expect(f.noseY).toBeLessThan(f.tailY);

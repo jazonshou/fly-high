@@ -136,6 +136,15 @@ cross-fades from the last drawn pose:
   the way he is now going, is the stride's back foot; the stride changes
   halves there (`matchStride`) and the rest of him fades into it, so he
   pivots on the foot under him and steps off with the one left behind.
+- **At ease** (`ActionChannels.idle`): nobody stands square on both feet.
+  His weight rests on one leg, that hip up and the other knee let go, the
+  shoulders tipped the other way over it, and every several seconds goes
+  over to the other; the arms hang by the thighs with loose hands
+  (`ARM_HANG`), not as a pair. He settles into it over a third of a second
+  and comes out of it as slowly (`EASE_RESPONSE`): the gait takes hold in
+  three frames of a start, and out of the car or off a landing the stand
+  would otherwise be there at once, the pelvis put 3 cm to one side in a
+  frame. ESTIMATES.
 - **Planted feet** (`footPlant.ts`): a stance foot holds its world point and
   the ground's height and slope; the pelvis drops so the leg reaches, and the
   heel lifts when it cannot. Slip is under 1 cm on flat ground and on 10 and

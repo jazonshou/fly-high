@@ -191,22 +191,68 @@ export class ActionChannels {
     sampleChannelKeys(CLIMB_TIMELINE, t, out);
   }
 
-  /** Breathing and a slow weight shift standing, added to `out` scaled by `amount`. */
-  idle(t: number, amount: number, out: Float64Array): void {
-    if (amount <= 0) return;
+  /**
+   * Standing at ease, added to `out` scaled by `amount`: nobody stands square
+   * on both feet. His weight rests on one leg (that hip up, the other knee
+   * let go, the shoulders tipped the other way over it, the head level) and
+   * every several seconds goes over to the other; he breathes, and his head
+   * wanders. Returns how far the pelvis stands toward the right foot, metres.
+   * ESTIMATES.
+   */
+  idle(t: number, amount: number, out: Float64Array): number {
+    if (amount <= 0) return 0;
     const breath = Math.sin(2 * Math.PI * 0.23 * t);
-    const shift = Math.sin((2 * Math.PI * t) / 7.3);
+    // -1 on the left leg .. 1 on the right: resting on each, and over to the other in a second and a half.
+    const rest = Math.tanh(2.6 * Math.sin((2 * Math.PI * t) / IDLE_SHIFT_SECONDS + 1.1)) / Math.tanh(2.6);
+    const onRight = Math.max(0, rest) * amount;
+    const onLeft = Math.max(0, -rest) * amount;
+    const lean = rest * amount;
     out[CH.spineFlex] = out[CH.spineFlex]! - 0.8 * breath * amount;
     out[CH.clavElevL] = out[CH.clavElevL]! + 1.2 * breath * amount;
     out[CH.clavElevR] = out[CH.clavElevR]! + 1.2 * breath * amount;
-    out[CH.pelvisBend] = out[CH.pelvisBend]! + 1.8 * shift * amount;
-    out[CH.spineBend] = out[CH.spineBend]! - 1.4 * shift * amount;
-    out[CH.neckTurn] = out[CH.neckTurn]! + 3 * Math.sin((2 * Math.PI * t) / 11) * amount;
+    out[CH.pelvisBend] = out[CH.pelvisBend]! - IDLE_HIP_DROP * lean;
+    out[CH.spineBend] = out[CH.spineBend]! + 1.45 * IDLE_HIP_DROP * lean;
+    out[CH.neckBend] = out[CH.neckBend]! - 0.25 * IDLE_HIP_DROP * lean;
+    out[CH.headBend] = out[CH.headBend]! - 0.2 * IDLE_HIP_DROP * lean;
+    out[CH.pelvisTurn] = out[CH.pelvisTurn]! - 2 * lean;
+    out[CH.spineTurn] = out[CH.spineTurn]! + 2.5 * lean;
+    // (The legs stay over his feet as the pelvis tips: the hip he stands on in, the other out.)
+    out[CH.hipAbdL] = out[CH.hipAbdL]! + IDLE_HIP_DROP * lean;
+    out[CH.hipAbdR] = out[CH.hipAbdR]! - IDLE_HIP_DROP * lean;
+    // The leg he is not standing on: its knee forward, a little.
+    out[CH.hipFlexL] = out[CH.hipFlexL]! + 7 * onRight;
+    out[CH.kneeL] = out[CH.kneeL]! + 15 * onRight;
+    out[CH.ankleL] = out[CH.ankleL]! + 6 * onRight;
+    out[CH.hipFlexR] = out[CH.hipFlexR]! + 7 * onLeft;
+    out[CH.kneeR] = out[CH.kneeR]! + 15 * onLeft;
+    out[CH.ankleR] = out[CH.ankleR]! + 6 * onLeft;
+    // The arms are not a pair: the one over the easy leg hangs a little forward and more bent.
+    out[CH.shFlexL] = out[CH.shFlexL]! + amount + 3 * onRight;
+    out[CH.elbowL] = out[CH.elbowL]! + 2 * amount + 4 * onRight;
+    out[CH.shFlexR] = out[CH.shFlexR]! - 2 * amount + 3 * onLeft;
+    out[CH.elbowR] = out[CH.elbowR]! + 4 * onLeft;
+    out[CH.neckTurn] = out[CH.neckTurn]! + (3 * Math.sin((2 * Math.PI * t) / 11) + 2 * Math.sin((2 * Math.PI * t) / 4.7 + 1)) * amount;
+    out[CH.headFlex] = out[CH.headFlex]! + 1.2 * Math.sin((2 * Math.PI * t) / 6.1) * amount;
+    return IDLE_SWAY * lean;
   }
 }
 
+/** Seconds from resting on one leg round to resting on it again. */
+const IDLE_SHIFT_SECONDS = 15;
+/** How far the pelvis drops on the side of the leg at ease, degrees, and goes over the leg he stands on, metres. */
+const IDLE_HIP_DROP = 3.5;
+const IDLE_SWAY = 0.028;
+
+/**
+ * An arm hanging relaxed, standing and as the walk's swing starts from: by
+ * the thigh, not held out from it (the bind pose's hangs 11 degrees out),
+ * turned in a little so the palm faces the thigh's back, the elbow a little
+ * bent, the hand loose (the bind's fingers are relaxed already: `hands.mts`).
+ */
+export const ARM_HANG = Object.freeze({ shAbd: -8, shRot: 6, elbow: 14, wristFlex: 3, fingers: 8, thumb: 2 });
+
 /** The relaxed standing pose's arms and hands (the legs straight under the hips). */
-export const STAND = channels({ ...both({ shAbd: -4, elbow: 12, fingers: 25, thumb: 15, wristFlex: 5, knee: 2, kneeRot: -6 }) });
+export const STAND = channels({ ...both({ ...ARM_HANG, knee: 2, kneeRot: -6 }) });
 
 const AIR_TAKE_OFF = channels({ ...both({ hipFlex: 6, knee: 6, ankle: -32, shFlex: 70, shAbd: 10, elbow: 30, fingers: 15 }), spineFlex: -4, neckFlex: -5 });
 const AIR_TOP = channels({ ...both({ hipFlex: 32, knee: 52, ankle: -10, shFlex: 35, shAbd: 25, elbow: 35, fingers: 20 }), spineFlex: 6 });
