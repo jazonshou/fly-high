@@ -17,6 +17,8 @@ import {
 } from "../src/render/webgpu/detail";
 import {
   canopyRankOrder,
+  DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL,
+  DETAIL_CPU_WRITER_POOL_MAX_BYTES,
   DETAIL_MEMBERSHIP_SLACK_METERS,
   DETAIL_PRESENTATION_REBUILD_MAX_WORK_UNITS_PER_UPDATE,
   DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE,
@@ -24,7 +26,11 @@ import {
   DETAIL_SUPPRESSION_BACKSTOP_METERS,
   GROUND_COVER_EDGE_FADE_METERS,
 } from "../src/render/webgpu/detail/WorldDetailRuntime";
-import { DETAIL_INSTANCE_STRIDE_BYTES } from "../src/render/webgpu/detail/instanceFormat";
+import {
+  DETAIL_INSTANCE_STRIDE_BYTES,
+  DetailInstanceBounds,
+  DetailInstanceWriter,
+} from "../src/render/webgpu/detail/instanceFormat";
 import {
   TREE_BARK_LAYER_MIN,
   TREE_BARK_LAYER_SPAN,
@@ -665,7 +671,9 @@ describe("WebGPU world-detail spatial presentation", () => {
       readonly pendingPresentationBuild: {
         readonly stagedBatches: Map<string, { readonly writer: object }>;
       } | null;
-      readonly detailBuildStoragePool: Map<string, { readonly writer: object }>;
+      readonly detailBuildStoragePool: readonly {
+        readonly writer: { readonly capacityBytes: number };
+      }[];
       readonly presentationChunks: Map<string, { readonly signature: string }>;
       readonly retiredBatches: readonly unknown[];
       readonly instanceBufferPool: readonly unknown[];
@@ -749,11 +757,12 @@ describe("WebGPU world-detail spatial presentation", () => {
       expect(liveBatch!.mesh.position.x).toBe(-1_024);
       expect(internals.retiredBatches).toHaveLength(retiredBefore);
       expect(internals.instanceBufferPool).toHaveLength(pooledBefore);
+      const pooledWriters = (): unknown[] =>
+        internals.detailBuildStoragePool.map((entry) => entry.writer);
       expect(
-        internals.detailBuildStoragePool.get(stagedPrototypeKey)?.writer
-          === stagedWriterBeforeCancel
-        || internals.pendingPresentationBuild?.stagedBatches.get(stagedPrototypeKey)?.writer
-          === stagedWriterBeforeCancel,
+        pooledWriters().includes(stagedWriterBeforeCancel)
+        || [...(internals.pendingPresentationBuild?.stagedBatches.values() ?? [])]
+          .some((staged) => staged.writer === stagedWriterBeforeCancel),
         "canceled CPU writer was neither pooled nor immediately reused",
       ).toBe(true);
 
@@ -770,9 +779,17 @@ describe("WebGPU world-detail spatial presentation", () => {
       expect(liveBatch!.mesh).toBe(meshIdentity);
       expect(liveBatch!.gpu?.shared).toBe(gpuIdentity);
       expect(liveBatch!.mesh.position.x).toBe(0);
-      expect(liveBatch!.writer).toBe(stagedWriterBeforeCancel);
-      expect(internals.detailBuildStoragePool.get(stagedPrototypeKey)?.writer)
-        .toBe(oldLiveWriter);
+      // The displaced live writer went back to the shared pool once the
+      // in-place write pointed the buffer's CPU mirror at its replacement;
+      // no live writer is ever pooled (pooled writers get overwritten).
+      expect(liveBatch!.writer).not.toBe(oldLiveWriter);
+      expect(pooledWriters()).toContain(oldLiveWriter);
+      const liveWriters = new Set([...internals.batches.values()].map((batch) => batch.writer));
+      expect(pooledWriters().filter((writer) => liveWriters.has(writer as never))).toEqual([]);
+      // Babylon's CPU mirror of the live allocation is the live writer's bytes.
+      const mirror = liveBatch!.gpu?.shared.getData() as Uint8Array | null;
+      expect(mirror?.buffer).toBe(liveBatch!.writer.finish().buffer);
+      expect(mirror).toEqual(liveBatch!.writer.finish());
       const newBytes = liveBatch!.writer.finish();
       const newFirstX = new DataView(
         newBytes.buffer,
@@ -781,19 +798,21 @@ describe("WebGPU world-detail spatial presentation", () => {
       ).getFloat32(0, true);
       expect(newFirstX).toBeCloseTo(oldFirstX - 1_024, 3);
 
-      // The next publication must consume the displaced old live writer, then
-      // return the first publication's writer. Pool cardinality stays one per
-      // prototype and no large packed ArrayBuffer becomes rebuild garbage.
+      // The next publication takes its writer from the pool, sized by the
+      // live batch it replaces, then returns the first publication's writer.
+      // No large packed ArrayBuffer becomes rebuild garbage.
       const publicationsAfterFirstCommit = runtime.presentationRebuildDiagnostics.publications;
       const firstPublishedWriter = liveBatch!.writer;
-      const pooledWriter = internals.detailBuildStoragePool.get(stagedPrototypeKey)!.writer;
+      const poolBeforeSecondBuild = pooledWriters();
       rebuildBudget.maximumWorkUnits = 4;
       for (let pass = 0; pass < 64; pass += 1) {
         runtime.update(observer, { x: 1_536, y: 0, z: 0 }, profile);
         if (internals.pendingPresentationBuild?.stagedBatches.has(stagedPrototypeKey)) break;
       }
-      expect(internals.pendingPresentationBuild?.stagedBatches.get(stagedPrototypeKey)?.writer)
-        .toBe(pooledWriter);
+      const secondStagedWriter = internals.pendingPresentationBuild?.stagedBatches
+        .get(stagedPrototypeKey)?.writer;
+      expect(poolBeforeSecondBuild).toContain(secondStagedWriter);
+      expect(pooledWriters()).not.toContain(secondStagedWriter);
       rebuildBudget.maximumWorkUnits = 1_000_000;
       for (let pass = 0; pass < 32; pass += 1) {
         runtime.update(observer, { x: 1_536, y: 0, z: 0 }, profile);
@@ -804,11 +823,16 @@ describe("WebGPU world-detail spatial presentation", () => {
       }
       expect(runtime.presentationRebuildDiagnostics.publications)
         .toBeGreaterThan(publicationsAfterFirstCommit);
-      expect(liveBatch!.writer).toBe(pooledWriter);
-      expect(internals.detailBuildStoragePool.get(stagedPrototypeKey)?.writer)
-        .toBe(firstPublishedWriter);
+      expect(liveBatch!.writer).toBe(secondStagedWriter);
+      expect(pooledWriters()).toContain(firstPublishedWriter);
       expect(runtime.presentationRebuildDiagnostics.pooledCpuBatchStorage)
-        .toBe(internals.detailBuildStoragePool.size);
+        .toBe(internals.detailBuildStoragePool.length);
+      expect(runtime.presentationRebuildDiagnostics.pooledCpuBatchStorageBytes).toBe(
+        internals.detailBuildStoragePool.reduce(
+          (bytes, entry) => bytes + entry.writer.capacityBytes,
+          0,
+        ),
+      );
       expect(liveBatch!.gpu?.shared).toBe(gpuIdentity);
       const secondPublishBytes = liveBatch!.writer.finish();
       expect(new DataView(
@@ -818,7 +842,7 @@ describe("WebGPU world-detail spatial presentation", () => {
       ).getFloat32(0, true)).toBeCloseTo(oldFirstX - 1_536, 3);
       runtime.dispose();
       expect(internals.pendingPresentationBuild).toBeNull();
-      expect(internals.detailBuildStoragePool.size).toBe(0);
+      expect(internals.detailBuildStoragePool).toHaveLength(0);
     } finally {
       runtime.dispose();
       scene.dispose();
@@ -1928,8 +1952,110 @@ describe("detail instance-buffer lifetime (perf-debt pass)", () => {
       // through the pool instead of being freed and remade.
       const returnLegAllocations = created - afterTeleport;
       expect(returnLegAllocations).toBeLessThan(afterTraverse * 0.75);
+      // A pooled allocation keeps no CPU mirror: it neither pins its last
+      // owner's writer bytes nor aliases them once that writer is reused.
+      const recycled = (runtime as unknown as {
+        readonly instanceBufferPool: readonly { readonly gpu: { readonly shared: Buffer } }[];
+      }).instanceBufferPool;
+      expect(recycled.length).toBeGreaterThan(0);
+      expect(recycled.every((pooled) => pooled.gpu.shared.getData() === null)).toBe(true);
     } finally {
       Buffer.prototype.dispose = originalDispose;
+      runtime.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+});
+
+/**
+ * The shared CPU writer pool behind worker-batch copies (record churn fix):
+ * best fit by capacity, a byte cap from the profile's cell budget, and the
+ * longest-idle writer dropped first when over it.
+ */
+describe("detail CPU writer pool", () => {
+  it("serves best-fit writers, holds its byte cap and drops the longest-idle first", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const runtime = new WorldDetailRuntime(scene, {
+      worldSeed: "detail-writer-pool",
+      terrainSample: forestTerrain,
+    });
+    // The pool is driven directly here; `update` does exactly the cap step
+    // below (cap from the profile, then trim), checked at the end.
+    const pool = runtime as unknown as {
+      readonly detailBuildStoragePool: readonly { readonly writer: DetailInstanceWriter }[];
+      detailBuildStoragePoolByteCap: number;
+      acquireDetailBuildStorage(records: number): {
+        readonly writer: DetailInstanceWriter;
+        readonly bounds: DetailInstanceBounds;
+      };
+      releaseDetailBuildStorage(writer: DetailInstanceWriter, bounds: DetailInstanceBounds): void;
+      trimDetailBuildStoragePool(): void;
+    };
+    const mib = 1_048_576;
+    const recordsPerMiB = mib / DETAIL_INSTANCE_STRIDE_BYTES;
+    const pooled = () => pool.detailBuildStoragePool.map((entry) => entry.writer);
+    const diagnostics = () => runtime.presentationRebuildDiagnostics;
+    try {
+      // A released writer comes back reset, and pooled bytes are counted.
+      pool.detailBuildStoragePoolByteCap = 12 * mib;
+      const used = new DetailInstanceWriter(recordsPerMiB);
+      used.push({
+        x: 1, y: 2, z: 3, quaternion: [0, 0, 0, 1], heightScaleMeters: 4, radialScale: 1,
+        tint: [1, 1, 1, 1], fade: 1, fadeIncoming: false, variant: 0, windPhase: 0, windResponse: 0,
+      });
+      const released: DetailInstanceWriter[] = [used];
+      pool.releaseDetailBuildStorage(used, new DetailInstanceBounds());
+      expect(used.count).toBe(0);
+      for (let index = 1; index < 10; index += 1) {
+        const writer = new DetailInstanceWriter(recordsPerMiB);
+        released.push(writer);
+        pool.releaseDetailBuildStorage(writer, new DetailInstanceBounds());
+      }
+      expect(diagnostics().pooledCpuBatchStorageBytes).toBe(10 * mib);
+      expect(diagnostics().cpuWriterPoolDrops).toBe(0);
+
+      // A 4 MiB cap (Low's) drops the six longest idle, and holds on release.
+      pool.detailBuildStoragePoolByteCap = 4 * mib;
+      pool.trimDetailBuildStoragePool();
+      expect(diagnostics().pooledCpuBatchStorageBytes).toBe(4 * mib);
+      expect(diagnostics().cpuWriterPoolDrops).toBe(6);
+      expect(pooled()).toEqual(released.slice(6));
+      pool.releaseDetailBuildStorage(new DetailInstanceWriter(recordsPerMiB), new DetailInstanceBounds());
+      expect(diagnostics().pooledCpuBatchStorageBytes).toBe(4 * mib);
+      expect(pooled()).not.toContain(released[6]);
+
+      // A batch that fills more than a quarter of a pooled writer takes it;
+      // a smaller one gets a new power-of-two writer of its own instead of
+      // pinning a megabyte.
+      const fits = pool.acquireDetailBuildStorage(recordsPerMiB / 4 + 1);
+      expect(fits.writer).toBe(released[7]);
+      expect(diagnostics().cpuWriterPoolHits).toBe(1);
+      const small = pool.acquireDetailBuildStorage(100);
+      expect(pooled()).not.toContain(small.writer);
+      expect(small.writer.capacityBytes).toBe(128 * DETAIL_INSTANCE_STRIDE_BYTES);
+      expect(diagnostics().cpuWriterAllocations).toBe(1);
+      const tiny = pool.acquireDetailBuildStorage(3);
+      expect(tiny.writer.capacityBytes).toBe(32 * DETAIL_INSTANCE_STRIDE_BYTES);
+      pool.releaseDetailBuildStorage(tiny.writer, tiny.bounds);
+      expect(pool.acquireDetailBuildStorage(0).writer).toBe(tiny.writer);
+      expect(diagnostics().cpuWriterAllocations).toBe(2);
+      expect(diagnostics().pooledCpuBatchStorage).toBe(3);
+      expect(diagnostics().pooledCpuBatchStorageBytes).toBe(3 * mib);
+
+      // The cap comes from the profile's cell budget at every update.
+      const observer = { x: 0, y: 120, z: 0 };
+      runtime.update(observer, { x: 0, y: 0, z: 0 }, resolveWebGpuQualityProfile("medium", "balanced"));
+      expect(pool.detailBuildStoragePoolByteCap).toBe(Math.min(
+        DETAIL_CPU_WRITER_POOL_MAX_BYTES,
+        384 * DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL,
+      ));
+      expect(pool.detailBuildStoragePoolByteCap).toBe(12 * mib);
+      runtime.update(observer, { x: 0, y: 0, z: 0 }, resolveWebGpuQualityProfile("low", "balanced"));
+      expect(pool.detailBuildStoragePoolByteCap).toBe(4 * mib);
+      expect(diagnostics().pooledCpuBatchStorageBytes).toBeLessThanOrEqual(4 * mib);
+    } finally {
       runtime.dispose();
       scene.dispose();
       engine.dispose();

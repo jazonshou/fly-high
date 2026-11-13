@@ -225,31 +225,62 @@ describe("compact instance format (2-11a)", () => {
     expect(writer.finish().byteLength).toBe(DETAIL_INSTANCE_STRIDE_BYTES);
   });
 
-  it("adopts an exact transferred buffer and worker-computed bounds without copying", () => {
+  it("copies transferred packed records into its own buffer, growing only when too small", () => {
     const source = new DetailInstanceWriter(2);
     source.push(RECORD);
     source.push({ ...RECORD, x: -44.25, variant: 96 });
+    source.push({ ...RECORD, z: 9.5, fade: 0.25 });
     const exact = source.finish().slice();
-    const adopted = DetailInstanceWriter.fromTransferredBytes(exact, 2);
-    expect(adopted.count).toBe(2);
-    expect(adopted.finish().buffer).toBe(exact.buffer);
-    expect(adopted.finish()).toEqual(source.finish());
+
+    // A pooled writer with room keeps its buffer: no allocation per batch.
+    const pooled = new DetailInstanceWriter(8);
+    pooled.push({ ...RECORD, x: 777 });
+    const pooledBuffer = pooled.finish().buffer;
+    pooled.copyPackedFrom(exact, 3);
+    expect(pooled.count).toBe(3);
+    expect(pooled.finish()).toEqual(source.finish());
+    expect(pooled.finish().buffer).toBe(pooledBuffer);
+    expect(pooled.finish().buffer).not.toBe(exact.buffer);
+    expect(pooled.capacityBytes).toBe(8 * DETAIL_INSTANCE_STRIDE_BYTES);
+    // The copy owns no reference to the source: changing one leaves the other.
+    exact.fill(0);
+    expect(pooled.finish()).toEqual(source.finish());
+
+    // A smaller batch reuses the same buffer; the view covers its records only.
+    pooled.copyPackedFrom(source.finish().subarray(0, DETAIL_INSTANCE_STRIDE_BYTES), 1);
+    expect(pooled.finish()).toEqual(source.finish().subarray(0, DETAIL_INSTANCE_STRIDE_BYTES));
+    expect(pooled.finish().buffer).toBe(pooledBuffer);
+
+    // Too small: grows, and the result is still byte-identical.
+    const small = new DetailInstanceWriter(1);
+    small.copyPackedFrom(source.finish(), 3);
+    expect(small.finish()).toEqual(source.finish());
+    expect(small.capacityBytes).toBeGreaterThanOrEqual(3 * DETAIL_INSTANCE_STRIDE_BYTES);
+    // ...and keeps packing after the copy exactly as a writer that pushed them.
+    small.push({ ...RECORD, y: 3 });
+    source.push({ ...RECORD, y: 3 });
+    expect(small.finish()).toEqual(source.finish());
 
     const minimum = [-7.5, -2, 3.25] as const;
     const maximum = [8, 11.5, 19] as const;
     const bounds = DetailInstanceBounds.fromExtents(minimum, maximum);
     expect(bounds.minimum()).toEqual(minimum);
     expect(bounds.maximum()).toEqual(maximum);
+    const reused = new DetailInstanceBounds();
+    reused.setExtents(minimum, maximum);
+    expect(reused.minimum()).toEqual(minimum);
+    expect(reused.maximum()).toEqual(maximum);
   });
 
   it("rejects malformed transferred record storage and bounds", () => {
-    expect(() => DetailInstanceWriter.fromTransferredBytes(new Uint8Array(31), 1))
-      .toThrow(/exact packed buffer/);
-    const offset = new Uint8Array(new ArrayBuffer(64), 32, 32);
-    expect(() => DetailInstanceWriter.fromTransferredBytes(offset, 1))
-      .toThrow(/exact packed buffer/);
-    expect(() => DetailInstanceWriter.fromTransferredBytes(new Uint8Array(32), 0))
+    const writer = new DetailInstanceWriter(4);
+    expect(() => writer.copyPackedFrom(new Uint8Array(31), 1))
+      .toThrow(/exactly count records/);
+    expect(() => writer.copyPackedFrom(new Uint8Array(64), 1))
+      .toThrow(/exactly count records/);
+    expect(() => writer.copyPackedFrom(new Uint8Array(32), 0))
       .toThrow(/positive integer/);
+    expect(writer.count).toBe(0);
     expect(() => DetailInstanceBounds.fromExtents(
       [0, Number.NaN, 0],
       [1, 2, 3],
@@ -258,6 +289,10 @@ describe("compact instance format (2-11a)", () => {
       [2, 0, 0],
       [1, 2, 3],
     )).toThrow(/finite and ordered/);
+    const bounds = DetailInstanceBounds.fromExtents([0, 0, 0], [1, 1, 1]);
+    expect(() => bounds.setExtents([0, 0, 0], [1, Number.POSITIVE_INFINITY, 1]))
+      .toThrow(/finite and ordered/);
+    expect(bounds.maximum()).toEqual([1, 1, 1]);
   });
 
   it("fuses packing and prototype bounds without changing bytes or bounds", () => {

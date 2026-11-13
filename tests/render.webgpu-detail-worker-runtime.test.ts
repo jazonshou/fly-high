@@ -3,11 +3,13 @@ import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
+  DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL,
   DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_MILLISECONDS,
   DETAIL_GENERATION_WORKER_MAX_NO_PROGRESS_UPDATES,
   DETAIL_MEMBERSHIP_SLACK_METERS,
   DETAIL_PRESENTATION_WORKER_MAX_PENDING_UPDATES,
   WorldDetailRuntime,
+  type DetailPresentationRebuildDiagnostics,
 } from "../src/render/webgpu/detail/WorldDetailRuntime";
 import { generateDetailCell } from "../src/render/webgpu/detail/generation";
 import type {
@@ -295,7 +297,7 @@ function settleWorker(
   bridge: RuntimeWorkerBridge,
   observer: ReturnType<typeof observerForCell>,
   quality: ReturnType<typeof profile>,
-  origin = ORIGIN,
+  origin: Readonly<{ x: number; y: number; z: number }> = ORIGIN,
   limit = 128,
 ): void {
   for (let pass = 0; pass < limit; pass += 1) {
@@ -550,6 +552,40 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
         aliasedResult,
       )).toThrow("unique transferred buffers");
       expect(privateRuntime.pendingPresentationBuild.stagedBatches.size).toBe(0);
+
+      // Records that are not one exact packed buffer are refused before any
+      // CPU writer is taken from the pool or made.
+      const before = runtime.presentationRebuildDiagnostics;
+      const [firstBatch, ...otherBatches] = heldResult.batches;
+      const padded = new Uint8Array(new ArrayBuffer(firstBatch!.bytes.byteLength + 32), 32);
+      padded.set(firstBatch!.bytes);
+      expect(() => privateRuntime.rehydrateWorkerPresentationResult(
+        privateRuntime.pendingPresentationBuild,
+        { ...heldResult, batches: [{ ...firstBatch!, bytes: padded }, ...otherBatches] },
+      )).toThrow("exact packed buffer");
+      expect(runtime.presentationRebuildDiagnostics.cpuWriterAllocations)
+        .toBe(before.cpuWriterAllocations);
+      expect(runtime.presentationRebuildDiagnostics.cpuWriterPoolHits)
+        .toBe(before.cpuWriterPoolHits);
+
+      // A batch that fails after storage was taken for it (here, its bounds)
+      // hands back every pair the result took: nothing staged, nothing lost.
+      expect(() => privateRuntime.rehydrateWorkerPresentationResult(
+        privateRuntime.pendingPresentationBuild,
+        {
+          ...heldResult,
+          batches: heldResult.batches.map((batch, index) => (
+            index === 1 ? { ...batch, minimum: [Number.NaN, 0, 0] as const } : batch
+          )),
+        },
+      )).toThrow("finite and ordered");
+      expect(privateRuntime.pendingPresentationBuild.stagedBatches.size).toBe(0);
+      const after = runtime.presentationRebuildDiagnostics;
+      expect(after.cpuWriterPoolHits + after.cpuWriterAllocations)
+        .toBe(before.cpuWriterPoolHits + before.cpuWriterAllocations + 2);
+      expect(after.pooledCpuBatchStorage).toBe(
+        before.pooledCpuBatchStorage + after.cpuWriterAllocations - before.cpuWriterAllocations,
+      );
 
       bridge.releaseHeldPresentations((event) => {
         if (event.type !== "presentation" || event.batches.length === 0) return event;
@@ -951,6 +987,115 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       for (const batch of state.batches.values()) {
         expect(batch.mesh.position).toMatchObject({ x: 0, y: 0, z: 0 });
       }
+    } finally {
+      runtime.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it("copies transferred batches into pooled writers: exact bytes, one owner each, no allocation once warm", () => {
+    const world = createWorld("detail-runtime-worker-copy", { airport: false });
+    const quality = profile();
+    const selected = richCell(world, quality.vegetationDensity);
+    const observer = observerForCell(selected.cellX, selected.cellZ);
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const bridge = new RuntimeWorkerBridge();
+    const runtime = createRuntime(scene, world, { bridge });
+    type Writer = DetailInstanceWriter;
+    const state = runtime as unknown as {
+      readonly batches: Map<string, {
+        readonly writer: Writer;
+        readonly mesh: { getVertexBuffer(kind: string): { getData(): unknown } | null };
+      }>;
+      readonly retiredBatches: readonly { readonly batch: { readonly writer: Writer } }[];
+      readonly detailBuildStoragePool: readonly { readonly writer: Writer }[];
+      readonly pendingPresentationBuild: {
+        readonly stagedBatches: Map<string, { readonly writer: Writer }>;
+      } | null;
+      readonly pendingPublication: { readonly uploads: readonly { readonly writer: Writer }[] } | null;
+      readonly instanceBufferPool: readonly { readonly gpu: { readonly shared: { getData(): unknown } } }[];
+      readonly presentationChunks: Map<string, unknown>;
+    };
+    // Every writer has exactly one owner, so none is overwritten while read.
+    const ownedWriters = (): Writer[] => {
+      const owned = [
+        ...[...state.batches.values()].map((batch) => batch.writer),
+        ...state.retiredBatches.map((retired) => retired.batch.writer),
+        ...state.detailBuildStoragePool.map((entry) => entry.writer),
+        ...[...(state.pendingPresentationBuild?.stagedBatches.values() ?? [])]
+          .map((staged) => staged.writer),
+        ...(state.pendingPublication?.uploads ?? []).map((upload) => upload.writer),
+      ];
+      expect(new Set(owned).size, "a CPU writer has two owners").toBe(owned.length);
+      return owned;
+    };
+
+    try {
+      settleWorker(runtime, bridge, observer, quality);
+      expect(state.presentationChunks.size).toBe(1);
+      const chunkKey = [...state.presentationChunks.keys()][0]!;
+      // Each rebase republishes the same footprint with every record moved.
+      const origins = [{ x: 512, y: 30, z: -256 }, ORIGIN];
+      let warm: DetailPresentationRebuildDiagnostics | null = null;
+      let batchCount = 0;
+      for (let republish = 0; republish < 24; republish += 1) {
+        const origin = origins[republish % 2]!;
+        const publicationsBefore = runtime.presentationRebuildDiagnostics.publications;
+        bridge.holdPresentations = true;
+        runtime.update(observer, origin, quality);
+        bridge.flush();
+        expect(bridge.heldPresentationEvents).toHaveLength(1);
+        const event = bridge.heldPresentationEvents[0]!;
+        if (event.type !== "presentation") throw new Error("expected a presentation");
+        bridge.holdPresentations = false;
+        bridge.releaseHeldPresentations();
+        settleWorker(runtime, bridge, observer, quality, origin);
+        expect(runtime.presentationRebuildDiagnostics.publications).toBe(publicationsBefore + 1);
+
+        batchCount = event.batches.length;
+        expect(batchCount).toBeGreaterThan(1);
+        for (const transferred of event.batches) {
+          const live = state.batches.get(`${transferred.prototypeKey}@${chunkKey}`)!;
+          // The GPU-bound bytes are the transferred bytes, byte for byte,
+          // held in the runtime's own buffer rather than the transferred one.
+          expect(live.writer.finish()).toEqual(transferred.bytes);
+          expect(live.writer.finish().buffer).not.toBe(transferred.bytes.buffer);
+          expect(live.mesh.getVertexBuffer("instancePosition")?.getData())
+            .toEqual(transferred.bytes);
+        }
+        ownedWriters();
+        if (republish === 3) warm = runtime.presentationRebuildDiagnostics;
+      }
+
+      const diagnostics = runtime.presentationRebuildDiagnostics;
+      expect(warm).not.toBeNull();
+      expect(diagnostics.cpuWriterAllocations).toBe(warm!.cpuWriterAllocations);
+      expect(diagnostics.cpuWriterPoolHits - warm!.cpuWriterPoolHits).toBe(20 * batchCount);
+      expect(diagnostics.cpuWriterPoolDrops).toBe(0);
+      expect(diagnostics.pooledCpuBatchStorageBytes).toBe(
+        state.detailBuildStoragePool.reduce((bytes, entry) => bytes + entry.writer.capacityBytes, 0),
+      );
+      expect(diagnostics.pooledCpuBatchStorageBytes)
+        .toBeLessThanOrEqual(128 * DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL);
+
+      // Leaving retires the chunk. After the grace window its allocations
+      // recycle with no CPU mirror left, and its writers come back to the
+      // pool (or straight into new work): owned once, never dropped.
+      const departed = [...state.batches.values()].map((batch) => batch.writer);
+      const away = observerForCell(selected.cellX + 40, selected.cellZ + 40);
+      for (let pass = 0; pass < 16; pass += 1) {
+        runtime.update(away, ORIGIN, quality);
+        bridge.flush();
+      }
+      expect(state.retiredBatches).toHaveLength(0);
+      expect(state.instanceBufferPool.length).toBeGreaterThan(0);
+      expect(state.instanceBufferPool.every((pooled) => pooled.gpu.shared.getData() === null))
+        .toBe(true);
+      const owned = new Set(ownedWriters());
+      expect(departed.every((writer) => owned.has(writer))).toBe(true);
+      expect(runtime.presentationRebuildDiagnostics.cpuWriterPoolDrops).toBe(0);
     } finally {
       runtime.dispose();
       scene.dispose();
