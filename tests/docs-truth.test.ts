@@ -246,6 +246,7 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     // The doc writes kilometres and the profile holds metres, so this row needs
     // the scale rather than a second parser.
     ["Vegetation radius", (p: (typeof PROFILES)[number]) => p.vegetationDistance / 1000],
+    ["Tree ground shadow range", (p: (typeof PROFILES)[number]) => p.treeGroundShadowRangeMeters],
   ];
 
   it.each(TIER_ROW_CHECKS.map((row) => [row[0], row[1]] as const))(
@@ -376,9 +377,10 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     const rows = tierTableRowLabels();
     expect(rows.length).toBeGreaterThan(20);
     // PR B part 2 adds three rows (34 to 37), part 2b a fourth, the land PR six
-    // (so 43, then 44) and the generated buildings seven (50, then 51); the
-    // next row-adding change raises this again, deliberately.
-    expect(rows.length, "the walk ran past the end of the tier table").toBeLessThan(52);
+    // (so 43, then 44), the generated buildings seven (50, then 51) and the
+    // tree ground shadow one (52); the next row-adding change raises this
+    // again, deliberately.
+    expect(rows.length, "the walk ran past the end of the tier table").toBeLessThan(53);
     expect(rows.at(-1), "the walk ran past the end of the tier table").toContain("Frame target");
     expect(TIER_ROW_CHECKS.length + DECLARED_UNVERIFIABLE.length).toBeGreaterThan(20);
   });

@@ -119,6 +119,14 @@ export interface VegetationDensitySample {
   readonly canopyClosure: number;
   /** `6-8`: absolute grass-sward cover of the ground, canopy-suppressed. */
   readonly grassCover: number;
+  /**
+   * How much of the bushes here are open ground's own scrub, 0 to 1: 0 inside
+   * a forest province, whose understory is spread evenly under the canopy, 1
+   * on open country, where bushes stand in thickets with bare ground between
+   * (`shrubThicketAt`). Scatter applies the thicket pattern to this share of
+   * `shrubStemsPerSquareMeter` at each stem.
+   */
+  readonly shrubThicketShare: number;
 }
 
 /** The five ground-cover archetypes, in the order the weight vector uses. */
@@ -632,6 +640,152 @@ export const PINYON_HEAT_ONSET = 0.08;
 export const PINYON_HEAT_FULL = 0.24;
 export const PINYON_HOT_KEEP = 0.15;
 
+/**
+ * Open ground's own trees: lone trees, copses and groves outside the closed
+ * forest (2026-11-12).
+ *
+ * Why. The closed-forest term is a product of about ten gates, so within
+ * 20 km of the start it read zero on 43% of the default world's land (55% of
+ * the capture world's) and the rendered cap or more on 25% (18%), with
+ * little between: a tree either stood in a forest or did not exist. Open
+ * country with nothing standing on it is what made the ground read as a
+ * painted sheet.
+ *
+ * What. A second, far thinner stand that needs no forest province and far
+ * less moisture, as the dry provinces' parkland is (`PARKLAND_TREE_SHARE`),
+ * for the temperate and cold provinces. Shares of the tree base (800/ha):
+ *
+ * - lone trees, 2.4/ha: one every 65 m or so;
+ * - copses, up to 17.6/ha more, where the glade field runs high (the top
+ *   third of it, full in the top eighth);
+ * - groves, up to 36/ha more in a copse's core (the top tenth, full in the
+ *   top twentieth). 56/ha in all, a little under what the near band can draw
+ *   and under the 60/ha the capture's forest shots search for, so a grove is
+ *   open woodland and never passes for the forest.
+ *
+ * Where. It rides two channels the forest already samples, so it adds no
+ * noise to the field or to its WGSL twin:
+ *
+ * - the forest province's signal, below the forest's own threshold: full at
+ *   the forest's edge (`OPEN_GROUND_WOODED_FULL`), gone by
+ *   `OPEN_GROUND_WOODED_ONSET`. So a forest is fringed by a kilometre or two
+ *   of parkland that thins into open steppe, and the steppe stays bare.
+ *   Within 20 km of the start, land with no tree at all falls from 43% to
+ *   13% on the default world and from 55% to 26% on the capture world, and
+ *   another 8% and 10% holds under one tree a hectare. Over six seeds, 14%
+ *   to 29% of the open land that could grow these trees grows none;
+ * - the glade field, raw: a copse stands where a forest's dense stand would,
+ *   so a forest that breaks up at its province's edge breaks into copses in
+ *   the same places.
+ *
+ * It takes the larger of itself and the closed forest rather than adding to
+ * it, so it changes nothing inside a stand and fills what the stand's gates
+ * leave empty: meadow provinces, glades, old burns and blowdowns.
+ */
+export const OPEN_GROUND_LONE_TREE_SHARE = 0.003;
+export const OPEN_GROUND_COPSE_SHARE = 0.022;
+export const OPEN_GROUND_GROVE_SHARE = 0.045;
+export const OPEN_GROUND_COPSE_ONSET = 0.15;
+export const OPEN_GROUND_COPSE_FULL = 0.38;
+export const OPEN_GROUND_GROVE_ONSET = 0.42;
+export const OPEN_GROUND_GROVE_FULL = 0.6;
+/** The forest province's signal (`forestProvinceSignal`); the forest itself starts at -0.22. */
+export const OPEN_GROUND_WOODED_ONSET = -0.45;
+export const OPEN_GROUND_WOODED_FULL = -0.2;
+/** A lone tree needs far less water than a closed stand (which starts at 0.3). */
+export const OPEN_GROUND_MOISTURE_ONSET = 0.16;
+export const OPEN_GROUND_MOISTURE_FULL = 0.36;
+
+/**
+ * Open ground's trees as a share of the tree base, before the habitat gates:
+ * the province signal says how wooded the country is, the raw glade field
+ * where its copses and groves stand.
+ */
+export function openGroundTreeShare(provinceSignal: number, gladeRaw: number): number {
+  const wooded = smoothstep(OPEN_GROUND_WOODED_ONSET, OPEN_GROUND_WOODED_FULL, provinceSignal);
+  if (wooded <= 0) return 0;
+  return wooded * (
+    OPEN_GROUND_LONE_TREE_SHARE
+    + OPEN_GROUND_COPSE_SHARE
+      * smoothstep(OPEN_GROUND_COPSE_ONSET, OPEN_GROUND_COPSE_FULL, gladeRaw)
+    + OPEN_GROUND_GROVE_SHARE
+      * smoothstep(OPEN_GROUND_GROVE_ONSET, OPEN_GROUND_GROVE_FULL, gladeRaw)
+  );
+}
+
+/**
+ * Open ground's bushes stand in thickets.
+ *
+ * The shrub law above spreads bushes evenly, which is what an understory is.
+ * Open country is not like that: scrub stands in patches a few tens of metres
+ * across with grass between, some country is scrubby and some is clean, and a
+ * lone bush is the exception. An even 100 bushes a hectare reads as noise from
+ * the air and as nothing in particular from the ground; the same bushes in
+ * thickets read as a place.
+ *
+ * Two fields, neither new to the density law's inputs:
+ * - a 90 m thicket field (two octaves, so a thicket's outline is ragged) says
+ *   where the patches are;
+ * - a 1.4 km scrub field says how much of the country they cover, from about
+ *   3% (clean grassland with the odd thicket) to about 45% (scrubland).
+ *
+ * The factor multiplies a stem's acceptance: `SHRUB_THICKET_PEAK` inside a
+ * thicket, `SHRUB_THICKET_LONE_SHARE` between them, which is the lone bushes.
+ * Over all country it averages a little under 1, so open ground carries about
+ * the bushes it did, somewhere instead of everywhere.
+ */
+export const SHRUB_THICKET_PEAK = 4.5;
+export const SHRUB_THICKET_LONE_SHARE = 0.07;
+const SHRUB_THICKET_WAVELENGTH_METERS = 90;
+const SHRUB_SCRUB_WAVELENGTH_METERS = 1_400;
+/** The thicket field's threshold in clean country and in scrubland (its 97th and 55th percentiles). */
+const SHRUB_THICKET_CLEAN_THRESHOLD = 0.62;
+const SHRUB_THICKET_SCRUB_THRESHOLD = 0.05;
+const SHRUB_THICKET_EDGE_HALF_WIDTH = 0.07;
+
+export interface ShrubThicketSample {
+  /** 0 between thickets, 1 inside one. */
+  readonly core: number;
+  /** What a stem's acceptance is multiplied by here. */
+  readonly factor: number;
+}
+
+/** The thicket pattern at a stem (see `SHRUB_THICKET_PEAK`). Full bandwidth: it places stems. */
+export function shrubThicketAt(seedHash: number, x: number, z: number): ShrubThicketSample {
+  const scrub = smoothstep(
+    -0.35,
+    0.45,
+    filteredValueNoise2D(
+      mixSeed(seedHash, 78),
+      x / SHRUB_SCRUB_WAVELENGTH_METERS,
+      z / SHRUB_SCRUB_WAVELENGTH_METERS,
+      SHRUB_SCRUB_WAVELENGTH_METERS,
+      0,
+    ),
+  );
+  const threshold = SHRUB_THICKET_CLEAN_THRESHOLD
+    + (SHRUB_THICKET_SCRUB_THRESHOLD - SHRUB_THICKET_CLEAN_THRESHOLD) * scrub;
+  const thicket = fbm2D(
+    mixSeed(seedHash, 77),
+    x / SHRUB_THICKET_WAVELENGTH_METERS,
+    z / SHRUB_THICKET_WAVELENGTH_METERS,
+    2,
+    2,
+    0.5,
+    SHRUB_THICKET_WAVELENGTH_METERS,
+    0,
+  );
+  const core = smoothstep(
+    threshold - SHRUB_THICKET_EDGE_HALF_WIDTH,
+    threshold + SHRUB_THICKET_EDGE_HALF_WIDTH,
+    thicket,
+  );
+  return {
+    core,
+    factor: SHRUB_THICKET_LONE_SHARE + (SHRUB_THICKET_PEAK - SHRUB_THICKET_LONE_SHARE) * core,
+  };
+}
+
 /** Base canopy density: ~800 stems/ha before habitat factors. */
 const BASE_TREE_STEMS = 0.08;
 const BASE_SHRUB_STEMS = 0.045;
@@ -648,6 +802,7 @@ const ZERO_DENSITY: VegetationDensitySample = Object.freeze({
   riparianBand: 0,
   canopyClosure: 0,
   grassCover: 1,
+  shrubThicketShare: 0,
 });
 
 interface ForestPatternSample {
@@ -655,6 +810,9 @@ interface ForestPatternSample {
   readonly disturbance: number;
   readonly forestFraction: number;
   readonly forestEdge: number;
+  /** The province gate before its threshold, and the glade field before its ramp: what open ground's trees read. */
+  readonly provinceSignal: number;
+  readonly gladeRaw: number;
 }
 
 export interface RiparianVegetationFactors {
@@ -751,8 +909,12 @@ export function sandCoverGroundFactor(sandCover: number): number {
   return sandCover > 0 ? 1 - saturate(sandCover) : 1;
 }
 
-/** Multi-kilometre canopy gate: 0 is meadow, 1 is closed-forest province. */
-export function forestFraction(
+/**
+ * The forest province's signal: the multi-kilometre province noise plus the
+ * climate's pull. The closed forest starts where it passes -0.22
+ * (`forestFraction`); open ground's trees read how far below that it sits.
+ */
+export function forestProvinceSignal(
   seedHash: number,
   x: number,
   z: number,
@@ -771,7 +933,18 @@ export function forestFraction(
     5_400,
     filterWidthMeters,
   );
-  return smoothstep(-0.22, 0.2, provinceRaw + (moisture - 0.55) * 0.7);
+  return provinceRaw + (moisture - 0.55) * 0.7;
+}
+
+/** Multi-kilometre canopy gate: 0 is meadow, 1 is closed-forest province. */
+export function forestFraction(
+  seedHash: number,
+  x: number,
+  z: number,
+  moisture: number,
+  filterWidthMeters = 0,
+): number {
+  return smoothstep(-0.22, 0.2, forestProvinceSignal(seedHash, x, z, moisture, filterWidthMeters));
 }
 
 /**
@@ -793,7 +966,8 @@ function sampleForestPattern(
 ): ForestPatternSample {
   // Moist climates are more likely to carry forest, but never force every
   // valley closed. The smooth gate is wide enough to form a real ecotone.
-  const province = forestFraction(seedHash, x, z, moisture, filterWidthMeters);
+  const provinceSignal = forestProvinceSignal(seedHash, x, z, moisture, filterWidthMeters);
+  const province = smoothstep(-0.22, 0.2, provinceSignal);
 
   const gladeRaw = fbm2D(mixSeed(seedHash, 73), x / 260, z / 260, 2, 2, 0.5, 260, filterWidthMeters);
   // The previous 0.30 floor authored at least 240 stems/ha in a nominal
@@ -835,7 +1009,7 @@ function sampleForestPattern(
   const windthrowEdge = 1 - smoothstep(0.008, 0.045, Math.abs(windthrowRaw - 0.61));
   const forestEdge = saturate(Math.max(provinceEdge, gladeEdge * 0.7, windthrowEdge));
 
-  return { glade, disturbance, forestFraction: province, forestEdge };
+  return { glade, disturbance, forestFraction: province, forestEdge, provinceSignal, gladeRaw };
 }
 
 export function densityField(
@@ -919,8 +1093,20 @@ export function densityField(
   const pinyonStems = BASE_TREE_STEMS * DESERT_TREE_SHARE * arid
     * openStand * pinyonSlope * pinyonHeat * (0.3 + 0.7 * forest.glade);
   const closedForestKeep = dryProvinceClosedForestKeep(arid, parkland, riparian.bankBand);
-  const treeStems = BASE_TREE_STEMS * moistureFactor * habitat * closedForestKeep
-    + parklandStems + pinyonStems;
+  const closedStems = BASE_TREE_STEMS * moistureFactor * habitat * closedForestKeep;
+  // Open ground's own trees (see `openGroundTreeShare`). The dry provinces
+  // have their own open stands above, so this one leaves them alone: the
+  // share left over is exactly 1 in the core and 0 on both dry plateaus.
+  const openGroundStems = BASE_TREE_STEMS
+    * openGroundTreeShare(forest.provinceSignal, forest.gladeRaw)
+    * smoothstep(OPEN_GROUND_MOISTURE_ONSET, OPEN_GROUND_MOISTURE_FULL, input.moisture)
+    * openStand * slopeFactor * lapse * (1 - arid - parkland);
+  // How much of the stand here is open ground's: 1 for a lone tree, 0 inside
+  // a closed forest, which takes this term over without a seam.
+  const openGrown = openGroundStems > closedStems
+    ? (openGroundStems - closedStems) / openGroundStems
+    : 0;
+  const treeStems = Math.max(closedStems, openGroundStems) + parklandStems + pinyonStems;
 
   // Shrubs tolerate drier and steeper ground, prefer open glades and edges,
   // and persist a little above the canopy treeline: on a mountain 140 m, in
@@ -941,11 +1127,17 @@ export function densityField(
   // The parkland's understory goes with the forest it grew under; the
   // desert keeps its moisture-gated scrub, which is sage and juniper there.
   const understoryKeep = dryProvinceClosedForestKeep(0, parkland, riparian.bankBand);
-  const shrubStems =
+  const moistShrubStems =
     BASE_SHRUB_STEMS * shrubMoisture * shrubSlope * shrubTreeline * openness * shoreline
     * forest.disturbance * shrubForestGate * edgeShrubGain * clearance
-    * riparian.clearance * riparian.shrubDensityGain * understoryKeep
-    + dryShrubStems;
+    * riparian.clearance * riparian.shrubDensityGain * understoryKeep;
+  const shrubStems = moistShrubStems + dryShrubStems;
+  // Thickets are open country's (see `shrubThicketAt`): a forest province's
+  // understory stays even, and the dry provinces' bushes already clump on the
+  // glade field.
+  const shrubThicketShare = shrubStems > 0
+    ? (moistShrubStems / shrubStems) * (1 - forest.forestFraction)
+    : 0;
 
   const groundCover = groundCoverWeights(
     input.moisture,
@@ -959,7 +1151,11 @@ export function densityField(
   const closure = canopyClosure(saturate(treeStems));
   // A lone tree is open-grown, the same form an edge stem has: shorter, with a
   // wider crown. `max` with a zero share is the shipped edge exactly.
-  const forestEdge = Math.max(forest.forestEdge, parkland * PARKLAND_OPEN_GROWN_EDGE);
+  const forestEdge = Math.max(
+    forest.forestEdge,
+    parkland * PARKLAND_OPEN_GROWN_EDGE,
+    openGrown * PARKLAND_OPEN_GROWN_EDGE,
+  );
   return {
     treeStemsPerSquareMeter: saturate(treeStems),
     shrubStemsPerSquareMeter: saturate(shrubStems),
@@ -972,5 +1168,6 @@ export function densityField(
     riparianBand: riparian.bankBand,
     canopyClosure: closure,
     grassCover: canopyGrassCover(groundCover.grass, closure),
+    shrubThicketShare,
   };
 }

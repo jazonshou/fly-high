@@ -40,7 +40,9 @@ import {
 } from "@/src/world/infrastructure";
 import { TERRAIN_REFERENCE_DAY_OF_YEAR } from "@/src/world";
 import {
+  SHRUB_THICKET_PEAK,
   densityField,
+  shrubThicketAt,
   dryProvinceGroundCoverKeep,
   dryProvinceShares,
   riparianVegetationFactors,
@@ -266,6 +268,7 @@ const ZERO_VEGETATION_DENSITY: VegetationDensitySample = Object.freeze({
   riparianBand: 0,
   canopyClosure: 0,
   grassCover: 1,
+  shrubThicketShare: 0,
 });
 
 /** The dry province's shares at a sample: one reading, shared by every draw. */
@@ -815,9 +818,13 @@ function treeColor(
  * per-subcell seed streams, so neighbouring detail pages derive identical
  * stems and the floating-origin rebase can never make anything slide.
  */
-const SCATTER_BLOCK_METERS = 32;
-/** Covers the widest thinning radius so page-edge decisions agree. */
-const SCATTER_HALO_METERS = 8;
+export const SCATTER_BLOCK_METERS = 32;
+/**
+ * Covers the widest thinning radius so page-edge decisions agree. It is also
+ * how far a change to the candidates can reach: removing a stem (a plant
+ * exclusion does) can let a weaker neighbour inside this distance stand.
+ */
+export const SCATTER_HALO_METERS = 8;
 /** Terrain sampled on a global 16 m grid; candidates interpolate heights. */
 const SCATTER_TERRAIN_GRID_METERS = 16;
 const MAX_SUBCELLS_PER_BLOCK_AXIS = 8;
@@ -875,6 +882,33 @@ function gridHeight(grid: ScatterTerrainGrid, x: number, z: number): number {
   const top = grid.samples[row0]!.height * (1 - fx) + grid.samples[row0 + 1]!.height * fx;
   const bottom = grid.samples[row1]!.height * (1 - fx) + grid.samples[row1 + 1]!.height * fx;
   return top * (1 - fz) + bottom * fz;
+}
+
+/** Half the span the ground slope under a stem is measured over, in metres. */
+const SCATTER_SLOPE_HALF_SPAN_METERS = SCATTER_TERRAIN_GRID_METERS / 2;
+
+/**
+ * The ground's slope at a point, dh/dx and dh/dz, by central differences of
+ * the same bilinear surface `gridHeight` reads. Measured across one whole
+ * grid pitch rather than as the patch's own tangent, because a tree's ground
+ * shadow reaches 10 to 30 m and should lie on the slope at that scale, not
+ * on one 16 m patch's twist.
+ */
+function gridSlope(grid: ScatterTerrainGrid, x: number, z: number): readonly [number, number] {
+  const half = SCATTER_SLOPE_HALF_SPAN_METERS;
+  return [
+    (gridHeight(grid, x + half, z) - gridHeight(grid, x - half, z)) / (2 * half),
+    (gridHeight(grid, x, z + half) - gridHeight(grid, x, z - half)) / (2 * half),
+  ];
+}
+
+function groundSlopeFields(
+  grid: ScatterTerrainGrid,
+  x: number,
+  z: number,
+): { readonly groundSlopeX: number; readonly groundSlopeZ: number } {
+  const [groundSlopeX, groundSlopeZ] = gridSlope(grid, x, z);
+  return { groundSlopeX, groundSlopeZ };
 }
 
 /**
@@ -1147,6 +1181,8 @@ function scatterLayer(
     random: RandomSource,
     stand: StandSample,
     push: (spacing: number, priority: number, build: () => DetailTreePlacement | DetailShrubPlacement) => void,
+    /** Understory only: how far inside a thicket the stem stands, 0 to 1 (`shrubThicketAt`). */
+    thicketCore: number,
   ) => void,
 ): readonly (DetailTreePlacement | DetailShrubPlacement)[] {
   const { minX, minZ, cellSize } = context;
@@ -1204,7 +1240,17 @@ function scatterLayer(
       if (!validSample(info.sample)) continue;
       const stems = info.stems;
       if (stems <= 1e-7) continue;
-      const jitterCell = kernelClamp(Math.sqrt(1 / stems), 3, 90);
+      // Open ground's bushes stand in thickets (`shrubThicketAt`): the block
+      // is provisioned for the thicket's peak, and each stem's acceptance
+      // takes the pattern at its own position. A share of exactly 0, which is
+      // every canopy block and every forest province's understory, leaves the
+      // block's subcells, streams and stems as they were.
+      const thicketShare = layer === "understory" ? info.field.shrubThicketShare : 0;
+      const jitterCell = kernelClamp(
+        Math.sqrt(1 / (stems * (1 + thicketShare * (SHRUB_THICKET_PEAK - 1)))),
+        3,
+        90,
+      );
       // Ceil + acceptance keeps the expected count exactly stems·area: the
       // subcell grid over-provisions and the acceptance roll trims it back.
       const sub = Math.max(
@@ -1225,8 +1271,19 @@ function scatterLayer(
           const jitterX = random();
           const jitterZ = random();
           const acceptRoll = random();
-          const x = blockX * SCATTER_BLOCK_METERS + (subX + jitterX) * subSize;
-          const z = blockZ * SCATTER_BLOCK_METERS + (subZ + jitterZ) * subSize;
+          // A thicket's stem may stand anywhere in the two-by-two subcells
+          // round its own (`SHRUB_THICKET_JITTER_SPAN`). One stem to a subcell
+          // is an even carpet where the acceptance nears 1, which is what a
+          // thicket's middle is, and an even carpet of bushes is an orchard.
+          // Every point is still proposed once per subcell's area, so the
+          // expected count is what it was. Elsewhere the span is exactly 1.
+          const span = thicketShare > 0 ? SHRUB_THICKET_JITTER_SPAN : 1;
+          const x = blockX * SCATTER_BLOCK_METERS
+            + (subX + 0.5 + (jitterX - 0.5) * span) * subSize;
+          const z = blockZ * SCATTER_BLOCK_METERS
+            + (subZ + 0.5 + (jitterZ - 0.5) * span) * subSize;
+          // Outside the halo it is another page's stem; nothing below is read for it.
+          if (x < loX || x >= hiX || z < loZ || z >= hiZ) continue;
           // A HARD gate at the stem's own position — see `structureFactorAt`.
           // Zero here means no roll can place this stem, which is what an
           // exclusion has to mean: a probabilistic reduction is not a fix for
@@ -1241,20 +1298,23 @@ function scatterLayer(
             ? sandCoverTreeFactor(sandCover)
             : sandCoverGroundFactor(sandCover);
           if (sand <= 0) continue;
+          // At the stem, like the two gates above: a thicket's edge is a few
+          // metres wide, and the 32 m block lattice would smear it to nothing.
+          const thicket = thicketShare > 0 ? shrubThicketAt(context.seedHash, x, z) : null;
           const acceptance = kernelClamp(
-            stemsInterpolated(x, z) * subSize * subSize * structure * sand,
+            stemsInterpolated(x, z) * subSize * subSize * structure * sand
+              * (thicket === null ? 1 : 1 + thicketShare * (thicket.factor - 1)),
             0,
             1,
           );
           if (acceptRoll >= acceptance) continue;
-          if (x < loX || x >= hiX || z < loZ || z >= hiZ) continue;
           const y = gridHeight(context.grid, x, z);
           // 2-11b: stand identity from the continuous field at the stem's
           // own position — no 32 m appearance lattice.
           const stand = sampleStandField(context.seedHash, x, z);
           emit(x, z, y, info.sample, info.field, random, stand, (spacing, priority, build) => {
             candidates.push({ x, z, priority, spacing, build });
-          });
+          }, thicket === null ? 0 : thicket.core * thicketShare);
         }
       }
     }
@@ -1269,6 +1329,33 @@ function scatterLayer(
     ))
     .map((candidate) => candidate.build());
 }
+
+const SHRUB_SAPLING_HEIGHT_METERS = 0.55;
+const SHRUB_HAZEL_GROWTH_METERS = 2.8;
+/**
+ * The tallest bush `scatterShrubs` authors: a fully mature hazel. Its reach
+ * is the furthest a bush batch draws (`estimateVegetationDrawCalls`).
+ */
+export const SHRUB_MAX_HEIGHT_METERS = SHRUB_SAPLING_HEIGHT_METERS + SHRUB_HAZEL_GROWTH_METERS;
+
+/**
+ * A bush's maturity is `0.2 + roll^exponent * 0.8`. The exponent is 1.45 on
+ * open ground, where most bushes are young, and falls by this much in the
+ * middle of a thicket, where most are grown: 0.6 there, a median maturity of
+ * 0.73 against 0.49, with the young ones still among them. Raising every bush
+ * toward full maturity instead made a thicket one height, which read as
+ * planted.
+ */
+const SHRUB_MATURITY_EXPONENT = 1.45;
+const SHRUB_THICKET_MATURITY_EXPONENT_CUT = 0.85;
+/**
+ * How far a thicket's stem may stand from its own subcell, in subcells: 2 is
+ * anywhere in the two-by-two block of them centred on it. The reach is half a
+ * subcell, 16 m at most, which stays inside the blocks a cell sweeps for its
+ * halo (`SCATTER_HALO_METERS` short of one block), so neighbouring pages
+ * still derive the same stems.
+ */
+export const SHRUB_THICKET_JITTER_SPAN = 2;
 
 /** How much of a tree's height a full desert takes away (31 m pine -> 12 m pinyon). */
 const DESERT_TREE_STATURE_CUT = 0.6;
@@ -1361,19 +1448,30 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
       ),
       standAge: stand.standAge,
       selection: random(),
+      // After every roll, so the stem's random stream is what it was. Only
+      // stems that survive thinning pay for the four height reads.
+      ...groundSlopeFields(context.grid, x, z),
     }));
   }) as readonly DetailTreePlacement[];
 }
 
 function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[] {
-  return scatterLayer(context, "understory", (x, z, y, blockSample, field, random, stand, push) => {
+  return scatterLayer(context, "understory", (
+    x, z, y, blockSample, field, random, stand, push, thicketCore,
+  ) => {
     const priority = random();
     const speciesRoll = random();
     const species = chooseShrubSpecies(
       blockSample,
       speciesRoll < 0.7 ? stand.dominantChoice : random(),
     );
-    const maturity = 0.2 + Math.pow(random(), 1.45) * 0.8;
+    // A thicket holds more grown bushes than open ground does, and still a
+    // spread of ages. No roll is drawn for it, and outside a thicket the
+    // exponent, and so the maturity, is what it was.
+    const maturity = 0.2 + Math.pow(
+      random(),
+      SHRUB_MATURITY_EXPONENT - SHRUB_THICKET_MATURITY_EXPONENT_CUT * thicketCore,
+    ) * 0.8;
     const temperatureOffset = blockSample.temperatureOffset ?? 0;
     const cold = borealShare(temperatureOffset);
     const tundra = tundraShare(temperatureOffset);
@@ -1386,7 +1484,8 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
     const heightFactor = field.heightFactor + (1 - field.heightFactor) * tundra;
     const height = (species === "sage"
       ? 0.35 + maturity * 1.05
-      : 0.55 + maturity * (species === "hazel" ? 2.8 : 2.1)) * heightFactor;
+      : SHRUB_SAPLING_HEIGHT_METERS
+        + maturity * (species === "hazel" ? SHRUB_HAZEL_GROWTH_METERS : 2.1)) * heightFactor;
     const radius = height * (species === "hazel" ? 0.72 : 0.62) * (0.82 + random() * 0.3);
     // Cold scrub is low scrub: taiga willow thickets stand 1-3 m and tundra
     // willow and dwarf birch under a metre. Exactly 1 in the temperate core.
@@ -1416,6 +1515,9 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
         tropicalWeightAt(blockSample),
       ),
       selection: random(),
+      canopyClosure: field.canopyClosure,
+      // After every roll, as a tree's are, so the stream is what it was.
+      ...groundSlopeFields(context.grid, x, z),
     }));
   }) as readonly DetailShrubPlacement[];
 }

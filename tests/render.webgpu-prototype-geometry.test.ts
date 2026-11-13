@@ -204,7 +204,9 @@ describe("vegetation prototype geometry (2-12/2-12b/2-15/2-16)", () => {
         // The bark part carries the trunk and two branch levels now; a palm
         // is one unbranched trunk.
         expect(trunk.triangleCount).toBeGreaterThanOrEqual(palm ? 120 : 400);
-        expect(trunk.triangleCount).toBeLessThanOrEqual(1_150);
+        // 1,150 until the bole grew its root flare: five more rings of its
+        // eight sides, 80 triangles, on the near model alone.
+        expect(trunk.triangleCount).toBeLessThanOrEqual(1_230);
         expect(
           trunk.triangleCount + crown.triangleCount + cards.triangleCount,
           `${species} v${variant} near total`,
@@ -230,9 +232,10 @@ describe("vegetation prototype geometry (2-12/2-12b/2-15/2-16)", () => {
     for (const species of SHRUB_SPECIES) {
       for (let variant = 0; variant < SHRUB_VARIANT_COUNTS[species]; variant += 1) {
         const shrub = buildShrubPrototype(species, variant, 12);
+        // 12 to 18 until the cards moved onto the bush's body (2026-11-12).
         const quads = shrub.triangleCount / 2;
-        expect(quads).toBeGreaterThanOrEqual(12);
-        expect(quads).toBeLessThanOrEqual(18);
+        expect(quads).toBeGreaterThanOrEqual(26);
+        expect(quads).toBeLessThanOrEqual(32);
       }
     }
     for (const variant of ROCK_VARIANTS) {

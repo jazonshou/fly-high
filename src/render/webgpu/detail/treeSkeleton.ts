@@ -170,6 +170,11 @@ export interface TreeSkeleton {
   readonly crownCenter: SkeletonVec3;
   /** Species base card half-width in unit-height units. */
   readonly cardHalfWidth: number;
+  /**
+   * How far the bole swells into the ground (0 none, 1 the species with the
+   * widest buttress). A palm's trunk carries its own bulb in its radii.
+   */
+  readonly rootFlare: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -712,6 +717,7 @@ export function buildTreeSkeleton(
       }
       : { x: 0, y: 0.65, z: 0 },
     cardHalfWidth: preset.cardHalfWidth * heightScale,
+    rootFlare: preset.flare,
   };
 }
 
@@ -969,6 +975,7 @@ function buildPalmSkeleton(variant: number, seed: number): TreeSkeleton {
     crownTopY: crownTopY * heightScale,
     crownCenter: scalePoint(top),
     cardHalfWidth: frondHalfWidth * heightScale,
+    rootFlare: 0,
   };
 }
 
@@ -1015,6 +1022,53 @@ export function palmFrondKept(budget: SkeletonMeshBudget, index: number): boolea
   return index % budget.frondStride === 0;
 }
 
+/**
+ * A bole's root flare, as rings in place of its first: `[rise, swell, lobe]`.
+ * The rise is along the trunk in base radii (negative is under the ground, so
+ * a tree on a slope has no gap on its downhill side), the swell is the radius
+ * as a multiple of the base's at a flare of 1, and the lobe is how far the
+ * ring's outline runs in and out of round (`TRUNK_ROOT_FLARE_LOBES` times
+ * about the trunk). A species' own `flare` scales the swell and the lobes.
+ *
+ * Why: a trunk was a tube whose first ring sat on the ground at its plain
+ * radius, a pole stood on a table. The species presets had carried a `flare`
+ * since the skeletons were written and nothing read it. The first flare was
+ * four round rings and a straight cone between the lowest two, and read as a
+ * turned pedestal under the tree; a concave profile and an outline that is
+ * not a circle are what make it roots.
+ */
+export const TRUNK_ROOT_FLARE_RINGS: readonly (readonly [number, number, number])[] = Object.freeze([
+  [-1.6, 2.6, 0.26],
+  [0, 2.15, 0.26],
+  [0.45, 1.62, 0.2],
+  [1.1, 1.32, 0.12],
+  [2.2, 1.12, 0.05],
+  [4.2, 1, 0],
+]);
+/** The last ring's rise: where the flare has run out and the bole is itself. */
+export const TRUNK_ROOT_FLARE_TOP_RISE = 4.2;
+/** How many times a flared ring's outline runs out and back about the trunk. */
+export const TRUNK_ROOT_FLARE_LOBES = 3;
+/**
+ * The bark's shade (its vertex colour's alpha, which the bark material maps
+ * as it does a limb's inside the crown) where the flare meets the ground, as
+ * a share of the bole's own: the ground and the tree shade each other there.
+ */
+export const TRUNK_ROOT_FLARE_CONTACT_SHADE = 0.68;
+/** The flare never climbs past this share of the bole's first segment. */
+export const TRUNK_ROOT_FLARE_SEGMENT_SHARE = 0.85;
+/** Trunks with fewer sides than this are the mid model's: too far to see a flare. */
+export const TRUNK_ROOT_FLARE_MINIMUM_SIDES = 6;
+
+/** Whether a budget meshes this skeleton's bole with its root flare. */
+export function trunkRootFlared(skeleton: TreeSkeleton, budget: SkeletonMeshBudget): boolean {
+  const bole = skeleton.stems[0];
+  return skeleton.rootFlare > 0
+    && budget.trunkSides >= TRUNK_ROOT_FLARE_MINIMUM_SIDES
+    && bole !== undefined
+    && bole.points.length >= 2;
+}
+
 export function estimateSkeletonTriangles(
   skeleton: TreeSkeleton,
   budget: SkeletonMeshBudget,
@@ -1032,7 +1086,10 @@ export function estimateSkeletonTriangles(
       ? budget.trunkSides
       : stem.level === 1 ? budget.branchSides : budget.twigSides;
     const interior = Math.max(0, stem.points.length - 2);
-    const rings = 2 + Math.floor(interior / budget.ringStride);
+    const flare = stem === skeleton.stems[0] && trunkRootFlared(skeleton, budget)
+      ? TRUNK_ROOT_FLARE_RINGS.length - 1
+      : 0;
+    const rings = 2 + Math.floor(interior / budget.ringStride) + flare;
     triangles += 2 * sides * (rings - 1) + sides;
   }
   const cards = Math.ceil(skeleton.anchors.length / budget.cardStride);

@@ -58,6 +58,40 @@ describe("WebGPU paged world-detail generation", () => {
     expect(detailCellKey(-3, 5)).toBe(first.key);
   });
 
+  it("gives every tree the slope of the ground it stands on", () => {
+    // A tilted plane: the height climbs 0.06 m per metre east and falls 0.04
+    // per metre north. The scatter grid is bilinear, so it holds a plane
+    // exactly, and every stem must report that plane's slope: it is what
+    // lays the tree's ground shadow on the hillside (`treeGroundShadow.ts`).
+    const plane: DetailTerrainSampler = (x, z) => ({
+      height: 160 + 0.06 * x - 0.04 * z,
+      slope: 0.07,
+      moisture: 0.6,
+      biome: TerrainBiome.FOREST,
+    });
+    const cell = generateDetailCell({
+      worldSeed: "slope-seed", cellX: 1, cellZ: -2, terrainSample: plane,
+    });
+    expect(cell.trees.length).toBeGreaterThan(20);
+    for (const tree of cell.trees) {
+      expect(tree.groundSlopeX).toBeCloseTo(0.06, 6);
+      expect(tree.groundSlopeZ).toBeCloseTo(-0.04, 6);
+      expect(tree.y).toBeCloseTo(160 + 0.06 * tree.x - 0.04 * tree.z, 3);
+    }
+    // Reading the slope takes no roll: the stand is the one a level world
+    // of the same seed grows, stem for stem.
+    const level: DetailTerrainSampler = (x, z) => ({ ...plane(x, z), height: 160 });
+    const flat = generateDetailCell({
+      worldSeed: "slope-seed", cellX: 1, cellZ: -2, terrainSample: level,
+    });
+    expect(flat.trees.map((tree) => [tree.x, tree.z, tree.species, tree.selection]))
+      .toEqual(cell.trees.map((tree) => [tree.x, tree.z, tree.species, tree.selection]));
+    for (const tree of flat.trees) {
+      expect(tree.groundSlopeX).toBeCloseTo(0, 9);
+      expect(tree.groundSlopeZ).toBeCloseTo(0, 9);
+    }
+  });
+
   it("uses biome, moisture, and slope rather than uniform scattering", () => {
     const shared = { worldSeed: "biome-comparison", cellX: 2, cellZ: -1 } as const;
     const forest = generateDetailCell({
@@ -413,7 +447,16 @@ describe("6-6 ecology channels in generation", () => {
     // `a46e54b1` there and is `a46e54b1` here. The sentinel branches reproduce
     // the 2-15 expressions exactly, so the shipping analytic build does not
     // move a pixel for this item.
-    expect(ecologyRun({}).digest).toBe("a46e54b1");
+    //
+    // RE-PINNED `a46e54b1` -> `83d7f902` on 2026-11-12 for open ground's own
+    // trees (`openGroundTreeShare`), which is a change to the density field
+    // itself and not to 6-6's channels. Measured part by part against the
+    // tree before it: these nine cells go from 22 trees to 202 (0.9/ha), and
+    // the shade those trees add moves the coverage of 147 of the 576
+    // ground-cover nodes by at most 0.0076, with no node changing archetype.
+    // The clutter layer is identical in eight cells and gains one piece in
+    // the ninth.
+    expect(ecologyRun({}).digest).toBe("83d7f902");
     expect(ecologyRun({}).digest).toBe(ecologyRun({}).digest);
   });
 

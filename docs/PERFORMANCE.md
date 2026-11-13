@@ -122,6 +122,7 @@ audit is why it now carries all four tiers):
 | Shadow cascades (`4-8b`, D15, `7-CSM`) | 2 | 2 | 2 | 2 |
 | Shadow distance (`4-8b`) | 900 m | 1.4 km | 1.8 km | 2.4 km |
 | Vegetation casts shadows (`4.5-C1`) | no | no | yes | yes |
+| Tree ground shadow range (`treeGroundShadowRangeMeters`; a decal under every drawn tree inside it, 0 = none) | 450 m | 1,100 m | 1,200 m | 2,000 m |
 | Ocean FFT resolution per cascade | 128² | 128² | 256² | 256² |
 | Active ocean cascades | 3 | 4 | 5 | 5 |
 | Cloud resolution-scale profile value | 0.25 | 0.45 | 0.60 | 0.70 |
@@ -598,9 +599,11 @@ measured ~0. Two consequences the vegetation perf-debt pass made concrete:
   160/200/500/650, debt ratios to 3.28/2.87/6.32/4.56.
   > **Superseded 2026-08-31 (`6-12`). Both figures above are historical: they
   > are what `4.5-C1` pinned, not what the tree holds.** `VEGETATION_DRAW_CEILING`
-  > is now **`[50, 58, 440, 515]`** — tiers 0 and 1 fell by roughly 3x after
+  > is now **`[50, 62, 448, 529]`** — tiers 0 and 1 fell by roughly 3x after
   > `6-8`'s canopy handoff and `6-9`'s GPU scatter, and tier 3 rose. Asserted
-  > against the constant by `tests/docs-truth.test.ts`.
+  > against the constant by `tests/docs-truth.test.ts`. (2026-11-12: it was
+  > `[50, 58, 440, 515]` until bushes and boulders drew by their own size;
+  > see that section.)
   >
   > **`VEGETATION_FRAME_DEBT_RATIO` no longer exists.** Grep for it: zero hits in
   > `src/` and zero in `tests/`. It survives only in prose — here, in
@@ -1933,7 +1936,8 @@ sharpen to the high tiers would have saved, without losing it on medium.
 Draw-call ceilings: every tier-1 shot now reads its ceiling minus one. The
 `final-sharpen` entry in `DRAW_CALL_RAISES` stays, as the raise mechanism
 requires, until the next re-pin moves all 32 ceilings down by one and
-retires it.
+retires it. (Retired 2026-11-13, when the block-culling re-pin refreshed the
+ratchet's snapshot: "Culling a batch by blocks".)
 
 **The ground grain, read at an explicit mip.** The other half of PR #20's
 cost is the ground grain's five extra array reads on terrain. They were
@@ -3959,6 +3963,1056 @@ other two brighten: their forests come up out of near-black, and the glow on
 
 **Delivery floors were NOT re-pinned**: the hosted runner does not gate frame
 delivery.
+
+## Tree ground shadows: a decal under every drawn tree (2026-11-12)
+
+Jason, 2026-11-12: open ground "looks fake and plasticy". One measured cause
+is that a tree shaded nothing. Trees cast a real shadow only as near shells
+and only where `vegetationCastsShadows` is on: nowhere on Low and Medium, and
+out to the near switch on High and Ultra (120 m and 190 m). Everywhere else a
+tree stood on evenly lit ground, so open ground with a few trees on it read as
+a painted sheet with models set on top.
+
+**What changed.**
+
+- `treeGroundShadow.ts`, `presentationBuild.ts`: every stem that has a tree
+  record inside the tier's range emits one more 32-byte record, its shadow,
+  under the prototype key `tree-ground-shadow`: the stem's base, the tilt of
+  the ground it stands on, its height and crown radius, its species' crown
+  shape and opacity (scaled by the leaf fraction, so a bare crown throws 30%),
+  its trunk radius and its stem key. One batch per presentation chunk, like
+  every other vegetation prototype.
+- `generation.ts`: each surviving stem carries the ground's slope, from four
+  reads of the 16 m scatter grid that already set its height.
+- `TreeGroundShadowMaterial.ts`: one unit quad per record, on the tyre tracks'
+  blend (`ALPHA_MULTIPLY`, no depth write, opaque group, ahead of water). The
+  vertex stage lays the quad on the stem's ground plane along the sun and
+  works out, per stem, what share of the ground's light is direct sun right
+  now: the sun's strength and colour against the sky's, the sun's angle to
+  that ground, the cloud shadow over the stem and the terrain's own shadow
+  (the horizon field). The fragment stage removes that share inside the
+  crown's ellipse and the trunk's strip, plus up to a fifth of the light in
+  a round patch under the crown that stays when the sun is hidden. In a closed stand
+  the shadows overlap, so each is raised to one over the expected overlap.
+- A shadow draws exactly while its tree does: the vertex stage runs the tree's
+  own test, the stem key against the law's drawn share at the live range. On
+  High and Ultra the crown's shadow hands over to the real one across 4 m at
+  the near switch.
+- The decal is drawn on its plane and depth-tested as if it lay 0.15 m plus
+  0.5% of the range higher (never more than a quarter of the eye's height
+  above the plane), so the coarser terrain mesh of the distance does not cut
+  it. Lifting the quad itself would slide the shadow toward the camera by
+  tens of metres at a kilometre.
+
+**Range by tier** (`treeGroundShadowRangeMeters`): 450 m / 1,100 m / 1,200 m /
+2,000 m, fading over the last fifth. Tiers 1 and 3 run to the mid radius,
+past which a stem's record set no longer depends on the observer. Tier 0
+stops at 450 m, the widest its vegetation draw row has room for. Tier 2 stops
+at 1,200 m for GPU memory headroom.
+
+**Calibration.** On High in SwiftShader, forest soil in a near tree's real
+shadow keeps 0.19 / 0.27 / 0.44 of its sunlit red / green / blue (linear)
+with the sun 57° up and 0.17 / 0.31 / 0.51 at 20°. `TREE_GROUND_SHADOW_DIRECT_TO_SKY`
+(6) and `TREE_GROUND_SHADOW_SKY_COLOUR` (1, 1.5, 2.4) give a solid crown's
+decal 0.17 / 0.24 / 0.36 and 0.21 / 0.36 / 0.61. `tests/gpu/tree-ground-shadow.test.ts`
+checks the drawn pixels against that model.
+
+**Cost.**
+
+- Records: 2 k / 13 k / 18 k / 50 k over closed forest at the near cap
+  (`estimateTreeGroundShadowRecords`). `detailInstanceBudget` moves from
+  150 k / 260 k / 560 k to 155 k / 265 k / 590 k on tiers 1 to 3 (+0.15 /
+  +0.15 / +0.92 MiB); tier 0's 60 k row already held it. On the Medium A/B
+  below the estimate moved 404.20 → 404.37 MiB.
+- Draws: one per presentation chunk the range touches. The model
+  (`estimateVegetationDrawCalls`, new `groundShadowRangeMeters` input) adds
+  1.5 / 2.4 / 2.5 / 3.9 draws. It also stops counting the grass-card batch,
+  which has drawn nothing since the blade field took grass over (-1.1 to
+  -1.2). Modelled totals 46.1 / 54.6 / 435.1 / 511.3 against unchanged
+  ceilings of 50 / 58 / 440 / 515; submission ratios re-pinned to 0.999 /
+  0.788 / 5.954 / 3.693.
+- Triangles: two per shadow in view.
+- Main thread: nothing per frame beyond a handful of uniform writes. The worker pays
+  four height reads per surviving stem at generation and one record per
+  admitted stem at packing.
+
+**A/B** on Medium / balanced, working tree against `b20d758`, cloud
+SwiftShader (4 CPUs, 16 rounds; GPU time is the Hodges-Lehmann estimate and
+its 95% interval, the gate is 5%):
+
+| shot | GPU time | CPU time (guard) | draw calls | vegetation batches | pixels |
+| --- | --- | --- | --- | --- | --- |
+| `approach-500ft` | same +0.3% (-1.1% to +1.9%) | same +0.5% | 248 → 249 | 20 → 21 | 7.2% differ |
+| `forest-500ft-sunbehind` | same +1.1% (+0.2% to +1.9%) | inconclusive +3.0% (-7.1% to +18.4%) | 250 → 251 | 21 → 22 | 7.9% differ |
+| `ground-2m-lowsun` | same +2.5% (+0.8% to +3.7%) | same -3.9% | 123 → 125 | 31 → 33 | 36.0% differ |
+
+`ground-2m-lowsun` is the worst case for fill: the camera stands in a grove
+with the sun low, so the longest shadows the decal draws cover most of the
+ground in frame, several deep.
+
+**The pull request's own A/B** (`perf-ab` run 43204262835, `1a7f1d3` against
+`b20d758`). On SwiftShader it repeats the table: GPU time same on all three,
++0.8% (+0.7% to +1.0%), +1.1% (+0.6% to +1.5%) and +0.2% (+0.1% to +0.3%).
+On the macOS runner's GPU (Apple M1, virtual; 640 rounds a shot; that adapter
+cannot time passes, so the frame is timed from `render()` to GPU idle) it is
+the first reading of frame time on a real GPU:
+
+| shot | frame wall time | CPU time (guard) | draw calls |
+| --- | --- | --- | --- |
+| `approach-500ft` | same +2.5% (+0.2% to +5.0%) | same +0.6% | 248 → 249 |
+| `cruise-horizon` | same +0.8% (-1.3% to +2.9%) | same +1.2% | 202, identical frames |
+| `forest-500ft-sunbehind` | same +0.9% (+0.3% to +1.5%) | same +0.1% | 250 → 251 |
+| `ground-2m-lowsun` | same +1.3% (+0.6% to +1.9%) | same +2.8% (+1.0% to +4.6%) | 123 → 125 |
+| `water-25ft` | same -0.2% (-0.9% to +0.4%) | same +1.5% | 225, identical frames |
+
+Every shot is inside the 5% gate. The two whose frames are identical in both
+arms show how far that runner moves on its own.
+
+**Known limits.**
+
+- No shadow past the tier's range, so from high altitude the far forest
+  edge still has none.
+- The shape is an ellipse with a lumpy edge, not the crown's silhouette. At
+  the High and Ultra handover the real shadows are sharper and a little
+  darker than the decals beyond them.
+- The decal lies on one plane. Where the ground curves sharply within a
+  shadow's length (a ridge line, a gully), part of it is hidden or sits a
+  little off.
+- Shadows stop growing below a sun 21.8° up and fade out as it nears the
+  horizon.
+- Only the ground and whatever stands less than the depth slack above it
+  take the shadow. Grass blades taller than that stay sunlit inside a
+  shadow, and so do shrubs, cars and the walker.
+- The fall of contrast with range uses a constant haze (4e-5 per metre), not
+  the atmosphere's.
+
+**Draw ceilings re-pinned; baselines pending.** Every capture shot with trees
+inside the range gains one draw per chunk the range touches, and the per-shot
+ceilings are exact measured counts, so they are re-pinned from three macOS
+captures: gpu-tests run 43204262725 at `1a7f1d3` (attempts 1 and 2) and run
+43218894856 at `8ded9e1`. The three agree on all 32 shots that carry a
+ceiling and read 21 of them above the old one: sixteen by 1, four by 2
+(`ground-2m-lowsun`, `runway-on-approach`, `grove-meadow-2m`,
+`horizon-shadow-far-annulus`) and `canopy-backlit-lowsun` by 3. The other
+eleven have no tree inside the range and did not move. Of the 19 shots with
+no ceiling, one differs between captures: `car-clearing-chase` read 151, 151
+and 149 with the same 27 vegetation batches. The thirteen
+re-pinned shots that sit in the ratchet's snapshot are declared as the
+per-shot `DRAW_CALL_RAISES` entry `tree-ground-shadows`, which replaces the
+entry staged in `MEASURED_DRAW_DELTAS`. The visual gates still fail on every
+shot with trees near the camera until the baselines are promoted from the
+macOS capture, after Jason approves the look.
+
+## Open ground's own trees: lone trees, copses and groves (2026-11-12)
+
+Jason, 2026-11-12: "we either have terrain that's filled with trees or we
+have terrain that's fully based on the ground's skin". Measured, that is the
+density field: within 20 km of the start the closed-forest term read zero on
+43% of the default world's land (55% of the capture world's) and the
+rendered cap or more on 25% (18%), with little between. A tree stood in a
+forest or did not exist.
+
+**What changed.** `densityField.ts` and its shader twin
+`densityFieldWgsl.ts` gain a second, far thinner stand outside the closed
+forest, as the dry provinces' parkland is. As shares of the 800/ha tree
+base: lone trees (0.003, 2.4/ha, one every 65 m or so), copses (0.022 more,
+where the glade field runs high) and groves (0.045 more in a copse's core):
+56/ha at most, under the 60/ha the capture's forest shots search for. It
+needs far less water than a closed stand (moisture 0.16 to 0.36 against 0.3
+up) and takes the larger of itself and the closed forest, so nothing changes
+inside a stand. Its trees grow open: the stand's edge factor gives them the
+shorter, wider crown an edge stem has.
+
+It rides two channels the forest already samples, so it adds no noise to the
+field or to the bake:
+
+- the forest province's signal (`forestProvinceSignal`), below the forest's
+  own threshold of -0.22: full at -0.2, gone by -0.45. A forest is fringed
+  by a kilometre or two of parkland that thins into open steppe.
+- the glade field, raw: copses stand where a forest's dense stands would.
+
+**How much land it changes** (authored stems a hectare, share of land within
+20 km of the start, sampled every 125 m with the world's source seed):
+
+| stems / ha | default world before | after | capture world before | after |
+| --- | --- | --- | --- | --- |
+| none | 42.9% | 13.0% | 55.3% | 25.9% |
+| up to 1 | 7.8% | 8.1% | 7.1% | 10.2% |
+| 1 to 5 | 6.4% | 27.7% | 5.4% | 24.1% |
+| 5 to 20 | 11.4% | 16.5% | 8.6% | 13.5% |
+| 20 to 55 | 4.7% | 7.2% | 3.9% | 6.0% |
+| 55 to 78 | 1.9% | 2.6% | 1.5% | 2.1% |
+| over 78 | 24.9% | 24.9% | 18.1% | 18.1% |
+
+Mean stems rise 2.3% and 2.7%. No sample lost a tree. Over six seeds, 14% to
+29% of the open land that could grow these trees grows none at the -0.45
+onset; -0.35 would keep 28% to 43% of it bare.
+
+**Cost.**
+
+- Records: none on the budget rows. `detailInstanceBudget` is sized for
+  closed forest at the near cap in every cell, which a 56/ha grove cannot
+  exceed.
+- Draws: a presentation chunk that held no tree had no tree batches, and
+  now it carries its cohort's. On Medium in SwiftShader, on the default
+  world, an open plain 3.5 km from the start draws 112 → 133 calls from
+  120 m up (vegetation batches 15 → 36), 115 → 136 at eye level and
+  103 → 118 from 400 m; greener hills 11 km out draw 88 → 101, 91 → 104 and
+  84 → 97. That is what a frame at a forest's edge already draws, inside the
+  vegetation draw row, which is modelled on every chunk carrying every
+  prototype.
+- Frame time: a cloud A/B against the tree ground shadow commit `1a7f1d3`
+  (Medium / balanced, SwiftShader, 4 CPUs, 16 rounds, the gate is 5%) on two
+  capture shots over country the term changes:
+
+| shot | GPU time | CPU time (guard) | draw calls | vegetation batches | pixels |
+| --- | --- | --- | --- | --- | --- |
+| `cruise-horizon` | same -0.9% (-3.0% to +1.3%) | inconclusive +7.7% (-4.2% to +25.0%) | 202 → 202 | unchanged | 4.8% differ |
+| `hamlet-300ft` | same +0.3% (-2.3% to +2.5%) | same -4.5% (-11.1% to +2.4%) | 233 → 246 | 17 → 30 | 23.7% differ |
+
+  The hamlet stands on an open plain that gains trees all round it (visible
+  instances 35.5 k → 47.2 k). Frame time on a real GPU is not measured.
+
+**What does not move.** All 51 capture shots and the four car sites resolve
+to the same placements (`resolveShotPlacement`, `resolveCarShotSite`,
+compared before and after): the forest searches ask for 60/ha, which the new
+term cannot reach. No probe of the land-cover bake changes its dominant
+material (872 of 4,096 move a weight; mean crown cover 0.0793 → 0.0815).
+Trees keep off runways, roads and buildings, because every stem passes the
+same clearances as before.
+
+**Tests.** `tests/render.webgpu-forest-pattern.test.ts` gains the law (seven
+tests: the share, the 60/ha ceiling, the range between no tree and forest,
+whole 2 km stretches left bare, the open-grown form, the dry provinces left
+to their own stands, the shader twin). The ecology digest and the live splat
+digest are re-pinned with what moved. The GPU bake parity tests pass
+unchanged.
+
+**Known limits.**
+
+- A lone tree is a forest tree's model with the edge form, not a
+  spreading open-grown tree of its own.
+- Species come from the province's cohort, so a plain beside a conifer
+  forest grows the same conifers.
+- Shots over open country gain draws and change their pictures, so their
+  ceilings and baselines move with this change, as the tree ground shadow's
+  did.
+- Past about two and a half near radii a thin stand's tree is its impostor
+  (2026-11-13, below). The draw counts and the A/B above were taken before
+  that, when it was a mesh to the mid radius.
+
+### Thin stands hand to their impostors early (2026-11-13)
+
+The first frame time read on a GPU for these trees was the pull request's
+own A/B on the macOS runner (`perf-ab` run 43375101895, `df3d430` against
+main `3ad6c3c`; Apple M1, virtual; 640 rounds a shot; the frame timed from
+`render()` to GPU idle):
+
+| shot | frame wall time | draw calls | vegetation batches |
+| --- | --- | --- | --- |
+| `approach-500ft` | same +2.5% (+0.4% to +4.6%) | 248 → 251 | 20 → 23 |
+| `cruise-horizon` | same +0.7% (-1.0% to +2.4%) | 202 → 202 | unchanged |
+| `forest-500ft-sunbehind` | same +1.4% (+0.4% to +2.4%) | 250 → 251 | 21 → 22 |
+| `ground-2m-lowsun` | same +0.7% (-0.1% to +1.4%) | 123 → 122 | 31 → 30 |
+| `water-25ft` | **slower +6.0%** (+5.1% to +6.9%) | 225 → 232 | 3 → 10 |
+
+`water-25ft` went 44.1 → 47.0 ms a frame with 0.69% of its pixels changed.
+Counted step by step (`perf:ab --rounds 0`), all seven draws arrive with the
+open-ground trees (`2305224` → `110b6f6`: 225 → 232) and none with the
+bushes, the boulders or the ground (`548af49` → `df3d430`: 232 → 232, GPU
+work identical). They are thirteen lone trees, eleven oak and two pine, on a
+shore 900 to 1,250 m from the camera: three mid meshes a species and the
+ground shadow batch under them. That adapter pays about 0.4 ms for each
+(it is slow for every draw: 225 of them in 44 ms), against the 26 µs
+`VEGETATION_DRAW_COST_MS` was measured at. SwiftShader read the same shot
++2.5% (+1.8% to +3.1%), inside its gate.
+
+**Why a far lone tree was a mesh.** A stem's LOD key is its canopy rank
+times its stand's density over the near cap (`detailTreeStemKey`), and
+geometry draws a stem while the key is within the geometry share at its
+range. In a forest that thins the meshes by the inverse square and leaves
+the widest 4.5% (`farFloorShare`) as meshes to the mid radius. In a stand of
+2.4 stems a hectare every key is under 0.04, so every tree was a mesh to the
+mid radius (640 m to 2 km by tier): nothing in triangles, and three draws a
+(species, variant) for each presentation chunk the trees stand in.
+
+**What changed.** `detailSparseStandStemKey` (`presentationBuild.ts`) lifts
+the keys of a thin stand into a band, `DETAIL_SPARSE_STAND_KEYS`: 0.14 to
+0.19, whole where the cell holds a tenth of the near cap or less (7.8/ha on
+Medium), tapering to nothing at a quarter of it. The band is above anything
+the geometry floor admits (0.045 plus the 0.04 admission margin) and under
+every tier's impostor floor (0.2 at the least), so a lifted stem is always
+drawn: as a mesh while the inverse-square share covers its key, as its
+impostor from there out, through the per-stem handoff every forest stem
+already takes.
+
+| tier | near radius | mesh to | no mesh record past | mid radius |
+| --- | --- | --- | --- | --- |
+| Low | 110 m | 254 to 293 m | 346 m | 640 m |
+| Medium | 150 m | 346 to 399 m | 472 m | 1,100 m |
+| High | 170 m | 392 to 452 m | 534 m | 1,500 m |
+| Ultra | 240 m | 553 to 639 m | 755 m | 2,000 m |
+
+A forest hands most of its stems to impostors from 274 m on Medium
+(`impostorFillStartMeters`), so a lone tree is a mesh for longer than most
+of a forest's are. Past the third column a cell admits no geometry record,
+and a chunk whose only mid-band trees are thin stands has no mid batch.
+
+The band is spread by a hash of the stem, not by rank. A lone tree is rank 0
+of one, so every lone tree carried key 0: one wind phase and one silhouette
+wobble for all of them (`detailStemHash` reads the key lane), and by rank
+they would all have changed representation on one ring.
+
+**Counts** (Medium, SwiftShader): `water-25ft` draws 232 → 226 and
+vegetation batches 10 → 4. The one draw left over main's 225 is the shore
+trees' ground shadow batch, which still reaches the mid radius.
+
+**What it looks like.** The same shore from 1 km (the shot), 600 m and
+400 m, before and after: every tree stands where it stood. Past the handoff
+a lone tree is its species' impostor, a little rounder and a little
+brighter than the mesh, and at the 8 to 12 pixels it stands on the capture
+frame the two are hard to tell apart.
+
+**What does not move.** A stand at a quarter of the near cap or more: a
+forest's widest crowns are meshes to the mid radius as before. Inside the
+handoff range every tree is the mesh it was; its wind phase and wobble
+change with its key.
+
+**Tests.** `tests/render.webgpu-detail-presentation-build.test.ts`, "a thin
+stand's trees" (four: the band against every tier's floors, meshes close by
+and impostors alone further out, a key of its own for each tree, a forest
+left as it was). Four of its packed fingerprints move: the fixture's cell
+holds seven trees, 17 a hectare.
+
+## Bushes and boulders: what stands between a tree and the ground (2026-11-12)
+
+Jason, 2026-11-12: where there are no trees "it looks fake and plasticy
+because, while the skin attempts to create texture, there isn't actually
+texture on the ground". Bushes were already authored (`scatterShrubs`), and
+rocks (`generateRocks`), but neither was there at the range open ground is
+judged from. A bush was a dozen thin leaf cards thinned by the tree law, so
+it was gone by the near radius (110 to 240 m) and threw no shadow. A rock
+stopped at the near radius whatever its size, except one in five of those
+2.2 m across or more, which drew to the mid radius.
+
+**What changed** (`groundObjects.ts` has the law, `presentationBuild.ts` the
+records):
+
+- **A reach set by size.** A bush or a boulder is drawn while it stands about
+  three pixels tall on a 1080-line frame: 300 m of range per metre of its
+  height, capped by the tier's ground shadow range (450 / 1,100 / 1,200 /
+  2,000 m). Over the last fifth of that range it grows out of the ground
+  instead of dithering, so the opaque path keeps its early-Z and nothing
+  pops. The rule runs in the vertex stage against the true camera distance
+  (`DETAIL_SIZE_RANGE` in `DetailInstanceMaterialPlugin`).
+- **A bush is up to four records.** Its leaf cards, as before, out to 90 m
+  per metre of height and never past the near radius. A solid body under
+  them, a clump of three mounds (60 triangles), drawn while its shape can be
+  seen (110 m per metre of its height, about ten pixels). A 12-triangle
+  stand-in for the body from there to the bush's reach. And a ground shadow,
+  which is one more record in the tree shadow's batch (variant lane 0), so
+  it costs no draw.
+- **Leaves that stand on the body.** A bush's cards were a dozen, at the
+  species' card size, on a few bare stems, and each showed its leaf layer
+  once: a hazel leaf was 20 cm on a bush 1.5 m tall, and up close a bush was
+  a dark mound with a few huge leaves round it. Now 26 to 32 smaller cards
+  (`buildShrubPrototype`) stand on the body's own faces, tilted against it
+  so their edges break its outline, and each shows its layer twice over
+  (`SHRUB_CARD_LAYER_REPEAT`): a leaf is half the size and a card holds four
+  times as many. The cards declare the body's radial unit (`radialUnit`), so
+  a card stays on the spot of the body it was built on for every bush. A
+  bush's cards are 52 to 64 triangles where they were 24 to 36, and cover
+  about 18% more area.
+- **The body is the bush at range and its core up close.** Inside 20 m per
+  metre of height (the bush about fifty pixels tall) the body shrinks to
+  0.72 and darkens, and the cards stand out from it: the same construction
+  the near trees use.
+- **The body is lit as leaves of a bush's size.** It is on the trees' opaque
+  crown path, whose leaf-cluster field has clumps 0.74 m and 0.27 m across:
+  a crown's, and as big as a bush's own lumps, so a thicket at 15 to 60 m
+  was a field of smooth green boulders. A material now sets that field's
+  grain (`setClusterGrain`). A bush's is 4.5 times finer (16 cm and 6 cm),
+  its tone runs from 0.5 to 1.5 where a crown's runs from 0.84 to 1.16, and
+  its normal is 1.5 times as strong. The mean tone is unchanged, each octave
+  still fades at its own pixel footprint, and a crown's uniforms hold the
+  values its shader had as constants.
+- **The shadow leaves out what the body hides.** The decal's depth slack is
+  taller than a bush at range, so a bush would take its own shadow. The
+  decal leaves out the part of its plane the body covers as the camera sees
+  it (`TreeGroundShadowMaterial`, "BUSHES AND BOULDERS").
+- **Thickets.** Open country's bushes are placed by a thicket field
+  (`shrubThicketAt`: 90 m thickets, more of them in scrub country 1.4 km
+  across, lone bushes between), not an even spread. A closed stand's
+  understory is unchanged.
+- **A thicket is not an orchard.** The scatter proposes one stem to a
+  subcell, and where the acceptance nears 1, which is a thicket's middle,
+  that is an even carpet: the first pictures showed far thickets as rows of
+  same-height dots. A thicket's stem may now stand anywhere in the
+  two-by-two subcells round its own (`SHRUB_THICKET_JITTER_SPAN`; the
+  expected count is unchanged), and a thicket holds a spread of ages instead
+  of all old growth (the maturity roll's exponent falls from 1.45 to 0.6 in
+  a thicket's middle). Measured in the densest 96 m of two thickets, the
+  Clark-Evans ratio of the drawn bushes (1 is random, above 1 is even) went
+  from 1.28 to 0.96 and 0.87, and bush heights from 0.83 / 0.99 / 1.92 m to
+  0.56 / 0.86 / 1.54 m (10th, 50th, 90th percentile). Stems that now land
+  inside a stronger neighbour's spacing yield, so a dense cell holds about a
+  tenth fewer bushes.
+- **Two drawn budgets per cell.** Understory (canopy closure 0.5 or more)
+  keeps the 60 a hectare it had and its solid goes only as far as its cards.
+  Open ground draws up to 260 a hectare times the tier's density scale (117
+  / 195 / 260 / 260), which only a cell of solid thicket reaches. Thinning
+  is by each bush's own `selection`, so the same bushes are drawn from every
+  range.
+- **Boulders** take the reach law and the shadow. They are not placed any
+  more thickly than before.
+
+**Tier rules, and what pays for them.** A bush's body and its stand-in are
+two new batches, and the three rock batches now draw past the near radius.
+In the draw model (`estimateVegetationDrawCalls`) that is +3.3 / +7.3 / +7.9
+/ +13.2 draws. Low's vegetation row had room for none of it (99.9%), so:
+
+- Low and Medium draw one leaf-card model per bush species, not two, as
+  they already draw one model per tree family (-3.3 / -3.5 draws).
+- Low's boulders stop at 250 m (`boulderRangeMeters`); a boulder up to
+  0.83 m tall keeps its whole reach there. Before this change they stopped
+  at 110 m, but for the one in five of the largest that drew to 640 m: a
+  term the draw model never priced.
+
+| modelled draws | Low | Medium | High | Ultra |
+| --- | --- | --- | --- | --- |
+| before | 46.1 | 54.6 | 435.1 | 511.3 |
+| after | 46.1 | 58.4 | 443.0 | 524.5 |
+| share of the vegetation row | 0.998 | 0.844 | 6.06 | 3.79 |
+
+**Records.** `detailInstanceBudget` now books bushes
+(`estimateBushRecords`, checked against the build's own output in
+`render.webgpu-detail-presentation-build.test.ts`). The rows hold the larger
+of two landscapes: closed forest with its understory, or open scrub at the
+tier's cap inside a bush's reach with forest beyond. Rows 60 k / 155 k / 265
+k / 590 k become 61 k / 185 k / 310 k / 630 k: +0.03 / +0.92 / +1.37 / +1.22
+MiB before the estimate's 1.15 overhead. The scrub figure is a saturation at
+a reference bush of 1.6 m, not a bound.
+
+**Measured load** (real cells and the real build, default world, the densest
+scrub found within 20 km of the start, 2.6 km from the airport):
+
+| tier | bushes with a record | stand-ins | bodies | leaf-card records | shadows | bush records | booked |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Low | 6,705 | 6,609 | 2,031 | 1,221 | 6,705 | 16.6 k | 23.6 k |
+| Medium | 13,380 | 13,287 | 3,338 | 2,421 | 13,380 | 32.4 k | 40.3 k |
+| High | 17,372 | 17,266 | 4,382 | 3,470 | 17,372 | 42.5 k | 53.7 k |
+
+On Medium that is about 159 k stand-in triangles, up to 200 k body triangles
+(fewer are drawn: a body record is kept one membership slack past where it
+draws) and 27 k shadow triangles. Typical scrub holds about half of this,
+open grassland a few hundred bushes.
+
+**Frame time.** A cloud A/B against the lone trees commit `110b6f6` (Medium
+/ balanced, SwiftShader, 4 CPUs, 16 rounds, the gate is 5%) on the two
+capture shots with the most bushes in view:
+
+| shot | GPU time | CPU time (guard) | draw calls | vegetation batches | visible instances | pixels |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ground-2m-lowsun` | same -2.6% (-3.4% to -1.6%) | same -3.2% (-12.0% to +9.0%) | 125 → 122 | 33 → 30 | 122.8 k → 133.4 k | 9.8% differ |
+| `hamlet-300ft` | faster -11.1% (-11.9% to -10.2%) | same +0.8% (-5.3% to +14.1%) | 246 → 242 | 30 → 26 | 47.2 k → 45.4 k | 0.3% differ |
+
+Draws fall on both. Two things return batches on Medium, and which returns
+more was not separated: one leaf-card model per bush species instead of
+two, and a chunk whose bushes all stand past their cards' reach now holds no
+card batch at all. The hamlet's 11% is most likely leaf cards too: a bush's
+cards used to draw to the near radius and now stop at 90 m per metre of its
+height, and alpha-tested cards are what a software rasteriser pays most for.
+Read it as "not slower", not as a gain a GPU will show. The estimated GPU
+memory row moves 404.37 → 405.43 MiB. The A/B was taken before the body's
+leaf grain, which adds four multiplies to the crown path's fragment stage
+and no texture read, and before the leaves that stand on the body.
+
+Those two were then measured together against this change without the new
+leaves, on `ground-2m-lowsun` (same setup): GPU time the same, +0.4% (-0.6%
+to +1.4%); CPU time not resolved, +4.2% (-9.9% to +18.2%); 122 draws on
+both; inventoried GPU memory 301.46 → 301.53 MiB (the card models' larger
+vertex buffers); 6.4% of pixels differ. At the measured load above, Medium's
+2,421 leaf-card records are about 140 k triangles where they were about
+73 k.
+
+**Tests.** `tests/render.webgpu-ground-objects.test.ts` (26: the reach law,
+its two shader transliterations, the body and stand-in meshes, the body's
+leaf grain, the leaf cards' place on the body at every bush size and their
+layer repeat, the shadow record, the thicket field, the tier rules, the
+runtime's wiring, and that a square generated as one page and as four holds
+the same bushes and trees, which is what a thicket's wider stem placement
+must not break).
+`tests/render.webgpu-detail-presentation-build.test.ts` gains the bush and
+boulder records (11: the hand-over by range, the two budgets, the tier's
+cap, the card variant cap, the boulder cap, and the record estimate against
+a built field). `tests/gpu/tree-ground-shadow.test.ts` gains the ground
+object's shadow on the adapter: its footprint, its reach, and what its own
+body hides. The draw model and the record rows are re-pinned in
+`tests/render.webgpu-rendered-density.test.ts`.
+`tests/render.infrastructure-plants.test.ts` moves to a cell whose slipway
+crosses a thicket and a stand of trees (its old cell's slipway fell on clean
+ground between thickets), and now states what the scatter guarantees past a
+plant exclusion's blend: no stem is lost or changed, one may stand where a
+cleared neighbour outranked it, and past `SCATTER_HALO_METERS` nothing
+differs. Its old claim, the same placements bit for bit from the blend
+outward, held only where no two stems competed.
+
+**Known limits.**
+
+- Boulders are as rare as they were (a few a hectare at most, and none on
+  most ground). Rocky ground that reads as rocky needs more of them placed,
+  which this change does not do.
+- On Low the few largest boulders that used to draw to 640 m now stop at
+  250 m with the rest.
+- A bush's body is a 60-triangle clump, and past its cards' reach (90 m per
+  metre of height, and never past the near radius) the leaf grain alone
+  carries it: its outline is angular there if looked for. Its leaves are
+  one flat layer per species, with no twigs or flowers.
+- The body is one clump shape for all three bush species; its colour is the
+  bush's own.
+- The leaf grain is locked to world position, whose 32-bit precision falls
+  with distance from the world's origin: about 1 cm at 100 km, against a
+  6 cm clump. A crown's grain has the same step against a 27 cm clump.
+- Another bush's or a tree's shadow falling across a distant bush darkens
+  it, because of the decal's depth slack. Only its own shadow is left out.
+- The record rows book a saturation, not a bound: scrub of taller bushes
+  than 1.6 m, solid out to their whole reach, would hold more.
+- High's GPU memory estimate has little room left: this takes 1.6 MiB of
+  the 6.4 MiB it had on this branch, and the walking branch takes most of
+  the rest.
+- Shots over open country gain draws and change their pictures, so their
+  ceilings and baselines move with this change. Frame time on a real GPU is
+  not measured.
+
+## The ground up close: a sward in depth, a finer read, blades of the turf's colour, rooted trunks (2026-11-13)
+
+Jason, 2026-11-12: "the default "floor" of the terrain still looks very
+blurry, plasticy, and fake. I'm wondering if there's some way to improve the
+look, especially when up close, to look like there's greater texture/detail.
+Because, right now it still just looks like trees that are glued to this
+plastic skin."
+
+**What was measured** (Medium, a 1.7 m eye, world `open-skies`):
+
+- The Grass and DryGrass layers were flat paint: 10% and 6% luminance
+  contrast, one-texel blades on a base of their own colour.
+- Their texels are 4.5 and 5.7 mm (a 512 layer over a 2.3 and a 2.9 m tile).
+  A walker sees the ground at their feet at 1 to 2 mm a pixel, so the layer
+  is stretched two to four times and the filter smooths it exactly where the
+  eye is closest.
+- The standing blades took the mean colour of every material the classifier
+  had on the ground under them, and were lit about three times brighter than
+  the turf: tan sticks on a green sheet.
+- A trunk ended in a flat cut on the surface. The species presets carry a
+  `flare`, and nothing read it.
+
+**What changed.**
+
+- **The sward is drawn in depth** (`synthesizeSward`,
+  `MaterialArraySynthesis.ts`). Tufts in three storeys (`SWARD_STOREYS`) over
+  a thatch floor, with a height test between them, and the depth a texel is
+  left at becomes its shade and its cavity. Luminance contrast is 56 to 57%.
+  Each layer's mean albedo is still fitted to its reference, and its mean
+  cavity is held where it shipped (`SWARD_CAVITY_LIFT` 1.3: 0.653 and 0.652
+  against 0.652 and 0.658), because past a 10 m footprint the mip tail is
+  all that is read and a cavity dims sun and sky both. A first cut at 0.635
+  put every distant meadow 3.5% darker. `SWARD_TILING_BAND_KEEP` goes 0.3 to
+  0.1, which holds the tiling band's energy at or under what shipped with
+  nine times the contrast in the layer.
+- **Array A's mips average light, not bytes** (`SURFACE_ALBEDO_MIP_KERNEL`,
+  kind `gamma2`, `TextureArrayMipPlan.ts`). The rgb is a gamma-2.0 albedo.
+  Boxing its bytes was within 3% while the layers were nearly flat; with lit
+  blades over shaded gaps it took 10 to 15% off a meadow's albedo between
+  the ground at the camera's feet and the same ground at 30 m. The ground
+  grain layer's channels are fields centred on 0.5 and stay on the box.
+- **The micro read** (`TERRAIN_MICRO_DETAIL`, `terrainSurfaceMicro` in
+  `TerrainSurfacePlugin.ts`). The material a fragment shows most of is read
+  a second time, 3.3 times finer and rotated 37.4 degrees, only where its
+  first read is magnified (under 1.6 texels a pixel, whole under 0.7: about
+  five metres from a standing eye). Where the first read is stretched past
+  1.4 times (the takeover, 0.7 to 0.25 texels a pixel) every layer's first
+  read is fetched from a coarser mip and keeps its tone, and the micro read
+  draws the blades at a pixel each: a one-texel blade magnified three times
+  was a staircase, most of all looking straight down. No texture is added.
+- **Blades are their sward's colour** (`GroundCoverSystem.ts`,
+  `groundCoverWgsl.ts`, `GroundCoverMaterialPlugin.ts`). The attribute tile
+  takes the sward's own albedo where the ground has much of one
+  (`GROUND_COVER_SWARD_COLOUR_GAIN`), the blade compute composes the
+  ground's patchwork (`TERRAIN_GROUND_PATCHWORK_WGSL`) so a blade stands in
+  the same lush and dry patch as the turf under it, each blade and each tuft
+  is spread a little along the dry axis, green swards take a lush shift
+  (`GROUND_COVER_BLADE_LUSH_SHIFT`, matched by eye against the turf through
+  the tone curve, which shows a brighter thing less saturated), and a blade
+  runs from 0.45 of its albedo at the root to 1.05 at the tip, with less
+  gloss.
+- **Root flare** (`TRUNK_ROOT_FLARE_RINGS`, `treeSkeleton.ts`;
+  `sweepSkeletonBark`). On the near tree model the bole's first ring becomes
+  six: a concave flare with three lobes that goes on under the ground and is
+  shaded where it meets it. 80 triangles a near tree.
+
+**Cost.** Cloud A/B, Medium, SwiftShader, 16 rounds, against the bushes and
+boulders change (`548af49`):
+
+| Shot | GPU time | CPU time (guard) | Draw calls | Pixels |
+| --- | --- | --- | --- | --- |
+| `ground-2m-lowsun` | same +0.9% (-0.4% to +2.4%) | faster -18.2% (-27.1% to -10.0%) | 122 → 122 | 53.0% differ |
+| `cruise-horizon` | same +0.4% (-0.6% to +1.6%) | same +0.0% (-6.8% to +6.2%) | 202 → 202 | 0.03% differ |
+
+The first cut of the micro read measured **+13.6%** (+12.4% to +14.7%) on
+`ground-2m-lowsun`, all of it in the main scene pass (9,827 to 11,258 ms a
+frame). It read every layer a second time inside `terrainSurfaceSample`,
+through the arrays' 16x anisotropic sampler. A fragment's code calls that
+function from five places (three ground candidates and the runway painter's
+two), and SwiftShader runs both sides of every branch, so every ground pixel
+on screen paid for ten more anisotropic fetches, near or far. It is now one
+read a fragment, after the layers are blended, of the layer with the
+largest share, and one trilinear tap from each array at an explicit level,
+which is how the ground grain reads (`GROUND_GRAIN_ANISOTROPY_LIMIT`). On a
+GPU the branch is taken for the pixels within about five metres of the
+camera and skipped for the rest. The pictures did not change by eye between
+the two cuts.
+
+The ground shot's CPU reading (11.7 to 9.3 ms a frame) is the guard's and
+nothing here should make the main thread faster: read it as "not slower".
+
+The blade compute is heavier by the patchwork it now evaluates for each
+blade. `tests/gpu/ground-cover-compute.test.ts` timed its dispatch on
+SwiftShader at 8.8 ms before and 11.3 to 11.5 ms after, for 107,592 blades
+(three runs in all). That test's alarm is four times the reference host's
+0.06 ms seed, so on this host it fails before and after and passes with
+`VITE_PERF_UNPINNED_HOST=1`; a third more of the seed is well inside it,
+but the reference host has not measured it. The A/B above includes the
+dispatch.
+
+Inventoried GPU memory 301.53 to 301.65 MiB (the near trunk models' larger
+vertex buffers). No estimate row is added. Frame time on a real GPU is not
+measured.
+
+**What moves.** Every baseline with ground in it: ground-2m-lowsun differs
+on 53% of its pixels from the frame before. From 40, 120 and 300 m over a
+meadow the ground's mean is within 1% of what it was (0.992 to 1.000), and
+neither layer shows a repeat lattice from there.
+
+**Tests.** `tests/render.webgpu-ground-closeup.test.ts` (16: the sward's
+contrast with its mean albedo and cavity held, the `gamma2` reduction and
+the drift it removes, the micro read's constants, the blade colour law, the
+flare's geometry and its triangle cost).
+`tests/render.webgpu-terrain-surface.test.ts` pins the micro read's shape in
+the shader: one call, two explicit-level taps, and none inside
+`terrainSurfaceSample`. `tests/render.webgpu-prototype-geometry.test.ts`
+moves the near trunk's triangle bound to 1,230, and
+`tests/render.webgpu-ground-cover-blade-light.test.ts` the blade's root and
+tip. On the adapter (cloud, SwiftShader): `tests/gpu/terrain-surface-compile`
+compiles all twelve triplanar, material-cap and runway variants and the
+three far-sward reads with the micro read in them, and
+`terrain-shadow-depth-wrapper`, `terrain-sampler-budget`,
+`infrastructure-surface` and `road-surface-material` pass. The rest of
+`npm run test:gpu` was not run on this change.
+
+**Known limits.**
+
+- Ground 10 to 40 m away is still fairly smooth: the micro read ends at
+  about five metres and the blades thin out.
+- Only Grass and DryGrass were redrawn. Forest floor, rock, sand and the
+  rest take the micro read and keep their layers.
+- The micro read is the dominant material's alone. Where two materials
+  share a pixel evenly its pattern switches from one to the other; the tone
+  does not.
+- It is one tap, so at a low eye (a driver's, or lying down) the ground a
+  few metres off is a little softer across the line of sight than an
+  anisotropic read would draw it.
+- Within about half a metre the micro read's own texels show.
+- The runway painter's asphalt and concrete are read as they were.
+- DryGrass's mean roughness rose 0.814 to 0.854 with the new layer.
+- `estimateSkeletonTriangles` does not mirror the bark sweep exactly (1,336
+  against a 1,168-triangle mesh for the test tree, before and after); only
+  the flare's own share of it is tested.
+
+## Terrain realism on the macOS runner: what the added draws cost (2026-11-13)
+
+The four steps above are one pull request (#47). This is what it reads on the
+only GPU the cloud has, the macOS runner's (Apple M1, virtual; `perf-ab`,
+640 rounds a shot, the frame timed from `render()` to GPU idle), against
+main.
+
+**The gate's five shots** (run 43388245753, `fa7889c` against `3ad6c3c`),
+all inside the 5% gate once thin stands hand to their impostors:
+
+| shot | frame wall time | draw calls | vegetation batches |
+| --- | --- | --- | --- |
+| `approach-500ft` | same +2.2% (+0.8% to +3.5%) | 248 → 251 | 20 → 23 |
+| `cruise-horizon` | same +0.5% (-1.0% to +2.1%) | 202 → 202 | unchanged |
+| `forest-500ft-sunbehind` | same +1.8% (+0.8% to +2.8%) | 250 → 251 | 21 → 22 |
+| `ground-2m-lowsun` | same +0.5% (-0.3% to +1.2%) | 123 → 122 | 31 → 30 |
+| `water-25ft` | same +3.1% (+2.1% to +4.1%) | 225 → 226 | 3 → 4 |
+
+SwiftShader read `water-25ft` +0.9% (+0.4% to +1.5%) on the same commit; it
+was +2.5% before the handover.
+
+**Four shots chosen for how much they gained** (the same workflow dispatched
+with `shots`, run 43395172324, `fa7889c` against the merge base `b20d758`):
+
+| shot | frame wall time | ms a frame | draw calls | vegetation batches | ms an added draw |
+| --- | --- | --- | --- | --- | --- |
+| `mountain-close` | **slower +22.2%** (+19.7% to +24.7%) | 76.0 → 96.6 | 225 → 252 | 12 → 39 | 0.76 |
+| `terrain-material-1600ft-down` | **slower +10.6%** (+8.5% to +12.8%) | 70.5 → 76.9 | 88 → 101 | 9 → 22 | 0.49 |
+| `horizon-shadow-far-annulus` | **slower +7.3%** (+6.2% to +8.3%) | 53.4 → 57.7 | 96 → 103 | 19 → 26 | 0.61 |
+| `hamlet-300ft` | inconclusive +4.8% (+3.8% to +5.8%) | 55.6 → 58.4 | 232 → 236 | 16 → 20 | 0.70 |
+
+SwiftShader read the look-down shot +4.5% (+4.0% to +5.0%) in GPU time.
+
+**That adapter is bound by draw calls.** Its frame is its draw count times
+about a third of a millisecond whatever is drawn: 225 draws in 76 ms on the
+mountain, 225 in 44 ms over water, 248 in 58 ms on the approach. So its
+frame time follows the draw count, and the gate's 5% is five to eleven draws
+on a 225-draw shot. It is not an upload cost: the renderer makes about 117
+`writeBuffer` calls a frame (one a material, one an aircraft part) and none
+a vegetation batch. Each batch is one replayed render bundle.
+
+**What the mountain's 27 are.** The two mountain shots look at one slope.
+On main it was grass with a pine stand: 12 batches. It now holds an oak
+grove beside the pines, thickets of three bush species and thirteen
+boulders, and the camera stands 130 m from a presentation chunk's edge, so
+most kinds are drawn for two chunks: 15 tree mesh batches (oak near and mid,
+pine near and mid, pine mid again in the next chunk), 4 impostor batches,
+4 ground shadow batches, 10 bush batches (bodies, far stand-ins and three
+species' leaves, twice) and 4 boulder batches (granite and limestone,
+twice), with 2 of heather. A batch is a (prototype, 4,096 m chunk), so a new
+kind of thing is a new draw in every chunk the frustum touches, however few
+of it stand there; the look-down shot draws 13 more for bushes and oaks
+that are almost all below its frame.
+
+**What it is on a GPU that is not virtual.** `VEGETATION_DRAW_COST_MS`, 26 µs
+a vegetation draw, was measured on the reference Mac, where `Δgpu` followed
+`Δdraws` across the capture set: 27 draws are about 0.7 ms there, and the
+one to seven most shots gained are 0.03 to 0.2 ms, under that host's 0.8 ms
+noise floor. No capture shot draws more vegetation batches than the heaviest
+did before these steps (`car-ford-chase`: 52 with the tree shadows alone, 46
+now); the mountain's 39 is the most any shot gained.
+
+**What that reading declared.** At `fa7889c` the pull request cost draws
+where it puts things on ground that was bare, and on a draw-bound adapter
+that is frame time one for one: up to 22% at the richest site measured.
+
+**Draw ceilings at that commit.** The capture's ceilings are each shot's
+exact count, pinned at `2305224` with the tree shadows. Two full macOS
+captures of `fa7889c` (gpu-tests run 43388245668, attempts 1 and 2) agreed on
+all 32 shots that carry one: 18 rose (`mountain-close` by 27,
+`terrain-material-1600ft-down` by 13, `horizon-shadow-far-annulus` by 5,
+fifteen others by 1 to 3), 6 fell by 1 to 3 (the second leaf-card model of a
+bush species, which Low and Medium no longer draw) and 8 did not move. Those
+counts were never pinned: the next section stops most of the added draws, and
+the ceilings are pinned from captures of that.
+
+**What took it back.** Not lighter rules, which would have recovered perhaps
+a third of the mountain's 27 (one leaf batch for the three bush species, one
+boulder batch for the three lithologies), and not a rework of the batching
+(one batch a prototype across chunks, a tree's three parts in fewer draws).
+Most of the 27 were batches with nothing in view, and so were some of the
+225 main drew: see the next section. What is left for a rework is LOD by
+slant range in place of ground range. Every distance in
+`presentationBuild.ts` and in the shader's band window is horizontal, so
+near-band meshes are still built for the ground under an aircraft at any
+height; they are no longer drawn unless they are in view.
+
+## Culling a batch by blocks: a draw only for what is in view (2026-11-13)
+
+Most of the draws above drew nothing. A vegetation batch is one prototype's
+instances over a 4,096 m presentation chunk, and its frustum test was one box
+over all of them: the chunk's width and the terrain's height. The chunk the
+camera stands in contains the eye, so every batch in it passed whichever way
+the camera looked, and a batch strung along a ridge passed with every
+instance off screen. At `mountain-close` 39 batches were drawn and seven had
+an instance whose bound touched the frustum. Main drew 12 there by the same
+test, and needed fewer.
+
+**The test.** `DetailInstanceBounds` keeps, beside the one box, a box a
+256 m block (`DETAIL_CULL_BLOCK_METERS`). Every instance's own bound goes
+into the block its position falls in, in the pass that packs the record, on
+the worker or inline, so there is no second walk over the records and each
+block's box is exactly as conservative as the whole one. The blocks cross
+the worker boundary with the batch (`DetailWorkerPresentationBatch.blocks`;
+a batch without them, or with a box outside its bounds, is refused). A batch
+mesh's `isInFrustum` answers Babylon's whole-box test first and then asks
+whether any block's box touches the frustum
+(`installDetailBlockFrustumTest`, `blockFrustumTest.ts`). It can only turn a
+yes into a no, and only for a batch with no instance whose bound touches the
+frustum, which had nothing to rasterise. Render-target lists (the shadow
+casters on High and Ultra) do not frustum-test their meshes, so a tree
+behind the camera still casts.
+
+The block lattice is the record origin's, not the chunk's, so the
+accumulator needs no chunk coordinates: a block's slot is its lattice index
+modulo 17 (`DETAIL_CULL_BLOCK_SLOTS`; a chunk is sixteen blocks wide and,
+unaligned, touches seventeen). A wider batch would only make two blocks
+share a slot, whose box is still a union of real instance bounds.
+
+**The same picture.** In the picture harness (SwiftShader, Medium) a session
+on the commit before and a session on this one, taking the same steps, wrote
+byte-identical frames at `mountain-close`, `terrain-material-1600ft-down`
+and `hamlet-300ft`, and a second pair run side by side wrote byte-identical
+frames at `water-25ft` twice, with 226 draws in one and 225 in the other.
+The harness does not reproduce the sea between sessions that are not run
+together: the first pair's water frames, taken 28 minutes apart, differ in
+one pixel of 680,900 by one level in one channel (a sun glint at the
+shoreline), and two sessions of this same commit differed over half the
+frame. So only pairs taken together are evidence. A third pair run side by
+side wrote byte-identical frames at `approach-500ft` and `ground-2m-lowsun`,
+twice each, with 249 draws against 247 and 123 against 115.
+
+**The same picture on the macOS runner.** The capture of this commit (the
+pull request's, gpu-tests run 43417533903) wrote frames byte-identical with
+`fa7889c`'s (run 43388245668, attempt 2) at ten shots, among them the ones
+that lost the most draws: `mountain-close`, `terrain-material-1600ft-down`,
+`forest-line-highsun`, `canopy-1200ft`, `veg-seam-1600ft-oblique`,
+`veg-seam-near-500ft`, `grove-forest-2m` and `lake-island-piercing`. That is
+what two captures of one commit share: `fa7889c`'s own two are byte-identical
+at eleven shots, and frames with open water or a different order of terrain
+pages behind them never are. Over all 51 shots the new frames pass every
+visual gate against the old ones, lowest SSIM 0.9999 and worst tile 0.9969;
+`fa7889c` against `05c8ccd`, whose rendering code is the same, reads 0.9998
+and 0.9956.
+
+The two captures dispatched on the branch (runs 43417542941 and
+43422970097) agree with it on every draw and batch count. The second of
+them has the same terrain pages resident shot for shot and is byte-identical
+with it at eight shots. The first held one terrain page more at its first
+shot and one fewer from the third on, a race at start-up, and with the pages
+in other atlas slots a few texels round the other way: at the shots where
+the other captures are identical it differs in 7 to 1,738 scattered pixels
+of 921,600, mostly by one level.
+
+**What it draws.** The picture harness at five capture placements, Medium,
+SwiftShader, the commit before and this one; "in view" is a test of every
+instance, which the blocks cannot beat:
+
+| placement | draw calls | vegetation batches | with an instance in view |
+| --- | --- | --- | --- |
+| `mountain-close` | 252 → 220 | 39 → 7 | 7 |
+| `terrain-material-1600ft-down` | 101 → 88 | 22 → 9 | 7 |
+| `water-25ft` | 226 → 225 | 4 → 3 | 3 |
+| `approach-500ft` | 249 → 247 | 21 → 19 | 17 |
+| `hamlet-300ft` | 236 → 236 | 20 → 20 | 20 |
+
+Main draws 225, 88 and 225 at the first three (the macOS A/B's base, same
+placements), so the mountain is five draws under main with an oak grove,
+thickets and boulders on it, and the other two are level. The hamlet's 20
+batches each have something in view. What the mountain no longer submits is
+50,159 of 54,230 instances, none of which reached a pixel.
+
+Block size was chosen on seven placements. Looking straight down from
+1,600 ft, 512 m blocks left 16 batches where 256 m leave nine and an exact
+test seven; elsewhere the two tied. 128 m blocks bought one or two batches
+on three placements for four times the boxes, and 256 m is within two
+batches of the exact test on all seven.
+
+**What the test costs.** A batch whose whole box misses the frustum costs
+what it did. One whose box passes walks its blocks until one touches: at
+most 289 boxes, 144 to 198 for the widest impostor batch in these scenes and
+11 to 68 a batch on average. All enabled batches together (7 to 63 of them)
+took 2 to 35 µs a frame in the harness, on a loaded four-core cloud host,
+against 1 to 18 µs for the whole boxes alone. A draw it saves is 26 µs of GPU
+on the reference Mac (`VEGETATION_DRAW_COST_MS`) and a third of a
+millisecond on the macOS runner. The accumulator's grid is 14 KB while a
+batch builds, pooled, and a published batch keeps 48 bytes a block.
+
+**What is not changed.** Which records a batch holds, and so its triangles
+when it is drawn; the shadow casters; batches whose box already missed. A
+batch behind the camera is now first drawn when the camera turns to it
+rather than when it is published, so its bundle is recorded then. The
+capture's two turning shots show no cost of that on the runner:
+`motion-banked-turn`'s longest frame read 146, 63 and 134 ms in three
+captures of this commit against 177, 479 and 2,305 ms in three of the code
+before, and `page-thrash-turn`'s 95, 72 and 143 ms against 182, 145 and
+261.
+
+**On the macOS runner.** The four shots of the section above, timed the same
+way against the same base (`perf-ab` dispatched with `shots`, run
+43417548215, `7beb285` against the merge base `b20d758`):
+
+| shot | frame wall time at `fa7889c` | at `7beb285` | ms a frame | draw calls | vegetation batches |
+| --- | --- | --- | --- | --- | --- |
+| `mountain-close` | slower +22.2% | same -2.7% (-4.7% to -0.6%) | 72.3 → 71.5 | 225 → 220 | 12 → 7 |
+| `terrain-material-1600ft-down` | slower +10.6% | same +0.5% (-1.0% to +2.2%) | 60.5 → 60.7 | 88 → 88 | 9 → 9 |
+| `horizon-shadow-far-annulus` | slower +7.3% | same +1.9% (+1.0% to +2.8%) | 48.5 → 49.2 | 96 → 97 | 19 → 20 |
+| `hamlet-300ft` | inconclusive +4.8% | inconclusive +4.8% (+4.1% to +5.6%) | 50.3 → 52.7 | 232 → 236 | 16 → 20 |
+
+The hamlet did not move and could not: its four added batches each have
+instances in the picture, 8,000 of them. It is the one site measured where
+the new vegetation still costs frame time on that adapter, 2.4 ms on a
+50 ms frame; by the reference Mac's 26 µs a draw it is 0.1 ms.
+
+The gate's five shots (the pull request's run 43417533856, against main
+`3ad6c3c`): `approach-500ft` -0.3% (-2.2% to +1.5%) with 248 → 247 draws,
+`cruise-horizon` +0.4% (-1.6% to +2.3%) with 202 → 201,
+`forest-500ft-sunbehind` -0.3% (-1.4% to +0.9%) with 250 → 247,
+`ground-2m-lowsun` **faster, -6.1%** (-6.8% to -5.4%) with 123 → 113, and
+`water-25ft` +1.2% (+0.4% to +2.0%) with 225 → 225. Main draws batches with
+nothing in view too, so four of the five now draw fewer calls than it does.
+SwiftShader, which
+weighs a draw lightly and the new vegetation's triangles and the ground's
+shading fully, read the same five +1.6%, +1.1%, +2.7%, +1.8% and -0.8% in
+GPU time on the same commit, all inside its 5% gate.
+
+**Draw ceilings re-pinned, down.** Three full macOS captures of `7beb285`
+agree on the draw count of all 51 shots: gpu-tests runs 43417533903 (the
+pull request's), 43417542941 and 43422970097 (dispatched on the branch). The
+ceilings were each shot's exact count at `2305224`, with the tree shadows
+and before the open-ground trees, the bushes and the boulders. With all of
+those in, 27 of the 32 shots that carried a ceiling read under it, none over
+and five on it (`motion-banked-turn` has since lost its ceiling: "The banked
+turn has no draw ceiling", below):
+
+| shot | pinned at `2305224` | `fa7889c` | `7beb285` | vegetation batches |
+| --- | --- | --- | --- | --- |
+| `mountain-close` | 231 | 258 | 226 | 39 → 7 |
+| `canopy-backlit-lowsun` | 106 | 106 | 84 | 32 → 10 |
+| `runway-on-approach` | 259 | 260 | 244 | 37 → 21 |
+| `terrain-material-1600ft-down` | 88 | 101 | 88 | 22 → 9 |
+| `forest-line-highsun` | 247 | 250 | 240 | 21 → 11 |
+| `hills-dusk-glint` | 247 | 250 | 240 | 21 → 11 |
+| `motion-banked-turn` | 257 | 257 | 247 | 22 → 12 |
+| `ground-2m-lowsun` | 125 | 122 | 113 | 30 → 21 |
+| `grove-meadow-2m` | 141 | 139 | 130 | 32 → 23 |
+| `horizon-shadow-far-annulus` | 98 | 103 | 97 | 26 → 20 |
+| `approach-500ft` | 249 | 251 | 247 | 23 → 19 |
+| `cruise-sun-30` | 227 | 228 | 224 | 4 → 0 |
+| `dusk-mesopic` | 250 | 252 | 248 | 23 → 19 |
+| `forest-500ft-sunbehind` | 251 | 251 | 247 | 22 → 18 |
+| `night` | 251 | 253 | 249 | 23 → 19 |
+| `night-moonlit` | 251 | 253 | 249 | 23 → 19 |
+| `veg-seam-1600ft-oblique` | 111 | 110 | 106 | 15 → 11 |
+| `winter-noon` | 249 | 251 | 247 | 23 → 19 |
+| `high-10000ft-down` | 73 | 72 | 69 | 5 → 2 |
+| `reference-viewport` | 250 | 252 | 249 | 24 → 21 |
+| `veg-seam-near-500ft` | 119 | 118 | 115 | 23 → 20 |
+| `canopy-1200ft` | 116 | 116 | 114 | 21 → 19 |
+| `cliff-60m` | 239 | 239 | 237 | 26 → 24 |
+| `page-thrash-turn` | 259 | 259 | 257 | 21 → 19 |
+| `slant-10km` | 210 | 211 | 209 | 4 → 2 |
+| `cdlod-transition` | 196 | 197 | 196 | 2 → 1 |
+| `coast-10km-lowsun` | 220 | 220 | 219 | 3 → 2 |
+| `cruise-horizon` | 202 | 202 | 201 | 1 → 0 |
+| `water-25ft` | 225 | 226 | 225 | 4 → 3 |
+| `water-3m` | 91 | 92 | 91 | 4 → 3 |
+| `water-400ft-glitter` | 88 | 89 | 88 | 4 → 3 |
+| `grove-forest-2m` | 123 | 122 | 122 | 24 → 24 |
+
+The 32 summed 6,049 draws at their ceilings, 6,110 at `fa7889c` and 5,918
+now, with 604 vegetation batches then and 412 now. The 19 shots with no
+ceiling read 3,176 and 3,116 (`car-ford-chase` 142 to 119), and the three
+captures agree on those too, which captures of the code before did not
+(`car-clearing-chase` read 150 and 148).
+
+The ceilings take the measured counts: 26 of the 27, the other being
+`motion-banked-turn`. In the ratchet
+(`scripts/deliveryFloors.mts`) a lower count takes no raise, but a raise
+entry must equal what its shots moved from the snapshot, and seven of the
+snapshot's twenty now read under it and eight on it. So
+`PREVIOUS_DRAW_CALL_CEILINGS` is refreshed to these counts and the three
+entries that named only those twenty are spent, as at the 2026-09-23 re-pin:
+`final-sharpen`, `generated-buildings` and `tree-ground-shadows`. Their
+draws are inside the snapshot now, with the open-ground vegetation's, whose
+staged record of `fa7889c` in `MEASURED_DRAW_DELTAS` is removed. The
+snapshot holds nineteen shots once `motion-banked-turn` leaves it.
+
+**The banked turn has no draw ceiling.** The commit that lowered the ceilings,
+`873e3a0`, changed no rendering code, and its capture (gpu-tests run
+43430044853) failed one gate of them: `motion-banked-turn` read 249 draws
+with 14 vegetation batches, against 247 with 12 in all three captures of
+`7beb285`. The other 50 counts were the same as theirs and every visual gate
+passed against the new baselines.
+
+The count is read at the pose the turn ends on, and the vegetation drawn
+there is not a function of that pose. A presentation chunk that straddles a
+band edge carries the observer in its signature, quantised to 64 m
+(`DETAIL_PRESENTATION_OBSERVER_QUANTUM_METERS`), so that it re-bakes its
+band memberships as the edge sweeps over it. The build takes the observer's
+position at the frame it starts (`createPendingPresentationBuild`), which is
+wherever the aircraft has got to when the worker is free, and nothing bakes
+it again inside the same 64 m or after the aircraft stops. The 45° turn
+flies 273 m in its 264 frames and enters its last quantum at frame 221, 43 m
+before the end; the 600 held frames that follow drain the queue and leave
+the records as they were baked. So the final pose holds a near band centred
+somewhere in those 43 m, and where is the worker's timing.
+
+Measured in the picture harness (SwiftShader, Medium): the frontier chunks
+baked at a chosen frame of the turn, then the turn's final pose held and its
+camera, the same to the centimetre in all five, counted:
+
+| records baked at | metres back along the track | vegetation batches | draw calls |
+| --- | --- | --- | --- |
+| frame 221, entering the last quantum | 43 | 12 | 247 |
+| frame 232 | 32 | 15 | 250 |
+| frame 243 | 21 | 17 | 252 |
+| frame 254 | 9 | 18 | 253 |
+| the final pose | 0 | 18 | 253 |
+
+The six batches that come and go are five of the six the near band's trees
+have (crown, fringe and trunk, of the oak and of the pine) and the near
+bushes', all in the chunk under the aircraft: the frame's lower edge meets
+the ground about where the near band ends, so whether one of that band's
+256 m blocks touches the frustum turns on where the band was centred. The
+other 235 draws are the same at all five and in all seven macOS captures,
+old code and new. The runner's 12 batches are the bake from the start of the
+quantum, and its 14 fall between the first two rows.
+
+Block culling did not make the final pose depend on its history; it made
+the draw count show it. Before, a batch drew whenever its chunk's box was in
+view, wherever in the chunk its band lay, and the count read 257 in all
+three captures of that code. The final frame was already not one picture: in
+each of the seven pairs compared, among the old code's three captures and
+the new code's four, it differs in 3,034 to 3,614 of its 921,600 pixels. No
+motion shot compares its last frame with a baseline.
+
+So `motion-banked-turn` carries no `drawCallCeiling` now. An exact ceiling on
+a count that timing chooses fails a pull request that changed nothing, and
+the ratchet refuses such samples by design (`drawCallCeilingFrom`: "Do not
+take the maximum: find out why it varies"). It leaves `DRAW_CALL_SAMPLES`
+and the snapshot, and `tests/delivery-floors.test.ts` names it: a shot is
+outside draw coverage if and only if it is an unpinned probe or declared
+there, and only a motion shot can be declared. What gates the shot is
+unchanged: the consecutive-frame SSIM of its 24 frames in motion (0.7897
+lowest in all four captures) and its delivery floors. The other 31 ceilings
+stand, 29 of them on still shots, each of which streams and settles at the
+pose it is read at, so its bake is that pose's.
+
+The other two motion shots keep exact ceilings, measured the same way, and
+each for its own reason:
+
+| shot | enters its last quantum | bakes tried | vegetation batches | draw calls on the runner |
+| --- | --- | --- | --- | --- |
+| `motion-banked-turn` | frame 221, 43 m before it stops | 221, 232, 243, 254, 263 | 12, 15, 17, 18, 18 | 247, 247, 247, 249 |
+| `page-thrash-turn` | frame 260, 4 m before it stops | 260, 261, 262, 263 | 19 at each | 257 in all four |
+| `cdlod-transition` | frame 247, 26 m before it stops | 247, 251, 255, 259, 263 | 1 at each | 196 in all four |
+
+The 60° turn's track pins its bake: every bake it can end on is within 4 m
+of where it stops. The level shot's bake is free over 26 m and does not
+matter: the one vegetation batch in its frame from 900 m is a far impostor
+chunk, and impostor records have no band edge to move. Both hold by where a
+track ends and what a frame shows, not by construction: a change to a motion
+shot's speed, start or frame count, or to the 64 m quantum, is a reason to
+measure it again, and a motion shot that disagrees with itself after one
+should lose its ceiling the same way.
+
+Two repairs were not taken. Pinning the largest count seen would be a margin
+on a field defined as the measurement, and 253 is one harness's reading at
+one end of the range, not a bound. Re-baking the frontier when the observer
+comes to rest would make the final pose a function of itself, but it is a
+re-bake every time a walker or a car stops, added to the game so that a test
+could count, or a capture-only hook pinning a state the game never reaches.
+
+**All thirty-nine baselines promoted 2026-11-13** from the pull request's
+capture of `7beb285` (gpu-tests run 43417533903, artifact
+`perf-capture-43417533903-1`, zip sha256 `9971b8c904a12d70…5d9b`), after
+Jason approved the look from the before and after frames. They carry the
+whole pull request: the tree ground shadows, open ground's trees, the bushes
+and boulders and the ground up close. Against the baselines they replace, 24
+of the 39 shots failed a visual gate at the capture-wide thresholds, 72
+gates in all, from `apron-hangar-variety` (SSIM 0.680), `grove-meadow-2m`
+(0.744) and `ground-2m-lowsun` (0.746), where the ground up close and the
+bushes fill the frame, to the cruise shots at 0.999, which did not need it.
+The block culling moves none of them: its frames are `fa7889c`'s, as above.
 
 ## In-app benchmark (?bench=1)
 

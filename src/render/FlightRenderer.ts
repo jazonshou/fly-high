@@ -1766,6 +1766,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       terrain.setCloudShadow(initialCloudShadow);
       ocean.setCloudShadow(initialCloudShadow);
       hydrology.setCloudShadow(initialCloudShadow);
+      // Tree ground shadows: a crown under a cloud throws none.
+      detail.setCloudShadow(initialCloudShadow);
       ocean.setSunShadows(atmosphere.shadows);
       hydrology.setSunShadows(atmosphere.shadows);
       // Terrain occlusion of the reflected sky: the ground bounce's albedo,
@@ -3433,6 +3435,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         this.terrain.setCloudShadow(cloudShadow);
         this.ocean.setCloudShadow(cloudShadow);
         this.hydrology.setCloudShadow(cloudShadow);
+        this.detail.setCloudShadow(cloudShadow);
         this.cloudShadowReceivers.setProjection(
           cloudShadow,
           this.originX,
@@ -4465,6 +4468,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       keySnapshot.sunIlluminanceNormalized
         * sunDirectionalHorizonGate(keySnapshot.sunDirection.y),
     );
+    // Tree ground shadows take out the direct share of the ground's light,
+    // which is the key light above against this sky light.
+    this.detail.setSkylight(keySnapshot.skylightIlluminanceNormalized);
     // Wave Q: the far band's hand-packed CSM receiver, on the same
     // forward-the-snapshot pattern. Impostors start inside the cascade
     // reach at every tier but cannot take Babylon's shadow varyings

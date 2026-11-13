@@ -148,6 +148,13 @@ export interface DetailTreePlacement {
   readonly standAge: number;
   /** Stable random value used for deterministic distance thinning. */
   readonly selection: number;
+  /**
+   * The ground's slope under the stem, dh/dx and dh/dz, taken from the same
+   * 16 m scatter grid that set `y`. Only the ground shadow reads it (it lays
+   * the shadow on the slope the tree stands on); absent means level ground.
+   */
+  readonly groundSlopeX?: number;
+  readonly groundSlopeZ?: number;
 }
 
 export interface DetailShrubPlacement {
@@ -164,6 +171,19 @@ export interface DetailShrubPlacement {
   readonly windResponse: number;
   readonly color: readonly [number, number, number, number];
   readonly selection: number;
+  /**
+   * How closed the canopy over the bush is, 0 to 1 (the density field's
+   * `canopyClosure` at its scatter block). Understory is drawn on the
+   * understory's budget and only as far as its leaf cards
+   * (`groundObjects.ts`). Absent reads as open ground.
+   */
+  readonly canopyClosure?: number;
+  /**
+   * The ground's rise per metre east and south under the bush, for the decal
+   * its shadow lies on, as a tree carries them. Absent reads as level.
+   */
+  readonly groundSlopeX?: number;
+  readonly groundSlopeZ?: number;
 }
 
 export interface DetailRockPlacement {
