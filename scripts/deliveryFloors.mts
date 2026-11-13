@@ -655,49 +655,63 @@ export const DRAW_CALL_SAMPLES: Readonly<Record<string, readonly number[]>> = Ob
   // The far blocks are one more draw wherever buildings stream; where near
   // shells and their shadow casters are in range it is four. Fourteen shots
   // sat exactly at their ceilings after #37, so these moved. See
-  // DRAW_CALL_RAISES, "generated-buildings", for the seven in the snapshot.
+  // DRAW_CALL_RAISES, "generated-buildings", for the seven in the snapshot
+  // (spent 2026-11-13).
+  // TWENTY-SEVEN RE-PINNED DOWN 2026-11-13 for PR #47's block culling, from three
+  // full macOS captures of 7beb285 that agree on the draw count of all 51 shots
+  // (gpu-tests runs 43417533903, 43417542941 and 43422970097). A vegetation batch
+  // is now drawn only when one of its 256 m blocks touches the frustum, not
+  // whenever the box over its whole 4,096 m chunk does, so batches with no
+  // instance in view are gone: 6 shots fell by 1, 8 by 2, 8 by 3 to 7 and
+  // 5 by 10 to 22 (canopy-backlit-lowsun 106 to 84), with the open-ground
+  // trees, bushes and boulders of the same pull request inside these counts.
+  // No shot rose. Five did not move (cdlod-transition, water-25ft, water-3m,
+  // terrain-material-1600ft-down, water-400ft-glitter). The counts those
+  // additions read before the culling (18 up, 6 down, at fa7889c) were never
+  // pinned. PREVIOUS_DRAW_CALL_CEILINGS is refreshed to these counts and every
+  // raise is spent, as on 2026-09-23.
   // TWENTY-ONE RE-PINNED 2026-11-12 for PR #47's tree ground shadows, from three
   // full macOS captures that agree on all 32 ceilinged shots (gpu-tests run
   // 43204262725 at 1a7f1d3, attempts 1 and 2, and run 43218894856 at 8ded9e1). The
   // decal is one draw per presentation chunk that holds shadow records: +1 on
   // sixteen shots, +2 on four and +3 on canopy-backlit-lowsun. The eleven with
   // no tree inside the decal's range did not move. See DRAW_CALL_RAISES,
-  // "tree-ground-shadows", for the thirteen in the snapshot.
+  // "tree-ground-shadows", for the thirteen in the snapshot (spent 2026-11-13).
   // ALL 32 RE-PINNED +1 2026-10-12 for PR #20's final sharpen, from three full
   // macOS captures that agree on every shot (see DRAW_CALL_RAISES,
-  // "final-sharpen"). The twelve shots outside PREVIOUS_DRAW_CALL_CEILINGS
+  // "final-sharpen", spent 2026-11-13). The twelve shots outside PREVIOUS_DRAW_CALL_CEILINGS
   // moved by the same +1; they sit outside the raise mechanism, as above.
-  "approach-500ft":              [249, 249, 249],
-  "slant-10km":                  [210, 210, 210], // 2026-09-14 tree-lod-residency-lead: 222 -> 223, identical across six runs
-  "high-10000ft-down":           [73, 73, 73],
-  "reference-viewport":          [250, 250, 250],
-  "cruise-horizon":              [202, 202, 202],
-  "winter-noon":                 [249, 249, 249],
-  "night":                       [251, 251, 251],
-  "night-moonlit":               [251, 251, 251],
-  "dusk-mesopic":                [250, 250, 250],
-  "motion-banked-turn":          [257, 257, 257],
-  "page-thrash-turn":            [259, 259, 259],
+  "approach-500ft":              [247, 247, 247],
+  "slant-10km":                  [209, 209, 209], // 2026-09-14 tree-lod-residency-lead: 222 -> 223, identical across six runs
+  "high-10000ft-down":           [69, 69, 69],
+  "reference-viewport":          [249, 249, 249],
+  "cruise-horizon":              [201, 201, 201],
+  "winter-noon":                 [247, 247, 247],
+  "night":                       [249, 249, 249],
+  "night-moonlit":               [249, 249, 249],
+  "dusk-mesopic":                [248, 248, 248],
+  "motion-banked-turn":          [247, 247, 247],
+  "page-thrash-turn":            [257, 257, 257],
   "cdlod-transition":            [196, 196, 196], // 2026-09-14 tree-lod-residency-lead: 208 -> 209, identical across four runs
-  "cruise-sun-30":               [227, 227, 227],
-  "forest-500ft-sunbehind":      [251, 251, 251],
-  "coast-10km-lowsun":           [220, 220, 220],
-  "ground-2m-lowsun":            [125, 125, 125],
-  "canopy-1200ft":               [116, 116, 116],
-  "runway-on-approach":          [259, 259, 259],
+  "cruise-sun-30":               [224, 224, 224],
+  "forest-500ft-sunbehind":      [247, 247, 247],
+  "coast-10km-lowsun":           [219, 219, 219],
+  "ground-2m-lowsun":            [113, 113, 113],
+  "canopy-1200ft":               [114, 114, 114],
+  "runway-on-approach":          [244, 244, 244],
   "water-25ft":                  [225, 225, 225],
-  "grove-forest-2m":             [123, 123, 123],
-  "grove-meadow-2m":             [141, 141, 141],
-  "hills-dusk-glint":            [247, 247, 247],
-  "mountain-close":              [231, 231, 231],
-  "forest-line-highsun":         [247, 247, 247],
-  "cliff-60m":                   [239, 239, 239],
+  "grove-forest-2m":             [122, 122, 122],
+  "grove-meadow-2m":             [130, 130, 130],
+  "hills-dusk-glint":            [240, 240, 240],
+  "mountain-close":              [226, 226, 226],
+  "forest-line-highsun":         [240, 240, 240],
+  "cliff-60m":                   [237, 237, 237],
   "water-3m":                    [91, 91, 91],
-  "veg-seam-1600ft-oblique":     [111, 111, 111],
-  "veg-seam-near-500ft":         [119, 119, 119],
+  "veg-seam-1600ft-oblique":     [106, 106, 106],
+  "veg-seam-near-500ft":         [115, 115, 115],
   "terrain-material-1600ft-down":[88, 88, 88],
-  "horizon-shadow-far-annulus":  [98, 98, 98],
-  "canopy-backlit-lowsun":       [106, 106, 106],
+  "horizon-shadow-far-annulus":  [97, 97, 97],
+  "canopy-backlit-lowsun":       [84, 84, 84],
   // W-11, 2026-09-19. FIVE identical readings rather than three, and they span
   // both arms of the W-11 A/B -- two on the branch, two on House-Keeping with
   // src/render/webgpu/water reverted, and the full candidate. A count that does
@@ -740,25 +754,35 @@ export const PREVIOUS_DRAW_CALL_CEILINGS: Readonly<Record<string, number>> = Obj
   // six entries in DRAW_CALL_RAISES named only these twenty, so all six are
   // deleted. Their growth is inside the new snapshot now, not an allowance on
   // top of an old one.
+  // ALL TWENTY REFRESHED 2026-11-13 at 7beb285 to the re-pinned counts (see
+  // DRAW_CALL_SAMPLES), which SPENDS every raise that named them, as on
+  // 2026-09-23: final-sharpen (+1 on all twenty), generated-buildings (seven)
+  // and tree-ground-shadows (thirteen) named only these twenty, and all three
+  // are deleted. PR #47's block culling took 7 of the twenty UNDER the
+  // snapshot they were raised from and 8 back onto it, so the raises no longer
+  // described how any ceiling stood to its previous one. Those three features
+  // still draw what their entries said; their draws are inside this snapshot
+  // now, with the open-ground vegetation's, not an allowance on top of an old
+  // one. A snapshot that no longer ships constrains nothing.
   "night-moonlit":                249,
   "dusk-mesopic":                 248,
   "approach-500ft":               247,
   "slant-10km":                   209,
-  "reference-viewport":           248,
-  "cruise-horizon":               200,
+  "reference-viewport":           249,
+  "cruise-horizon":               201,
   "winter-noon":                  247,
   "night":                        249,
-  "motion-banked-turn":           254,
-  "page-thrash-turn":             253,
-  "cdlod-transition":             195,
-  "cruise-sun-30":                226,
-  "forest-500ft-sunbehind":       248,
+  "motion-banked-turn":           247,
+  "page-thrash-turn":             257,
+  "cdlod-transition":             196,
+  "cruise-sun-30":                224,
+  "forest-500ft-sunbehind":       247,
   "coast-10km-lowsun":            219,
-  "runway-on-approach":           255,
-  "water-25ft":                   224,
-  "hills-dusk-glint":             244,
-  "mountain-close":               230,
-  "forest-line-highsun":          244,
+  "runway-on-approach":           244,
+  "water-25ft":                   225,
+  "hills-dusk-glint":             240,
+  "mountain-close":               226,
+  "forest-line-highsun":          240,
   "cliff-60m":                    237,
 });
 
@@ -835,85 +859,13 @@ export type DrawCallRaise =
  * ceiling", which is correct and reads like a bug in the entry.
  */
 export const DRAW_CALL_RAISES: readonly DrawCallRaise[] = Object.freeze([
-  Object.freeze({
-    kind: "uniform",
-    feature: "final-sharpen",
-    commit: "ea99c02",
-    reason:
-      "The final RCAS sharpen (`lighting/SharpenPass.ts`, PR #20) is one more "
-      + "post-process on the camera at tier 1 with no content gating: one "
-      + "full-screen quad per frame on every shot. The ground grain in the same PR "
-      + "adds texture fetches to the existing terrain draw and no mesh, so it "
-      + "contributes 0. Predicted +1 uniform, then measured by three full macOS "
-      + "captures on the hosted runner (gpu-tests runs 38217280044, "
-      + "38221252437 and 38263651854 at 3d96334, 4ae62d1 and 5dc696c): all 32 "
-      + "shots that carry a ceiling read exactly their previous ceiling plus one "
-      + "in all three, no shot at +0 or +2. Promoted out of MEASURED_DRAW_DELTAS, "
-      + "where it was staged at 4ae62d1.",
-    delta: 1,
-    shots: Object.freeze(Object.keys(PREVIOUS_DRAW_CALL_CEILINGS)),
-  }),
-  Object.freeze({
-    kind: "per-shot",
-    feature: "generated-buildings",
-    commit: "4cc4ed4",
-    reason:
-      "PR #41's generated buildings (`StructureSystem`) draw at most four meshes whatever "
-      + "the number of buildings: the far blocks, the near shells, and the open buildings "
-      + "and their glass next to the camera. The far blocks are one draw wherever the "
-      + "settlements stream; the near shells add one main-pass draw and their shadow-cascade "
-      + "draws on Medium and up. Measured by three full macOS captures that agree on all "
-      + "fourteen counts (gpu-tests runs 41360179301, 41363835761 and 41368280700 at 4cc4ed4, a1a2af8 "
-      + "and 0565615) against the land tip's capture at c438d62 (run 41344730906).",
-    whyNonUniform:
-      "The far blocks cost one draw on every shot with buildings streamed. page-thrash-turn "
-      + "also has near shells in range, so it adds the near set's main-pass draw and its "
-      + "shadow casters: four in all.",
-    deltas: Object.freeze({
-      "cruise-horizon": 1,
-      "motion-banked-turn": 1,
-      "page-thrash-turn": 4,
-      "forest-500ft-sunbehind": 1,
-      "runway-on-approach": 1,
-      "hills-dusk-glint": 1,
-      "forest-line-highsun": 1,
-    }),
-  }),
-  Object.freeze({
-    kind: "per-shot",
-    feature: "tree-ground-shadows",
-    commit: "1a7f1d3",
-    reason:
-      "PR #47's tree ground shadow (`TreeGroundShadowMaterial`) is one batch, so one draw, "
-      + "per 4,096 m presentation chunk that holds a shadow record, whatever the number of "
-      + "trees. Predicted from the construction (`estimateVegetationDrawCalls` adds 2.4 at "
-      + "tier 1), then measured by three full macOS captures that agree on all 32 ceilinged "
-      + "shots (gpu-tests run 43204262725 at 1a7f1d3, attempts 1 and 2, and run 43218894856 at "
-      + "8ded9e1) against the ceilings, which were main's exact counts at b20d758. The cloud "
-      + "A/B and the macOS runner's A/B of the same pair read the same three deltas with "
-      + "the vegetation batch count rising in step. Promoted out of MEASURED_DRAW_DELTAS, "
-      + "where it was staged at 8ded9e1.",
-    whyNonUniform:
-      "What varies is how many presentation chunks with trees in them the decal's range "
-      + "(1,100 m at tier 1) reaches from the shot's camera: one on twelve of these, two on "
-      + "runway-on-approach. Shots with no tree inside the range (open water, high altitude, "
-      + "bare mountain) did not move and are not named.",
-    deltas: Object.freeze({
-      "approach-500ft": 1,
-      "reference-viewport": 1,
-      "winter-noon": 1,
-      "night": 1,
-      "night-moonlit": 1,
-      "dusk-mesopic": 1,
-      "motion-banked-turn": 1,
-      "page-thrash-turn": 1,
-      "forest-500ft-sunbehind": 1,
-      "hills-dusk-glint": 1,
-      "forest-line-highsun": 1,
-      "cliff-60m": 1,
-      "runway-on-approach": 2,
-    }),
-  }),
+  // EMPTY SINCE 2026-11-13. The three entries that stood here were spent when
+  // PREVIOUS_DRAW_CALL_CEILINGS was refreshed to the counts at 7beb285:
+  // "final-sharpen" (ea99c02, +1 on all twenty), "generated-buildings"
+  // (4cc4ed4, +1 on six and +4 on page-thrash-turn) and "tree-ground-shadows"
+  // (1a7f1d3, +1 on twelve and +2 on runway-on-approach). Their reasons are in
+  // this file's history and in docs/PERFORMANCE.md. The next feature that
+  // costs draws declares its raise against the refreshed snapshot.
 ]);
 
 /**
@@ -1120,55 +1072,6 @@ export const MEASURED_DRAW_DELTAS: readonly MeasuredDrawDelta[] = Object.freeze(
       + "signage 2. PREDICTED from construction before measuring, then measured "
       + "uniform on 34 of 34. Its uniformity is what eliminated furniture as the "
       + "cause of the +24/+12 split.",
-  }),
-  Object.freeze({
-    owner: "terrain realism / open-ground trees, bushes and boulders (PR #47)",
-    feature: "open-ground-vegetation",
-    baseRef: "2305224", headRef: "fa7889c",
-    shotsMeasured: 32,
-    delta: Object.freeze({
-      // Up: a lone tree, a copse, a thicket or a boulder is a new batch in each
-      // presentation chunk the frustum touches.
-      "slant-10km": 1, "cdlod-transition": 1, "cruise-sun-30": 1, "runway-on-approach": 1,
-      "water-25ft": 1, "water-3m": 1, "water-400ft-glitter": 1,
-      "approach-500ft": 2, "reference-viewport": 2, "winter-noon": 2, "night": 2,
-      "night-moonlit": 2, "dusk-mesopic": 2,
-      "hills-dusk-glint": 3, "forest-line-highsun": 3,
-      "horizon-shadow-far-annulus": 5,
-      // The mountain slope: an oak grove beside the pines, thickets of three bush
-      // species and boulders, seen across a chunk edge.
-      "terrain-material-1600ft-down": 13,
-      "mountain-close": 27,
-      // Down: one leaf-card model a bush species on Low and Medium.
-      "high-10000ft-down": -1, "grove-forest-2m": -1, "veg-seam-1600ft-oblique": -1,
-      "veg-seam-near-500ft": -1, "grove-meadow-2m": -2, "ground-2m-lowsun": -3,
-    }),
-    note:
-      "PR #47's steps after the tree ground shadow: open ground's own trees (110b6f6, "
-      + "with the thin-stand handover of fa7889c), bushes with bodies and far stand-ins "
-      + "and boulders that reach by size (548af49). The ground up close (df3d430) adds no "
-      + "draw. Measured against the committed ceilings, which are the exact counts at "
-      + "2305224, on all 32 shots that carry one, by the two macOS captures of gpu-tests "
-      + "run 43388245668 at fa7889c (attempts 1 and 2, which agree on the draw and batch "
-      + "counts of 50 of the 51 shots; car-clearing-chase, which carries no ceiling, read "
-      + "150 and 148): 18 rose, 6 fell and 8 did not move (cruise-horizon, "
-      + "motion-banked-turn, page-thrash-turn, forest-500ft-sunbehind, coast-10km-lowsun, "
-      + "canopy-1200ft, cliff-60m, canopy-backlit-lowsun). A batch is a (prototype, "
-      + "4,096 m chunk), so each new KIND of thing in view is a draw in every chunk the "
-      + "frustum touches: three meshes a (species, variant) for a tree near enough to be "
-      + "one, a batch each for bush bodies, their far stand-ins, each species' leaves and "
-      + "each boulder lithology, and the shadow and impostor batches of a chunk that had "
-      + "no tree. mountain-close is 12 vegetation batches at 2305224 and 39 now. The six "
-      + "that fell are what the cap on bush leaf-card models removes (`treeVariantCap` "
-      + "applies to bushes on Low and Medium from 548af49: one model a species, not two). "
-      + "The macOS runner's A/B reads "
-      + "the cost in frame time, about a third of a millisecond a draw on that adapter: "
-      + "docs/PERFORMANCE.md, \"Terrain realism on the macOS runner\". TWO captures, "
-      + "and the ceilings never moved to these counts: the commit after 05c8ccd culls a "
-      + "batch by its 256 m blocks (docs/PERFORMANCE.md, \"Culling a batch by blocks\"), "
-      + "which stops drawing most of what rose here and some of what 2305224 drew. This "
-      + "entry is the record of fa7889c. It is replaced, not promoted, when three "
-      + "captures of the block-culled head agree.",
   }),
 ]);
 

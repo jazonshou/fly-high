@@ -1936,7 +1936,8 @@ sharpen to the high tiers would have saved, without losing it on medium.
 Draw-call ceilings: every tier-1 shot now reads its ceiling minus one. The
 `final-sharpen` entry in `DRAW_CALL_RAISES` stays, as the raise mechanism
 requires, until the next re-pin moves all 32 ceilings down by one and
-retires it.
+retires it. (Retired 2026-11-13, when the block-culling re-pin refreshed the
+ratchet's snapshot: "Culling a batch by blocks".)
 
 **The ground grain, read at an explicit mip.** The other half of PR #20's
 cost is the ground grain's five extra array reads on terrain. They were
@@ -4755,9 +4756,31 @@ The harness does not reproduce the sea between sessions that are not run
 together: the first pair's water frames, taken 28 minutes apart, differ in
 one pixel of 680,900 by one level in one channel (a sun glint at the
 shoreline), and two sessions of this same commit differed over half the
-frame. So only pairs taken together are evidence, and the macOS capture's
-frames of this commit are compared with `fa7889c`'s when the ceilings are
-pinned.
+frame. So only pairs taken together are evidence. A third pair run side by
+side wrote byte-identical frames at `approach-500ft` and `ground-2m-lowsun`,
+twice each, with 249 draws against 247 and 123 against 115.
+
+**The same picture on the macOS runner.** The capture of this commit (the
+pull request's, gpu-tests run 43417533903) wrote frames byte-identical with
+`fa7889c`'s (run 43388245668, attempt 2) at ten shots, among them the ones
+that lost the most draws: `mountain-close`, `terrain-material-1600ft-down`,
+`forest-line-highsun`, `canopy-1200ft`, `veg-seam-1600ft-oblique`,
+`veg-seam-near-500ft`, `grove-forest-2m` and `lake-island-piercing`. That is
+what two captures of one commit share: `fa7889c`'s own two are byte-identical
+at eleven shots, and frames with open water or a different order of terrain
+pages behind them never are. Over all 51 shots the new frames pass every
+visual gate against the old ones, lowest SSIM 0.9999 and worst tile 0.9969;
+`fa7889c` against `05c8ccd`, whose rendering code is the same, reads 0.9998
+and 0.9956.
+
+The two captures dispatched on the branch (runs 43417542941 and
+43422970097) agree with it on every draw and batch count. The second of
+them has the same terrain pages resident shot for shot and is byte-identical
+with it at eight shots. The first held one terrain page more at its first
+shot and one fewer from the third on, a race at start-up, and with the pages
+in other atlas slots a few texels round the other way: at the shots where
+the other captures are identical it differs in 7 to 1,738 scattered pixels
+of 921,600, mostly by one level.
 
 **What it draws.** The picture harness at five capture placements, Medium,
 SwiftShader, the commit before and this one; "in view" is a test of every
@@ -4796,7 +4819,111 @@ batch builds, pooled, and a published batch keeps 48 bytes a block.
 **What is not changed.** Which records a batch holds, and so its triangles
 when it is drawn; the shadow casters; batches whose box already missed. A
 batch behind the camera is now first drawn when the camera turns to it
-rather than when it is published, so its bundle is recorded then.
+rather than when it is published, so its bundle is recorded then. The
+capture's two turning shots show no cost of that on the runner:
+`motion-banked-turn`'s longest frame read 146, 63 and 134 ms in three
+captures of this commit against 177, 479 and 2,305 ms in three of the code
+before, and `page-thrash-turn`'s 95, 72 and 143 ms against 182, 145 and
+261.
+
+**On the macOS runner.** The four shots of the section above, timed the same
+way against the same base (`perf-ab` dispatched with `shots`, run
+43417548215, `7beb285` against the merge base `b20d758`):
+
+| shot | frame wall time at `fa7889c` | at `7beb285` | ms a frame | draw calls | vegetation batches |
+| --- | --- | --- | --- | --- | --- |
+| `mountain-close` | slower +22.2% | same -2.7% (-4.7% to -0.6%) | 72.3 → 71.5 | 225 → 220 | 12 → 7 |
+| `terrain-material-1600ft-down` | slower +10.6% | same +0.5% (-1.0% to +2.2%) | 60.5 → 60.7 | 88 → 88 | 9 → 9 |
+| `horizon-shadow-far-annulus` | slower +7.3% | same +1.9% (+1.0% to +2.8%) | 48.5 → 49.2 | 96 → 97 | 19 → 20 |
+| `hamlet-300ft` | inconclusive +4.8% | inconclusive +4.8% (+4.1% to +5.6%) | 50.3 → 52.7 | 232 → 236 | 16 → 20 |
+
+The hamlet did not move and could not: its four added batches each have
+instances in the picture, 8,000 of them. It is the one site measured where
+the new vegetation still costs frame time on that adapter, 2.4 ms on a
+50 ms frame; by the reference Mac's 26 µs a draw it is 0.1 ms.
+
+The gate's five shots (the pull request's run 43417533856, against main
+`3ad6c3c`): `approach-500ft` -0.3% (-2.2% to +1.5%) with 248 → 247 draws,
+`cruise-horizon` +0.4% (-1.6% to +2.3%) with 202 → 201,
+`forest-500ft-sunbehind` -0.3% (-1.4% to +0.9%) with 250 → 247,
+`ground-2m-lowsun` **faster, -6.1%** (-6.8% to -5.4%) with 123 → 113, and
+`water-25ft` +1.2% (+0.4% to +2.0%) with 225 → 225. Main draws batches with
+nothing in view too, so four of the five now draw fewer calls than it does.
+SwiftShader, which
+weighs a draw lightly and the new vegetation's triangles and the ground's
+shading fully, read the same five +1.6%, +1.1%, +2.7%, +1.8% and -0.8% in
+GPU time on the same commit, all inside its 5% gate.
+
+**Draw ceilings re-pinned, down.** Three full macOS captures of `7beb285`
+agree on the draw count of all 51 shots: gpu-tests runs 43417533903 (the
+pull request's), 43417542941 and 43422970097 (dispatched on the branch). The
+ceilings were each shot's exact count at `2305224`, with the tree shadows
+and before the open-ground trees, the bushes and the boulders. With all of
+those in, 27 of the 32 shots that carry a ceiling read under it, none over
+and five on it:
+
+| shot | pinned at `2305224` | `fa7889c` | `7beb285` | vegetation batches |
+| --- | --- | --- | --- | --- |
+| `mountain-close` | 231 | 258 | 226 | 39 → 7 |
+| `canopy-backlit-lowsun` | 106 | 106 | 84 | 32 → 10 |
+| `runway-on-approach` | 259 | 260 | 244 | 37 → 21 |
+| `terrain-material-1600ft-down` | 88 | 101 | 88 | 22 → 9 |
+| `forest-line-highsun` | 247 | 250 | 240 | 21 → 11 |
+| `hills-dusk-glint` | 247 | 250 | 240 | 21 → 11 |
+| `motion-banked-turn` | 257 | 257 | 247 | 22 → 12 |
+| `ground-2m-lowsun` | 125 | 122 | 113 | 30 → 21 |
+| `grove-meadow-2m` | 141 | 139 | 130 | 32 → 23 |
+| `horizon-shadow-far-annulus` | 98 | 103 | 97 | 26 → 20 |
+| `approach-500ft` | 249 | 251 | 247 | 23 → 19 |
+| `cruise-sun-30` | 227 | 228 | 224 | 4 → 0 |
+| `dusk-mesopic` | 250 | 252 | 248 | 23 → 19 |
+| `forest-500ft-sunbehind` | 251 | 251 | 247 | 22 → 18 |
+| `night` | 251 | 253 | 249 | 23 → 19 |
+| `night-moonlit` | 251 | 253 | 249 | 23 → 19 |
+| `veg-seam-1600ft-oblique` | 111 | 110 | 106 | 15 → 11 |
+| `winter-noon` | 249 | 251 | 247 | 23 → 19 |
+| `high-10000ft-down` | 73 | 72 | 69 | 5 → 2 |
+| `reference-viewport` | 250 | 252 | 249 | 24 → 21 |
+| `veg-seam-near-500ft` | 119 | 118 | 115 | 23 → 20 |
+| `canopy-1200ft` | 116 | 116 | 114 | 21 → 19 |
+| `cliff-60m` | 239 | 239 | 237 | 26 → 24 |
+| `page-thrash-turn` | 259 | 259 | 257 | 21 → 19 |
+| `slant-10km` | 210 | 211 | 209 | 4 → 2 |
+| `cdlod-transition` | 196 | 197 | 196 | 2 → 1 |
+| `coast-10km-lowsun` | 220 | 220 | 219 | 3 → 2 |
+| `cruise-horizon` | 202 | 202 | 201 | 1 → 0 |
+| `water-25ft` | 225 | 226 | 225 | 4 → 3 |
+| `water-3m` | 91 | 92 | 91 | 4 → 3 |
+| `water-400ft-glitter` | 88 | 89 | 88 | 4 → 3 |
+| `grove-forest-2m` | 123 | 122 | 122 | 24 → 24 |
+
+The 32 summed 6,049 draws at their ceilings, 6,110 at `fa7889c` and 5,918
+now, with 604 vegetation batches then and 412 now. The 19 shots with no
+ceiling read 3,176 and 3,116 (`car-ford-chase` 142 to 119), and the three
+captures agree on those too, which captures of the code before did not
+(`car-clearing-chase` read 150 and 148).
+
+The 27 ceilings take the measured counts. In the ratchet
+(`scripts/deliveryFloors.mts`) a lower count takes no raise, but a raise
+entry must equal what its shots moved from the snapshot, and seven of the
+snapshot's twenty now read under it and eight on it. So
+`PREVIOUS_DRAW_CALL_CEILINGS` is refreshed to these counts and the three
+entries that named only those twenty are spent, as at the 2026-09-23 re-pin:
+`final-sharpen`, `generated-buildings` and `tree-ground-shadows`. Their
+draws are inside the snapshot now, with the open-ground vegetation's, whose
+staged record of `fa7889c` in `MEASURED_DRAW_DELTAS` is removed.
+
+**All thirty-nine baselines promoted 2026-11-13** from the pull request's
+capture of `7beb285` (gpu-tests run 43417533903, artifact
+`perf-capture-43417533903-1`, zip sha256 `9971b8c904a12d70…5d9b`), after
+Jason approved the look from the before and after frames. They carry the
+whole pull request: the tree ground shadows, open ground's trees, the bushes
+and boulders and the ground up close. Against the baselines they replace, 24
+of the 39 shots failed a visual gate at the capture-wide thresholds, 72
+gates in all, from `apron-hangar-variety` (SSIM 0.680), `grove-meadow-2m`
+(0.744) and `ground-2m-lowsun` (0.746), where the ground up close and the
+bushes fill the frame, to the cruise shots at 0.999, which did not need it.
+The block culling moves none of them: its frames are `fa7889c`'s, as above.
 
 ## In-app benchmark (?bench=1)
 
