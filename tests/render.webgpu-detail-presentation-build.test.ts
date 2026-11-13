@@ -133,7 +133,6 @@ function fixtureCell(cellX: number, cellZ: number): GeneratedDetailCell {
     maxZ: minZ + cellSizeMeters,
     trees: TREE_SPECIES.map((species, index) => ({
       kind: "tree" as const,
-      id: `tree-${index}`,
       species,
       x: centerX + (index - 3) * 0.75,
       y: 91 + index * 0.2,
@@ -150,7 +149,6 @@ function fixtureCell(cellX: number, cellZ: number): GeneratedDetailCell {
     })),
     shrubs: SHRUB_SPECIES.map((species, index) => ({
       kind: "shrub" as const,
-      id: `shrub-${index}`,
       species,
       x: centerX - 5 + index * 4,
       y: 89.5 + index * 0.15,
@@ -165,7 +163,6 @@ function fixtureCell(cellX: number, cellZ: number): GeneratedDetailCell {
     })),
     rocks: ROCK_VARIANTS.map((variant, index) => ({
       kind: "rock" as const,
-      id: `rock-${index}`,
       variant,
       x: centerX + 7 - index * 4,
       y: 89.2,
@@ -179,7 +176,6 @@ function fixtureCell(cellX: number, cellZ: number): GeneratedDetailCell {
     })),
     clutter: CLUTTER_KINDS.map((clutterKind, index) => ({
       kind: "clutter" as const,
-      id: `clutter-${index}`,
       clutterKind,
       x: centerX - 8 + index * 4,
       y: 89.1,
