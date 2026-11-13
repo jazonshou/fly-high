@@ -226,6 +226,12 @@ Foot strikes (count, strength, foot) go back to the renderer for the sounds.
   swimmer's eye; the seated hands and feet; getting in and out continuous
   with the seat; landings, the roll, the climb; first person and the look.
 - `tests/render.person-motion-budget.test.ts`: the frame budget.
+- `tests/render.person-motion-fluid.test.ts`: nothing on him jumps. A start,
+  a walk and a stop, an about-turn, a turn on the spot, getting in and
+  getting out are run at 60 Hz with the root moved as the sim and the
+  renderer move it, and the pelvis, head, hands and feet are each held to an
+  acceleration from one frame to the next (35 to 180 m/s2 by part and move;
+  one frame's 3 cm jump is 108).
 - `tests/gpu/person-figure.test.ts`: compile and inter-stage audit, draws
   per tier, the skin following the bones, the maps lit the way the bake
   made them (the image's top at the top, the normal map's X and Y), the
