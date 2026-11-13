@@ -55,3 +55,48 @@ describe("uncaptured WebGPU errors fail closed", () => {
     expect(gameSource).toContain("if (disposed || rendererTerminal) return;");
   });
 });
+
+describe("a lost device fails startup closed", () => {
+  // Babylon restores a lost device by itself, with the raw textures empty
+  // (their CPU copies are dropped after upload, TextureCpuMirror.ts). The
+  // renderer's onContextLostObservable observer exists only once create()
+  // has built it, so create() must treat a loss before that as fatal.
+  const createMethod = rendererSource.match(
+    /static async create\(options: FlightRendererOptions\)[\s\S]*?\n  \}\n/u,
+  )?.[0] ?? "";
+
+  it("watches the device from engine creation, before any scene resource", () => {
+    const engineCreated = createMethod.indexOf("WebGPUEngine.CreateAsync(");
+    const latchInstalled = createMethod.indexOf(
+      "const deviceLoss = new GpuDeviceLossLatch(engine._device, options.signal);",
+    );
+    const sceneCreated = createMethod.indexOf("const scene = new Scene(engine)");
+
+    expect(engineCreated).toBeGreaterThan(0);
+    expect(latchInstalled).toBeGreaterThan(engineCreated);
+    expect(sceneCreated).toBeGreaterThan(latchInstalled);
+  });
+
+  it("makes every later startup wait stop on the loss and reports it", () => {
+    const afterLatch = createMethod.slice(
+      createMethod.indexOf("const deviceLoss = new GpuDeviceLossLatch("),
+    );
+    expect(afterLatch).toContain("const signal = deviceLoss.signal;");
+    // The caller's signal reaches the waits only through the latch.
+    expect(afterLatch.slice(afterLatch.indexOf("\n"))).not.toContain("options.signal");
+    expect(afterLatch).toContain("() => deviceLoss.dispose(),");
+    expect(afterLatch).toContain("const failure = deviceLoss.error ?? error;");
+    expect(afterLatch).toContain("throw failure;");
+  });
+
+  it("hands loss to the renderer's own observer only once that exists", () => {
+    const constructed = createMethod.indexOf("const renderer = new FlightRenderer(");
+    const handedOff = createMethod.indexOf("deviceLoss.dispose();\n      cleanup.length = 0;");
+    const returned = createMethod.indexOf("return renderer;");
+
+    expect(constructed).toBeGreaterThan(0);
+    expect(handedOff).toBeGreaterThan(constructed);
+    expect(returned).toBeGreaterThan(handedOff);
+    expect(rendererSource).toContain("this.engine.onContextLostObservable.add(() => {");
+  });
+});
