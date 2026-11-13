@@ -21,12 +21,14 @@ import type {
  * in Node: an object, a colour tuple and about fifteen numbers that pointer
  * compression boxes one by one. A heap snapshot of the detail worker on the
  * Low bench found 89 retained cells holding 133 MiB that way. Columns hold
- * the same values in ~115 B per placement (88 such cells: 42 MiB).
+ * the values the build reads in ~103 B per placement (88 such cells:
+ * 38 MiB).
  *
  * Every number is a Float64Array element, so it is the exact double the
  * generator produced, and every name is its index in a fixed code table
  * below, so a packed cell reads back bit for bit what was packed: the
- * presentation build's output bytes cannot change.
+ * presentation build's output bytes cannot change. That holds for the
+ * fields the build reads, the only ones packed (`TREE_FIELDS` and below).
  */
 
 /**
@@ -71,10 +73,16 @@ function encode<Name extends string>(
   return codes[name];
 }
 
+/**
+ * The fields the presentation build reads, and only those. Not packed:
+ * a tree's trunk radius, wind phase (its phase lane carries the stem's LOD
+ * key) and stand age, and a clutter piece's selection. A view has no getter
+ * for them, so a build that starts reading one fails to compile instead of
+ * reading a value nobody packed.
+ */
 const TREE_FIELDS = [
-  "x", "y", "z", "yawRadians", "heightMeters", "crownRadiusMeters", "trunkRadiusMeters",
-  "windPhaseRadians", "windResponse", "colorR", "colorG", "colorB", "colorA", "standAge",
-  "selection",
+  "x", "y", "z", "yawRadians", "heightMeters", "crownRadiusMeters", "windResponse",
+  "colorR", "colorG", "colorB", "colorA", "selection",
 ] as const;
 const SHRUB_FIELDS = [
   "x", "y", "z", "yawRadians", "heightMeters", "radiusMeters", "windPhaseRadians",
@@ -86,7 +94,7 @@ const ROCK_FIELDS = [
 ] as const;
 const CLUTTER_FIELDS = [
   "x", "y", "z", "yawRadians", "sizeMeters", "colorR", "colorG", "colorB", "colorA",
-  "selection", "normalX", "normalY", "normalZ",
+  "normalX", "normalY", "normalZ",
 ] as const;
 const GROUND_COVER_FIELDS = [
   "coverage", "colorR", "colorG", "colorB", "heightMeters",
@@ -146,14 +154,11 @@ function packTrees(trees: readonly DetailTreePlacement[]): PackedTreeColumns {
     columns.yawRadians[index] = tree.yawRadians;
     columns.heightMeters[index] = tree.heightMeters;
     columns.crownRadiusMeters[index] = tree.crownRadiusMeters;
-    columns.trunkRadiusMeters[index] = tree.trunkRadiusMeters;
-    columns.windPhaseRadians[index] = tree.windPhaseRadians;
     columns.windResponse[index] = tree.windResponse;
     columns.colorR[index] = tree.color[0];
     columns.colorG[index] = tree.color[1];
     columns.colorB[index] = tree.color[2];
     columns.colorA[index] = tree.color[3];
-    columns.standAge[index] = tree.standAge;
     columns.selection[index] = tree.selection;
   });
   return columns;
@@ -215,7 +220,6 @@ function packClutter(clutter: readonly DetailClutterPlacement[]): PackedClutterC
     columns.colorG[index] = piece.color[1];
     columns.colorB[index] = piece.color[2];
     columns.colorA[index] = piece.color[3];
-    columns.selection[index] = piece.selection;
     columns.normalX[index] = piece.normal.x;
     columns.normalY[index] = piece.normal.y;
     columns.normalZ[index] = piece.normal.z;
@@ -289,10 +293,7 @@ export class PackedTreeView {
   get yawRadians(): number { return this.columns!.yawRadians[this.index]!; }
   get heightMeters(): number { return this.columns!.heightMeters[this.index]!; }
   get crownRadiusMeters(): number { return this.columns!.crownRadiusMeters[this.index]!; }
-  get trunkRadiusMeters(): number { return this.columns!.trunkRadiusMeters[this.index]!; }
-  get windPhaseRadians(): number { return this.columns!.windPhaseRadians[this.index]!; }
   get windResponse(): number { return this.columns!.windResponse[this.index]!; }
-  get standAge(): number { return this.columns!.standAge[this.index]!; }
   get selection(): number { return this.columns!.selection[this.index]!; }
   get color(): readonly [number, number, number, number] {
     return fillTint(this.tint, this.columns!, this.index);
@@ -371,7 +372,6 @@ export class PackedClutterView {
   get z(): number { return this.columns!.z[this.index]!; }
   get yawRadians(): number { return this.columns!.yawRadians[this.index]!; }
   get sizeMeters(): number { return this.columns!.sizeMeters[this.index]!; }
-  get selection(): number { return this.columns!.selection[this.index]!; }
   get color(): readonly [number, number, number, number] {
     return fillTint(this.tint, this.columns!, this.index);
   }

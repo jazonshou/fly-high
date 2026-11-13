@@ -27,6 +27,8 @@ import {
 import { RENDERED_DENSITY_LAWS } from "../src/render/webgpu/detail/renderedDensity";
 import type {
   ClutterKind,
+  DetailClutterPlacement,
+  DetailTreePlacement,
   GeneratedDetailCell,
   GroundCoverArchetype,
   RockVariant,
@@ -39,7 +41,9 @@ import type {
  * packed columns (`packDetailCell`), and the presentation build reads those
  * columns through cursors. The presentation build's own pinned fingerprints
  * (render.webgpu-detail-presentation-build) were recorded when it still read
- * placement objects; this file proves the packing itself loses nothing.
+ * placement objects; this file proves the packing loses nothing the build
+ * reads. (A field the build never reads is not packed, and its view has no
+ * getter for it, so reading one is a compile error.)
  */
 
 // The Low bench world, and a cell on its route with every placement kind.
@@ -60,8 +64,34 @@ function generatedCell(cellX: number, cellZ: number): GeneratedDetailCell {
 const FOREST = generatedCell(14, 3);
 const EDGE = generatedCell(12, 2);
 
+/**
+ * A generated cell less the fields the packing drops because the
+ * presentation build never reads them.
+ */
+interface ReadCell extends Omit<GeneratedDetailCell, "trees" | "clutter"> {
+  readonly trees: readonly Omit<DetailTreePlacement, "trunkRadiusMeters" | "windPhaseRadians" | "standAge">[];
+  readonly clutter: readonly Omit<DetailClutterPlacement, "selection">[];
+}
+
+function omit<Value extends object, Key extends keyof Value>(
+  value: Value,
+  keys: readonly Key[],
+): Omit<Value, Key> {
+  const copy: Partial<Value> = { ...value };
+  for (const key of keys) delete copy[key];
+  return copy as Omit<Value, Key>;
+}
+
+function readFields(cell: GeneratedDetailCell): ReadCell {
+  return {
+    ...cell,
+    trees: cell.trees.map((tree) => omit(tree, ["trunkRadiusMeters", "windPhaseRadians", "standAge"])),
+    clutter: cell.clutter.map((piece) => omit(piece, ["selection"])),
+  };
+}
+
 /** Rebuilds placement objects from a packed cell, field by field, through the cursors. */
-function unpack(packed: PackedDetailCell): GeneratedDetailCell {
+function unpack(packed: PackedDetailCell): ReadCell {
   const tree = new PackedTreeView();
   const shrub = new PackedShrubView();
   const rock = new PackedRockView();
@@ -87,11 +117,8 @@ function unpack(packed: PackedDetailCell): GeneratedDetailCell {
         yawRadians: tree.yawRadians,
         heightMeters: tree.heightMeters,
         crownRadiusMeters: tree.crownRadiusMeters,
-        trunkRadiusMeters: tree.trunkRadiusMeters,
-        windPhaseRadians: tree.windPhaseRadians,
         windResponse: tree.windResponse,
         color: [...tree.color] as [number, number, number, number],
-        standAge: tree.standAge,
         selection: tree.selection,
       };
     }),
@@ -139,7 +166,6 @@ function unpack(packed: PackedDetailCell): GeneratedDetailCell {
         yawRadians: piece.yawRadians,
         sizeMeters: piece.sizeMeters,
         color: [...piece.color] as [number, number, number, number],
-        selection: piece.selection,
         normal: { ...piece.normal },
       };
     }),
@@ -255,7 +281,7 @@ function startBuild(input: DetailPresentationBuildInput, buildCatalog: DetailPre
 }
 
 describe("packed detail cells", () => {
-  it("reads back every field of a generated cell bit for bit", () => {
+  it("reads back every field the build reads, bit for bit", () => {
     for (const cell of [FOREST, EDGE]) {
       // Non-vacuous: every placement kind and both colour tuple lengths.
       expect(cell.trees.length).toBeGreaterThan(100);
@@ -268,9 +294,10 @@ describe("packed detail cells", () => {
       // lost -0), fails here. Only the first mismatch is diffed: a diff of
       // thousands of placements would take minutes to print.
       const unpacked = unpack(packDetailCell(cell));
+      const read = readFields(cell);
       for (const kind of ["trees", "shrubs", "rocks", "clutter", "groundCover"] as const) {
         const actual: readonly unknown[] = unpacked[kind];
-        const expected: readonly unknown[] = cell[kind];
+        const expected: readonly unknown[] = read[kind];
         expect(actual.length, kind).toBe(expected.length);
         const first = actual.findIndex((item, index) => !isDeepStrictEqual(item, expected[index]));
         if (first >= 0) expect(actual[first], `${kind}[${first}]`).toEqual(expected[first]);
