@@ -1047,6 +1047,11 @@ export class WorldDetailRuntime {
   private captureSuppressedChunks = 0;
   private captureStaleVisibleChunks = 0;
   private readonly presentationRebuildBudget: DetailPresentationRebuildBudget;
+  /**
+   * `DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE`; a field only so tests can
+   * stream a publication over many updates.
+   */
+  private readonly publicationStreamBytesPerUpdate = DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE;
   private readonly presentationNowMilliseconds: () => number;
   private presentationWorkUnitsLastUpdate = 0;
   private presentationMillisecondsLastUpdate = 0;
@@ -3520,7 +3525,7 @@ export class WorldDetailRuntime {
     // Streaming phase: packed records flow into the disabled staged buffers
     // under the per-update byte budget. Nothing here is visible — the staged
     // meshes stay disabled until the flip.
-    let budget = DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE;
+    let budget = this.publicationStreamBytesPerUpdate;
     for (const upload of publication.uploads) {
       if (upload.kind === "fits" || !upload.structuralDone) continue;
       const gpu = upload.stagedBatch?.gpu;

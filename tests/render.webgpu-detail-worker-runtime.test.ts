@@ -1,3 +1,4 @@
+import { Buffer as NodeBuffer } from "node:buffer";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
@@ -1096,6 +1097,257 @@ describe("WorldDetailRuntime retained-worker presentation integration", () => {
       const owned = new Set(ownedWriters());
       expect(departed.every((writer) => owned.has(writer))).toBe(true);
       expect(runtime.presentationRebuildDiagnostics.cpuWriterPoolDrops).toBe(0);
+    } finally {
+      runtime.dispose();
+      scene.dispose();
+      engine.dispose();
+    }
+  });
+
+  it("hands the GPU the built bytes while pooled writers are reused mid-flight, worker and inline", () => {
+    // The device's view: a shadow of every dynamic vertex buffer, written
+    // exactly as WebGPU's writeBuffer would be (offset, then the whole view
+    // or byteLength). `getData()` is only Babylon's CPU mirror, so it cannot
+    // tell what the GPU received.
+    const engine = new NullEngine();
+    const device = engine as unknown as {
+      createDynamicVertexBuffer(data: ArrayBufferView | number, label?: string): object;
+      updateDynamicVertexBuffer(
+        buffer: object,
+        data: ArrayBufferView,
+        byteOffset?: number,
+        byteLength?: number,
+      ): void;
+    };
+    const shadows = new Map<object, Uint8Array>();
+    const createBuffer = device.createDynamicVertexBuffer.bind(engine);
+    device.createDynamicVertexBuffer = (data, label) => {
+      const buffer = createBuffer(data, label);
+      shadows.set(buffer, typeof data === "number"
+        ? new Uint8Array(data)
+        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice());
+      return buffer;
+    };
+    device.updateDynamicVertexBuffer = (buffer, data, byteOffset = 0, byteLength) => {
+      const shadow = shadows.get(buffer);
+      const length = byteLength ?? data.byteLength;
+      if (!shadow || byteOffset + length > shadow.byteLength) throw new Error("write outside a GPU buffer");
+      shadow.set(new Uint8Array(data.buffer, data.byteOffset, length), byteOffset);
+    };
+
+    const world = createWorld("detail-runtime-worker-gpu-shadow", { airport: false });
+    const quality = profile();
+    const selected = richCell(world, quality.vegetationDensity);
+    const start = observerForCell(selected.cellX, selected.cellZ);
+    const scene = new Scene(engine);
+    const bridge = new RuntimeWorkerBridge();
+    // No respawn: failing the worker below hands every build to the inline
+    // builder, whose writers are sized before their records are known.
+    const runtime = createRuntime(scene, world, { bridge, respawnLimit: 0 });
+    type Writer = DetailInstanceWriter;
+    type Allocation = { readonly shared: { getBuffer(): object | null; getData(): unknown } };
+    type Batch = {
+      readonly prototypeKey: string;
+      readonly writer: Writer;
+      readonly gpu: Allocation | null;
+      readonly mesh: { isEnabled(): boolean; readonly forcedInstanceCount: number };
+    };
+    const state = runtime as unknown as {
+      publicationStreamBytesPerUpdate: number;
+      readonly batches: Map<string, Batch>;
+      readonly retiredBatches: readonly { readonly batch: Batch }[];
+      readonly detailBuildStoragePool: readonly { readonly writer: Writer }[];
+      readonly instanceBufferPool: readonly { readonly gpu: Allocation }[];
+      readonly pendingPresentationBuild: {
+        readonly buildId: number;
+        readonly coordinates: { readonly key: string };
+        readonly stagedBatches: Map<string, { readonly writer: Writer }>;
+      } | null;
+      readonly pendingPublication: {
+        readonly uploads: readonly {
+          readonly kind: "fits" | "create" | "grow";
+          readonly writer: Writer;
+          readonly packed: Uint8Array;
+          readonly streamedBytes: number;
+          readonly stagedBatch: Batch | null;
+        }[];
+      } | null;
+      readonly presentationChunks: Map<string, {
+        readonly revision: number;
+        readonly batchKeys: Set<string>;
+      }>;
+    };
+    // 4 KiB per update streams a chunk's create and grow uploads over many
+    // updates, so ownership and GPU bytes are checked mid-stream too.
+    state.publicationStreamBytesPerUpdate = 4_096;
+
+    // What the worker transferred for each chunk's latest build, copied as
+    // it arrives (the runtime keeps no reference to these bytes).
+    const transferred = new Map<string, Map<string, Uint8Array>>();
+    bridge.addEventListener("message", (event) => {
+      const data = (event as MessageEvent<DetailWorkerEvent>).data;
+      const build = state.pendingPresentationBuild;
+      if (data.type !== "presentation" || build?.buildId !== data.buildId) return;
+      transferred.set(build.coordinates.key, new Map(
+        data.batches.map((batch) => [batch.prototypeKey, batch.bytes.slice()]),
+      ));
+    });
+
+    const same = (first: Uint8Array, second: Uint8Array): boolean =>
+      NodeBuffer.from(first.buffer, first.byteOffset, first.byteLength)
+        .equals(NodeBuffer.from(second.buffer, second.byteOffset, second.byteLength));
+    const shadowOf = (allocation: Allocation, byteLength: number): Uint8Array | null => {
+      const buffer = allocation.shared.getBuffer();
+      return buffer ? shadows.get(buffer)?.subarray(0, byteLength) ?? null : null;
+    };
+    const failures: string[] = [];
+    const fail = (message: string) => {
+      if (failures.length < 8) failures.push(message);
+    };
+    const everLive = new WeakSet<Writer>();
+    const seen = { create: 0, grow: 0, fits: 0, midStream: 0, midStreamReused: 0, flips: 0, checks: 0 };
+
+    const check = (update: number) => {
+      const live = [...state.batches.values()];
+      const uploads = state.pendingPublication?.uploads ?? [];
+      // One owner per writer, the pending publication's streaming uploads
+      // included; a pooled writer shares no storage with an owned one.
+      const owned = [
+        ...live.map((batch) => batch.writer),
+        ...state.retiredBatches.map((retired) => retired.batch.writer),
+        ...[...(state.pendingPresentationBuild?.stagedBatches.values() ?? [])]
+          .map((staged) => staged.writer),
+        ...uploads.map((upload) => upload.writer),
+      ];
+      if (new Set(owned).size !== owned.length) fail(`update ${update}: a writer has two owners`);
+      const ownedStorage = new Set(owned.map((writer) => writer.finish().buffer));
+      const pooledStorage = new Set(
+        state.detailBuildStoragePool.map((entry) => entry.writer.finish().buffer),
+      );
+      for (const storage of pooledStorage) {
+        if (ownedStorage.has(storage)) fail(`update ${update}: a pooled writer is still owned`);
+      }
+      // Babylon's mirror of any allocation never points into a pooled writer,
+      // and a recycled allocation keeps none.
+      const allocations = [
+        ...live,
+        ...state.retiredBatches.map((retired) => retired.batch),
+        ...uploads.flatMap((upload) => (upload.stagedBatch ? [upload.stagedBatch] : [])),
+      ].flatMap((batch) => (batch.gpu ? [batch.gpu] : []));
+      for (const allocation of allocations) {
+        const mirror = allocation.shared.getData() as Uint8Array | null;
+        if (mirror && pooledStorage.has(mirror.buffer)) {
+          fail(`update ${update}: _data aliases a pooled writer`);
+        }
+      }
+      if (state.instanceBufferPool.some((pooled) => pooled.gpu.shared.getData() !== null)) {
+        fail(`update ${update}: a recycled allocation kept its _data`);
+      }
+
+      // Every drawn batch's GPU bytes are its writer's records.
+      for (const batch of live) {
+        everLive.add(batch.writer);
+        if (!batch.gpu || !batch.mesh.isEnabled() || batch.mesh.forcedInstanceCount === 0) continue;
+        const records = batch.writer.finish();
+        const gpu = shadowOf(batch.gpu, records.byteLength);
+        seen.checks += 1;
+        if (!gpu || !same(gpu, records)) fail(`update ${update}: GPU bytes differ from the live writer`);
+        const mirror = batch.gpu.shared.getData() as Uint8Array | null;
+        if (mirror && !same(mirror, records)) fail(`update ${update}: _data differs from the live writer`);
+      }
+      // Mid-stream, the slices already sent are what the writer still holds.
+      for (const upload of uploads) {
+        seen[upload.kind] += 1;
+        const records = upload.writer.finish();
+        if (upload.packed.buffer !== records.buffer || !same(upload.packed, records)) {
+          fail(`update ${update}: a streaming writer changed under its upload`);
+        }
+        const gpu = upload.stagedBatch?.gpu;
+        if (!gpu || upload.streamedBytes === 0) continue;
+        const sent = shadowOf(gpu, upload.streamedBytes);
+        if (!sent || !same(sent, records.subarray(0, upload.streamedBytes))) {
+          fail(`update ${update}: streamed GPU slices differ from the writer`);
+        }
+        if (upload.streamedBytes < upload.packed.byteLength) {
+          seen.midStream += 1;
+          if (everLive.has(upload.writer)) seen.midStreamReused += 1;
+        }
+      }
+    };
+    // A flipped chunk's GPU bytes are, batch for batch, what was transferred.
+    const checkFlips = (update: number, revisions: ReadonlyMap<string, number>) => {
+      for (const [chunkKey, chunk] of state.presentationChunks) {
+        // A chunk first seen this update starts unpublished, at revision 0.
+        if (chunk.revision === (revisions.get(chunkKey) ?? 0)) continue;
+        const expected = transferred.get(chunkKey);
+        if (!expected) continue;
+        seen.flips += 1;
+        if (chunk.batchKeys.size !== expected.size) fail(`update ${update}: published batch set differs`);
+        for (const batchKey of chunk.batchKeys) {
+          const batch = state.batches.get(batchKey)!;
+          const bytes = expected.get(batch.prototypeKey);
+          const gpu = batch.gpu && bytes ? shadowOf(batch.gpu, bytes.byteLength) : null;
+          if (!bytes || !gpu || !same(gpu, bytes)) fail(`update ${update}: GPU bytes differ from the transfer`);
+        }
+        transferred.delete(chunkKey);
+      }
+    };
+
+    try {
+      // Settle, then fly three chunks east and back: chunks are created,
+      // grow as they come near, rebuild in place and retire, so retired
+      // writers return to the pool and are taken again while uploads stream.
+      let update = 0;
+      const step = (observer: { x: number; y: number; z: number }, velocityX: number) => {
+        const revisions = new Map(
+          [...state.presentationChunks].map(([key, chunk]) => [key, chunk.revision]),
+        );
+        runtime.update({ ...observer, velocityX, velocityZ: 0 }, ORIGIN, quality);
+        bridge.flush();
+        check(update);
+        checkFlips(update, revisions);
+        update += 1;
+      };
+      const fly = () => {
+        for (let pass = 0; pass < 600 && (pass < 8 || runtime.pendingWorkItems > 0); pass += 1) {
+          step(start, 0);
+        }
+        for (const direction of [1, -1]) {
+          for (let pass = 0; pass < 320; pass += 1) {
+            const along = direction > 0 ? pass * 10 : (320 - pass) * 10;
+            step({ ...start, x: start.x + along }, direction * 600);
+          }
+        }
+        for (let pass = 0; pass < 600 && runtime.pendingWorkItems > 0; pass += 1) step(start, 0);
+      };
+
+      fly();
+      expect(failures).toEqual([]);
+      // The flight exercised what the bytes must survive.
+      expect(seen.create).toBeGreaterThan(0);
+      expect(seen.grow).toBeGreaterThan(0);
+      expect(seen.fits).toBeGreaterThan(0);
+      expect(seen.midStream).toBeGreaterThan(0);
+      expect(seen.midStreamReused).toBeGreaterThan(0);
+      expect(seen.flips).toBeGreaterThan(4);
+      expect(seen.checks).toBeGreaterThan(100);
+      const worker = runtime.presentationRebuildDiagnostics;
+      expect(worker.cpuWriterPoolHits).toBeGreaterThan(0);
+      expect(worker.workerFallbacks).toBe(0);
+
+      // The same flight on the inline builder: its staged writers grow and
+      // are refit through the pool while the checks above run every update.
+      bridge.fail();
+      expect(internals(runtime).client).toBeNull();
+      const checksBefore = seen.checks;
+      fly();
+      expect(failures).toEqual([]);
+      const inline = runtime.presentationRebuildDiagnostics;
+      expect(inline.workerFallbacks).toBe(1);
+      expect(inline.publications - inline.workerBuildPublications).toBeGreaterThan(4);
+      expect(seen.checks - checksBefore).toBeGreaterThan(100);
+      expect(inline.cpuWriterGrowths).toBeGreaterThan(0);
+      expect(inline.cpuWriterRefits).toBeGreaterThan(0);
     } finally {
       runtime.dispose();
       scene.dispose();
