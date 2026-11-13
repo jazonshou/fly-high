@@ -259,15 +259,17 @@ export function boardingWalkShare(distance: number): number {
  * How far open the boarding door stands (0 shut .. 1) at a boarding progress:
  * the one timing the sim's doors, the drawn door and the figure's hands all
  * read. Getting in (after the walk's share of the progress), the walker pulls
- * it open as he reaches the door stand (to 0.2 of the rest) and draws it shut
- * behind him as he sits (0.56 to 0.88); getting out, he pushes it open from
- * the seat (0.04 to 0.28) and swings it shut as he steps clear (0.7 to 0.95).
+ * it open from the stand at its handle (to 0.22 of the rest) and it comes in
+ * with the hand on its armrest as he climbs in and sits (0.4 to 0.9, never
+ * further shut than his body in the doorway leaves room for); getting out, he
+ * pushes it open from the seat (0.06 to 0.3) and draws it round after him as
+ * he steps clear, letting it swing shut (0.7 to 0.95).
  */
 export function boardingDoorOpening(action: "getIn" | "getOut", progress: number, walkShare = 0): number {
   const p = Math.min(1, Math.max(0, progress));
-  if (action === "getOut") return Math.min(doorRamp(p, 0.04, 0.28), 1 - doorRamp(p, 0.7, 0.95));
+  if (action === "getOut") return Math.min(doorRamp(p, 0.06, 0.3), 1 - doorRamp(p, 0.7, 0.95));
   const q = (p - walkShare) / (1 - walkShare);
-  return Math.min(doorRamp(q, -0.02, 0.2), 1 - doorRamp(q, 0.56, 0.88));
+  return Math.min(doorRamp(q, 0, 0.22), 1 - doorRamp(q, 0.4, 0.9));
 }
 
 function doorRamp(value: number, start: number, end: number): number {

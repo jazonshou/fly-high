@@ -191,18 +191,29 @@ cross-fades from the last drawn pose:
 - **Car** (`carSeat.ts`): the walk to the door, getting in, getting out,
   and seated with the hands on the rim (each re-gripping a third of a turn
   back as the wheel turns) and the feet on the pedals. Getting in is one
-  move from wherever he stood within reach: he walks to the door stand at a
-  walking pace (`boardingWalkSeconds`, carrying on from the velocity he had),
-  opens the door as he arrives, steps into its opening with the near foot,
-  puts the other up on the step, hoists himself by the pillar's handle, ducks
-  in, sits and draws the door shut (2.4 s after the walk). Getting out is
-  the reverse (2.4 s). His feet are the planter's throughout: the step into
-  the opening is a step to a place asked for, a foot going up to the step is
-  picked up from rest, and neither foot leaves the ground while the other is
-  in the air. A hand reaching for a hold straightens its arm only
-  asymptotically (`softReach`), so it does not lock in a frame. The sim's
-  door, the drawn door and the hands read one opening
-  (`boardingDoorOpening`). ESTIMATES.
+  move from wherever he stood within reach: he walks up to the door's handle
+  at a walking pace (`boardingWalkSeconds`, carrying on from the velocity he
+  had), takes it with the outer hand as he arrives and pulls the door open,
+  the hand sliding back along it and round its trailing edge to the armrest
+  inside; he steps into the opening with the near foot, puts the other up on
+  the step, hauls himself in by the wheel's rim with the inner hand, ducks
+  in, sits and draws the door shut by the armrest (2.4 s after the walk).
+  Getting out (2.4 s): he pushes the door open from the armrest, turns out
+  on the seat with that hand to his knee, steps down with the other hand on
+  the door's top beside him, and shuts the door with it. The door opens to
+  its check strap's first stop (50 degrees), so it stays within his reach.
+  His feet are the planter's throughout: the step into the opening is a step
+  to a place asked for, a foot going up to the step is picked up from rest,
+  and neither foot leaves the ground while the other is in the air.
+  **A hand holds only what its arm reaches** (`armReach.ts`): the elbow is a
+  hinge that hangs down, out and a little back and never quite straightens
+  (35 degrees of bend at the least), the chest and the shoulder go a little
+  way after a far hold before the arm strains for it, and a hand is laid on
+  a hold either end on (a handle, the wheel's rim) or palm down (the
+  armrest, the door's top), the forearm taking most of the hand's roll.
+  A hold comes on and goes off by its weight, the arm swinging between its
+  own pose and the reach. The sim's door, the drawn door and the hands read
+  one opening (`boardingDoorOpening`). ESTIMATES.
 - **Look**: the head and neck turn toward the camera's aim (up to 70
   degrees either way, 40 up, 45 down, the neck taking 40%); looking back past
   100 degrees eases the head to the front.
@@ -243,6 +254,15 @@ Foot strikes (count, strength, foot) go back to the renderer for the sounds.
   renderer move it, and the pelvis, head, hands and feet are each held to an
   acceleration from one frame to the next (35 to 180 m/s2 by part and move;
   one frame's 3 cm jump is 108).
+- `tests/render.person-arm-reach.test.ts`: the reaching arm. A grip taken
+  end on brings the wrist a palm short of it with the elbow bent and below
+  the line; the arm never straightens and draws out to a far hold without a
+  snap; the chest and shoulder go after it; a palm is laid flat on a ledge,
+  fingers the way the forearm comes or the way the hold says. Getting in
+  and out by either door: a hand at full weight is within its arm's reach
+  and on its hold, the elbows keep over 30 degrees of bend, no wrist or palm
+  passes through the door's slab, and the handle is reached for only from
+  near it.
 - `tests/gpu/person-figure.test.ts`: compile and inter-stage audit, draws
   per tier, the skin following the bones, the maps lit the way the bake
   made them (the image's top at the top, the normal map's X and Y), the

@@ -2,6 +2,7 @@ import { DOUBLE_ZERO } from "@/src/sim/ground/doubleZero";
 import type { PersonBoardingState } from "@/src/game/types";
 import { boardingDoorOpening, CAR_SEATING, PERSON } from "@/src/vehicles/person";
 import { BODY, DOOR_LINES, FRONT_DOOR_HINGE, GLASSHOUSE, STEERING_WHEEL } from "../ground/lc76Lines";
+import { createHold, mixHolds, type Hold } from "./armReach";
 import { both, CHANNEL_COUNT, channels, createChannels, mirrorChannels } from "./channels";
 import { PROPORTIONS } from "./figureProportions";
 import { STAND } from "./actions";
@@ -38,19 +39,34 @@ import { STAND } from "./actions";
  *
  * GETTING IN (right door, right-hand drive; the left door is the mirror
  * image, sliding across the passenger seat): walk from where the walker
- * stood to the door stand, behind the door's trailing edge, the outer hand
- * out to the handle; pull the door open past him; a step in to the opening,
- * the outer hand to the door's pull inside; the inner foot up onto the side
- * step, the inner hand to the A-pillar's grab handle; up off the step,
+ * stood to the handle, half facing the door behind its trailing edge; the
+ * outer hand takes the handle over the walk's last step and pulls the door
+ * open past him, sliding back along it to its trailing edge and round it as
+ * it swings; a step in to the opening, the outer hand along the inside of
+ * the door to its armrest; the inner foot up onto
+ * the side step, the inner hand in to the wheel's rim; up off the step,
  * leaning in under the door's top, the outer leg trailing; the inner leg into
- * the footwell and down onto the seat, the outer leg after it, the outer hand
- * drawing the door shut as he sits; both hands to the wheel. GETTING OUT: the
- * outer hand pushes the door open; he turns out on the seat and swings the
- * outer leg onto the step; slides forward off the cushion and out under the
- * door's top, the inner hand on the grab handle; the inner foot down to the
- * ground, then the outer off the step; two steps clear to
- * `CAR_SEATING.doorStand`, the inner hand swinging the door shut behind him;
- * he ends facing away from the car.
+ * the footwell and down onto the seat, the outer leg after it, the door
+ * coming in with the hand on its armrest and drawn shut as he sits; the
+ * hands to their places on the wheel. GETTING OUT: the outer hand pushes the
+ * door open off its armrest and lets it swing; he turns out on the seat and
+ * swings the outer leg onto the step, the outer hand off the door and down
+ * by his thigh; slides forward off the cushion and out under the door's top,
+ * the inner hand across from the wheel to the open door's top beside him;
+ * the inner foot down to the ground, then the outer off the step; two steps
+ * clear to `CAR_SEATING.doorStand`, the inner hand drawing the door round
+ * after him and letting it swing shut; he ends facing away from the car.
+ *
+ * A HAND HOLDS ONLY WHAT ITS ARM REACHES. Each hold above is within the
+ * arm's easy reach of the shoulder for as long as the hand is on it (the
+ * handle and the door's edge from the stand at the door, the armrest from the opening and from
+ * the seat with the door within a hand of shut, the door's top from the
+ * ground beside it), and the door's swing is timed so the hand on it can
+ * stay there; between holds the arm is the pose's own, and a hand leaves one
+ * hold and comes to the next on the arm's arc (`armReach.ts`). The grab
+ * handle inside the A pillar is 1.08 m ahead of the hip point, out of a
+ * climbing man's reach until he is in the seat: he hauls himself in on the
+ * wheel.
  *
  * THE PELVIS'S PATH and the pose run on ONE curve through the keys (a
  * Catmull-Rom spline in the progress): its speed carries through every key
@@ -104,17 +120,58 @@ export function doorOpenAt(action: PersonBoardingState["action"], progress: numb
   return boardingDoorOpening(action, progress, walkShare);
 }
 
-/** A point on the right front door opened by `open`, `along` metres back from the hinge, `height` above the ground, `out` off its skin, into limb `limb`'s target. */
-function doorPoint(open: number, along: number, height: number, out: number, target: Float64Array, limb: number): void {
+/**
+ * What a hand holds on the right front door (`along` metres back from the
+ * hinge, `height` above the ground, `out` off its skin), read off the drawn
+ * door: the handle outside, a black pull just under the belt from 0.13 to
+ * 0.27 m from the trailing edge (`carAtlas.ts`), taken by its trailing end; the armrest inside, a 0.05 m ledge along
+ * the door card with its top 1.12 m up (`carBody.ts`); the door's top inside
+ * the glass, the slab's steel at the belt.
+ */
+const DOOR_HANDLE = Object.freeze({ along: DOOR_LENGTH - 0.15, height: BODY.belt - 0.065, out: 0.035 });
+const DOOR_ARMREST = Object.freeze({ height: 1.12, out: -0.15 });
+/** The door's trailing edge where a hand takes it to swing it: under the belt, a little past the edge, in the slab's middle. */
+const DOOR_EDGE = Object.freeze({ past: 0.025, height: BODY.belt - 0.1, out: -0.05 });
+const DOOR_TOP = Object.freeze({ height: BODY.belt, out: -0.09 });
+
+/** A hold's place on the right front door opened by `open`: `along` metres back from the hinge, `height` above the ground, `out` off its skin. */
+function doorHold(hold: Hold, open: number, along: number, height: number, out: number): void {
   const angle = open * DOOR_OPEN_RADIANS;
   const c = Math.cos(angle);
   const s = Math.sin(angle);
-  target[limb * 3] = DOOR_HINGE_X - along * c + out * s - HIP.forward;
-  target[limb * 3 + 1] = height - HIP_ABOVE_GROUND;
-  target[limb * 3 + 2] = FRONT_DOOR_HINGE.z + along * s + out * c - HIP.right;
+  hold.x = DOOR_HINGE_X - along * c + out * s - HIP.forward;
+  hold.y = height - HIP_ABOVE_GROUND;
+  hold.z = FRONT_DOOR_HINGE.z + along * s + out * c - HIP.right;
 }
 
-/** The limbs' slots in the targets and weights. */
+/**
+ * A hand laid on the door opened by `open`, palm down: the fingers along
+ * the door, toward its trailing edge (`back` 1) or its hinge (-1), by `told`
+ * (the rest the way the forearm comes: all of that would point them into the
+ * door card from a shoulder square to it).
+ */
+function layOnDoor(hold: Hold, open: number, back: 1 | -1, told: number): void {
+  const angle = open * DOOR_OPEN_RADIANS;
+  hold.palm = 1;
+  hold.told = told;
+  hold.palmX = 0;
+  hold.palmY = -1;
+  hold.palmZ = 0;
+  hold.fingersX = -back * Math.cos(angle);
+  hold.fingersY = 0;
+  hold.fingersZ = back * Math.sin(angle);
+}
+
+/** A grip taken end on (a rim, a handle): the hand carries on from the forearm. */
+function gripAt(hold: Hold, x: number, y: number, z: number): void {
+  hold.x = x;
+  hold.y = y;
+  hold.z = z;
+  hold.palm = 0;
+  hold.told = 0;
+}
+
+/** The hands' slots in the holds, and the feet's in the targets and weights (after the hands' two, which are not read). */
 const LEFT_HAND = 0;
 const RIGHT_HAND = 1;
 const LEFT_FOOT = 2;
@@ -130,56 +187,97 @@ export const SEATED = channels({
   headFlex: -6,
 });
 const GRIP = { fingers: 55, thumb: 28 } as const;
-/** At the door, an arm out to its handle, the weight a little back as it swings open. */
-const AT_DOOR = channels({ ...both({ shAbd: -4, elbow: 14, fingers: 28, thumb: 15, knee: 4, kneeRot: -6 }), spineFlex: 7, spineTurn: -6, neckFlex: 5 });
-const DOOR_OPEN = channels({ ...both({ shAbd: -4, elbow: 16, fingers: 30, thumb: 15, knee: 3, kneeRot: -6 }), spineFlex: 2, neckFlex: 3 });
-/** A step in to the opening, the hands going up. */
-const STEP_IN = channels({ ...both({ shFlex: 18, elbow: 30, knee: 14, hipFlex: 6, ankle: 7, kneeRot: -6, ...GRIP }), spineFlex: 6, neckFlex: -2 });
-/** The inner foot up on the side step, the weight going onto it. */
+/** An arm hanging easy by the side. */
+const EASY = { shAbd: -4, elbow: 14, fingers: 28, thumb: 15 } as const;
+
+/** One arm's channels under side `side`'s names. */
+function arm<S extends "L" | "R">(side: S, values: Partial<Record<"shFlex" | "shAbd" | "shRot" | "elbow" | "foreTwist" | "wristFlex" | "fingers" | "thumb" | "clavElev" | "clavProt", number>>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const name of Object.keys(values) as (keyof typeof values)[]) out[`${name}${side}`] = values[name]!;
+  return out;
+}
+
+// The arms' own poses below are what a hand passes through between its holds (a hold at its full weight sets the
+// arm whatever they say): the outer arm (R) the door's, the inner one (L) the wheel's.
+
+/** At the door, the outer hand out to its handle, the weight a little back as it swings open. */
+const AT_DOOR = channels({
+  ...both({ knee: 4, kneeRot: -6 }),
+  ...arm("R", { shFlex: 38, shAbd: 4, elbow: 46, foreTwist: 25, ...GRIP }),
+  ...arm("L", EASY),
+  spineFlex: 7, spineTurn: -4, neckFlex: 6,
+});
+const DOOR_OPEN = channels({
+  ...both({ knee: 3, kneeRot: -6 }),
+  ...arm("R", { shFlex: 2, shAbd: 8, elbow: 42, foreTwist: 10, fingers: 36, thumb: 18 }),
+  ...arm("L", EASY),
+  spineFlex: 2, neckFlex: 3,
+});
+/** A step in to the opening, the outer hand going to the door's armrest. */
+const STEP_IN = channels({
+  ...both({ knee: 14, hipFlex: 6, ankle: 7, kneeRot: -6 }),
+  ...arm("R", { shFlex: 12, shAbd: 18, elbow: 58, foreTwist: 55, fingers: 30, thumb: 18 }),
+  ...arm("L", { shFlex: 8, shAbd: -2, elbow: 26, fingers: 30, thumb: 16 }),
+  spineFlex: 6, neckFlex: -2,
+});
+/** The inner foot up on the side step, the weight going onto it, the inner hand in toward the wheel. */
 const FOOT_UP = channels({
-  ...both({ shFlex: 30, elbow: 40, ...GRIP }),
+  ...arm("R", { shFlex: 14, shAbd: 20, elbow: 62, foreTwist: 60, fingers: 30, thumb: 18 }),
+  ...arm("L", { shFlex: 42, shAbd: 4, elbow: 48, foreTwist: 20, fingers: 40, thumb: 22 }),
   hipFlexL: 76, kneeL: 98, ankleL: 8, hipAbdL: 8, hipFlexR: -4, kneeR: 6, pelvisTilt: 6, spineFlex: 18, neckFlex: -8,
 });
 /** Up off the step: the inner leg straightening under him, the outer one off the ground, the trunk in under the door's top. */
 const HOIST = channels({
-  ...both({ shFlex: 35, elbow: 55, ...GRIP }),
+  ...arm("R", { shFlex: 4, shAbd: 24, elbow: 58, foreTwist: 60, fingers: 30, thumb: 18 }),
+  ...arm("L", { shFlex: 58, shAbd: 6, elbow: 52, foreTwist: 25, ...GRIP }),
   hipFlexL: 66, kneeL: 76, ankleL: 12, hipAbdL: 6, hipFlexR: 8, kneeR: 46, ankleR: -28, hipAbdR: 6, pelvisTilt: 10, spineFlex: 32, neckFlex: -14,
 });
 /** In the doorway over the seat's corner, the inner leg going to the footwell, the outer knee coming up. */
 const DUCK_IN = channels({
-  ...both({ shFlex: 38, elbow: 55, ...GRIP }),
+  ...arm("R", { shFlex: 6, shAbd: 26, elbow: 64, foreTwist: 60, fingers: 30, thumb: 18 }),
+  ...arm("L", { shFlex: 56, shAbd: 8, elbow: 56, foreTwist: 30, ...GRIP }),
   hipFlexL: 70, kneeL: 66, ankleL: 6, hipAbdL: 4, hipFlexR: 40, kneeR: 84, ankleR: -16, hipAbdR: 14, pelvisTilt: 6, spineFlex: 36, neckFlex: -16, headFlex: -4,
 });
 /** Down onto the cushion, the outer leg coming in over the sill. */
 const SIT_IN = channels({
-  ...both({ shFlex: 42, elbow: 45, ...GRIP }),
+  ...arm("R", { shFlex: 16, shAbd: 20, elbow: 70, foreTwist: 55, fingers: 30, thumb: 18 }),
+  ...arm("L", { shFlex: 52, shAbd: 10, elbow: 44, foreTwist: 36, ...GRIP }),
   hipFlexL: 84, kneeL: 82, ankleL: 10, hipAbdL: 6, hipFlexR: 80, kneeR: 100, ankleR: 2, hipAbdR: 22, hipRotR: -10, pelvisTilt: -6, spineFlex: 34, neckFlex: -17, headFlex: -5,
 });
 
-/** Turned out on the seat, looking out of the door, the outer leg swinging over the sill. */
+/** Turned out on the seat, looking out of the door, the outer leg swinging over the sill, the outer hand back off the door. */
 const TURN_OUT = channels({
-  ...both({ shFlex: 42, elbow: 45, ...GRIP }),
+  ...arm("R", { shFlex: 26, shAbd: 12, elbow: 66, foreTwist: 45, fingers: 32, thumb: 18 }),
+  ...arm("L", { shFlex: 50, shAbd: 8, elbow: 42, foreTwist: 36, ...GRIP }),
   hipFlexL: 84, kneeL: 80, ankleL: 10, hipAbdL: 2, hipFlexR: 82, kneeR: 76, ankleR: 4, hipAbdR: 26, hipRotR: -14,
   pelvisTilt: -8, spineFlex: 38, spineTurn: 14, neckFlex: -8, neckTurn: 16, headTurn: 10,
 });
-/** On the cushion's edge, the outer foot on the step, leaning out under the door's top. */
+/** On the cushion's edge, the outer foot on the step, leaning out under the door's top, the outer hand on its knee. */
 const EDGE = channels({
-  ...both({ shFlex: 36, elbow: 45, ...GRIP }),
+  ...arm("R", { shFlex: 34, shAbd: 6, elbow: 48, foreTwist: 60, fingers: 30, thumb: 18 }),
+  ...arm("L", { shFlex: 36, shAbd: 0, elbow: 108, foreTwist: 50, fingers: 36, thumb: 20 }),
   hipFlexL: 82, kneeL: 92, ankleL: 0, hipAbdL: 8, hipFlexR: 74, kneeR: 98, ankleR: 8, hipAbdR: 12,
   pelvisTilt: 2, spineFlex: 40, spineTurn: 8, neckFlex: -6, neckTurn: 8,
 });
-/** Off the cushion, the weight on the step, the inner leg reaching down for the ground. */
+/** Off the cushion, the weight on the step, the inner leg reaching down for the ground, the outer arm out for balance. */
 const STEP_DOWN = channels({
-  ...both({ shFlex: 30, elbow: 40, ...GRIP }),
+  ...arm("R", { shFlex: 14, shAbd: 20, elbow: 44, foreTwist: 30, fingers: 30, thumb: 16 }),
+  ...arm("L", { shFlex: 50, shAbd: 10, elbow: 90, foreTwist: 60, fingers: 30, thumb: 18 }),
   hipFlexL: 42, kneeL: 22, ankleL: -28, hipAbdL: 4, hipFlexR: 80, kneeR: 108, ankleR: 14, hipAbdR: 8, pelvisTilt: 8, spineFlex: 30, neckFlex: -8,
 });
 /** The inner foot on the ground taking the weight, the outer coming off the step. */
 const TOUCH_DOWN = channels({
-  ...both({ shFlex: 14, elbow: 30, fingers: 40, thumb: 20 }),
+  ...arm("R", { shFlex: 4, shAbd: 10, elbow: 30, fingers: 30, thumb: 16 }),
+  ...arm("L", { shFlex: 40, shAbd: 24, elbow: 50, foreTwist: 60, fingers: 30, thumb: 18 }),
   hipFlexL: 20, kneeL: 12, ankleL: -4, hipFlexR: 50, kneeR: 84, ankleR: -10, hipAbdR: 8, pelvisTilt: 4, spineFlex: 16, neckFlex: -6,
 });
-/** Both feet down, the knees still soft. */
-const ON_GROUND = channels({ ...both({ shAbd: -3, elbow: 18, fingers: 30, thumb: 15, hipFlex: 8, knee: 14, ankle: 6, kneeRot: -6 }), spineFlex: 6 });
+/** Both feet down, the knees still soft, the inner hand on the door and a glance at it. */
+const ON_GROUND = channels({
+  ...both({ hipFlex: 8, knee: 14, ankle: 6, kneeRot: -6 }),
+  ...arm("R", { shAbd: -2, elbow: 18, fingers: 30, thumb: 15 }),
+  ...arm("L", { shFlex: 30, shAbd: 26, elbow: 54, foreTwist: 55, fingers: 30, thumb: 18 }),
+  spineFlex: 6, spineTurn: -8, neckTurn: -16, headTurn: -10,
+});
 
 /**
  * A key: the progress, the pelvis's place, the body's turn to the right, the
@@ -191,11 +289,19 @@ type Key = readonly [p: number, x: number, y: number, z: number, yaw: number, po
 const STAND_HIP = SEAT.ground + PROPORTIONS.hipHeight;
 const DOOR = SEAT.doorStand;
 const STEP = SEAT.step;
-/** The facing at the door stand getting in: forward along the car and in toward it. */
-const AT_DOOR_YAW = -0.5;
+/**
+ * Where he stands to open the door, and his facing there: half toward the
+ * car, behind the door's trailing edge and 0.19 m outside the arc it swings
+ * on, the handle 0.48 m ahead of the outer shoulder and a hand under it,
+ * where a hand takes a door's handle with the elbow well bent. (The walker's
+ * own stand, `CAR_SEATING.doorStand`, is a capsule's width off the body; the
+ * figure steps 0.3 m in from it to the handle and back out to it.)
+ */
+const HANDLE_STAND = Object.freeze([-0.16, 0.83] as const);
+const AT_DOOR_YAW = -0.85;
 
 /** Where the hips are a step in to the opening, and the body's turn there. */
-const STEP_IN_AT = Object.freeze([0.12, 0.9, -0.42] as const);
+const STEP_IN_AT = Object.freeze([0.1, 0.86, -0.5] as const);
 /** Where the outer foot's ankle comes down on that step: under its hip there (0.09 m out from the pelvis) and 0.06 m on, the way he faces. */
 const STEP_IN_FOOT = Object.freeze([
   STEP_IN_AT[0] - 0.09 * Math.sin(STEP_IN_AT[2]) + 0.06 * Math.cos(STEP_IN_AT[2]),
@@ -207,15 +313,15 @@ const STEP_IN_FOOT = Object.freeze([
  * it (0 at the stand .. 1 seated).
  */
 const GET_IN: readonly Key[] = [
-  [0, DOOR[0], STAND_HIP, DOOR[2], AT_DOOR_YAW, AT_DOOR, true],
-  // (He stands until the door has swung past him and his feet are together under him.)
-  [0.13, DOOR[0] - 0.01, STAND_HIP, DOOR[2] + 0.01, -0.46, DOOR_OPEN],
+  [0, HANDLE_STAND[0], STAND_HIP, HANDLE_STAND[1], AT_DOOR_YAW, AT_DOOR, true],
+  // (He stands, the weight going back, until the door has swung past him.)
+  [0.13, HANDLE_STAND[0] - 0.06, STAND_HIP, HANDLE_STAND[1] + 0.065, AT_DOOR_YAW + 0.05, DOOR_OPEN],
   // In to the opening, between the open door and the B pillar: one step, the outer foot leading.
   [0.27, STEP_IN_AT[0], STAND_HIP - 0.025, STEP_IN_AT[1], STEP_IN_AT[2], STEP_IN],
   [0.38, 0.2, STAND_HIP - 0.025, 0.82, -0.38, FOOT_UP],
   // The hips stay ahead of the B pillar (x 0.025) until they are inboard of the door's skin.
-  [0.49, 0.32, -0.07, 0.62, -0.3, HOIST],
-  [0.6, 0.3, 0.01, 0.4, -0.16, DUCK_IN],
+  [0.49, 0.26, -0.07, 0.62, -0.3, HOIST],
+  [0.6, 0.23, 0.01, 0.4, -0.16, DUCK_IN],
   [0.71, 0.1, 0.01, 0.14, -0.05, SIT_IN],
   [0.84, 0, 0, 0, 0, SEATED, true],
   [1, 0, 0, 0, 0, SEATED, true],
@@ -248,6 +354,15 @@ function track(keys: readonly Key[]): Track {
 const GET_IN_TRACK = track(GET_IN);
 const GET_OUT_TRACK = track(GET_OUT);
 
+/** The outer hand is on the door's handle from within this far of it (the pelvis's distance over the ground: all of it, none of it). */
+const HANDLE_WITHIN = Object.freeze([0.46, 1] as const);
+/** Where a hand lies on the door's armrest, metres back from the hinge: getting in (from the opening, then from the seat), and pushing the door open from the seat. */
+const ARMREST_ALONG_IN = Object.freeze([0.52, 0.82] as const);
+const ARMREST_ALONG_OUT = 0.8;
+/** Where the inner hand lies on the door's top getting out, metres back from the hinge: as he comes down, and by its trailing end to draw it shut. */
+const DOOR_TOP_ALONG = Object.freeze([0.92, 1.07] as const);
+/** Where on the wheel's rim the inner hand hauls him in: the side he comes from, above its middle. */
+const RIM_HAUL_CLOCK = 0.9;
 /** Past a re-grip's threshold by this share of a third of a turn before the hand lets go. */
 const REGRIP_MARGIN = 0.05;
 /** A foot going between two of its places lifts this far over the straight line between them. */
@@ -273,13 +388,17 @@ export interface SeatPlacement {
   gait: number;
   /** 0..1: how much the feet stand on the ground (the foot planter's weight). */
   ground: number;
+  /** Getting in, on his feet at the door before he climbs: the body comes up off its last stride as a walker's does, not as a climber's. */
+  afoot: boolean;
   /** Each foot asked to stand on the ground, left then right. */
   stance: [boolean, boolean];
   /** A foot to step as the body moves off, once the other is down, and where its ankle comes down, seat frame (the foot planter's `step`): 0 left, 1 right, -1 none. */
   step: -1 | 0 | 1;
   stepX: number;
   stepZ: number;
-  /** Limb targets, seat frame, and their weights: left hand, right hand, left foot, right foot. */
+  /** What each hand holds, seat frame: left, right (`armReach.ts`). */
+  readonly holds: readonly [Hold, Hold];
+  /** The feet's targets, seat frame, and their weights, in the slots after the hands' (which are not read): left foot, right foot. */
   readonly targets: Float64Array;
   readonly weights: Float64Array;
 }
@@ -307,19 +426,24 @@ export class CarSeatMotion {
     walkSpeed: DOUBLE_ZERO,
     gait: DOUBLE_ZERO,
     ground: DOUBLE_ZERO,
+    afoot: false,
     stance: [true, true],
     step: -1,
     stepX: DOUBLE_ZERO,
     stepZ: DOUBLE_ZERO,
+    holds: [createHold(), createHold()],
     targets: new Float64Array(12),
     weights: new Float64Array(4),
   };
   private readonly mirror = createChannels();
-  /** The getting-in-and-out moves' own targets (door, pillar, step) and the seat's (wheel, pedals), mixed at the end. */
+  /** The getting-in-and-out moves' own holds and targets (door, step) and the seat's (wheel, pedals), mixed at the end. */
+  private readonly moveHolds: [Hold, Hold] = [createHold(), createHold()];
+  private readonly seatHolds: [Hold, Hold] = [createHold(), createHold()];
   private readonly moveTargets = new Float64Array(12);
   private readonly moveWeights = new Float64Array(4);
   private readonly seatTargets = new Float64Array(12);
   private readonly seatWeights = new Float64Array(4);
+  private readonly rim = new Float64Array(3);
   /** Each hand's re-grip offset on the wheel, radians, easing out, and the shuffle count it was at. */
   private readonly regrip = new Float64Array(2);
   private readonly shuffle = new Float64Array(2);
@@ -342,9 +466,16 @@ export class CarSeatMotion {
     const mw = this.moveWeights;
     mw.fill(0);
     this.seatWeights.fill(0);
+    const leftHold = this.moveHolds[LEFT_HAND];
+    const rightHold = this.moveHolds[RIGHT_HAND];
+    leftHold.weight = 0;
+    rightHold.weight = 0;
+    this.seatHolds[LEFT_HAND].weight = 0;
+    this.seatHolds[RIGHT_HAND].weight = 0;
     place.walkSpeed = 0;
     place.gait = 0;
     place.step = -1;
+    place.afoot = false;
     if (!boarding) {
       out.set(SEATED);
       place.x = 0;
@@ -376,6 +507,7 @@ export class CarSeatMotion {
       // then the inner one up onto the step, and the outer off the ground as he rises.
       // (The feet keep the planter's hold until both are off the ground and into the pose's own places.)
       place.ground = 1 - smooth(0.54, 0.6, q);
+      place.afoot = q < 0.26;
       place.stance[0] = q < 0.26;
       place.stance[1] = q < 0.4;
       if (q > 0.115 && q < 0.2) {
@@ -389,18 +521,38 @@ export class CarSeatMotion {
       lerpLimb(mt, LEFT_FOOT, STEP[0], STEP[1] + PROPORTIONS.ankleHeight + STEP_UP_ARC * (1 - up), STEP[2], SILL[0], SILL[1], SILL[2], smooth(0.55, 0.65, q));
       mw[LEFT_FOOT] = up * (1 - smooth(0.63, 0.75, q));
       setLimb(mt, mw, RIGHT_FOOT, SILL[0] - 0.05, SILL[1], SILL[2] + 0.04, smooth(0.55, 0.67, q) * (1 - smooth(0.69, 0.81, q)));
-      // The outer hand goes out to the door's handle as he comes up to it, pulls it open and lets it swing on,
-      // then holds its pull inside from the step in until it has drawn the door shut.
-      const reach = walking ? smooth(0.5, 0.95, p / walk) : 1 - smooth(0.08, 0.2, q);
-      const hold = smooth(0.2, 0.34, q) * (1 - smooth(0.86, 0.98, q));
-      if (q < 0.2) doorPoint(door, DOOR_LENGTH - 0.12, 1.12, 0.05, mt, RIGHT_HAND);
-      else doorPoint(door, DOOR_LENGTH - 0.45, 1.02, -0.08, mt, RIGHT_HAND);
-      mw[RIGHT_HAND] = Math.max(reach, hold);
-      // The inner hand takes the pillar's handle as the body comes within its reach.
-      setLimb(mt, mw, LEFT_HAND, SEAT.pillarHandle[0], SEAT.pillarHandle[1], SEAT.pillarHandle[2], smooth(0.27, 0.45, q) * (1 - smooth(0.66, 0.82, q)));
+      // The outer hand takes the door's handle over the walk's last step and pulls the door open; as it swings it
+      // slides back along it to the trailing edge and round it, swinging the door on by that, and from the step in
+      // it lies on the door's armrest inside, the door coming in with it.
+      // (One hold all the way, moving on the door: it never lets go of a door swinging past it.)
+      {
+        const toEdge = smooth(0.04, 0.14, q);
+        const round = smooth(0.12, 0.18, q);
+        const inside = smooth(0.2, 0.26, q);
+        const toArmrest = smooth(0.23, 0.4, q);
+        // (Ahead of his shoulder on the armrest while he climbs; as he sits the hand shifts back along it to beside him, to draw the door shut.)
+        const shift = smooth(0.56, 0.72, q);
+        const edge = DOOR_LENGTH + DOOR_EDGE.past;
+        const along = DOOR_HANDLE.along + (edge - DOOR_HANDLE.along) * toEdge + (ARMREST_ALONG_IN[0] - edge) * toArmrest + (ARMREST_ALONG_IN[1] - ARMREST_ALONG_IN[0]) * shift;
+        const height = DOOR_HANDLE.height + (DOOR_EDGE.height - DOOR_HANDLE.height) * toEdge + (DOOR_ARMREST.height - DOOR_EDGE.height) * toArmrest;
+        const off = DOOR_HANDLE.out + (DOOR_EDGE.out - DOOR_HANDLE.out) * round + (DOOR_ARMREST.out - DOOR_EDGE.out) * inside;
+        doorHold(rightHold, door, along, height, off);
+        layOnDoor(rightHold, door, -1, 0.5);
+        rightHold.palm = toArmrest;
+        // (It goes out to the handle as he comes within an arm of it: over the walk's last step, not held out on the way.
+        // Through the far door he lets go of the armrest as he slides across to the driver's seat.)
+        const within = 1 - smooth(HANDLE_WITHIN[0], HANDLE_WITHIN[1], Math.hypot(rightHold.x - place.x, rightHold.z - place.z));
+        rightHold.weight = (q > 0 ? 1 : within) * (1 - 2.4 * shift * (1 - shift)) * (1 - (sideSign < 0 ? smooth(0.76, 0.86, q) : smooth(0.84, 0.93, q)));
+      }
+      // The inner hand goes in to the wheel's rim on the side he comes from as he puts his weight on the step, hauls
+      // him up and in by it, and goes round the rim's top to its own place as his shoulders come in over the wheel.
+      const own = -(Math.PI / 2 + 0.15) + steeringWheel;
+      gripPoint(RIM_HAUL_CLOCK + (own - RIM_HAUL_CLOCK) * smooth(0.48, 0.72, q), this.rim, 0);
+      gripAt(leftHold, this.rim[0]!, this.rim[1]!, this.rim[2]!);
+      leftHold.weight = smooth(0.36, 0.5, q) * (1 - smooth(0.7, 0.82, q));
       seatedShare = smooth(0.71, 0.84, q);
-      // Each hand goes straight from its hold to the wheel (the two weights cross).
-      this.hands(steeringWheel, smooth(0.66, 0.82, q), smooth(0.86, 0.98, q), deltaSeconds);
+      // Each hand goes from its hold to its place on the wheel.
+      this.hands(steeringWheel, smooth(0.7, 0.82, q), smooth(0.87, 0.98, q), deltaSeconds);
       this.pedals(smooth(0.61, 0.79, q), smooth(0.69, 0.87, q));
     } else {
       // The inner foot reaches the ground as the hips come down off the sill, then the outer one off the step.
@@ -413,19 +565,25 @@ export class CarSeatMotion {
       mw[RIGHT_FOOT] = smooth(0.1, 0.22, p) * (1 - smooth(0.58, 0.72, p));
       // The inner foot over the sill after it, then down for the ground.
       setLimb(mt, mw, LEFT_FOOT, SILL[0], SILL[1], SILL[2], smooth(0.22, 0.34, p) * (1 - smooth(0.36, 0.46, p)));
-      // The outer hand pushes the door open by its pull and steadies him on it down to the ground.
+      // The outer hand goes from the wheel to the door's armrest, pushes the door open off it and lets it swing.
       // (From the driver's seat to the far door he reaches for it as he slides across, not at arm's length at once.)
-      doorPoint(door, DOOR_LENGTH - 0.45, 1.02, -0.08, mt, RIGHT_HAND);
-      mw[RIGHT_HAND] = (sideSign < 0 ? smooth(0.04, 0.22, p) : smooth(0.02, 0.09, p)) * (1 - smooth(0.48, 0.66, p));
-      // The inner hand takes the pillar's handle, then goes across to the door's edge and swings it shut behind him.
-      doorPoint(door, DOOR_LENGTH - 0.15, 1.15, 0.06, mt, LEFT_HAND);
-      lerpLimb(
-        mt, LEFT_HAND, SEAT.pillarHandle[0], SEAT.pillarHandle[1], SEAT.pillarHandle[2],
-        mt[LEFT_HAND * 3]!, mt[LEFT_HAND * 3 + 1]!, mt[LEFT_HAND * 3 + 2]!, smooth(0.54, 0.72, p),
+      doorHold(rightHold, door, ARMREST_ALONG_OUT, DOOR_ARMREST.height, DOOR_ARMREST.out);
+      layOnDoor(rightHold, door, -1, 0.5);
+      rightHold.weight = (sideSign < 0 ? smooth(0.04, 0.2, p) : smooth(0.01, 0.09, p)) * (1 - smooth(0.1, 0.24, p));
+      // The inner hand comes across from the wheel to the open door's top beside him as he slides out, steadies him
+      // on it down to the ground, and draws the door round after him as he steps clear, letting it swing shut.
+      // (It comes to the door's top from over it and inside it, not up through the door card.)
+      // (And it lets go off the door's trailing end, the door swinging on shut past it.)
+      const over = 1 - smooth(0.44, 0.6, p);
+      const letGo = smooth(0.7, 0.78, p);
+      doorHold(
+        leftHold, door, DOOR_TOP_ALONG[0] + (DOOR_TOP_ALONG[1] - DOOR_TOP_ALONG[0]) * smooth(0.5, 0.64, p) + 0.16 * letGo,
+        DOOR_TOP.height + 0.1 * over + 0.03 * letGo, DOOR_TOP.out - 0.2 * over - 0.1 * letGo,
       );
-      mw[LEFT_HAND] = smooth(0.26, 0.42, p) * (1 - smooth(0.86, 0.95, p));
+      layOnDoor(leftHold, door, 1, 1);
+      leftHold.weight = smooth(0.42, 0.56, p) * (1 - smooth(0.71, 0.8, p));
       seatedShare = 1 - smooth(0.1, 0.26, p);
-      this.hands(steeringWheel, 1 - smooth(0.18, 0.3, p), 1 - smooth(0, 0.07, p), deltaSeconds);
+      this.hands(steeringWheel, 1 - smooth(0.2, 0.34, p), 1 - smooth(0, 0.08, p), deltaSeconds);
       this.pedals(1 - smooth(0.2, 0.34, p), 1 - smooth(0.1, 0.22, p));
     }
     if (sideSign < 0) {
@@ -433,7 +591,9 @@ export class CarSeatMotion {
       // Across from the passenger's seat to the driver's (in) or back (out), and only there do the hands take the wheel.
       const across = getIn ? smooth(0.76, 0.99, q) : 1 - smooth(0, 0.2, p);
       place.z += -SEAT.passengerOffset * across * seatedShare;
-      for (let limb = 0; limb < 4; limb += 1) this.seatWeights[limb] = this.seatWeights[limb]! * across;
+      for (let limb = LEFT_FOOT; limb <= RIGHT_FOOT; limb += 1) this.seatWeights[limb] = this.seatWeights[limb]! * across;
+      this.seatHolds[LEFT_HAND].weight *= across;
+      this.seatHolds[RIGHT_HAND].weight *= across;
     }
     this.mix();
     return place;
@@ -454,8 +614,10 @@ export class CarSeatMotion {
       }
       this.regrip[hand] = this.regrip[hand]! * Math.max(0, 1 - deltaSeconds / 0.12);
       const clock = (hand === 0 ? -1 : 1) * (Math.PI / 2 + 0.15) + steeringWheel - this.shuffle[hand]! * third + this.regrip[hand]!;
-      gripPoint(clock, this.seatTargets, hand * 3);
-      this.seatWeights[hand] = hand === 0 ? leftWeight : rightWeight;
+      gripPoint(clock, this.rim, 0);
+      const hold = this.seatHolds[hand]!;
+      gripAt(hold, this.rim[0]!, this.rim[1]!, this.rim[2]!);
+      hold.weight = hand === 0 ? leftWeight : rightWeight;
     }
   }
 
@@ -465,12 +627,15 @@ export class CarSeatMotion {
   }
 
   /**
-   * The moves' and the seat's targets together: a limb going from one to the
-   * other passes between them, a foot lifted over the sill on the way.
+   * The moves' and the seat's holds and targets together: a limb going from
+   * one to the other passes between them, a foot lifted over the sill on the
+   * way.
    */
   private mix(): void {
     const place = this.placement;
-    for (let limb = 0; limb < 4; limb += 1) {
+    mixHolds(this.moveHolds[LEFT_HAND], this.seatHolds[LEFT_HAND], place.holds[LEFT_HAND]);
+    mixHolds(this.moveHolds[RIGHT_HAND], this.seatHolds[RIGHT_HAND], place.holds[RIGHT_HAND]);
+    for (let limb = LEFT_FOOT; limb <= RIGHT_FOOT; limb += 1) {
       const a = this.moveWeights[limb]!;
       const b = this.seatWeights[limb]!;
       const total = a + b;
@@ -480,7 +645,7 @@ export class CarSeatMotion {
         const i = limb * 3 + axis;
         place.targets[i] = (this.moveTargets[i]! * a + this.seatTargets[i]! * b) / total;
       }
-      if (limb >= LEFT_FOOT) place.targets[limb * 3 + 1] = place.targets[limb * 3 + 1]! + (FOOT_ARC * 4 * a * b) / (total * total);
+      place.targets[limb * 3 + 1] = place.targets[limb * 3 + 1]! + (FOOT_ARC * 4 * a * b) / (total * total);
     }
   }
 
@@ -491,22 +656,32 @@ export class CarSeatMotion {
     pose.set(this.mirror);
     place.z = mirrorZ(place.z);
     place.yaw = -place.yaw;
+    const holds = this.moveHolds;
+    const left = holds[LEFT_HAND];
+    holds[LEFT_HAND] = holds[RIGHT_HAND];
+    holds[RIGHT_HAND] = left;
+    for (const hold of holds) {
+      hold.z = mirrorZ(hold.z);
+      hold.fingersZ = -hold.fingersZ;
+      hold.palmZ = -hold.palmZ;
+    }
+    // The feet's targets change sides with them.
     const t = this.moveTargets;
     const w = this.moveWeights;
-    for (const [a, b] of [[0, 1], [2, 3]] as const) {
-      const ax = t[a * 3]!;
-      const ay = t[a * 3 + 1]!;
-      const az = t[a * 3 + 2]!;
-      t[a * 3] = t[b * 3]!;
-      t[a * 3 + 1] = t[b * 3 + 1]!;
-      t[a * 3 + 2] = mirrorZ(t[b * 3 + 2]!);
-      t[b * 3] = ax;
-      t[b * 3 + 1] = ay;
-      t[b * 3 + 2] = mirrorZ(az);
-      const wa = w[a]!;
-      w[a] = w[b]!;
-      w[b] = wa;
-    }
+    const a = LEFT_FOOT * 3;
+    const b = RIGHT_FOOT * 3;
+    const ax = t[a]!;
+    const ay = t[a + 1]!;
+    const az = t[a + 2]!;
+    t[a] = t[b]!;
+    t[a + 1] = t[b + 1]!;
+    t[a + 2] = mirrorZ(t[b + 2]!);
+    t[b] = ax;
+    t[b + 1] = ay;
+    t[b + 2] = mirrorZ(az);
+    const weight = w[LEFT_FOOT]!;
+    w[LEFT_FOOT] = w[RIGHT_FOOT]!;
+    w[RIGHT_FOOT] = weight;
     const stance = place.stance[0];
     place.stance[0] = place.stance[1];
     place.stance[1] = stance;
@@ -523,7 +698,7 @@ function mirrorZ(z: number): number {
 }
 
 /**
- * Getting in, the walk from where the walker stood to the door stand, `t`
+ * Getting in, the walk from where the walker stood to the door's handle, `t`
  * 0..1 through its `seconds`, for the right door (the left door's start
  * mirrored): the pelvis's place carries on from the walker's own velocity
  * and comes to rest at the stand; he turns to walk there when it is more
@@ -531,12 +706,12 @@ function mirrorZ(z: number): number {
  * makes along his facing, and a shorter move is shuffled on standing feet.
  */
 function walkToDoor(t: number, seconds: number, from: BoardingFrom | null, sideSign: number, place: SeatPlacement): void {
-  const x0 = from ? from.forward : DOOR[0];
-  const z0 = from ? (sideSign > 0 ? from.right : mirrorZ(from.right)) : DOOR[2];
+  const x0 = from ? from.forward : HANDLE_STAND[0];
+  const z0 = from ? (sideSign > 0 ? from.right : mirrorZ(from.right)) : HANDLE_STAND[1];
   const facing = from ? from.facing * sideSign : AT_DOOR_YAW;
   const up = from ? from.up - SEAT.ground : 0;
-  const dx = DOOR[0] - x0;
-  const dz = DOOR[2] - z0;
+  const dx = HANDLE_STAND[0] - x0;
+  const dz = HANDLE_STAND[1] - z0;
   const distance = Math.hypot(dx, dz);
   // The start's velocity as travel over the whole walk, no more than a curve that still ends at the stand can carry.
   let vx = (from?.velocityForward ?? 0) * seconds;

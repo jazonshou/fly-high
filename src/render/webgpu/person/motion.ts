@@ -2,6 +2,7 @@ import { DOUBLE_ZERO } from "@/src/sim/ground/doubleZero";
 import type { PersonMode, PersonVisualState } from "@/src/game/types";
 import { PERSON } from "@/src/vehicles/person";
 import { ActionChannels, rollKeyedSeconds, STAND, smoothstep } from "./actions";
+import { reachFor } from "./armReach";
 import { CarSeatMotion, SEAT, type BoardingFrom } from "./carSeat";
 import { applyChannels, CH, createChannels, LIMB_OFFSET, mixChannels, SIDE_BASE } from "./channels";
 import { PROPORTIONS } from "./figureProportions";
@@ -10,8 +11,8 @@ import { dimensionlessSpeed, strideLength } from "./gait";
 import { WALK_GROUP_SPEED } from "./gaitData";
 import { setGlobalRotation, solveTwoBone } from "./ik";
 import { GaitChannels } from "./locomotion";
-import { blendPoses, FigurePose, multiplyQuaternions, rotateVector, rotationBetween, setAxisAngle, setEuler } from "./pose";
-import { BIND_POSITIONS, BONE, SIDES } from "./skeleton";
+import { blendPoses, FigurePose, multiplyQuaternions, rotateVector, setAxisAngle, setEuler } from "./pose";
+import { BONE, SIDES } from "./skeleton";
 
 /**
  * The walker's motion: from the sim's `PersonVisualState` and the root's own
@@ -89,9 +90,6 @@ const FADE_INTO: Readonly<Record<Family, number>> = Object.freeze({
   car: 0,
 });
 /** The arm from the shoulder to the wrist, straight. */
-const ARM_LENGTH = boneLength(SIDES[0]!.upperArm, SIDES[0]!.forearm) + boneLength(SIDES[0]!.forearm, SIDES[0]!.hand);
-/** The share of a limb's length from which it straightens toward a target only asymptotically (`softReach`). */
-const SOFT_REACH_FROM = 0.88;
 /** Seconds a foot takes off the ground to its place in a getting-in's pose (up to the car's step, after the body off the ground). */
 const CAR_PICK_UP_SECONDS = 0.32;
 /** Seconds the body takes to fade across the car's frame change, in or out. */
@@ -494,7 +492,7 @@ export class PersonMotion {
       // A landing, a climb or a seat stands up off its crouch at its own pace.
       // (The walk to a car's door is a walk.)
       const walking = family === "ground" || (family === "car" && this.seat.placement.walkSpeed > 0);
-      options.riseRate = walking ? MAX_RISE : ACTION_RISE;
+      options.riseRate = walking || (family === "car" && this.seat.placement.afoot) ? MAX_RISE : ACTION_RISE;
       options.fallRate = family === "car" ? ACTION_RISE : Number.POSITIVE_INFINITY;
       options.facing = facing;
       options.landing = this.landing;
@@ -867,60 +865,15 @@ export class PersonMotion {
     if (!rolling) setEuler(target.rotations, 0, 0, 0, 0);
   }
 
-  /** Hands to the wheel or the car's handles, feet to the step or the pedals. */
+  /** Hands to the wheel or the car's door (`reachFor`), feet to the step or the pedals. */
   private reachSeatTargets(pose: FigurePose): void {
     const place = this.seat.placement;
+    reachFor(pose, place.holds[0], place.holds[1]);
     const t = place.targets;
     const w = place.weights;
     const gp = pose.globalPositions;
-    const q = this.q;
     for (let side = 0; side < 2; side += 1) {
       const bones = SIDES[side]!;
-      const hand = w[side]!;
-      if (hand > 0) {
-        // The wrist a palm's length short of the grip, toward the shoulder.
-        const sx = gp[bones.upperArm * 3]!;
-        const sy = gp[bones.upperArm * 3 + 1]!;
-        const sz = gp[bones.upperArm * 3 + 2]!;
-        const gx = t[side * 3]!;
-        const gy = t[side * 3 + 1]!;
-        const gz = t[side * 3 + 2]!;
-        const d = Math.hypot(gx - sx, gy - sy, gz - sz) || 1;
-        const palm = 0.075;
-        // (No further than the arm reaches, straightening toward a grip beyond it without a snap.)
-        const out = softReach(d - palm, ARM_LENGTH) / d;
-        const wx = sx + (gx - sx) * out;
-        const wy = sy + (gy - sy) * out;
-        const wz = sz + (gz - sz) * out;
-        const ex = gp[bones.hand * 3]!;
-        const ey = gp[bones.hand * 3 + 1]!;
-        const ez = gp[bones.hand * 3 + 2]!;
-        solveTwoBone(pose, bones.upperArm, bones.forearm, bones.hand, ex + (wx - ex) * hand, ey + (wy - ey) * hand, ez + (wz - ez) * hand);
-        // The hand points at the grip.
-        const hx = BIND_POSITIONS[bones.fingers * 3]! - BIND_POSITIONS[bones.hand * 3]!;
-        const hy = BIND_POSITIONS[bones.fingers * 3 + 1]! - BIND_POSITIONS[bones.hand * 3 + 1]!;
-        const hz = BIND_POSITIONS[bones.fingers * 3 + 2]! - BIND_POSITIONS[bones.hand * 3 + 2]!;
-        const hl = Math.hypot(hx, hy, hz);
-        const px = gx - gp[bones.hand * 3]!;
-        const py = gy - gp[bones.hand * 3 + 1]!;
-        const pz = gz - gp[bones.hand * 3 + 2]!;
-        const pl = Math.hypot(px, py, pz) || 1;
-        rotationBetween(hx / hl, hy / hl, hz / hl, px / pl, py / pl, pz / pl, q, 0);
-        const current = pose.globalRotations;
-        const o = bones.hand * 4;
-        // nlerp(current, aim, hand) into q[4..7]
-        const dot = current[o]! * q[0]! + current[o + 1]! * q[1]! + current[o + 2]! * q[2]! + current[o + 3]! * q[3]!;
-        const sign = dot < 0 ? -1 : 1;
-        let length = 0;
-        for (let i = 0; i < 4; i += 1) {
-          q[4 + i] = current[o + i]! * (1 - hand) + q[i]! * hand * sign;
-          length += q[4 + i]! * q[4 + i]!;
-        }
-        length = Math.sqrt(length) || 1;
-        for (let i = 0; i < 4; i += 1) q[4 + i] = q[4 + i]! / length;
-        setGlobalRotation(pose, bones.hand, q, 4);
-        pose.computeGlobals();
-      }
       const foot = w[2 + side]!;
       if (foot > 0) {
         const ex = gp[bones.foot * 3]!;
@@ -1025,24 +978,3 @@ function smooth01(t: number): number {
   return u * u * (3 - 2 * u);
 }
 
-function boneLength(a: number, b: number): number {
-  return Math.hypot(
-    BIND_POSITIONS[a * 3]! - BIND_POSITIONS[b * 3]!,
-    BIND_POSITIONS[a * 3 + 1]! - BIND_POSITIONS[b * 3 + 1]!,
-    BIND_POSITIONS[a * 3 + 2]! - BIND_POSITIONS[b * 3 + 2]!,
-  );
-}
-
-/**
- * How far along the way to a target `distance` off a limb of `length`
- * reaches: all the way to one well within it; past `SOFT_REACH_FROM` of its
- * length it straightens only asymptotically, so a target moving out of reach
- * (a door swinging away, a handle not yet come up to) draws the limb out
- * smoothly instead of locking it straight in one frame.
- */
-function softReach(distance: number, length: number): number {
-  const from = length * SOFT_REACH_FROM;
-  if (distance <= from) return distance;
-  const room = length * (0.998 - SOFT_REACH_FROM);
-  return from + room * (1 - Math.exp(-(distance - from) / room));
-}

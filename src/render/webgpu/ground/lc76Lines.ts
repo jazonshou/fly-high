@@ -147,12 +147,16 @@ export const REAR_DOOR_SPLIT_Z = -0.17;
 
 /**
  * The front doors' hinges: a vertical axis at the leading edge's top on the
- * belt, in the side's skin. A door swings its trailing edge out to `openRadians`.
+ * belt, in the side's skin. A door swings its trailing edge out to
+ * `openRadians`: 50 degrees, the check strap's first stop, where a door
+ * someone is getting in or out by stands (its armrest still a hand's reach
+ * from the doorway; at the strap's end, 65 degrees and more, nobody in the
+ * opening reaches it). ESTIMATE.
  */
 export const FRONT_DOOR_HINGE = Object.freeze({
   x: DOOR_LINES.frontDoorBelt,
   z: BODY.halfWidth,
-  openRadians: (65 * Math.PI) / 180,
+  openRadians: (50 * Math.PI) / 180,
 });
 
 /** The headlamps: round 7-inch LED units at the grille's ends. */
