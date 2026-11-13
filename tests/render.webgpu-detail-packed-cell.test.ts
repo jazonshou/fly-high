@@ -297,8 +297,14 @@ describe("packed detail cells", () => {
 
   it("refuses a name outside its code table instead of storing a wrong one", () => {
     const tree = FOREST.trees[0]!;
-    const bad = { ...FOREST, trees: [{ ...tree, species: "baobab" as TreeSpecies }] };
-    expect(() => packDetailCell(bad)).toThrow(/tree species baobab/);
+    // "toString" and "constructor" are keys every plain object inherits.
+    for (const species of ["baobab", "toString", "constructor"]) {
+      const bad = { ...FOREST, trees: [{ ...tree, species: species as TreeSpecies }] };
+      expect(() => packDetailCell(bad), species).toThrow(`tree species ${species}`);
+    }
+    const piece = FOREST.clutter[0]!;
+    const badClutter = { ...FOREST, clutter: [{ ...piece, clutterKind: "hasOwnProperty" as ClutterKind }] };
+    expect(() => packDetailCell(badClutter)).toThrow("clutter kind hasOwnProperty");
   });
 
   it("gives every build its own cursors, so interleaved builds keep their bytes", () => {

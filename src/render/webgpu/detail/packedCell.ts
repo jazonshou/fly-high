@@ -65,9 +65,10 @@ function encode<Name extends string>(
   name: Name,
   label: string,
 ): number {
-  const code = (codes as Readonly<Record<string, number>>)[name];
-  if (code === undefined) throw new Error(`Cannot pack unknown ${label} ${String(name)}`);
-  return code;
+  // Own keys only: an inherited one ("toString") would get past an
+  // `undefined` check and be stored as code 0, the table's first name.
+  if (!Object.hasOwn(codes, name)) throw new Error(`Cannot pack unknown ${label} ${String(name)}`);
+  return codes[name];
 }
 
 const TREE_FIELDS = [
