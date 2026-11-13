@@ -9,6 +9,7 @@ import {
   generateDetailCell,
   STRUCTURE_SITE_CELL_MARGIN_METERS,
 } from "@/src/render/webgpu/detail/generation";
+import type { PackedDetailCell } from "@/src/render/webgpu/detail/packedCell";
 import type { GeneratedDetailCell } from "@/src/render/webgpu/detail/types";
 import { WorldDetailRuntime } from "@/src/render/webgpu/detail/WorldDetailRuntime";
 import type {
@@ -94,9 +95,24 @@ function distanceToCapsule(exclusion: InfrastructurePlantExclusion, x: number, z
   return Math.hypot(x - (exclusion.ax + dx * t), z - (exclusion.az + dz * t));
 }
 
+type Placed = readonly { readonly x: number; readonly z: number }[];
+
+/** A generated cell's stems, rocks and logs. */
+function woody(cell: GeneratedDetailCell): Placed {
+  return [...cell.trees, ...cell.shrubs, ...cell.clutter, ...cell.rocks];
+}
+
+/** The same, read from the packed columns an inline resident keeps. */
+function packedWoody(cell: PackedDetailCell): Placed {
+  return [cell.trees, cell.shrubs, cell.clutter, cell.rocks].flatMap((columns) => Array.from(
+    { length: columns.count },
+    (_, index) => ({ x: columns.x[index]!, z: columns.z[index]! }),
+  ));
+}
+
 /** Stems, rocks and logs on any of the exclusions' cleared ground. */
-function onCleared(cell: GeneratedDetailCell, exclusions: readonly InfrastructurePlantExclusion[]): number {
-  return [...cell.trees, ...cell.shrubs, ...cell.clutter, ...cell.rocks]
+function onCleared(placed: Placed, exclusions: readonly InfrastructurePlantExclusion[]): number {
+  return placed
     .filter((p) => exclusions.some((e) => distanceToCapsule(e, p.x, p.z) <= e.radius)).length;
 }
 
@@ -169,7 +185,7 @@ describe("a detail cell's plant exclusions from the live index", () => {
     const full = infrastructurePlantExclusions(infrastructureIndex(world));
     const built = generate(...roadCell);
     expect(built).toEqual(generate(...roadCell, full));
-    expect(onCleared(built, roadExclusions)).toBe(0);
+    expect(onCleared(woody(built), roadExclusions)).toBe(0);
     // The road to the marina's car park reaches its cell too: still the full list's cell.
     expect(generate(...marinaCell)).toEqual(generate(...marinaCell, full));
   });
@@ -207,7 +223,7 @@ describe("the detail worker", () => {
     };
 
     const bare = generate(...roadCell);
-    expect(onCleared(bare, roadExclusions), "nothing grew where the road goes: the test is not armed")
+    expect(onCleared(woody(bare), roadExclusions), "nothing grew where the road goes: the test is not armed")
       .toBeGreaterThan(10);
     expect(fromWorker(roadCell)).toEqual(bare);
 
@@ -215,7 +231,7 @@ describe("the detail worker", () => {
     worker.handleCommand({ type: "infrastructure", update: packInfrastructureRegionsUpdate(update) });
     const built = generate(...roadCell);
     expect(fromWorker(roadCell)).toEqual(built);
-    expect(onCleared(built, roadExclusions)).toBe(0);
+    expect(onCleared(woody(built), roadExclusions)).toBe(0);
 
     worker.handleCommand({ type: "infrastructure", update: packInfrastructureRegionsUpdate(removeRoads().update) });
     expect(fromWorker(roadCell)).toEqual(bare);
@@ -290,7 +306,7 @@ class WorkerBridge {
 interface ResidentView {
   readonly revision: number;
   readonly descriptor?: DetailRetainedCellDescriptor;
-  readonly cell?: GeneratedDetailCell;
+  readonly cell?: PackedDetailCell;
 }
 
 function residents(runtime: WorldDetailRuntime): Map<string, ResidentView> {
@@ -391,7 +407,7 @@ describe("WorldDetailRuntime.infrastructureChanged", () => {
       }
       expect(reached).toBeGreaterThan(0);
       for (const key of regenerated) {
-        expect(onCleared(residents(runtime).get(key)!.cell!, roadExclusions), key).toBe(0);
+        expect(onCleared(packedWoody(residents(runtime).get(key)!.cell!), roadExclusions), key).toBe(0);
       }
       // The kept cells nearest the roads are the same cells built on or not.
       const kept = [...before.keys()].filter((key) => !regenerated.has(key))

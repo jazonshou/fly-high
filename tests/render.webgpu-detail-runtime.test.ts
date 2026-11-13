@@ -26,6 +26,11 @@ import {
 } from "../src/render/webgpu/detail/WorldDetailRuntime";
 import { DETAIL_INSTANCE_STRIDE_BYTES } from "../src/render/webgpu/detail/instanceFormat";
 import {
+  packDetailCell,
+  PackedTreeView,
+  type PackedDetailCell,
+} from "../src/render/webgpu/detail/packedCell";
+import {
   TREE_BARK_LAYER_MIN,
   TREE_BARK_LAYER_SPAN,
   treeBarkAtlasLayer,
@@ -408,15 +413,7 @@ describe("WebGPU world-detail spatial presentation", () => {
     // generated species' bark layer, and birch still rides an oak-family
     // batch without adding another prototype/draw.
     const internals = runtime as unknown as {
-      cells: Map<string, {
-        cell: {
-          trees: readonly {
-            x: number;
-            z: number;
-            species: "pine" | "cedar" | "spruce" | "oak" | "maple" | "birch" | "willow";
-          }[];
-        };
-      }>;
+      cells: Map<string, { cell: PackedDetailCell }>;
       batches: Map<string, {
         prototypeKey: string;
         writer: { finish(): Uint8Array };
@@ -424,8 +421,10 @@ describe("WebGPU world-detail spatial presentation", () => {
     };
     const positionKey = (x: number, z: number) => `${Math.fround(x)}:${Math.fround(z)}`;
     const speciesAt = new Map<string, Parameters<typeof treeBarkAtlasLayer>[0]>();
+    const tree = new PackedTreeView();
     for (const resident of internals.cells.values()) {
-      for (const tree of resident.cell.trees) {
+      for (let index = 0; index < resident.cell.trees.count; index += 1) {
+        tree.at(resident.cell.trees, index);
         speciesAt.set(positionKey(tree.x, tree.z), tree.species);
       }
     }
@@ -935,7 +934,7 @@ describe("WebGPU world-detail spatial presentation", () => {
       readonly cellX: number;
       readonly cellZ: number;
       readonly cellSizeMeters: number;
-      readonly cell: typeof sourceCell;
+      readonly cell: PackedDetailCell;
       readonly generation: number;
       readonly revision: number;
       readonly treeCanopyRank: Float32Array;
@@ -1002,7 +1001,7 @@ describe("WebGPU world-detail spatial presentation", () => {
           cellX,
           cellZ,
           cellSizeMeters: cell.cellSizeMeters,
-          cell,
+          cell: packDetailCell(cell),
           generation: 0,
           revision: cellZ * 8 + cellX + 1,
           treeCanopyRank: canopyRanks,

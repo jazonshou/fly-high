@@ -93,6 +93,7 @@ import {
   type DetailPresentationChunkCoordinates,
 } from "./spatialChunks";
 import { treePrototypeSpecies, treeTrunkTint } from "./treePrototypeFamily";
+import { packDetailCell, type PackedDetailCell } from "./packedCell";
 import {
   buildPresentationChunk,
   detailCellMinimumDistanceMeters,
@@ -128,7 +129,6 @@ import {
   type DetailLod,
   type GroundCoverArchetype,
   type DetailTerrainSampler,
-  type GeneratedDetailCell,
   type RockVariant,
   type ShrubSpecies,
   type TreeSpecies,
@@ -571,7 +571,8 @@ interface ResidentCellBase {
 
 interface InlineResidentCell extends ResidentCellBase {
   readonly source: "inline";
-  readonly cell: GeneratedDetailCell;
+  /** Packed as the worker packs its retained cells (`packDetailCell`). */
+  readonly cell: PackedDetailCell;
   /** Canopy rank of each stem in `cell.trees`, in [0, 1). */
   readonly treeCanopyRank: Float32Array;
 }
@@ -2171,7 +2172,7 @@ export class WorldDetailRuntime {
           cellX: cell.cellX,
           cellZ: cell.cellZ,
           cellSizeMeters: cell.cellSizeMeters,
-          cell,
+          cell: packDetailCell(cell),
           generation: this.cellEpoch,
           revision: ++this.cellRevision,
           treeCanopyRank: detailTreeCanopyRankOrder(cell.trees),

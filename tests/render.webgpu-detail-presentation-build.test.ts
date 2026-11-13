@@ -8,6 +8,7 @@ import {
   detailPrototypeBoundKernel,
   type DetailBillboardFrameBounds,
 } from "../src/render/webgpu/detail/instanceFormat";
+import { packDetailCell } from "../src/render/webgpu/detail/packedCell";
 import {
   buildPresentationChunk,
   detailCellMinimumDistanceMeters,
@@ -303,7 +304,7 @@ describe("pure detail presentation build", () => {
     const catalog = buildCatalog(false);
     const base: DetailPresentationBuildInput = {
       residents: [{
-        cell,
+        cell: packDetailCell(cell),
         treeCanopyRank: Float32Array.from([0, 1 / 7, 2 / 7, 3 / 7, 4 / 7, 5 / 7, 6 / 7]),
         lod: "near",
         distance: detailCellMinimumDistanceMeters(
@@ -450,7 +451,7 @@ describe("pure detail presentation build", () => {
       const observerZ = centerZ;
       const input: DetailPresentationBuildInput = {
         residents: [{
-          cell,
+          cell: packDetailCell(cell),
           treeCanopyRank: Float32Array.from([
             0, 1 / 7, 2 / 7, 3 / 7, 4 / 7, 5 / 7, 6 / 7,
           ]),
