@@ -2163,6 +2163,10 @@ export class WorldDetailRuntime {
             }
             : {}),
         });
+        // Packing and ranking are part of the cell's main-thread cost, so
+        // the credit is charged after them.
+        const packed = packDetailCell(cell);
+        const treeCanopyRank = detailTreeCanopyRankOrder(cell.trees);
         if (credit !== null) {
           recordInlineCellAfterWorkerFailure(credit, this.nowMilliseconds() - cellStartedAt);
         }
@@ -2172,10 +2176,10 @@ export class WorldDetailRuntime {
           cellX: cell.cellX,
           cellZ: cell.cellZ,
           cellSizeMeters: cell.cellSizeMeters,
-          cell: packDetailCell(cell),
+          cell: packed,
           generation: this.cellEpoch,
           revision: ++this.cellRevision,
-          treeCanopyRank: detailTreeCanopyRankOrder(cell.trees),
+          treeCanopyRank,
           lod: desired.lod,
           distance: desired.distance,
           invalidated: false,
