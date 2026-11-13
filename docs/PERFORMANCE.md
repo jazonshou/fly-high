@@ -3889,6 +3889,60 @@ unchanged, one mesh plus the tier's cascades: MEASURED again in
 
 GPU time is for the macOS runner's walker shots, as before.
 
+## The walker redesigned (2026-11-12): the same draws and maps
+
+The walker's figure is one designed man in place of the mean of MakeHuman's
+three population targets, his stand is at ease, and his motion follows the
+sim's point as a body does (docs/WALKER_FIGURE.md, "The body" and "The
+motion"). Nothing a frame costs moves:
+
+- Draws: unchanged, one mesh plus the tier's cascades
+  (`tests/gpu/person-figure.test.ts`: 2 on Low, 3 on Medium, High and Ultra).
+- Maps: the same three at the same sizes, so `personFigureMiB` and the
+  memory estimate read what they did (259.3 of Low's 260 MiB, 698.0 of
+  High's 700, 992.0 of Ultra's 1,000). No estimate row is added.
+- Triangles: 33,928 / 9,999 / 3,000 / 999 at the four levels (33,112 /
+  10,000 / 3,000 / 996): the hair is a mesh of its own now, paid for from
+  the boots. Vertices 19,449 / 6,459 / 2,323 / 1,012 (19,128 / 6,545 /
+  2,353 / 1,059); vertex and index buffers stay 2.4 MB with all four levels.
+- Load: 754 KB of mesh (742) and 138 KB (Low, High; 123), 443 KB (Medium;
+  399) or 1.6 MB (Ultra; 1.5) of JPEG maps: the painted beard, brows and
+  hair compress a little less well.
+- The motion is channels and arithmetic on the CPU: no draw, buffer,
+  texture or uniform is added. `PersonMotion.update` MEASURED about 8 us a
+  frame before and after in the cloud container (the least of nine laps of
+  the course, three runs each: 7.0 to 8.0 before, 7.2 to 8.4 after), inside
+  the 80 us the budget test holds it to, with the same garbage (214 to 351 B
+  a frame of boxed doubles before, 209 to 256 after).
+
+`npm run perf:ab -- --base 2ed6690 --rounds 0` (the walking branch's head)
+on SwiftShader, 2026-11-12:
+
+| Shot | Draws | Work counts | Pixels |
+| --- | --- | --- | --- |
+| approach-500ft | 248 -> 248 | identical | identical |
+| car-clearing-chase | 148 -> 148 | identical | identical |
+| walk-door-chase | 143 -> 143 | identical | the new figure and stand (9.82% differ, SSIM 0.9774) |
+| walk-clearing-chase | 151 -> 151 | identical | the new figure and walk (7.60% differ, SSIM 0.9701) |
+
+The only renderer diagnostics that differ: the two walker frames draw 2,448
+more triangles (2,374,216 -> 2,376,664 and 2,294,918 -> 2,297,366: the finest
+level's 816 more, in the colour pass and two shadow cascades), and the
+inventoried GPU memory of the car and walker shots is 0.02 MiB up (331.78 ->
+331.80; the mesh's 20 KB more of vertex and index data). The memory estimate
+is the same number on both arms (422.6 MiB at the A/B's settings).
+
+No aircraft, boat or scenery frame draws the walker, so the 39 reference
+pictures in `tests/perf/baseline` do not move, and no walker shot has a
+baseline or a draw ceiling yet, so nothing is re-pinned. The walker shots'
+pictures do change (the figure, and where he stands by the door:
+`WALK_SHOT_DOOR_STAND` follows `CAR_SEATING.doorStand`).
+
+Sim timings that changed with the motion: getting in is the walk to the
+door stand (`boardingWalkSeconds`, 0.45 s plus the distance at 1.25 m/s)
+and then 2.4 s (2.0 s in all before); getting out is 2.4 s (1.6 s). GPU
+time is for the macOS runner's walker shots, as before.
+
 ## Generated buildings (2026-11, PR #41)
 
 The settlements that stream with the roads now carry buildings: about 100

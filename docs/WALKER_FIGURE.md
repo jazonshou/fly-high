@@ -23,31 +23,42 @@ the ground between the heels (seated: the driver's hip point). The sim's
   the mesh is fitted to the same joints.
 - **Mesh** (`walkerBody.ts`, baked by `scripts/bake-walker-body.mts`): a
   real person's anatomy from MakeHuman's base mesh, not a likeness of anyone.
-  MakeHuman's young-male macro targets for African, Asian and European
-  ancestry are averaged a third each, so the face belongs to no group and no
-  one; the result is scaled and fitted joint by joint onto the skeleton above
-  and skinned with MakeHuman's own weights, its 160-odd bones folded onto our
-  27. Its high-poly eyes go in the sockets. Over the body the bake builds the
-  clothes as shells lifted off it (the skin they cover removed): an
-  olive-grey soft-shell jacket with a stand-up collar, zip, hem and cuff
-  bands; stone trousers; brown leather boots with laces; a short dark cut of
-  hair rising off the scalp only where it is thick, its thin edge painted on
-  the skin.
+  He is one particular man, designed like a casting sheet
+  (`scripts/walkerBody/design.mts`): about forty and used to working
+  outdoors, broad in the shoulder, a long square-jawed head, a strong brow
+  over deep-set eyes, a prominent nose with a bump on the bridge, a wide
+  mouth, a short full beard, and nothing in the face quite symmetric. The
+  first realistic figure was a third each of MakeHuman's three population
+  targets and nothing else, the mean of the means: a face with no feature
+  stronger than any other, which read as a mask. `SHAPE` in that file lists
+  his MakeHuman targets and their weights (macro, detail, a little
+  asymmetry). The result is scaled and fitted joint by joint onto the
+  skeleton above and skinned with MakeHuman's own weights, its 160-odd bones
+  folded onto our 27. Its high-poly eyes go in the sockets, the irises where
+  MakeHuman's eye bones look, which is where its lids frame them. The hands
+  are posed relaxed after the fit (`hands.mts`). Over the body the bake
+  builds the clothes as shells lifted off it (the skin they cover removed):
+  an olive-grey soft-shell jacket with a stand-up collar, zip, hem and cuff
+  bands; stone trousers; brown leather boots with laces. The hair is a mesh
+  of its own (`hair.mts`): the scalp's faces where the hair is thick, divided
+  finer, cut along the hairline and lifted by the cut's length into locks,
+  pushed up at the front and across; its thin edge is painted on the skin.
 - **Sources**: MakeHuman's files are fetched at bake time from its GitHub
   repository at a pinned commit (`MAKEHUMAN_COMMIT` in
   `scripts/walkerBody/sources.mts`) into `node_modules/.cache/walker-body/`.
   Every asset bundled with MakeHuman is CC0 1.0 (its `LICENSE.md`, section
   C); the bake checks that text before using anything. Only the baked files
   are in the repository.
-- **Levels of detail**: MEASURED 33,112 triangles, then 10,000, 3,000 and
-  996, simplified with meshoptimizer keeping UV seams, normals and UVs
-  (errors 0.14%, 0.62% and 3.1% of the figure's size). The figure switches
+- **Levels of detail**: MEASURED 33,928 triangles, then 9,999, 3,000 and
+  999, simplified with meshoptimizer keeping UV seams, normals and UVs
+  (errors 0.15%, 0.62% and 3.0% of the figure's size). The figure switches
   at 10, 25 and 80 m (`FIGURE_LOD_DISTANCES`, with 1.5 m either side). Low
   tier starts at the second (`personFigureFinestLod`).
 - **Maps**: one atlas in MakeHuman's UV layout, painted by the bake from
-  measured surface points: albedo (skin tone and mottle, redder cheeks, nose
-  and ears, stubble, lips, brows, lashes, irises; the jacket's fabric, seams
-  and folds; the trousers' twill; leather with toe wear), a normal map from
+  measured surface points: albedo (sun-browned skin and its mottle, redder
+  cheeks, nose and ears, the beard and the heavy brows, greying hair, lips,
+  lashes, irises; the jacket's fabric, seams and folds; the trousers' twill;
+  leather with toe wear), a normal map from
   the same painters' heights (pores, creases, weave, grain, laces), and
   occlusion, roughness and metalness. The occlusion is ray-traced against the
   whole figure (32 rays a texel at half size) and also darkens the albedo a
@@ -58,8 +69,8 @@ the ground between the heels (seated: the driver's hip point). The sim's
   The figure builds the mip chains itself, in linear light,
   renormalising the normals and widening the roughness where they spread
   (Toksvig).
-- **Files** (`src/render/webgpu/person/assets/`, 2.8 MB): `walker-body.bin`
-  (742 KB: the shared vertices quantised to 16 bits, four bone indices and
+- **Files** (`src/render/webgpu/person/assets/`, 3.0 MB): `walker-body.bin`
+  (754 KB: the shared vertices quantised to 16 bits, four bone indices and
   weights in bytes, 16-bit triangles per level) and three JPEGs per size
   (albedo q90, normal q94 and occlusion-roughness-metal q92, 4:4:4 for the
   last two). The renderer loads only the tier's size, alongside the scene,
