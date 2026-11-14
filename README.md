@@ -56,11 +56,7 @@ npm run build:pages   # static bundle for GitHub Pages
 
 ## Documentation
 
-- [docs/FLIGHT_MODEL.md](docs/FLIGHT_MODEL.md), [docs/CALIBRATION.md](docs/CALIBRATION.md), [docs/PERFORMANCE.md](docs/PERFORMANCE.md): how the aircraft, its calibration, and the performance budgets work.
-- [docs/architecture/](docs/architecture/): the architecture contract the code must satisfy.
-- [docs/plans/](docs/plans/): the rendering programme and each phase's execution plan.
-- [docs/findings/](docs/findings/): audits, measured defects, and review briefs.
-- [docs/status/](docs/status/): closeout, handover, and outcome records. Start with [PROJECT_CLOSEOUT_2026_09_02.md](docs/status/PROJECT_CLOSEOUT_2026_09_02.md).
+Start with [docs/OVERVIEW.md](docs/OVERVIEW.md): what the game does, how the code fits together, and how it is checked. It links the deeper docs on performance, architecture, and the aircraft, car and boat models.
 
 ## License
 
