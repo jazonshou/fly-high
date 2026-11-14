@@ -51,8 +51,8 @@ The ceiling is high for a different reason, and it is a model limitation
 rather than a choice: `calculateEngineThrust` holds propeller thrust at a flat
 cap until the power limit bites, where a real fixed-pitch propeller decays
 continuously with speed. That also puts best climb at 44 m/s where the real
-aeroplane's is near 30. Recorded in
-`docs/findings/AIRCRAFT_FRAMING_2026_09_19.md` as a named follow-up.
+aeroplane's is near 30. It was recorded as a named follow-up in the
+aircraft framing finding of 2026-09-19 (see `docs/ARCHIVE.md`).
 
 Run only the measured handling rebuild scenarios with:
 
