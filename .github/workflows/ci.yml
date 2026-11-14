@@ -42,6 +42,20 @@ jobs:
         if: failure()
         run: cat "$(npm config get cache)"/_logs/*-debug-0.log || true
 
+      # Vitest starts the files it has timings for slowest first; with none it
+      # starts the largest first. On 2026-11-12 that left a 79-line file that
+      # runs 132 s to start at 732 s of 864 and run alone for the last 100 s.
+      # The timings live in node_modules (vitest.config.ts's cacheDir), which
+      # `npm ci` empties, so they are restored after the install. Each run
+      # saves its own under a fresh key and the newest restores; a pull
+      # request falls back to main's.
+      - name: Restore Vitest's file timings
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.vite-node-*/vitest/*/results.json
+          key: vitest-timings-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: vitest-timings-${{ runner.os }}-
+
       - name: Lint
         run: npm run lint
 
