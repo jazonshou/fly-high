@@ -3,6 +3,7 @@ import { RawTexture2DArray } from "@babylonjs/core/Materials/Textures/rawTexture
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import type { Scene } from "@babylonjs/core/scene";
 import { takeOverMipChain } from "./MipChainUpload";
+import { dropTextureCpuMirror } from "./TextureCpuMirror";
 import type { MipKernel, MippedTextureArrayPlan } from "./TextureArrayMipPlan";
 import { planMippedTextureArray } from "./TextureArrayMipPlan";
 
@@ -73,6 +74,8 @@ export function uploadMippedTextureArrayPlan(
     for (let level = 0; level < plan.mipLevelCount; level += 1) {
       texture.updateMipLevel(plan.packedLevels[level]!, level);
     }
+    // Babylon would keep every level on the CPU for a restore this game never runs.
+    dropTextureCpuMirror(texture);
     return texture;
   } catch (error) {
     // The constructor has already allocated and uploaded mip 0. If a later

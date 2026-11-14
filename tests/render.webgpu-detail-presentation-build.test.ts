@@ -9,6 +9,7 @@ import {
   type DetailBillboardFrameBounds,
   type DetailInstanceRecord,
 } from "../src/render/webgpu/detail/instanceFormat";
+import { packDetailCell } from "../src/render/webgpu/detail/packedCell";
 import {
   GROUND_OBJECT_REACH_GROW_SHARE,
   GROUND_OBJECT_REACH_METERS_PER_METER,
@@ -165,7 +166,6 @@ function fixtureCell(cellX: number, cellZ: number): GeneratedDetailCell {
     maxZ: minZ + cellSizeMeters,
     trees: TREE_SPECIES.map((species, index) => ({
       kind: "tree" as const,
-      id: `tree-${index}`,
       species,
       x: centerX + (index - 3) * 0.75,
       y: 91 + index * 0.2,
@@ -182,7 +182,6 @@ function fixtureCell(cellX: number, cellZ: number): GeneratedDetailCell {
     })),
     shrubs: SHRUB_SPECIES.map((species, index) => ({
       kind: "shrub" as const,
-      id: `shrub-${index}`,
       species,
       x: centerX - 5 + index * 4,
       y: 89.5 + index * 0.15,
@@ -197,7 +196,6 @@ function fixtureCell(cellX: number, cellZ: number): GeneratedDetailCell {
     })),
     rocks: ROCK_VARIANTS.map((variant, index) => ({
       kind: "rock" as const,
-      id: `rock-${index}`,
       variant,
       x: centerX + 7 - index * 4,
       y: 89.2,
@@ -211,7 +209,6 @@ function fixtureCell(cellX: number, cellZ: number): GeneratedDetailCell {
     })),
     clutter: CLUTTER_KINDS.map((clutterKind, index) => ({
       kind: "clutter" as const,
-      id: `clutter-${index}`,
       clutterKind,
       x: centerX - 8 + index * 4,
       y: 89.1,
@@ -339,7 +336,7 @@ describe("pure detail presentation build", () => {
     const catalog = buildCatalog(false);
     const base: DetailPresentationBuildInput = {
       residents: [{
-        cell,
+        cell: packDetailCell(cell),
         treeCanopyRank: Float32Array.from([0, 1 / 7, 2 / 7, 3 / 7, 4 / 7, 5 / 7, 6 / 7]),
         lod: "near",
         distance: detailCellMinimumDistanceMeters(
@@ -486,7 +483,7 @@ describe("pure detail presentation build", () => {
       const observerZ = centerZ;
       const input: DetailPresentationBuildInput = {
         residents: [{
-          cell,
+          cell: packDetailCell(cell),
           treeCanopyRank: Float32Array.from([
             0, 1 / 7, 2 / 7, 3 / 7, 4 / 7, 5 / 7, 6 / 7,
           ]),
@@ -713,7 +710,6 @@ describe("tree ground shadow records", () => {
       const template = cell.trees[index % cell.trees.length]!;
       return {
         ...template,
-        id: `tree-${index}`,
         x: cell.minX + 4 + (index % 8) * 7,
         z: cell.minZ + 6 + Math.floor(index / 8) * 11,
         selection: (index * 0.137) % 1,
@@ -734,7 +730,7 @@ describe("tree ground shadow records", () => {
     );
     return {
       residents: [{
-        cell,
+        cell: packDetailCell(cell),
         treeCanopyRank: Float32Array.from({ length: count }, (_, index) => index / count),
         lod: distance <= law.near.outerRadiusMeters ? "near" : "mid",
         distance,
@@ -901,7 +897,6 @@ describe("a thin stand's trees", () => {
       const template = cell.trees[index % cell.trees.length]!;
       return {
         ...template,
-        id: `tree-${index}`,
         x: cell.minX + 4 + (index % 8) * 7,
         z: cell.minZ + 6 + Math.floor(index / 8) * 11,
         selection: (0.07 + index * 0.137) % 1,
@@ -920,7 +915,7 @@ describe("a thin stand's trees", () => {
     );
     return runBuild({
       residents: [{
-        cell,
+        cell: packDetailCell(cell),
         treeCanopyRank: Float32Array.from({ length: count }, (_, index) => index / count),
         lod: distance <= law.near.outerRadiusMeters ? "near" : "mid",
         distance,
@@ -1046,7 +1041,6 @@ describe("bush and boulder records", () => {
   function shrub(overrides: Partial<Shrub> = {}): Shrub {
     return {
       kind: "shrub",
-      id: "shrub",
       species: "hazel",
       x: 32,
       y: 90,
@@ -1065,7 +1059,6 @@ describe("bush and boulder records", () => {
   function rock(overrides: Partial<Rock> = {}): Rock {
     return {
       kind: "rock",
-      id: "rock",
       variant: "granite",
       x: 32,
       y: 90,
@@ -1101,7 +1094,7 @@ describe("bush and boulder records", () => {
     const iterator = buildPresentationChunk(
       {
         residents: [{
-          cell,
+          cell: packDetailCell(cell),
           treeCanopyRank: new Float32Array(0),
           lod: distance <= law.near.outerRadiusMeters ? "near" : "mid",
           distance,
@@ -1118,7 +1111,13 @@ describe("bush and boulder records", () => {
         ...overrides,
       },
       catalog,
-      { appendInstance: (key, record) => { records.push({ key, record }); } },
+      {
+        // A record's tint is the build's scratch tuple (`PackedShrubView`),
+        // refilled on the next read: a sink that keeps a record copies it.
+        appendInstance: (key, record) => {
+          records.push({ key, record: { ...record, tint: [...record.tint] as typeof record.tint } });
+        },
+      },
     );
     let step = iterator.next();
     while (!step.done) step = iterator.next();
@@ -1265,13 +1264,11 @@ describe("bush and boulder records", () => {
   it("draws a cell's bushes to two budgets, the same bushes from every range", () => {
     const hectares = (64 * 64) / 10_000;
     const open = Array.from({ length: 200 }, (_, index) => shrub({
-      id: `open-${index}`,
       x: 2 + (index % 20) * 3,
       z: 2 + Math.floor(index / 20) * 6,
       selection: (index + 0.5) / 200,
     }));
     const under = Array.from({ length: 50 }, (_, index) => shrub({
-      id: `under-${index}`,
       x: 3 + (index % 10) * 6,
       z: 5 + Math.floor(index / 10) * 12,
       selection: (index + 0.5) / 50,
@@ -1279,7 +1276,8 @@ describe("bush and boulder records", () => {
       windPhaseRadians: 3.3,
     }));
     const cell = cellOf([...open, ...under]);
-    const shares = shrubDrawnShares(cell.shrubs, hectares);
+    const packedShrubs = packDetailCell(cell).shrubs;
+    const shares = shrubDrawnShares(packedShrubs, hectares);
     expect(shares.open).toBeCloseTo((SHRUB_OPEN_DRAWN_PER_HECTARE * hectares) / 200, 12);
     expect(shares.understory).toBeCloseTo((SHRUB_UNDERSTORY_DRAWN_PER_HECTARE * hectares) / 50, 12);
     const openDrawn = open.filter((entry) => entry.selection <= shares.open).length;
@@ -1300,14 +1298,15 @@ describe("bush and boulder records", () => {
     expect(new Set(far.map(place))).toEqual(new Set(close.filter((entry) => !isUnder(entry)).map(place)));
 
     // A sparse cell draws every bush it has.
-    expect(shrubDrawnShares(open.slice(0, 40), hectares)).toEqual({ understory: 1, open: 1 });
+    expect(shrubDrawnShares(packDetailCell(cellOf(open.slice(0, 40))).shrubs, hectares))
+      .toEqual({ understory: 1, open: 1 });
 
     // A tier authored thinner draws to a lower open cap, and the bushes it
     // keeps are the first of the ones a fuller tier draws. The understory's
     // budget does not move.
     const lowCap = shrubOpenDrawnPerHectare(0.45);
     expect(lowCap).toBeCloseTo(SHRUB_OPEN_DRAWN_PER_HECTARE * 0.45, 12);
-    const lowShares = shrubDrawnShares(cell.shrubs, hectares, lowCap);
+    const lowShares = shrubDrawnShares(packedShrubs, hectares, lowCap);
     expect(lowShares.understory).toBe(shares.understory);
     expect(lowShares.open).toBeCloseTo(shares.open * 0.45, 12);
     const low = collect(cell, 250, { shrubOpenDrawnPerHectare: lowCap }).records
@@ -1318,7 +1317,7 @@ describe("bush and boulder records", () => {
     for (const entry of low) expect(drawnFar.has(place(entry))).toBe(true);
     // A cap of nothing draws no open bush, and a tier denser than the
     // reference draws to the reference cap, not past it.
-    expect(shrubDrawnShares(cell.shrubs, hectares, 0).open).toBe(0);
+    expect(shrubDrawnShares(packedShrubs, hectares, 0).open).toBe(0);
     expect(shrubOpenDrawnPerHectare(1.4)).toBe(SHRUB_OPEN_DRAWN_PER_HECTARE);
     expect(shrubOpenDrawnPerHectare(0)).toBe(0);
     expect(shrubOpenDrawnPerHectare(Number.NaN)).toBe(0);
@@ -1355,7 +1354,6 @@ describe("bush and boulder records", () => {
           for (let z = SPACING / 2; z < CELL; z += SPACING) {
             for (let x = SPACING / 2; x < CELL; x += SPACING) {
               bushes.push(shrub({
-                id: `${cellX}:${cellZ}:${x}:${z}`,
                 x: cellX * CELL + x + ((cellX + cellZ) & 1),
                 z: cellZ * CELL + z,
                 heightMeters: height,
@@ -1370,7 +1368,7 @@ describe("bush and boulder records", () => {
           };
           const distance = detailCellMinimumDistanceMeters(0, 0, cellX, cellZ, CELL);
           residents.push({
-            cell,
+            cell: packDetailCell(cell),
             treeCanopyRank: new Float32Array(0),
             lod: distance <= law.near.outerRadiusMeters ? "near" : "mid",
             distance,
@@ -1445,7 +1443,6 @@ describe("bush and boulder records", () => {
 
   it("draws one leaf-card model per bush species on a tier that draws one per tree", () => {
     const bushes = Array.from({ length: 40 }, (_, index) => shrub({
-      id: `bush-${index}`,
       x: 4 + (index % 8) * 7,
       z: 4 + Math.floor(index / 8) * 11,
       selection: (index + 0.5) / 40,

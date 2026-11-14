@@ -13,6 +13,7 @@ import {
   detailTreeCanopyRankOrder,
   type DetailPresentationBuildCatalog,
 } from "../src/render/webgpu/detail/presentationBuild";
+import { packDetailCell, type PackedDetailCell } from "../src/render/webgpu/detail/packedCell";
 import { WorldDetailRuntime } from "../src/render/webgpu/detail/WorldDetailRuntime";
 import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityProfile";
 import {
@@ -980,6 +981,14 @@ describe("detail generation client (1B-10)", () => {
         dayOfYear: 171,
         latitudeDegrees: world.latitudeDegrees,
       });
+      // The worker retains the cell packed, as columns, not as the generator's
+      // placement objects; the build above read those columns.
+      const retained = (worker as unknown as {
+        readonly retainedCells: Map<number, { readonly cell: PackedDetailCell }>;
+      }).retainedCells.get(secondToken)!;
+      expect(retained.cell.trees.x).toBeInstanceOf(Float64Array);
+      expect(retained.cell.trees.count).toBe(secondEvent.cell.counts.trees);
+      expect(retained.cell).toEqual(packDetailCell(cell));
       const inlineBatches = new Map<string, {
         readonly writer: DetailInstanceWriter;
         readonly bounds: DetailInstanceBounds;
@@ -988,7 +997,7 @@ describe("detail generation client (1B-10)", () => {
         {
           ...input,
           residents: [{
-            cell,
+            cell: packDetailCell(cell),
             treeCanopyRank: detailTreeCanopyRankOrder(cell.trees),
             lod: "near",
             distance: 0,

@@ -301,6 +301,65 @@ describe("car soft ground", () => {
     expect(sand.travelled).toBeGreaterThan(30);
   });
 
+  /** In 4H on flat `material`, brought to `speed` with the wheel held straight. */
+  function runningOn(material: Material, speed: number): GroundVehicleSimulator {
+    const sim = carOn(FLAT, material);
+    hold(sim, 0.1, { handbrake: 1 });
+    hold(sim, 1, { handbrake: 1, rangePresses: 1 });
+    for (let i = 0; i < 20 / STEP && speedOf(sim) < speed; i += 1) {
+      controls(sim, { rangePresses: 1, accelerator: 1, steer: Math.max(-1, Math.min(1, 3 * headingOf(sim))) });
+      sim.step(STEP);
+    }
+    expect(speedOf(sim)).toBeGreaterThan(speed - 0.5);
+    return sim;
+  }
+
+  /** The braking deceleration from 12 m/s to a stop on Space, held straight, in g. */
+  function stopping(material: Material): number {
+    const sim = runningOn(material, 12);
+    const v0 = speedOf(sim);
+    const z0 = sim.state.position.z;
+    for (let i = 0; i < 10 / STEP && speedOf(sim) > 0.05; i += 1) {
+      controls(sim, { rangePresses: 1, brake: 1, steer: Math.max(-1, Math.min(1, 3 * headingOf(sim))) });
+      sim.step(STEP);
+    }
+    return (v0 * v0) / (2 * (sim.state.position.z - z0)) / 9.80665;
+  }
+
+  /** At 10 m/s, the wheel wound to half the lock it reaches there and held 4 s on a pedal that holds the speed: the turn's radius and the body's sideslip (degrees). */
+  function turning(material: Material): { radius: number; sideslip: number } {
+    const sim = runningOn(material, 10);
+    let lean = 0;
+    for (let i = 0; i < 4 / STEP; i += 1) {
+      const error = 10 - speedOf(sim);
+      lean = Math.max(0, Math.min(1, lean + 0.4 * error * STEP));
+      controls(sim, { rangePresses: 1, accelerator: Math.max(0, Math.min(1, 0.25 * error + lean)), steer: 0.5 });
+      sim.step(STEP);
+    }
+    const v = sim.state.velocity;
+    const yawRate = Math.abs(sim.state.angularVelocity.y);
+    const off = headingOf(sim) - Math.atan2(v.x, v.z);
+    return { radius: Math.hypot(v.x, v.z) / yawRate, sideslip: (Math.abs(Math.atan2(Math.sin(off), Math.cos(off))) * 180) / Math.PI };
+  }
+
+  it("grips a dry meadow as a car does: ABS stops at about half a g, and it turns with its body in line", () => {
+    // Dry grass with ABS: about 0.5 (accident reconstruction's skid tests); locked wheels on dry
+    // rye-grass slide at 0.36 to 0.42, against 0.65 on dry asphalt (Cenek et al., NZ). Gravel grips a
+    // little more, asphalt much more.
+    const meadow = stopping(SurfaceMaterial.Grass);
+    expect(meadow).toBeGreaterThan(0.43);
+    expect(meadow).toBeLessThan(0.58);
+    expect(stopping(SurfaceMaterial.Gravel)).toBeGreaterThan(meadow);
+    expect(stopping(SurfaceMaterial.Asphalt)).toBeGreaterThan(stopping(SurfaceMaterial.Gravel));
+    // Half the lock at 10 m/s (about 0.3 g on asphalt) is inside the meadow's grip: the car
+    // runs a little wide of its asphalt line, its body in line with its path. With the loose
+    // ground's shear (K = 2.5 cm) it ran 44% wide, the body nearly 3 degrees across it.
+    const grass = turning(SurfaceMaterial.Grass);
+    const asphalt = turning(SurfaceMaterial.Asphalt);
+    expect(grass.radius / asphalt.radius).toBeLessThan(1.25);
+    expect(grass.sideslip).toBeLessThan(1.5);
+  });
+
   it("reports each tyre's sinkage, material and wetness for the tracks and the spray", () => {
     const sim = carOn(groundOf((out) => {
       out.height = 0;

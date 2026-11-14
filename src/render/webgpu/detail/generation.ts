@@ -1419,7 +1419,6 @@ function scatterTrees(context: ScatterContext): readonly DetailTreePlacement[] {
     // exclusion zone thins the stand far below its ecological density.
     push(kernelClamp(crown * 0.5, 2, 6.5), priority, () => ({
       kind: "tree",
-      id: `canopy:${x.toFixed(2)}:${z.toFixed(2)}`,
       species,
       x,
       y,
@@ -1495,7 +1494,6 @@ function scatterShrubs(context: ScatterContext): readonly DetailShrubPlacement[]
       * (1 - tundra * TUNDRA_SHRUB_STATURE_LOSS);
     push(kernelClamp(radius * 1.3, 1, 5), priority, () => ({
       kind: "shrub",
-      id: `understory:${x.toFixed(2)}:${z.toFixed(2)}`,
       species,
       x,
       y,
@@ -1817,7 +1815,6 @@ function generateRocks(
     );
     rocks.push({
       kind: "rock",
-      id: `${key}/rock/${index}`,
       variant,
       x,
       // 2-15: sunk by radius·(0.12 + 0.25·hash) so rocks sit IN the ground.
@@ -2115,7 +2112,6 @@ function scatterClutter(
     );
     placements.push({
       kind: "clutter",
-      id: `${context.seed}/clutter/${index}/${x.toFixed(1)}/${z.toFixed(1)}`,
       clutterKind: kind,
       x,
       y: sample.height,

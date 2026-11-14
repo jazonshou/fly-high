@@ -97,6 +97,7 @@ import {
   type DetailPresentationChunkCoordinates,
 } from "./spatialChunks";
 import { treePrototypeSpecies, treeTrunkTint } from "./treePrototypeFamily";
+import { packDetailCell, type PackedDetailCell } from "./packedCell";
 import {
   buildPresentationChunk,
   detailCellMinimumDistanceMeters,
@@ -160,7 +161,6 @@ import {
   type DetailLod,
   type GroundCoverArchetype,
   type DetailTerrainSampler,
-  type GeneratedDetailCell,
   type RockVariant,
   type ShrubSpecies,
   type TreeSpecies,
@@ -377,7 +377,8 @@ interface DetailPresentationChunk {
 /** CPU-only batch assembled while the previously published chunk stays live. */
 interface StagedDetailBatch {
   readonly prototypeKey: string;
-  readonly writer: DetailInstanceWriter;
+  /** Replaced, through the pool, when an inline build outgrows it. */
+  writer: DetailInstanceWriter;
   readonly bounds: DetailInstanceBounds;
   readonly prototypeBoundKernel: DetailPrototypeBoundKernel;
 }
@@ -509,7 +510,21 @@ export interface DetailPresentationRebuildDiagnostics {
   readonly workUnitsLastUpdate: number;
   readonly millisecondsLastUpdate: number;
   readonly stagedRecords: number;
+  /** Idle CPU writers held for reuse, and their bytes (bounded by the pool's cap). */
   readonly pooledCpuBatchStorage: number;
+  readonly pooledCpuBatchStorageBytes: number;
+  /** Lifetime totals: writers made because none pooled fit, served from the pool, dropped past the cap. */
+  readonly cpuWriterAllocations: number;
+  readonly cpuWriterPoolHits: number;
+  readonly cpuWriterPoolDrops: number;
+  /**
+   * Lifetime totals of inline staged writers moved to another writer (each
+   * also an allocation or a pool hit): one that filled, to one that holds
+   * twice its records; one left with four times its records or more once they
+   * were known, to one that fits.
+   */
+  readonly cpuWriterGrowths: number;
+  readonly cpuWriterRefits: number;
   readonly cancellations: number;
   readonly publications: number;
   readonly backloggedChunks: number;
@@ -611,7 +626,8 @@ interface ResidentCellBase {
 
 interface InlineResidentCell extends ResidentCellBase {
   readonly source: "inline";
-  readonly cell: GeneratedDetailCell;
+  /** Packed as the worker packs its retained cells (`packDetailCell`). */
+  readonly cell: PackedDetailCell;
   /** Canopy rank of each stem in `cell.trees`, in [0, 1). */
   readonly treeCanopyRank: Float32Array;
 }
@@ -722,6 +738,33 @@ export interface WorldDetailRuntimeOptions {
  * to have retired, at ~60 Hz.
  */
 export const DETAIL_INSTANCE_BUFFER_REUSE_GRACE_UPDATES = 8;
+
+/**
+ * Idle CPU writers kept for reuse are capped by bytes: 64 KiB per cell of the
+ * profile's cell budget, at most 16 MiB (8 MiB at Low's 128 cells, 16 MiB at
+ * Medium's 384 and High's 896). The pool only holds what releases outrun
+ * takes, so the cap is headroom rather than a size. Simulating the bench
+ * route (75 s, in-process worker), Low's pool averaged 3.2 MiB and dropped
+ * nothing, leaving 0.08 MiB/s of new long-lived writer bytes against 3.5 when
+ * every transferred buffer was kept; Medium's dropped nothing either (0.11
+ * against 9.1 MiB/s). Straight 60 s Low lines averaged 4.7-5.2 MiB; a 4 MiB
+ * cap kept 1.2-1.6 MiB less there but dropped 39-74 writers and made up to
+ * 0.016 MiB/s more, and at 3 MiB the bench route rose to 0.14.
+ */
+export const DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL = 64 * 1_024;
+export const DETAIL_CPU_WRITER_POOL_MAX_BYTES = 16 * 1_024 * 1_024;
+/**
+ * New writers hold a power of two of at least this many records, and a writer
+ * serves a batch only while that batch fills more than a quarter of it
+ * (batches under the minimum count as the minimum), so a small batch never
+ * keeps a large buffer alive. Requiring more than half made live writers
+ * smaller but moved the slack into the pool, as writers a batch no longer
+ * half filled sat there unused: within 0.1 MiB and 0.01 MiB/s on the
+ * simulated bench route, but 0.4-1.1 MiB more writer bytes retained and about
+ * 0.02 MiB/s more new long-lived ones on straight Low lines and on Medium.
+ */
+const DETAIL_CPU_WRITER_MIN_RECORDS = 32;
+const DETAIL_CPU_WRITER_MAX_OVERSIZE = 4;
 
 /**
  * 2-17 close: one chunk is rebuilt at a time, now across bounded update
@@ -911,6 +954,20 @@ function profileCellBudget(profile: WebGpuQualityProfile): number {
   return 896;
 }
 
+/** The power-of-two record capacity a new pooled CPU writer gets for `records`. */
+function detailCpuWriterCapacityRecords(records: number): number {
+  let capacity = DETAIL_CPU_WRITER_MIN_RECORDS;
+  while (capacity < records) capacity *= 2;
+  return capacity;
+}
+
+/** Writers of this many bytes or more are too large to hold `records`. */
+function detailCpuWriterOversizeBytes(records: number): number {
+  return DETAIL_CPU_WRITER_MAX_OVERSIZE
+    * Math.max(records, DETAIL_CPU_WRITER_MIN_RECORDS)
+    * DETAIL_INSTANCE_STRIDE_BYTES;
+}
+
 /**
  * Paged natural/settlement detail built entirely from Babylon meshes and thin
  * instances. Generation is incremental; normal per-frame updates become no-ops
@@ -923,11 +980,45 @@ export class WorldDetailRuntime {
   private readonly prototypes = new Map<string, DetailPrototype>();
   private readonly presentationChunks = new Map<string, DetailPresentationChunk>();
   /**
-   * One detached CPU writer/bounds pair per prototype at most. A staged build
-   * consumes it; commit returns the displaced live pair. This restores the
-   * pre-staging growable-buffer reuse without sharing storage with live data.
+   * Idle CPU writer/bounds pairs shared by every prototype, in release order,
+   * taken best-fit by capacity (`acquireDetailBuildStorage`) and capped by
+   * bytes (longest-idle dropped first). A worker batch is COPIED into one,
+   * so the buffer the worker transferred dies young rather than living,
+   * promoted, until a later publication displaces it.
+   *
+   * Lifetime rule: a writer comes here only once nothing can read its bytes
+   * again. GPU contents never alias a writer (`writeBuffer` copies at the
+   * call); the readers are Babylon's `Buffer._data` mirror of the allocation
+   * its batch uploaded into (`getData()`, context-restore `_rebuild`) and a
+   * publication upload's `packed` view while it streams. Every writer has one
+   * owner at a time (a build, a publication upload, a live or retired batch,
+   * or this pool), so none is released twice, and it is released only:
+   *  - from a build or publication that never reached a live mesh (cancel,
+   *    a rejected worker result, a `fits` upload whose batch vanished). A
+   *    staged allocation it streamed into is recycled first, dropping `_data`;
+   *  - as the displaced writer of an in-place `fits` flip, after `uploadBatch`
+   *    has pointed `_data` at the new writer (a staged writer always holds at
+   *    least one record, so that write always happens);
+   *  - from a retired batch in `disposeExpiredBatches`, after its mesh is
+   *    disposed and its allocation recycled, which drops `_data`.
+   * A live batch's writer is never written into, so its `_data` stays exact.
    */
-  private readonly detailBuildStoragePool = new Map<string, PooledDetailBuildStorage>();
+  private readonly detailBuildStoragePool: PooledDetailBuildStorage[] = [];
+  private detailBuildStoragePoolBytes = 0;
+  /** Set from the profile at every update; Low's cap until the first. */
+  private detailBuildStoragePoolByteCap =
+    128 * DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL;
+  private cpuWriterAllocations = 0;
+  private cpuWriterPoolHits = 0;
+  private cpuWriterPoolDrops = 0;
+  private cpuWriterGrowths = 0;
+  private cpuWriterRefits = 0;
+  /**
+   * Each prototype's record count in its latest staged batch: the size an
+   * inline build asks the pool for when the chunk has no live batch of that
+   * prototype to go by.
+   */
+  private readonly stagedRecordsByPrototype = new Map<string, number>();
   private readonly materials = new Set<PBRMaterial>();
   private readonly instancePlugins = new Set<DetailInstanceMaterialPlugin>();
   private readonly pluginByMaterial = new Map<PBRMaterial, DetailInstanceMaterialPlugin>();
@@ -1035,6 +1126,11 @@ export class WorldDetailRuntime {
   private captureSuppressedChunks = 0;
   private captureStaleVisibleChunks = 0;
   private readonly presentationRebuildBudget: DetailPresentationRebuildBudget;
+  /**
+   * `DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE`; a field only so tests can
+   * stream a publication over many updates.
+   */
+  private readonly publicationStreamBytesPerUpdate = DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE;
   private readonly presentationNowMilliseconds: () => number;
   private presentationWorkUnitsLastUpdate = 0;
   private presentationMillisecondsLastUpdate = 0;
@@ -1907,7 +2003,13 @@ export class WorldDetailRuntime {
       workUnitsLastUpdate: this.presentationWorkUnitsLastUpdate,
       millisecondsLastUpdate: this.presentationMillisecondsLastUpdate,
       stagedRecords,
-      pooledCpuBatchStorage: this.detailBuildStoragePool.size,
+      pooledCpuBatchStorage: this.detailBuildStoragePool.length,
+      pooledCpuBatchStorageBytes: this.detailBuildStoragePoolBytes,
+      cpuWriterAllocations: this.cpuWriterAllocations,
+      cpuWriterPoolHits: this.cpuWriterPoolHits,
+      cpuWriterPoolDrops: this.cpuWriterPoolDrops,
+      cpuWriterGrowths: this.cpuWriterGrowths,
+      cpuWriterRefits: this.cpuWriterRefits,
       cancellations: this.presentationBuildCancellations,
       publications: this.presentationBuildPublications,
       backloggedChunks: this.presentationBacklogChunks,
@@ -2004,6 +2106,11 @@ export class WorldDetailRuntime {
     this.updateSequence += 1;
     this.excludeUpdateGapFromWorkerDeadlines();
     this.vegetationCastsShadows = profile.vegetationCastsShadows;
+    this.detailBuildStoragePoolByteCap = Math.min(
+      DETAIL_CPU_WRITER_POOL_MAX_BYTES,
+      profileCellBudget(profile) * DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL,
+    );
+    this.trimDetailBuildStoragePool();
     this.disposeExpiredBatches();
     // Wind phase rides the caller's SIMULATION clock when provided (Z-1):
     // a wall-clock accumulator made every tree's sway phase depend on how
@@ -2276,6 +2383,10 @@ export class WorldDetailRuntime {
             }
             : {}),
         });
+        // Packing and ranking are part of the cell's main-thread cost, so
+        // the credit is charged after them.
+        const packed = packDetailCell(cell);
+        const treeCanopyRank = detailTreeCanopyRankOrder(cell.trees);
         if (credit !== null) {
           recordInlineCellAfterWorkerFailure(credit, this.nowMilliseconds() - cellStartedAt);
         }
@@ -2285,10 +2396,10 @@ export class WorldDetailRuntime {
           cellX: cell.cellX,
           cellZ: cell.cellZ,
           cellSizeMeters: cell.cellSizeMeters,
-          cell,
+          cell: packed,
           generation: this.cellEpoch,
           revision: ++this.cellRevision,
-          treeCanopyRank: detailTreeCanopyRankOrder(cell.trees),
+          treeCanopyRank,
           lod: desired.lod,
           distance: desired.distance,
           invalidated: false,
@@ -2591,7 +2702,9 @@ export class WorldDetailRuntime {
     this.cells.clear();
     this.desiredCells = [];
     this.desiredKeys.clear();
-    this.detailBuildStoragePool.clear();
+    this.detailBuildStoragePool.length = 0;
+    this.detailBuildStoragePoolBytes = 0;
+    this.stagedRecordsByPrototype.clear();
     for (const batch of this.batches.values()) {
       batch.mesh.dispose(false, false);
       batch.gpu?.shared.dispose();
@@ -3242,7 +3355,12 @@ export class WorldDetailRuntime {
         this.presentationBuildCatalog,
         {
           appendInstance: (prototypeKey, record, billboardFrame) => {
-            const batch = this.getStagedBatch(prototypeKey, stagedBatches);
+            const batch = this.getStagedBatch(
+              prototypeKey,
+              target.coordinates.key,
+              stagedBatches,
+            );
+            if (batch.writer.full) this.growStagedWriter(batch);
             batch.writer.pushBounded(
               record,
               batch.bounds,
@@ -3468,6 +3586,16 @@ export class WorldDetailRuntime {
         throw new Error("Detail worker presentation batches must own unique transferred buffers");
       }
       transferredBuffers.add(batch.bytes.buffer);
+      // Checked before any storage is taken: the count sizes the copy.
+      if (
+        !Number.isSafeInteger(batch.count)
+        || batch.count <= 0
+        || batch.bytes.byteOffset !== 0
+        || batch.bytes.byteLength !== batch.count * DETAIL_INSTANCE_STRIDE_BYTES
+        || batch.bytes.buffer.byteLength !== batch.bytes.byteLength
+      ) {
+        throw new RangeError("Transferred detail instance bytes must be one exact packed buffer");
+      }
     }
 
     const stagedBatches = new Map<string, StagedDetailBatch>();
@@ -3480,20 +3608,21 @@ export class WorldDetailRuntime {
         if (!prototype) {
           throw new Error(`Detail worker presentation referenced unknown prototype ${batch.prototypeKey}`);
         }
+        // Copy into pooled storage and keep no reference to the transferred
+        // bytes, which then die young with the worker's message.
+        const storage = this.acquireDetailBuildStorage(batch.count);
         stagedBatches.set(batch.prototypeKey, {
           prototypeKey: batch.prototypeKey,
-          writer: DetailInstanceWriter.fromTransferredBytes(batch.bytes, batch.count),
-          bounds: DetailInstanceBounds.fromExtents(batch.minimum, batch.maximum, batch.blocks),
+          writer: storage.writer,
+          bounds: storage.bounds,
           prototypeBoundKernel: prototype.boundKernel,
         });
+        storage.writer.copyPackedFrom(batch.bytes, batch.count);
+        storage.bounds.setExtents(batch.minimum, batch.maximum, batch.blocks);
       }
     } catch (error) {
       for (const staged of stagedBatches.values()) {
-        this.releaseDetailBuildStorage(
-          staged.prototypeKey,
-          staged.writer,
-          staged.bounds,
-        );
+        this.releaseDetailBuildStorage(staged.writer, staged.bounds);
       }
       throw error;
     }
@@ -3555,6 +3684,8 @@ export class WorldDetailRuntime {
     }
     const uploads: StagedDetailBatchUpload[] = [];
     for (const staged of build.stagedBatches.values()) {
+      this.refitStagedWriter(staged);
+      this.stagedRecordsByPrototype.set(staged.prototypeKey, staged.writer.count);
       const batchKey = `${staged.prototypeKey}@${build.coordinates.key}`;
       const live = this.batches.get(batchKey);
       const packed = staged.writer.finish();
@@ -3624,7 +3755,7 @@ export class WorldDetailRuntime {
     // Streaming phase: packed records flow into the disabled staged buffers
     // under the per-update byte budget. Nothing here is visible — the staged
     // meshes stay disabled until the flip.
-    let budget = DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE;
+    let budget = this.publicationStreamBytesPerUpdate;
     for (const upload of publication.uploads) {
       if (upload.kind === "fits" || !upload.structuralDone) continue;
       const gpu = upload.stagedBatch?.gpu;
@@ -3687,7 +3818,7 @@ export class WorldDetailRuntime {
           // Defensive: `fits` implies a live batch existed at staging and
           // nothing removes one mid-publication; if that ever changes, the
           // staged writer must still return to the bounded pool.
-          this.releaseDetailBuildStorage(upload.prototypeKey, upload.writer, upload.bounds);
+          this.releaseDetailBuildStorage(upload.writer, upload.bounds);
           continue;
         }
         const displacedWriter = batch.writer;
@@ -3695,12 +3826,10 @@ export class WorldDetailRuntime {
         batch.writer = upload.writer;
         batch.bounds = upload.bounds;
         batch.filledRevision = nextRevision;
+        // Rewrites the allocation's `_data` to the new writer, so the
+        // displaced one is unreferenced once this returns.
         this.uploadBatch(batch, publication.recordOrigin, currentOrigin);
-        this.releaseDetailBuildStorage(
-          upload.prototypeKey,
-          displacedWriter,
-          displacedBounds,
-        );
+        this.releaseDetailBuildStorage(displacedWriter, displacedBounds);
       } else {
         const staged = upload.stagedBatch;
         if (!staged) continue;
@@ -3795,15 +3924,12 @@ export class WorldDetailRuntime {
       const staged = upload.stagedBatch;
       if (staged) {
         staged.mesh.dispose(false, false);
+        // Recycling drops the `_data` a streamed slice of this writer set.
         if (staged.gpu) this.recycleInstanceBuffers(staged.gpu);
         staged.gpu = null;
         this.revealRamps.delete(staged.mesh);
       }
-      this.releaseDetailBuildStorage(
-        upload.prototypeKey,
-        upload.writer,
-        upload.bounds,
-      );
+      this.releaseDetailBuildStorage(upload.writer, upload.bounds);
     }
     publication.uploads.length = 0;
     this.pendingPublication = null;
@@ -3933,13 +4059,20 @@ export class WorldDetailRuntime {
 
   private getStagedBatch(
     prototypeKey: string,
+    chunkKey: string,
     stagedBatches: Map<string, StagedDetailBatch>,
   ): StagedDetailBatch {
     const existing = stagedBatches.get(prototypeKey);
     if (existing) return existing;
     const prototype = this.prototypes.get(prototypeKey);
     if (!prototype) throw new Error(`Missing detail prototype ${prototypeKey}`);
-    const storage = this.acquireDetailBuildStorage(prototypeKey);
+    // Size it like the live batch it will replace or, for a new batch, like
+    // the prototype's latest; it grows through the pool if that was too few
+    // and is refit if it ends far too large (`createPendingPublication`).
+    const live = this.batches.get(`${prototypeKey}@${chunkKey}`);
+    const storage = this.acquireDetailBuildStorage(
+      live?.writer.count ?? this.stagedRecordsByPrototype.get(prototypeKey) ?? 0,
+    );
     const staged: StagedDetailBatch = {
       prototypeKey,
       writer: storage.writer,
@@ -3950,41 +4083,101 @@ export class WorldDetailRuntime {
     return staged;
   }
 
-  private acquireDetailBuildStorage(prototypeKey: string): PooledDetailBuildStorage {
-    const pooled = this.detailBuildStoragePool.get(prototypeKey);
-    if (pooled) {
-      this.detailBuildStoragePool.delete(prototypeKey);
-      pooled.writer.reset();
-      pooled.bounds.reset();
-      return pooled;
+  /**
+   * Takes the idle writer/bounds pair that best fits `minimumRecords` — the
+   * smallest writer that holds them in less than four times their bytes, the
+   * oldest of equals — or makes one with a power-of-two capacity, so released
+   * writers come in few sizes and match later batches. Pooled pairs were reset
+   * when released.
+   */
+  private acquireDetailBuildStorage(minimumRecords: number): PooledDetailBuildStorage {
+    const pool = this.detailBuildStoragePool;
+    const minimumBytes = minimumRecords * DETAIL_INSTANCE_STRIDE_BYTES;
+    let bestIndex = -1;
+    let bestBytes = detailCpuWriterOversizeBytes(minimumRecords);
+    for (let index = 0; index < pool.length; index += 1) {
+      const bytes = pool[index]!.writer.capacityBytes;
+      if (bytes < minimumBytes || bytes >= bestBytes) continue;
+      bestIndex = index;
+      bestBytes = bytes;
     }
+    if (bestIndex >= 0) {
+      // splice keeps the rest in release order for `trimDetailBuildStoragePool`.
+      const [pooled] = pool.splice(bestIndex, 1);
+      this.detailBuildStoragePoolBytes -= bestBytes;
+      this.cpuWriterPoolHits = addDiagnosticCount(this.cpuWriterPoolHits);
+      return pooled!;
+    }
+    this.cpuWriterAllocations = addDiagnosticCount(this.cpuWriterAllocations);
     return {
-      writer: new DetailInstanceWriter(),
+      writer: new DetailInstanceWriter(detailCpuWriterCapacityRecords(minimumRecords)),
       bounds: new DetailInstanceBounds(),
     };
   }
 
+  /**
+   * Moves a full inline staged writer's records into a pooled writer that
+   * holds twice as many and returns the outgrown one to the pool.
+   * `pushBounded` would double it in place instead, and as an inline build
+   * spans updates the dropped buffer was often promoted before it died.
+   * Nothing but the build reads a staged writer, so the swap is invisible.
+   */
+  private growStagedWriter(staged: StagedDetailBatch): void {
+    const outgrown = staged.writer;
+    const larger = this.acquireDetailBuildStorage(2 * outgrown.count);
+    larger.writer.copyPackedFrom(outgrown.finish(), outgrown.count);
+    staged.writer = larger.writer;
+    this.releaseDetailBuildStorage(outgrown, larger.bounds);
+    this.cpuWriterGrowths = addDiagnosticCount(this.cpuWriterGrowths);
+  }
+
+  /**
+   * An inline build sizes its writers before it knows their records, so a
+   * batch that shrank can end in a writer four times its records or more; that
+   * one is swapped for a writer that fits, as a pool hit would, before it is
+   * published, so no live writer keeps a large buffer for a few records. A
+   * worker batch is copied into a fitting writer from the start.
+   */
+  private refitStagedWriter(staged: StagedDetailBatch): void {
+    const writer = staged.writer;
+    const count = writer.count;
+    if (count === 0 || writer.capacityBytes < detailCpuWriterOversizeBytes(count)) return;
+    const fitted = this.acquireDetailBuildStorage(count);
+    fitted.writer.copyPackedFrom(writer.finish(), count);
+    staged.writer = fitted.writer;
+    this.releaseDetailBuildStorage(writer, fitted.bounds);
+    this.cpuWriterRefits = addDiagnosticCount(this.cpuWriterRefits);
+  }
+
+  /** Returns a pair nothing reads any more (see `detailBuildStoragePool`). */
   private releaseDetailBuildStorage(
-    prototypeKey: string,
     writer: DetailInstanceWriter,
     bounds: DetailInstanceBounds,
   ): void {
-    // One active staged chunk means one spare per prototype is sufficient.
-    // Refuse a second entry explicitly rather than letting structural churn
-    // turn this CPU-only pool into an unbounded cache.
-    if (this.detailBuildStoragePool.has(prototypeKey)) return;
     writer.reset();
     bounds.reset();
-    this.detailBuildStoragePool.set(prototypeKey, { writer, bounds });
+    this.detailBuildStoragePool.push({ writer, bounds });
+    this.detailBuildStoragePoolBytes += writer.capacityBytes;
+    this.trimDetailBuildStoragePool();
+  }
+
+  /**
+   * Drops the longest-idle writers until the pool is within its byte cap.
+   * Measured on a simulated Low flight, evicting the oldest cut the churn
+   * left at a 4 MiB cap to a sixth of evicting the largest.
+   */
+  private trimDetailBuildStoragePool(): void {
+    const pool = this.detailBuildStoragePool;
+    while (this.detailBuildStoragePoolBytes > this.detailBuildStoragePoolByteCap) {
+      const dropped = pool.shift()!;
+      this.detailBuildStoragePoolBytes -= dropped.writer.capacityBytes;
+      this.cpuWriterPoolDrops = addDiagnosticCount(this.cpuWriterPoolDrops);
+    }
   }
 
   private releaseStagedBuildStorage(build: PendingDetailChunkBuild): void {
     for (const staged of build.stagedBatches.values()) {
-      this.releaseDetailBuildStorage(
-        staged.prototypeKey,
-        staged.writer,
-        staged.bounds,
-      );
+      this.releaseDetailBuildStorage(staged.writer, staged.bounds);
     }
     build.stagedBatches.clear();
   }
@@ -4151,6 +4344,11 @@ export class WorldDetailRuntime {
 
   /** Returns an allocation to the pool; nothing is destroyed in flight. */
   private recycleInstanceBuffers(gpu: DetailInstanceGpuBuffers): void {
+    // Its contents are dead. Babylon's `_data` mirror would pin the previous
+    // owner's writer bytes and alias them once that writer is reused; a
+    // context-restore `_rebuild` without it recreates the buffer by capacity,
+    // and the next owner writes every byte it draws before it is enabled.
+    (gpu.shared as unknown as { _data: unknown })._data = null;
     this.instanceBufferPool.push({
       gpu,
       reusableAfterUpdate:
@@ -4332,7 +4530,9 @@ export class WorldDetailRuntime {
       castsShadows: prototype.castsShadows,
       prototypeKey,
       chunkKey: coordinates.key,
-      writer: new DetailInstanceWriter(),
+      // Placeholder: the flip installs the staged writer before this batch
+      // is ever live, so it never needs room for records.
+      writer: new DetailInstanceWriter(1),
       bounds: new DetailInstanceBounds(),
       prototypeBoundKernel: prototype.boundKernel,
       gpu: null,
@@ -4373,6 +4573,9 @@ export class WorldDetailRuntime {
         // PooledInstanceBuffers.
         if (retired.batch.gpu) this.recycleInstanceBuffers(retired.batch.gpu);
         retired.batch.gpu = null;
+        // The mesh is gone and recycling dropped `_data`: nothing reads these
+        // records again, so the writer goes back for reuse.
+        this.releaseDetailBuildStorage(retired.batch.writer, retired.batch.bounds);
         continue;
       }
       this.retiredBatches[writeIndex] = retired;

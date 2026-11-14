@@ -768,9 +768,12 @@ describe("thickets", () => {
     // Then the pages' size does not matter: a square generated as one page
     // and as four holds the same stems, each exactly once. Solid thicket
     // country, and thin country whose blocks are a subcell or two.
-    type Stem = { readonly id: string };
+    // A stem is named by where it stands, to the centimetre: the name the
+    // generator gave it while placements carried one.
+    type Stem = { readonly x: number; readonly z: number };
+    const id = (stem: Stem): string => `${stem.x.toFixed(2)}:${stem.z.toFixed(2)}`;
     const byId = (list: readonly Stem[]): readonly Stem[] =>
-      [...list].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      [...list].sort((a, b) => (id(a) < id(b) ? -1 : id(a) > id(b) ? 1 : 0));
     const SMALL = 256;
     for (const [moisture, enough, enoughAlongSeams] of [[0.8, 3_000, 150], [0.26, 200, 15]] as const) {
       const generate = (cellX: number, cellZ: number, cellSizeMeters: number) => generateDetailCell({
@@ -796,7 +799,7 @@ describe("thickets", () => {
         )));
         for (const kind of ["shrubs", "trees"] as const) {
           const parts: readonly Stem[] = quarters.flatMap((quarter): readonly Stem[] => quarter[kind]);
-          expect(new Set(parts.map((stem) => stem.id)).size).toBe(parts.length);
+          expect(new Set(parts.map(id)).size).toBe(parts.length);
           expect(byId(parts)).toEqual(byId(whole[kind]));
         }
         const seamX = (squareX * 2 + 1) * SMALL;

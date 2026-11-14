@@ -328,14 +328,27 @@ chapters 2 and 5; `soil.ts`), with the soils of Wong's table 2.3:
 | Soil | n | k_c | k_phi | c (kPa) | phi | K (m) | Depth (m) |
 |---|---|---|---|---|---|---|---|
 | Dry sand | 1.1 | 990 | 1,528,430 | 1.04 | 28 | 0.025 | 0.35 |
-| Sandy loam | 0.7 | 5,270 | 1,515,040 | 1.72 | 29 | 0.025 | 0.15 |
+| Sandy loam | 0.7 | 5,270 | 1,515,040 | 1.72 | 29 | 0.01 | 0.15 |
 | Clayey soil | 0.5 | 13,190 | 692,150 | 4.14 | 13 | 0.03 | 0.30 |
 | Snow | 1.6 | 4,370 | 196,720 | 1.03 | 19.7 | 0.04 | 0.20 |
 | Tephra | 1.1 | 990 | 1,528,430 | 0 | 34 | 0.03 | 0.30 |
 
-K (the shear deformation modulus) is not in the table; 2.5 to 4 cm follows
-Wong's measured shear curves. The depths (the soft layer over firm ground)
-and tephra's row are estimates.
+K (the shear deformation modulus) is not in the table. Bekker's figures, as
+Wong quotes them, are about 1 cm for firm sandy ground, 2.5 cm for loose
+sand, 0.6 cm for a clay at its maximum compaction and 2.5 to 5 cm for fresh
+snow. The sandy loam is the ground under grass, scrub and forest, bound by
+the roots of what grows there, so it takes the firm 1 cm; dune sand, wet clay
+(mud) and snow keep the looser figures. K sets how far the soil shears before
+it holds. The tyre's curve on soil reaches 83% of the soil's capacity at a
+slip of 6K over the patch length (about 0.35 m on loam under a 5.5 kN wheel),
+so at 2.5 cm a tyre on a meadow came to its grip only at 43% slip, or 23
+degrees of slip angle:
+its ABS stops ran at 0.38 g, the car could not turn harder than about 0.3 g,
+and it ran 44% wide of its asphalt line at half lock. At 1 cm the grip comes
+at 17% slip, or 10 degrees (Grip by surface, below). The grip itself, the
+soil's capacity, is unchanged: about 0.58 of the load, 0.41 sideways at the
+curve's peak. The depths (the soft
+layer over firm ground) and tephra's row are estimates.
 
 - Sinkage: the tyre's flat, 2 sqrt(D delta) long, presses the soil as a
   plate of the tread's width, p = (k_c / b + k_phi) z^n. A softer tyre has a
@@ -563,10 +576,41 @@ the car's path (the grid's node writes, `hermitePatch`, `footprintBed`).
 | Underbody | the hull scrapes and high-centres from the geometry | a berm between the tracks: 0.25 m clears, 0.32 m drags the diffs and the car goes on, 0.42 m beaches it on the axles | `sim.car-terrain` |
 | Surface parity | the worker's material maps to the bake's soil model at least 98% of the time | 1,235 of 1,236 land cells, six provinces, at midsummer; 1,236 of 1,236 in mid-January | `sim.car-terrain` |
 | Seasonal snow | the car drives the snow that is drawn | in the temperate and boreal provinces, cells that are loam on day 171 and that the bake paints loam then are snow on day 15 when the bake paints them snow, read again from the same cache after the day changes | `sim.car-terrain` |
+| Dry meadow | grips about as gravel does: ABS stops on dry grass at about 0.5 g in skid tests; locked wheels on dry rye-grass slide at 0.36 to 0.42 against 0.65 on dry asphalt (Cenek et al., NZ) | 12 m/s to a stop in 4H at 0.48 g (gravel 0.58, asphalt 0.91); half the lock at 10 m/s runs 16% wide of the asphalt line with the body 0.4 degrees off its path | `sim.car-terrain` |
 | Snow | packed snow is slippery; deep snow is soft | 4H from 10 m/s: packed snow stops in 3.8 times asphalt's distance (23 m against 6 m); parked on 0.2 m of deep snow the tyres sink to the ground under it, and half throttle takes 6.6 s to 10 m/s against asphalt's 4.5 | `sim.car-terrain` |
 | Wading | a 0.6 m ford at walking pace is fine; 0.9 m floods the intake and stops the engine | 0.6 m: across at 1.4 m/s, engine running; 0.9 m: drowned on the way down, short of the deep bed | `sim.car-water` |
 | Current | a 1.5 m/s river at 0.7 m pushes the car measurably downstream during a crossing | held square to the bank, it crabs 1.3 m downstream over a 30 m crossing; unsteered, the light rear swings downstream and the car yaws upstream | `sim.car-water` |
 | Floating | (the plan's buoyancy and 60 s cabin flooding) | parked under 1.6 m of still water: afloat at first, on its wheels again after 90 s | `sim.car-water` |
+
+### Grip by surface
+
+`scripts/car-traction-probe.mts` drives the car on flat test ground with every
+tyre on one surface, as the worker describes it (roughness and all), and
+prints a row per surface: seconds from rest to 10 m/s at full throttle in 2H
+and 4H; a ramp steer at 10 m/s in 4H (ISO 4138: the wheel wound from straight
+to the lock the speed allows over 8 s, the speed held), with the most
+lateral acceleration held, the body's sideslip and the tyres' slip angles
+there; W and D held from 12 m/s as the keyboard winds the wheel, in 2H and
+4H; a stop from 12 m/s on Space in 4H; and the steepest plane climbed 20 m
+from rest at 60% pedal in 4H and 4L. Grass, dry grass, forest floor and shrub
+are one soil. On 2026-11-12:
+
+| Surface | 0 to 10 m/s, 2H / 4H | Most lateral g at 10 m/s (sideslip, front tyres' slip angle) | Stop from 12 m/s | Climb, 4H / 4L |
+|---|---|---|---|---|
+| Asphalt | 2.3 / 2.3 s | 0.56 (1 degree, 4), the lock's limit | 8.0 m | 40 / 37.5 degrees |
+| Gravel | 3.6 / 2.3 s | 0.49 (1, 7) | 12.8 m | 30 / 27.5 |
+| Grass, dry grass | 5.4 / 3.1 s | 0.37 (1.5, 8) | 15.1 m | 25 / 22.5 |
+| The same with K = 2.5 cm | 6.0 / 3.6 s | 0.32 (5.6, 12) | 19.4 m | 22.5 / 22.5 |
+| Damp grass (wetness 0.75) | 7.6 / 4.3 s | 0.26 (7, 13) | 23.2 m | 17.5 / 17.5 |
+| Mud | 15.2 / 6.1 s | 0.17 (12, 20) | 36.0 m | 10 / 10 |
+| Sand, at road pressure | 21.9 / 5.7 s | 0.30 (3, 10) | 14.0 m | 15 / 15 |
+| Snow, deep / packed | 9.2 / 4.5, 9.9 / 4.6 s | 0.26, 0.24 | 22.5, 34.3 m | 15 / 15, 10 / 10 |
+
+In 2H, W and D held from 12 m/s still swing the tail out on gravel, grass,
+mud and snow: full throttle spins the rear tyres past what they hold
+sideways. In 4H the same keys turn the car with its body within 3 degrees
+of its path on the roads, grass and sand, and 13 to 19 degrees across it on
+damp grass, mud and snow, without a spin.
 
 On a 30 degree slope in 2H only the rear tyres pull: they carry about 56% of
 the car's weight there, so the climb needs a friction of about 0.9. Asphalt
@@ -611,7 +655,12 @@ top road's plane, crossings pinned to the higher road, 1:3 V ditches).
   every province, three tries each, on forest floor, grass and dry grass
   alike. Their sandy loam's shear gives out there in 4L (asphalt and rock
   climb 30 degrees; see Off the road). The other seeds' slopes, 15 to 18
-  degrees on average and up to 24, are climbed at 10 km/h.
+  degrees on average and up to 24, are climbed at 10 km/h. Rerun on
+  2026-11-12 with the loam's firmer K: open country and the fords
+  unchanged (30 of 30 each, 33.0 and 13.4 km/h); the climb still stops at
+  31 degrees on the default seed, 1.7 m higher up, and between tries the
+  tyres hold the car where before it slid back at up to 3.8 m/s, so the
+  probe's driven distance at the third stop is 111 m where it was 165.
 - The fords are crossed at 13 km/h with 0.50 to 0.60 m at the deepest
   wheel, the engine running.
 - The step. At speed on the real world a step costs about 90 to 100 us here,

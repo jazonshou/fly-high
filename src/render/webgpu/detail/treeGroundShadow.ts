@@ -118,6 +118,16 @@ function clamp01(value: number): number {
 }
 
 /**
+ * What a stem's shadow reads of its tree: a generated placement, or the
+ * presentation build's cursor over a packed cell (`PackedTreeView`).
+ */
+export type TreeGroundShadowSource = Pick<
+  DetailTreePlacement,
+  | "species" | "x" | "y" | "z" | "heightMeters" | "crownRadiusMeters"
+  | "trunkRadiusMeters" | "color" | "groundSlopeX" | "groundSlopeZ"
+>;
+
+/**
  * The record one stem's shadow travels in, on the detail instance format:
  *
  * - position: the stem's base;
@@ -132,7 +142,7 @@ function clamp01(value: number): number {
  *   while the tree does.
  */
 export function treeGroundShadowRecord(
-  tree: DetailTreePlacement,
+  tree: TreeGroundShadowSource,
   stemKey: number,
   standDensityShare: number,
   floatingOrigin: DetailFloatingOrigin,

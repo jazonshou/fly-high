@@ -52,7 +52,6 @@ const HALF = 32;
 /** Level ground, an oak 16 m tall, 10 m east of the camera's foot. */
 const TREE: DetailTreePlacement = {
   kind: "tree",
-  id: "oak",
   species: "oak",
   x: 10,
   y: 0,

@@ -6,6 +6,7 @@ import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
+import { dropTextureCpuMirror } from "@/src/render/webgpu/core/TextureCpuMirror";
 import type { AircraftBuildContext } from "../../builders";
 import type { DisplayContext2D, DisplayState } from "./displayState";
 import { drawDisplayAtlas, type DisplayPage, type DisplaySlot } from "./displayPages";
@@ -376,6 +377,9 @@ export function createDisplayAtlas(build: AircraftBuildContext, layout: DisplayL
       mipmaps ? Texture.TRILINEAR_SAMPLINGMODE : Texture.BILINEAR_SAMPLINGMODE,
       Constants.TEXTURETYPE_UNSIGNED_BYTE,
     );
+    // The zero fill is on the GPU now. Without this, Babylon keeps it as the CPU copy until the
+    // first `uploadDisplayAtlas`, which only cockpit view triggers.
+    dropTextureCpuMirror(texture);
     texture.name = layout.name;
     texture.wrapU = Texture.CLAMP_ADDRESSMODE;
     texture.wrapV = Texture.CLAMP_ADDRESSMODE;
@@ -403,6 +407,9 @@ export function uploadDisplayAtlas(atlas: DisplayAtlas): void {
   if (!context) return;
   const pixels = context.getImageData(0, 0, atlas.width, atlas.height);
   atlas.texture.update(new Uint8Array(pixels.data.buffer));
+  // Babylon would keep this readback alive until the next one (for good, on a
+  // board drawn once) for a device-loss restore this game never runs.
+  dropTextureCpuMirror(atlas.texture);
 }
 
 /** The screens' material when the displays are live: black albedo, white emissive, the atlas as the emissive image. */

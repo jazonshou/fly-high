@@ -132,7 +132,6 @@ export interface DetailCellGenerationOptions {
 
 export interface DetailTreePlacement {
   readonly kind: "tree";
-  readonly id: string;
   readonly species: TreeSpecies;
   readonly x: number;
   readonly y: number;
@@ -159,7 +158,6 @@ export interface DetailTreePlacement {
 
 export interface DetailShrubPlacement {
   readonly kind: "shrub";
-  readonly id: string;
   readonly species: ShrubSpecies;
   readonly x: number;
   readonly y: number;
@@ -188,7 +186,6 @@ export interface DetailShrubPlacement {
 
 export interface DetailRockPlacement {
   readonly kind: "rock";
-  readonly id: string;
   readonly variant: RockVariant;
   readonly x: number;
   readonly y: number;
@@ -225,7 +222,6 @@ export interface DetailGroundCoverNode {
 /** 2-15: ground clutter — logs, stumps, branch litter, moss cushions. */
 export interface DetailClutterPlacement {
   readonly kind: "clutter";
-  readonly id: string;
   readonly clutterKind: ClutterKind;
   readonly x: number;
   readonly y: number;

@@ -320,32 +320,40 @@ export class DetailInstanceWriter {
   }
 
   /**
-   * Adopts one exact packed range whose ArrayBuffer ownership was transferred
-   * from the detail worker. No byte copy is performed: the returned writer is
-   * the sole mutable owner and can enter the same CPU/GPU publication path as
-   * an inline writer.
+   * Replaces the records with a copy of `count` records already packed by
+   * another writer (a batch the detail worker transferred). The copy lands in
+   * this writer's own buffer, which grows only when too small, so a pooled
+   * writer takes the batch without allocating and the transferred buffer is
+   * garbage as soon as the caller drops it. Adopting that buffer instead kept
+   * it alive, promoted to the old generation, until the next publication.
    */
-  static fromTransferredBytes(bytes: Uint8Array, count: number): DetailInstanceWriter {
+  copyPackedFrom(bytes: Uint8Array, count: number): void {
     if (!Number.isSafeInteger(count) || count <= 0) {
-      throw new RangeError("Transferred detail instance count must be a positive integer");
+      throw new RangeError("Packed detail instance count must be a positive integer");
     }
-    if (
-      !(bytes.buffer instanceof ArrayBuffer)
-      || bytes.byteOffset !== 0
-      || bytes.byteLength !== count * DETAIL_INSTANCE_STRIDE_BYTES
-      || bytes.buffer.byteLength !== bytes.byteLength
-    ) {
-      throw new RangeError("Transferred detail instance bytes must be one exact packed buffer");
+    if (bytes.byteLength !== count * DETAIL_INSTANCE_STRIDE_BYTES) {
+      throw new RangeError("Packed detail instance bytes must hold exactly count records");
     }
-    const writer = new DetailInstanceWriter(1);
-    writer.buffer = bytes.buffer;
-    writer.view = new DataView(writer.buffer);
-    writer.countValue = count;
-    return writer;
+    if (this.buffer.byteLength < bytes.byteLength) {
+      this.buffer = new ArrayBuffer(bytes.byteLength);
+      this.view = new DataView(this.buffer);
+    }
+    new Uint8Array(this.buffer, 0, bytes.byteLength).set(bytes);
+    this.countValue = count;
   }
 
   get count(): number {
     return this.countValue;
+  }
+
+  /** Bytes the writer holds without growing (its buffer's whole length). */
+  get capacityBytes(): number {
+    return this.buffer.byteLength;
+  }
+
+  /** True when the next push would have to grow the buffer. */
+  get full(): boolean {
+    return (this.countValue + 1) * DETAIL_INSTANCE_STRIDE_BYTES > this.buffer.byteLength;
   }
 
   reset(): void {
@@ -676,6 +684,22 @@ export class DetailInstanceBounds {
     maximum: readonly [number, number, number],
     blocks?: Float64Array,
   ): DetailInstanceBounds {
+    const bounds = new DetailInstanceBounds();
+    bounds.setExtents(minimum, maximum, blocks);
+    return bounds;
+  }
+
+  /**
+   * As `fromExtents`, into this (pooled) instance; left unchanged if it
+   * throws. Whatever blocks the instance held are replaced: `blocks` is kept,
+   * not copied (it is small, and the batch that draws these records holds it
+   * for as long as it lives), and without it the bounds have none.
+   */
+  setExtents(
+    minimum: readonly [number, number, number],
+    maximum: readonly [number, number, number],
+    blocks?: Float64Array,
+  ): void {
     for (let axis = 0; axis < 3; axis += 1) {
       if (
         !Number.isFinite(minimum[axis])
@@ -688,16 +712,18 @@ export class DetailInstanceBounds {
     if (blocks !== undefined && !isDetailCullBlockList(blocks, minimum, maximum)) {
       throw new RangeError("Transferred detail culling blocks must be ordered boxes inside the bounds");
     }
-    const bounds = new DetailInstanceBounds();
-    bounds.minX = minimum[0];
-    bounds.minY = minimum[1];
-    bounds.minZ = minimum[2];
-    bounds.maxX = maximum[0];
-    bounds.maxY = maximum[1];
-    bounds.maxZ = maximum[2];
-    if (blocks === undefined) bounds.blocksKnown = false;
-    else bounds.blockList = blocks;
-    return bounds;
+    this.minX = minimum[0];
+    this.minY = minimum[1];
+    this.minZ = minimum[2];
+    this.maxX = maximum[0];
+    this.maxY = maximum[1];
+    this.maxZ = maximum[2];
+    if (this.blockScratch !== null) {
+      closeDetailCullBlockScratch(this.blockScratch, null);
+      this.blockScratch = null;
+    }
+    this.blockList = blocks ?? null;
+    this.blocksKnown = blocks !== undefined;
   }
 
   reset(): void {

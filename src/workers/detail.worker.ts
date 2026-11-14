@@ -7,6 +7,7 @@ import {
   type DetailBillboardFrameBounds,
   type DetailInstanceRecord,
 } from "@/src/render/webgpu/detail/instanceFormat";
+import { packDetailCell, type PackedDetailCell } from "@/src/render/webgpu/detail/packedCell";
 import {
   buildPresentationChunk,
   detailTreeCanopyRankOrder,
@@ -81,8 +82,14 @@ export const DETAIL_WORKER_GENERATE_SHARE_MINIMUM_MILLISECONDS = 4;
 export const DETAIL_WORKER_GENERATE_SHARE_MAXIMUM_MILLISECONDS = 8;
 export const DETAIL_WORKER_GENERATE_SHARE_OF_LAST_GENERATE = 0.2;
 
+/**
+ * A retained cell is packed into columns (`packDetailCell`), not kept as the
+ * generator's object graph: on the Low bench that graph held ~130 MiB of
+ * this worker's heap in boxed numbers, placement objects and colour tuples,
+ * and the columns read back the same doubles, so builds post the same bytes.
+ */
 interface RetainedDetailCell {
-  readonly cell: ReturnType<typeof generateDetailCell>;
+  readonly cell: PackedDetailCell;
   readonly treeCanopyRank: Float32Array;
 }
 
@@ -355,7 +362,7 @@ export class DetailWorkerRuntime {
       if (command.retain) {
         retainedToken = this.allocateCellToken();
         this.retainedCells.set(retainedToken, {
-          cell,
+          cell: packDetailCell(cell),
           treeCanopyRank: detailTreeCanopyRankOrder(cell.trees),
         });
         this.post({

@@ -72,7 +72,10 @@ describe("plants on built ground", () => {
   it("keeps every stem, rock and log off the capsule and thins them back over the blend", () => {
     const control = generate(CELL_X, CELL_Z);
     const gated = generate(CELL_X, CELL_Z, [SLIPWAY]);
-    type Placed = { readonly id: string; readonly x: number; readonly z: number };
+    type Placed = { readonly x: number; readonly z: number };
+    // A stem is named by where it stands, to the centimetre: the name the
+    // generator gave it while placements carried one.
+    const id = (p: Placed): string => `${p.x.toFixed(2)}:${p.z.toFixed(2)}`;
     const placed = (cell: GeneratedDetailCell): readonly Placed[] =>
       [...cell.trees, ...cell.shrubs, ...cell.clutter, ...cell.rocks];
     const distance = (p: Placed) => distanceToCapsule(SLIPWAY, p.x, p.z);
@@ -103,8 +106,8 @@ describe("plants on built ground", () => {
     // and none changes; one may stand where a cleared neighbour outranked it;
     // and past the thinning's whole reach nothing differs at all.
     for (const kind of ["trees", "shrubs"] as const) {
-      const after = new Map(beyond(gated[kind]).map((stem) => [stem.id, stem]));
-      for (const stem of beyond(control[kind])) expect(after.get(stem.id)).toEqual(stem);
+      const after = new Map(beyond(gated[kind]).map((stem) => [id(stem), stem]));
+      for (const stem of beyond(control[kind])) expect(after.get(id(stem))).toEqual(stem);
       expect(beyond(gated[kind], SCATTER_HALO_METERS)).toEqual(beyond(control[kind], SCATTER_HALO_METERS));
     }
     // Shrubs share the trees' layer scatter and its gate; the cell keeps the

@@ -42,7 +42,6 @@ const SPECIES = Object.keys(TREE_GROUND_SHADOW_SHAPES) as TreeSpecies[];
 function tree(overrides: Partial<DetailTreePlacement> = {}): DetailTreePlacement {
   return {
     kind: "tree",
-    id: "tree-0",
     species: "oak",
     x: 1_204.5,
     y: 88.25,
