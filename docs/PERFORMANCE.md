@@ -5104,14 +5104,15 @@ the fragment stage dropped what fell outside the layer. That drew the same
 frames and cost more than the dither had. Both shells' whole cards were
 filled across the ring, 1.72 near shells of pixels where the dither had
 filled one, and on SwiftShader, where a dropped fragment costs what a kept
-one does, the main pass measured +7.2% (5.9% to 8.6%) at
-`forest-500ft-sunbehind` and +6.2% (4.5% to 7.7%) at `ground-2m-lowsun`
-against `ee332aa`, on the same draws and triangles. (The forest shot is
-taken 152 m up, and the bottom of its frame looks down on trees 50 to 100 m
-away over the ground, which is the range the bands go by.) A scaled card
-fills what it shows: the two shells together fill one near shell where the
-handoff starts and the mid shell's 0.72 of one where it ends, never more
-than the near shell alone.
+one does, the main pass measured +6.2% (4.5% to 7.7%) at `ground-2m-lowsun`
+against `ee332aa`, on the same draws and triangles. A scaled card fills what
+it shows: the two shells together fill one near shell where the handoff
+starts and the mid shell's 0.72 of one where it ends, never more than the
+near shell alone. (`forest-500ft-sunbehind` read +7.2% (5.9% to 8.6%) in the
+same run, and that was not this fill: no tree of the ring is in its frame,
+as the cost below says. Every card fragment in the frame ran the bounds
+test, and every card vertex the division; which of the two it was, was not
+measured.)
 
 **Cost.** Draw calls, triangles and every other count of GPU work are
 unchanged: the mid shell's batches were already drawn, with every card
@@ -5127,11 +5128,39 @@ Both frames moved toward the Mac's baseline of the same shot (SSIM 0.963 →
 0.970 and 0.746 → 0.760), which is the packed lanes: SwiftShader now draws
 the leaf cards and trunk pixels the Mac always drew. Taken alone
 (`forest-500ft-sunbehind`, 10 rounds) the packed lanes read -3.6% (-6.4% to
--0.8%) in the main pass, so the handoff itself is roughly 5% of that frame
-on SwiftShader: the leaves of the trees 50 to 100 m off, which were half
-missing before, and their mid shells' triangles, which were folded away
-there before. Its cards cover no more pixels than the near shell's alone
-(the dither rasterised every one of those and dropped half).
+-0.8%) in the main pass, so the handoff reads roughly 5% of that frame on
+SwiftShader. That is not leaves drawn. The forest shot looks level from
+152 m up, the ring is under the camera and below the frame, and the Mac's
+capture of the shot at `732f642` is its baseline to within 2 levels of one
+channel. With the frame, the draws and the triangles the same, what is left
+is the vertex stage: every leaf-card vertex that is drawn, at any range, now
+reads its tangent and works out its share, and SwiftShader shades vertices
+on the CPU. That is reasoned from what did not change and was not measured
+apart. At `ground-2m-lowsun`, where the ring is the middle of the frame, the
+cards cover no more pixels than the near shell's alone (the dither
+rasterised every one of those and dropped half), and the shot reads +0.0%.
+
+On a GPU the same change is not seen. The pull request's own A/B on the
+macOS runner at `732f642` against main `3ad6c3c` (Performance A/B run
+43648593447, 640 rounds, frame wall time, advisory): `approach-500ft` same
+-0.2% (-1.9% to +1.6%), `cruise-horizon` same +0.2% (-0.7% to +1.0%),
+`forest-500ft-sunbehind` same +0.0% (-0.8% to +0.9%), `ground-2m-lowsun`
+faster -5.6% (-6.3% to -4.8%), `water-25ft` same -0.5% (-1.4% to +0.5%).
+
+**Baselines.** Five promoted 2026-11-14 from the pull request's capture of
+`732f642` (gpu-tests run 43648593383, artifact `perf-capture-43648593383-1`,
+zip sha256 `9c980530dae2b8a4…796a`). Against the baselines they replace,
+that capture failed 7 visual gates at 3 of its 51 shots and no other gate:
+`grove-meadow-2m` (SSIM 0.941, RGB 0.947, worst tile 0.44),
+`ground-2m-lowsun` (0.968, worst tile 0.55) and `grove-forest-2m` (0.976,
+worst tile 0.37). Each moved only where its trees stand 50 to 100 m off:
+the stippled and striped cards against the sky at the top left of
+`grove-meadow-2m` are whole leaves, and no pixel of the lower two fifths of
+any of the three frames moved by more than 8 levels. Two more moved inside
+their gates and are promoted with them, so that a baseline is what the code
+draws: `apron-hangar-variety` (0.30% of its pixels, the tree in front of the
+hangar) and `approach-lights-outboard` (0.15%, a tree under the aircraft).
+The other 34 are their baselines to a mean of 0.007/255 or less and stay.
 
 **What is not changed.** Up close a lone oak still reads as a rounded hull
 with leaf clusters on it. The opaque core is an icosphere at 0.62 of the
