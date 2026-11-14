@@ -50,8 +50,8 @@ npm run verify        # lint, typecheck, tests, and production build
 npm test              # deterministic test suite
 npm run test:gpu      # WebGPU tests (needs a real GPU)
 npm run perf:capture  # screenshot and frame-time capture suite
-npm run build         # production bundle (Cloudflare Worker)
-npm run build:pages   # static bundle for GitHub Pages
+npm run build         # production bundle (deployed to GitHub Pages)
+npm start             # serve the production bundle locally
 ```
 
 ## Documentation

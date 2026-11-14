@@ -11,7 +11,7 @@
  *    in the numbers, not the game's.
  *  - Everything is `position: fixed`, because the bench's own React root
  *    need not sit inside `main.flight-shell`, and `html, body` hide their
- *    overflow (app/globals.css), so each panel scrolls inside itself.
+ *    overflow (static/globals.css), so each panel scrolls inside itself.
  *
  * Stacking (flight.css's table runs from the vignette at 1 to the error
  * banner at 40): the run chip at 45, above everything the game draws, with
