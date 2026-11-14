@@ -104,6 +104,11 @@ interface MutableEvents {
   insensitiveLatched: number;
   urgentSheds: number;
   exhaustedWindows: number;
+  fallbackEngaged: number;
+  fallbackTrials: number;
+  fallbackTrialsFailed: number;
+  fallbackExits: number;
+  fallbackSettled: number;
 }
 
 interface Bucket {
@@ -151,6 +156,11 @@ function bucket(startS: number, endS: number): Bucket {
       insensitiveLatched: 0,
       urgentSheds: 0,
       exhaustedWindows: 0,
+      fallbackEngaged: 0,
+      fallbackTrials: 0,
+      fallbackTrialsFailed: 0,
+      fallbackExits: 0,
+      fallbackSettled: 0,
     },
     atFloor: 0,
     belowCeiling: 0,
@@ -336,6 +346,7 @@ export class GovernorTrace {
         state.urgent,
         state.spentWindows,
         governorExhausted(state),
+        state.fallback.phase,
       ] as const));
     } else {
       this.decisionsTruncated = true;
@@ -362,6 +373,16 @@ export class GovernorTrace {
       const shedRung = state.cpuWorkLevel > previous.cpuWorkLevel || state.gpuWorkLevel > previous.gpuWorkLevel;
       if (state.urgent && shedRung) events.urgentSheds += 1;
       if (governorExhausted(state)) events.exhaustedWindows += 1;
+      // The even fallback (PR B part 2b, G6), from its phase before and after.
+      const was = previous.fallback;
+      const now = state.fallback;
+      if (was.phase === "off" && now.phase !== "off") events.fallbackEngaged += 1;
+      if (was.phase !== "trial" && now.phase === "trial") events.fallbackTrials += 1;
+      if (now.failedTrials > was.failedTrials) events.fallbackTrialsFailed += now.failedTrials - was.failedTrials;
+      // A passed trial starts the exit clock at 0. Forced off (the config
+      // allows no fallback any more) leaves the clock as it was: no exit.
+      if (was.phase !== "off" && now.phase === "off" && now.msSinceExit === 0) events.fallbackExits += 1;
+      if (was.phase !== "settled" && now.phase === "settled") events.fallbackSettled += 1;
     }
   }
 

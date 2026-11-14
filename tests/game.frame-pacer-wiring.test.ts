@@ -7,8 +7,10 @@ import { readSource } from "./support/sourceText";
  * tested in `game.frame-pacer.test.ts`; these guards hold FlightGame to the
  * wiring around it. A tick that does not draw only asks for the next frame,
  * the renderer hears of a new cadence inside the frame's `try` (so a throw
- * there takes the one stop path), and the fail-closed, bench.inert and
- * diagnostics-cadence guards keep passing unchanged.
+ * there takes the one stop path), the governor's even fallback request (PR B
+ * part 2b, G6) is read after each frame and handed to the next tick, and the
+ * fail-closed, bench.inert and diagnostics-cadence guards keep passing
+ * unchanged.
  */
 
 const projectRoot = join(import.meta.dirname, "..");
@@ -18,10 +20,28 @@ const pacerSource = readSource(join(projectRoot, "src/game/framePacer.ts"));
 const renderLoop = flightGame.match(/const renderLoop = \(now: number\) => \{[\s\S]*?\n {6}\};/u)?.[0] ?? "";
 
 describe("FlightGame's frame loop paces its ticks", () => {
-  it("asks the pacer first, right after the stop check", () => {
+  it("asks the pacer first, right after the stop check, with the governor's last fallback request", () => {
     expect(renderLoop).toMatch(
-      /^const renderLoop = \(now: number\) => \{\s+if \(disposed \|\| rendererTerminal\) return;\s+const paced = framePacer\.tick\(now, settingsRef\.current\.frameRate, phaseRef\.current === "paused"\);/u,
+      /^const renderLoop = \(now: number\) => \{\s+if \(disposed \|\| rendererTerminal\) return;\s+const paced = framePacer\.tick\(now, settingsRef\.current\.frameRate, phaseRef\.current === "paused", cadenceFallback\);/u,
     );
+  });
+
+  it("reads the governor's fallback request right after each frame, inside the frame's try (PR B part 2b, G6)", () => {
+    const attempt = renderLoop.slice(renderLoop.indexOf("try {"), renderLoop.indexOf("} catch (renderError)"));
+    expect(attempt).toMatch(
+      /renderer\.render\(frameState, deltaSeconds\);\s+cadenceFallback = renderer\.cadenceFallbackRequest\(\);\s+$/u,
+    );
+    expect(flightGame.match(/cadenceFallbackRequest\(/gu)).toHaveLength(1);
+    expect(flightGame.match(/cadenceFallback = /gu)).toHaveLength(1);
+  });
+
+  it("keeps the request beside the pending cadence, so a rebuilt renderer starts with none", () => {
+    // Declared per run of the effect, as the pacer is: nothing an old
+    // renderer asked for outlives it.
+    expect(flightGame).toMatch(
+      /const framePacer = new FramePacer\(\);\s+let pendingCadence: PresentationCadence \| null = null;\s+let cadenceFallback: CadenceFallbackRequest \| null = null;/u,
+    );
+    expect(flightGame.match(/let cadenceFallback\b/gu)).toHaveLength(1);
   });
 
   it("only asks for the next frame on a tick that does not draw", () => {

@@ -10,8 +10,10 @@ import { benchProfile, benchTimings } from "../src/bench/plan";
 import {
   CPU_WORK_MAX_LEVEL,
   EXHAUSTED_AFTER_WINDOWS,
+  FALLBACK_OFF,
   createGovernorState,
   governorConfigForProfile,
+  type CadenceFallbackState,
   type GovernorConfig,
   type GovernorSignals,
   type GovernorState,
@@ -143,12 +145,13 @@ describe("governor trace", () => {
     expect(summary.decisions).toHaveLength(6);
     expect(summary.decisions[2]!.slice(0, 6)).toEqual([32, "gpu-resolution", "gpu-bound", 20, 0.95, 0.95]);
     expect(summary.decisions[2]!.slice(7))
-      .toEqual([1, 0, "terrain-page-requests", false, null, 5, 25, null, false, 0, false]);
+      .toEqual([1, 0, "terrain-page-requests", false, null, 5, 25, null, false, 0, false, "off"]);
     expect(summary.decisions[1]!.slice(1, 4)).toEqual(["cpu-work", "cpu-bound", null]);
     expect(summary.flight.decisions).toBe(5);
     expect(summary.flight.events).toEqual({
       scaleDown: 2, scaleUp: 1, cpuShed: 1, cpuRecover: 1, gpuShed: 1, gpuRecover: 1, insensitiveLatched: 1,
       urgentSheds: 0, exhaustedWindows: 0,
+      fallbackEngaged: 0, fallbackTrials: 0, fallbackTrialsFailed: 0, fallbackExits: 0, fallbackSettled: 0,
     });
     expect(summary.windows.ground.decisions).toBe(1);
     expect(summary.windows.ground.events.cpuShed).toBe(1);
@@ -257,7 +260,7 @@ describe("governor trace", () => {
     step(76);
 
     const { decisions, windows } = trace.summary();
-    expect(decisions.map((decision) => decision.slice(15))).toEqual([
+    expect(decisions.map((decision) => decision.slice(15, 18))).toEqual([
       [true, 0, false],
       [true, 0, false],
       [true, 0, false],
@@ -269,6 +272,73 @@ describe("governor trace", () => {
     ]);
     expect(windows.air.events).toMatchObject({ cpuShed: 2, gpuShed: 1, scaleDown: 1, urgentSheds: 2, exhaustedWindows: 2 });
     expect(windows.ground.events).toMatchObject({ urgentSheds: 0, exhaustedWindows: 0 });
+  });
+
+  it("records the even fallback's phase with each decision, and counts its switches from consecutive states (G6)", () => {
+    const { config, scale, trace } = setup("low");
+    const current = probe(config, scale);
+    let frame = 30 * 60;
+    const step = (until: number): void => {
+      for (; frame < until * 60; frame += 1) trace.observe(frame / 60, current);
+    };
+    const fallback = (change: Partial<CadenceFallbackState>): CadenceFallbackState => Object.freeze({ ...FALLBACK_OFF, ...change });
+    const slow: GovernorSignals = { gpuP95Ms: null, cpuP95Ms: 19, intervalP95Ms: 30 };
+    const script: Partial<GovernorState>[] = [
+      // Spent windows: exhausted, still at 60.
+      { spentWindows: EXHAUSTED_AFTER_WINDOWS },
+      // Engaged: the engaging rebase zeroes the spent count, and the governor stays exhausted.
+      { spentWindows: 0, fallback: fallback({ phase: "engaged", trialDueInMs: 60_000, minIntervalMs: 22 }) },
+      { fallback: fallback({ phase: "engaged", trialDueInMs: 56_000, minIntervalMs: 22 }) },
+      // A trial at 60 that fails narrowly: back to engaged.
+      { mode: "fallback-trial", fallback: fallback({ phase: "trial", minIntervalMs: 22 }) },
+      { fallback: fallback({ phase: "engaged", trialDueInMs: 120_000, failedTrials: 1, minIntervalMs: 22 }) },
+      // A second trial that fails: settled.
+      { mode: "fallback-trial", fallback: fallback({ phase: "trial", failedTrials: 1, minIntervalMs: 22 }) },
+      { fallback: fallback({ phase: "settled", trialFrom: "settled", trialDueInMs: 300_000, failedTrials: 2, minIntervalMs: 22 }) },
+      // Settled, from full quality: a trial that passes ends the fallback,
+      // starts the exit clock and keeps its window's mean.
+      { mode: "fallback-trial", fallback: fallback({ phase: "trial", trialFrom: "settled", failedTrials: 2, minIntervalMs: 22 }) },
+      { mode: "balanced", fallback: fallback({ failedTrials: 2, msSinceExit: 0, exitIntervalMs: 16.8 }) },
+      { fallback: fallback({ failedTrials: 2, msSinceExit: 4_000, exitIntervalMs: 16.8 }) },
+      // Exhausted again before 240 s forgive the exit: the governor counts the
+      // re-entry as a third failed trial, which settles at the engage. At 60 Hz
+      // (one divisor) the passed trial's interval is not kept to retry.
+      { fallback: fallback({ phase: "settled", trialFrom: "settled", trialDueInMs: 300_000, failedTrials: 3, minIntervalMs: 24, engageIntervalMs: 24 }) },
+      // A settled trial, 300 s on from full quality, fails: still settled.
+      { mode: "fallback-trial", fallback: fallback({ phase: "trial", trialFrom: "settled", failedTrials: 3, minIntervalMs: 24, engageIntervalMs: 24 }) },
+      { fallback: fallback({ phase: "settled", trialFrom: "settled", trialDueInMs: 300_000, failedTrials: 4, minIntervalMs: 24, engageIntervalMs: 24 }) },
+      // The setting moved away from 60 fps: off, the failures kept, and no exit.
+      { fallback: fallback({ failedTrials: 4 }) },
+    ];
+    step(31);
+    script.forEach((change, index) => {
+      decide(current, change, slow, scale);
+      step(32 + index);
+    });
+    step(76);
+
+    const { decisions, windows } = trace.summary();
+    expect(decisions.map((decision) => decision[18])).toEqual([
+      "off", "engaged", "engaged", "trial", "engaged", "trial", "settled", "trial", "off", "off", "settled", "trial", "settled", "off",
+    ]);
+    // Exhausted while the spent count says so, and whenever the fallback is not off.
+    expect(decisions.map((decision) => decision[17])).toEqual([
+      true, true, true, true, true, true, true, true, false, false, true, true, true, false,
+    ]);
+    expect(windows.air.events).toMatchObject({
+      fallbackEngaged: 2,
+      fallbackTrials: 4,
+      // Three failed trials, and the quick re-entry the governor counts as one more.
+      fallbackTrialsFailed: 4,
+      fallbackExits: 1,
+      // The trial that failed second, the re-entry, and the settled trial that failed.
+      fallbackSettled: 3,
+      exhaustedWindows: 11,
+    });
+    expect(windows.ground.events).toMatchObject({
+      fallbackEngaged: 0, fallbackTrials: 0, fallbackTrialsFailed: 0, fallbackExits: 0, fallbackSettled: 0,
+    });
+    expect(windows.air.modeShare["fallback-trial"]).toBeGreaterThan(0);
   });
 
   it("a pinned renderer never decides and reads as pinned", () => {

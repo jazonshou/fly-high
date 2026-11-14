@@ -60,14 +60,22 @@ const DEG = Math.PI / 180;
 
 /**
  * Wong's table 2.3 (dry sand, sandy loam, clayey soil, snow), from the plan.
- * K is not in the table: about 1 to 4 cm, from Wong's measured shear curves,
- * and the bogging tests check it. Tephra is a coarse sand: dry sand's
- * pressure-sinkage with a cinder's steeper friction angle and no cohesion.
- * The depths are estimates: a dune's sand is deep, a meadow's loam is not.
+ * K is not in the table. Bekker's figures, as Wong quotes them, are about
+ * 1 cm for firm sandy ground, 2.5 cm for loose sand, 0.6 cm for a clay at
+ * its maximum compaction and 2.5 to 5 cm for fresh snow. The sandy loam is
+ * the ground under grass, scrub and forest, bound by the roots of what grows
+ * there, so it takes the firm figure. Loose dune sand, wet clay and snow
+ * take the looser ones, and the bogging tests check them. K sets how far
+ * the soil shears before it holds: at 2.5 cm a tyre on a meadow reached its
+ * grip only at 43% slip, or 23 degrees of slip angle, and its ABS stops ran
+ * well past a car's on dry grass (docs/CAR_MODEL.md, "Soft ground"). Tephra
+ * is a coarse sand: dry sand's pressure-sinkage with a cinder's steeper
+ * friction angle and no cohesion. The depths are estimates: a dune's sand
+ * is deep, a meadow's loam is not.
  */
 export const SOILS = Object.freeze({
   drySand: Object.freeze({ n: 1.1, kc: 990, kPhi: 1_528_430, cohesion: 1_040, frictionAngle: 28 * DEG, shearModulus: 0.025, maxSinkage: 0.35 }),
-  sandyLoam: Object.freeze({ n: 0.7, kc: 5_270, kPhi: 1_515_040, cohesion: 1_720, frictionAngle: 29 * DEG, shearModulus: 0.025, maxSinkage: 0.15 }),
+  sandyLoam: Object.freeze({ n: 0.7, kc: 5_270, kPhi: 1_515_040, cohesion: 1_720, frictionAngle: 29 * DEG, shearModulus: 0.01, maxSinkage: 0.15 }),
   clayeySoil: Object.freeze({ n: 0.5, kc: 13_190, kPhi: 692_150, cohesion: 4_140, frictionAngle: 13 * DEG, shearModulus: 0.03, maxSinkage: 0.3 }),
   snow: Object.freeze({ n: 1.6, kc: 4_370, kPhi: 196_720, cohesion: 1_030, frictionAngle: 19.7 * DEG, shearModulus: 0.04, maxSinkage: 0.2 }),
   tephra: Object.freeze({ n: 1.1, kc: 990, kPhi: 1_528_430, cohesion: 0, frictionAngle: 34 * DEG, shearModulus: 0.03, maxSinkage: 0.3 }),
