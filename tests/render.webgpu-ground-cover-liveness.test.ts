@@ -6,6 +6,7 @@ import {
   type DetailPresentationBuildInput,
 } from "../src/render/webgpu/detail/presentationBuild";
 import { GROUND_COVER_ARCHETYPES } from "../src/render/webgpu/detail/densityField";
+import { packDetailCell } from "../src/render/webgpu/detail/packedCell";
 import { RENDERED_DENSITY_LAWS } from "../src/render/webgpu/detail/renderedDensity";
 import type {
   GeneratedDetailCell,
@@ -94,7 +95,7 @@ function emittedFor(
   const input: DetailPresentationBuildInput = {
     residents: [
       {
-        cell,
+        cell: packDetailCell(cell),
         treeCanopyRank: new Float32Array(0),
         lod: { band: "near", fade: 1 } as never,
         distance: 0,

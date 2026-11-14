@@ -19,6 +19,7 @@ import {
   DETAIL_CELL_SAMPLE_MARGIN_METERS,
   generateDetailCell,
 } from "../src/render/webgpu/detail/generation";
+import type { PackedDetailCell } from "../src/render/webgpu/detail/packedCell";
 import type { GeneratedDetailCell } from "../src/render/webgpu/detail/types";
 import { WorldDetailRuntime } from "../src/render/webgpu/detail/WorldDetailRuntime";
 import type {
@@ -103,6 +104,20 @@ type Placed = readonly { readonly x: number; readonly z: number }[];
 
 function woody(cell: GeneratedDetailCell): Placed {
   return [...cell.trees, ...cell.shrubs, ...cell.clutter, ...cell.rocks];
+}
+
+/** The same, read from the packed columns an inline resident keeps. */
+function packedWoody(cell: PackedDetailCell): Placed {
+  return [cell.trees, cell.shrubs, cell.clutter, cell.rocks].flatMap((columns) => {
+    // A resident of another shape would read as no placements and pass.
+    if (!(columns.x instanceof Float64Array) || columns.x.length !== columns.count) {
+      throw new Error("Not a packed detail cell");
+    }
+    return Array.from(
+      { length: columns.count },
+      (_, index) => ({ x: columns.x[index]!, z: columns.z[index]! }),
+    );
+  });
 }
 
 function count(placed: Placed, test: (x: number, z: number) => boolean): number {
@@ -320,7 +335,7 @@ interface ResidentView {
   readonly revision: number;
   readonly invalidated: boolean;
   readonly descriptor?: DetailRetainedCellDescriptor;
-  readonly cell?: GeneratedDetailCell;
+  readonly cell?: PackedDetailCell;
 }
 
 function residents(runtime: WorldDetailRuntime): Map<string, ResidentView> {
@@ -483,7 +498,7 @@ describe("WorldDetailRuntime.setAirports", () => {
           continue;
         }
         expect(resident.revision, key).not.toBe(before.get(key));
-        const placed = woody(resident.cell!);
+        const placed = packedWoody(resident.cell!);
         stems += placed.length;
         expect(count(placed, (x, z) => onRunway(spawned, x, z)), key).toBe(0);
         expect(count(placed, (x, z) => inHangar(spawned, next.seedHash, x, z)), key).toBe(0);

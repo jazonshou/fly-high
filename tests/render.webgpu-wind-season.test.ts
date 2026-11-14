@@ -150,7 +150,8 @@ describe("seasonal crown (2-13a)", () => {
     const summer = collectTrees(171);
     const winter = collectTrees(deepWinterDay);
     const placementSignature = (tree: (typeof summer)[number]) => ({
-      id: tree.id,
+      // Generation no longer names stems; the label it used, built here.
+      id: `canopy:${tree.x.toFixed(2)}:${tree.z.toFixed(2)}`,
       species: tree.species,
       x: tree.x,
       y: tree.y,

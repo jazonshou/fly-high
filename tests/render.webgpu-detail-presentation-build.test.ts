@@ -8,6 +8,7 @@ import {
   detailPrototypeBoundKernel,
   type DetailBillboardFrameBounds,
 } from "../src/render/webgpu/detail/instanceFormat";
+import { packDetailCell } from "../src/render/webgpu/detail/packedCell";
 import {
   buildPresentationChunk,
   detailCellMinimumDistanceMeters,
@@ -133,7 +134,6 @@ function fixtureCell(cellX: number, cellZ: number): GeneratedDetailCell {
     maxZ: minZ + cellSizeMeters,
     trees: TREE_SPECIES.map((species, index) => ({
       kind: "tree" as const,
-      id: `tree-${index}`,
       species,
       x: centerX + (index - 3) * 0.75,
       y: 91 + index * 0.2,
@@ -150,7 +150,6 @@ function fixtureCell(cellX: number, cellZ: number): GeneratedDetailCell {
     })),
     shrubs: SHRUB_SPECIES.map((species, index) => ({
       kind: "shrub" as const,
-      id: `shrub-${index}`,
       species,
       x: centerX - 5 + index * 4,
       y: 89.5 + index * 0.15,
@@ -165,7 +164,6 @@ function fixtureCell(cellX: number, cellZ: number): GeneratedDetailCell {
     })),
     rocks: ROCK_VARIANTS.map((variant, index) => ({
       kind: "rock" as const,
-      id: `rock-${index}`,
       variant,
       x: centerX + 7 - index * 4,
       y: 89.2,
@@ -179,7 +177,6 @@ function fixtureCell(cellX: number, cellZ: number): GeneratedDetailCell {
     })),
     clutter: CLUTTER_KINDS.map((clutterKind, index) => ({
       kind: "clutter" as const,
-      id: `clutter-${index}`,
       clutterKind,
       x: centerX - 8 + index * 4,
       y: 89.1,
@@ -307,7 +304,7 @@ describe("pure detail presentation build", () => {
     const catalog = buildCatalog(false);
     const base: DetailPresentationBuildInput = {
       residents: [{
-        cell,
+        cell: packDetailCell(cell),
         treeCanopyRank: Float32Array.from([0, 1 / 7, 2 / 7, 3 / 7, 4 / 7, 5 / 7, 6 / 7]),
         lod: "near",
         distance: detailCellMinimumDistanceMeters(
@@ -454,7 +451,7 @@ describe("pure detail presentation build", () => {
       const observerZ = centerZ;
       const input: DetailPresentationBuildInput = {
         residents: [{
-          cell,
+          cell: packDetailCell(cell),
           treeCanopyRank: Float32Array.from([
             0, 1 / 7, 2 / 7, 3 / 7, 4 / 7, 5 / 7, 6 / 7,
           ]),

@@ -11,10 +11,17 @@ import {
   renderedShareAtDistance,
   type RenderedDensityLaw,
 } from "./renderedDensity";
+import {
+  PackedClutterView,
+  PackedRockView,
+  PackedShrubView,
+  PackedTreeView,
+  packedGroundCoverArchetype,
+  type PackedDetailCell,
+} from "./packedCell";
 import type {
   DetailFloatingOrigin,
   DetailLod,
-  GeneratedDetailCell,
   ShrubSpecies,
   TreeSpecies,
 } from "./types";
@@ -144,7 +151,8 @@ interface MutableDetailPresentationChunkStatistics {
 }
 
 export interface DetailPresentationBuildResident {
-  readonly cell: GeneratedDetailCell;
+  /** The cell as its owner retains it, packed (`packDetailCell`). */
+  readonly cell: PackedDetailCell;
   readonly treeCanopyRank: Float32Array;
   readonly lod: DetailLod;
   readonly distance: number;
@@ -211,9 +219,10 @@ export interface DetailPresentationBuildInput {
 
 export interface DetailPresentationBuildSink {
   /**
-   * Consumes a record synchronously and in call order. The builder reuses one
-   * ground-cover tint tuple, so sinks must pack/copy before returning rather
-   * than retain mutable record members by reference.
+   * Consumes a record synchronously and in call order. The builder reuses
+   * tint tuples (ground cover's, and each packed placement cursor's), so
+   * sinks must pack/copy before returning rather than retain mutable record
+   * members by reference.
    */
   appendInstance(
     prototypeKey: string,
@@ -452,6 +461,13 @@ export function* buildPresentationChunk(
     groundCoverInstances: 0,
   };
   const groundCoverTint: [number, number, number, number] = [0, 0, 0, 1];
+  // Placement cursors over the packed columns. This build yields between
+  // records, so it owns its cursors: a shared one could be repointed by
+  // another build's slice while this one is suspended.
+  const treeView = new PackedTreeView();
+  const shrubView = new PackedShrubView();
+  const rockView = new PackedRockView();
+  const clutterView = new PackedClutterView();
 
   for (const resident of residents) {
     yield;
@@ -459,7 +475,7 @@ export function* buildPresentationChunk(
     else statistics.midCells += 1;
 
     const cellHectares = (resident.cell.cellSizeMeters * resident.cell.cellSizeMeters) / 10_000;
-    const stemsPerHa = resident.cell.trees.length / Math.max(cellHectares, 1e-6);
+    const stemsPerHa = resident.cell.trees.count / Math.max(cellHectares, 1e-6);
     // 2026-09-13: the CPU decides which tree records EXIST; the GPU decides
     // which one draws, per stem and per frame, against the live camera range
     // (`DetailInstanceMaterialPlugin`'s band windows compare the stem's key —
@@ -485,7 +501,7 @@ export function* buildPresentationChunk(
       drawnShareAtDistance(densityLaw, resident.distance)
         + DETAIL_DENSITY_ADMISSION_MARGIN_SHARE,
     );
-    const shrubsPerHa = resident.cell.shrubs.length / Math.max(cellHectares, 1e-6);
+    const shrubsPerHa = resident.cell.shrubs.count / Math.max(cellHectares, 1e-6);
     const shrubBudgetPerHa = 60 * renderedShareAtDistance(densityLaw, resident.distance);
     const shrubShare = resident.distance > densityLaw.mid.outerRadiusMeters
       ? 0
@@ -529,9 +545,10 @@ export function* buildPresentationChunk(
     // 2026-09-14: no far cutoff. Impostor records exist for every resident
     // stem the drawn ceiling admits, wherever it is; the shader's live cull
     // decides what draws (see `detailFadeBandMemberships`).
-    const treeCount = resident.cell.trees.length;
+    const trees = resident.cell.trees;
+    const treeCount = trees.count;
     const appendImpostorOnlyRecord = (
-      tree: GeneratedDetailCell["trees"][number],
+      tree: PackedTreeView,
       stemKey: number,
     ): void => {
       const treeCatalog = catalog.trees[tree.species];
@@ -583,7 +600,7 @@ export function* buildPresentationChunk(
     let rejectedTreeCandidates = 0;
     let impostorOnlyRecords = 0;
     for (let treeIndex = 0; treeIndex < treeCount; treeIndex += 1) {
-      const tree = resident.cell.trees[treeIndex]!;
+      const tree = treeView.at(trees, treeIndex);
       const stemKey = detailTreeStemKey(
         resident.treeCanopyRank[treeIndex] ?? 1,
         stemsPerHa,
@@ -754,12 +771,13 @@ export function* buildPresentationChunk(
     }
 
     let rejectedShrubCandidates = 0;
-    for (
-      const shrub of shrubShare <= 0
-        || currentCellDistance >= densityLaw.mid.outerRadiusMeters
-        ? []
-        : resident.cell.shrubs
-    ) {
+    const shrubs = resident.cell.shrubs;
+    const shrubCount = shrubShare <= 0
+      || currentCellDistance >= densityLaw.mid.outerRadiusMeters
+      ? 0
+      : shrubs.count;
+    for (let shrubIndex = 0; shrubIndex < shrubCount; shrubIndex += 1) {
+      const shrub = shrubView.at(shrubs, shrubIndex);
       if (shrub.selection > shrubShare) {
         rejectedShrubCandidates += 1;
         if (rejectedShrubCandidates === DETAIL_PRESENTATION_REJECTION_BLOCK_SIZE) {
@@ -808,11 +826,10 @@ export function* buildPresentationChunk(
       statistics.shrubInstances += 1;
     }
 
-    for (
-      const rock of currentCellDistance >= densityLaw.mid.outerRadiusMeters
-        ? []
-        : resident.cell.rocks
-    ) {
+    const rocks = resident.cell.rocks;
+    const rockCount = currentCellDistance >= densityLaw.mid.outerRadiusMeters ? 0 : rocks.count;
+    for (let rockIndex = 0; rockIndex < rockCount; rockIndex += 1) {
+      const rock = rockView.at(rocks, rockIndex);
       yield;
       const rockDistance = Math.hypot(rock.x - observerX, rock.z - observerZ);
       const bigRock = rock.radiusMeters >= 2.2 && rock.selection <= 0.22;
@@ -845,11 +862,12 @@ export function* buildPresentationChunk(
       statistics.rockInstances += 1;
     }
 
-    for (
-      const piece of currentCellDistance >= densityLaw.near.outerRadiusMeters
-        ? []
-        : resident.cell.clutter
-    ) {
+    const clutter = resident.cell.clutter;
+    const clutterCount = currentCellDistance >= densityLaw.near.outerRadiusMeters
+      ? 0
+      : clutter.count;
+    for (let clutterIndex = 0; clutterIndex < clutterCount; clutterIndex += 1) {
+      const piece = clutterView.at(clutter, clutterIndex);
       yield;
       const clutterDistance = Math.hypot(piece.x - observerX, piece.z - observerZ);
       const clutterEdge = densityLaw.near.outerRadiusMeters;
@@ -875,8 +893,9 @@ export function* buildPresentationChunk(
     }
 
     const grassRadius = grassRadiusMeters;
-    if (resident.cell.groundCover.length > 0 && currentCellDistance < grassRadius) {
+    if (resident.cell.groundCover.count > 0 && currentCellDistance < grassRadius) {
       const cell = resident.cell;
+      const nodes = cell.groundCover;
       const spacing = GROUND_COVER_CANDIDATE_SPACING_METERS;
       const nodeSpacing = cell.cellSizeMeters / catalog.groundCoverGrid;
       const fullDensityRadius = grassRadius * GROUND_COVER_FULL_DENSITY_SHARE;
@@ -917,12 +936,16 @@ export function* buildPresentationChunk(
             catalog.groundCoverGrid - 1,
             Math.max(0, Math.floor((z - cell.minZ) / nodeSpacing)),
           );
-          const node = cell.groundCover[nodeRow * catalog.groundCoverGrid + nodeColumn];
-          if (!node || node.coverage <= 0) continue;
+          const nodeIndex = nodeRow * catalog.groundCoverGrid + nodeColumn;
+          if (nodeIndex >= nodes.count) continue;
+          const coverage = nodes.coverage[nodeIndex]!;
+          if (coverage <= 0) continue;
+          const archetype = packedGroundCoverArchetype(nodes, nodeIndex);
+          const nodeHeight = nodes.heightMeters[nodeIndex]!;
           // Wave G: the compute blade system carries the grass archetype
           // wherever it is live, so grass cards retire globally — nothing
           // else draws grass once the field exists.
-          if (input.groundCoverBladesActive && node.archetype === "grass") continue;
+          if (input.groundCoverBladesActive && archetype === "grass") continue;
           // `6-9`: the field now carries fern, heather and reed too, but only
           // out to its own outermost ring. Inside that radius the cards step
           // aside; outside it they are still the only representation there
@@ -936,7 +959,7 @@ export function* buildPresentationChunk(
           }
           const nearBoost = 1 + GROUND_COVER_NEAR_BOOST_FACTOR
             * Math.max(0, 1 - patchDistance / GROUND_COVER_NEAR_BOOST_RADIUS_METERS);
-          if (groundCoverHash(x, z, 2) >= Math.min(1, ramp * node.coverage * nearBoost)) {
+          if (groundCoverHash(x, z, 2) >= Math.min(1, ramp * coverage * nearBoost)) {
             continue;
           }
           const heightHash = groundCoverHash(x, z, 3);
@@ -959,39 +982,36 @@ export function* buildPresentationChunk(
           const v1 = Math.min(catalog.groundCoverGrid - 1, v0 + 1);
           const fu = gridU - u0;
           const fv = gridV - v0;
-          const height00 = cell.groundCover[v0 * catalog.groundCoverGrid + u0]?.heightMeters
-            ?? node.heightMeters;
-          const height10 = cell.groundCover[v0 * catalog.groundCoverGrid + u1]?.heightMeters
-            ?? node.heightMeters;
-          const height01 = cell.groundCover[v1 * catalog.groundCoverGrid + u0]?.heightMeters
-            ?? node.heightMeters;
-          const height11 = cell.groundCover[v1 * catalog.groundCoverGrid + u1]?.heightMeters
-            ?? node.heightMeters;
+          // A read past the last node is undefined, as it was on the node array.
+          const height00 = nodes.heightMeters[v0 * catalog.groundCoverGrid + u0] ?? nodeHeight;
+          const height10 = nodes.heightMeters[v0 * catalog.groundCoverGrid + u1] ?? nodeHeight;
+          const height01 = nodes.heightMeters[v1 * catalog.groundCoverGrid + u0] ?? nodeHeight;
+          const height11 = nodes.heightMeters[v1 * catalog.groundCoverGrid + u1] ?? nodeHeight;
           const patchHeight =
             height00 * (1 - fu) * (1 - fv)
             + height10 * fu * (1 - fv)
             + height01 * (1 - fu) * fv
             + height11 * fu * fv;
-          groundCoverTint[0] = node.color[0];
-          groundCoverTint[1] = node.color[1];
-          groundCoverTint[2] = node.color[2];
-          sink.appendInstance(`ground-${node.archetype}`, {
+          groundCoverTint[0] = nodes.colorR[nodeIndex]!;
+          groundCoverTint[1] = nodes.colorG[nodeIndex]!;
+          groundCoverTint[2] = nodes.colorB[nodeIndex]!;
+          sink.appendInstance(`ground-${archetype}`, {
             x: x - floatingOrigin.x,
             y: patchHeight - floatingOrigin.y,
             z: z - floatingOrigin.z,
             quaternion: yawQuaternion(groundCoverHash(x, z, 4) * 2 * Math.PI),
             heightScaleMeters: (0.75 + heightHash * 0.5)
-              * (node.archetype === "reed" ? 1.15
-                : node.archetype === "heather" ? 0.75
-                : node.archetype === "fern" ? 0.85 : 0.8),
+              * (archetype === "reed" ? 1.15
+                : archetype === "heather" ? 0.75
+                : archetype === "fern" ? 0.85 : 0.8),
             radialScale: 1,
             fade: grassFade,
             fadeIncoming: false,
             variant: 0,
             tint: groundCoverTint,
             windPhase: groundCoverHash(x, z, 5),
-            windResponse: node.archetype === "heather" ? 0.3
-              : node.archetype === "fern" ? 0.5 : 0.9,
+            windResponse: archetype === "heather" ? 0.3
+              : archetype === "fern" ? 0.5 : 0.9,
           });
           statistics.groundCoverInstances += 1;
         }
