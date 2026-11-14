@@ -605,6 +605,7 @@ describe("the step controller's canvas", () => {
 describe("the step controller's pacing (PR B)", () => {
   const sixty: PresentationCadence = { frameCapHz: null, divisor: 1, displayPeriodMs: 1_000 / 60, periodConfirmed: true };
   const thirty: PresentationCadence = { frameCapHz: 30, divisor: 2, displayPeriodMs: 1_000 / 60, periodConfirmed: true };
+  const sixtyCapped: PresentationCadence = { frameCapHz: 60, divisor: 1, displayPeriodMs: 1_000 / 60, periodConfirmed: true };
 
   it("judges a flight drawing every 2nd refresh by its slot: 30 fps on time, nothing missed, hitches over 60 ms", () => {
     const h = harness({ frameRate: "30" });
@@ -620,12 +621,15 @@ describe("the step controller's pacing (PR B)", () => {
     expect(result.pacing).toEqual({
       setting: "30",
       effective: "30",
-      cadenceAtFlightStart: { frameCapHz: 30, divisor: 2, displayHz: 60, confirmed: true },
-      cadenceAtEnd: { frameCapHz: 30, divisor: 2, displayHz: 60, confirmed: true },
+      cadenceAtFlightStart: { frameCapHz: 30, divisor: 2, displayHz: 60, confirmed: true, fallbackHz: null },
+      cadenceAtEnd: { frameCapHz: 30, divisor: 2, displayHz: 60, confirmed: true, fallbackHz: null },
       cadenceChanges: 0,
       rafTicks: 2 * result.pacing.renderedFrames,
       renderedFrames: expect.any(Number),
       pacedHz: 30,
+      // The player's own 30 fps is not the governor's fallback.
+      fallbackFrames: 0,
+      fallbackShare: 0,
       governorConfigAtFlightStart: h.probe.governorConfig,
     });
     // The quick flight's 20 s at 30 fps.
@@ -642,25 +646,99 @@ describe("the step controller's pacing (PR B)", () => {
     expect(result.raf.disagrees).toBe(false);
   });
 
-  it("keeps the threshold and slot it started with when the cadence changes mid-flight, and counts the change", () => {
+  /**
+   * Ticks a 60 Hz refresh apart from `at`, the last drawn frame's timestamp,
+   * until `until` says stop: draws every `divisor`th, as the frame pacer
+   * does, and skips the ticks between. Returns the last drawn frame's
+   * timestamp.
+   */
+  function pace(h: ReturnType<typeof harness>, at: number, divisor: number, until: () => boolean): number {
+    const period = 1_000 / 60;
+    let last = at;
+    for (let tick = 1; !until() && tick < 20_000; tick += 1) {
+      if (tick % divisor === 0) {
+        last = at + tick * period;
+        h.frame(last);
+      } else {
+        h.skippedFrame(at + tick * period);
+      }
+    }
+    return last;
+  }
+
+  it("judges each interval by the cadence that paced it when the cadence changes mid-flight, and counts the change (/4)", () => {
     const h = harness();
     h.probe.presentationCadence = sixty;
-    h.run(1_000, 1_000 / 60, () => h.controller.phase === "flying");
-    h.run(h.now() + 10, 1_000 / 60, () => h.controller.flightElapsedS >= 5);
+    const settled = h.run(1_000, 1_000 / 60, () => h.controller.phase === "flying") - 1_000 / 60;
+    // Between the ground window (1 s to 5 s) and the air window (10 s to 20 s).
+    let at = pace(h, settled, 1, () => h.controller.flightElapsedS >= 6);
+    // The pacer moves to every 2nd refresh: the frame drawn under the new
+    // cadence closes the first 33.3 ms interval, which that cadence paced.
     h.probe.presentationCadence = thirty;
-    h.run(h.now() + 10, 1_000 / 60, () => h.controller.flightElapsedS >= 7);
+    at = pace(h, at, 2, () => h.controller.flightElapsedS >= 7);
     // The same identity again, in a new object, is a new cadence too: the pacer replaces it only on a change.
     h.probe.presentationCadence = { ...thirty };
-    h.run(h.now() + 10, 1_000 / 60, () => h.finished.length > 0);
+    pace(h, at, 2, () => h.finished.length > 0);
     const { result } = h.finished[0]!;
     expect(result.pacing).toMatchObject({
-      cadenceAtFlightStart: { frameCapHz: null, divisor: 1, displayHz: 60, confirmed: true },
-      cadenceAtEnd: { frameCapHz: 30, divisor: 2 },
+      cadenceAtFlightStart: { frameCapHz: null, divisor: 1, displayHz: 60, confirmed: true, fallbackHz: null },
+      cadenceAtEnd: { frameCapHz: 30, divisor: 2, fallbackHz: null },
       cadenceChanges: 2,
       pacedHz: 30,
+      fallbackFrames: 0,
     });
-    expect(result.windows.air!.over.hitch.thresholdMs).toBeCloseTo(27.4, 9);
-    expect(result.windows.air!.vsyncBuckets!.divisor).toBe(1);
+    // The air window is all at 30 fps: judged by its own slot and threshold,
+    // not the flight's first frame's, which a `/3` report kept.
+    const air = result.windows.air!;
+    expect(air.fps).toBeCloseTo(30, 1);
+    expect(air.over.hitch).toMatchObject({ count: 0 });
+    expect(air.over.hitch.thresholdMs).toBeCloseTo(60, 9);
+    expect(air.missedRefresh).toEqual({ count: 0, per240: 0, longestStreak: 0 });
+    expect(air.vsyncBuckets).toMatchObject({ divisor: 1, x1: air.frames, offSlot: 0, irregular: 0 });
+    expect(air.displayCapped).toBe(true);
+    // The ground window is all at 60, against 27.4 ms.
+    const ground = result.windows.ground!;
+    expect(ground.over.hitch.thresholdMs).toBeCloseTo(27.4, 9);
+    expect(ground.vsyncBuckets).toMatchObject({ x1: ground.frames, irregular: 0 });
+  });
+
+  it("counts 33.3 ms frames under the even fallback in fallbackFrames, neither as hitches nor as missed refreshes (G6)", () => {
+    // Low at 60 Hz: the governor's fallback draws every 2nd refresh, at 30 fps.
+    const fallback: PresentationCadence = { ...sixtyCapped, divisor: 2, fallbackHz: 30 };
+    const h = harness({ tierIndex: 0 });
+    h.probe.presentationCadence = sixtyCapped;
+    const settled = h.run(1_000, 1_000 / 60, () => h.controller.phase === "flying") - 1_000 / 60;
+    // At 60 until 3 s into the flight, inside the ground window, then the fallback to the end.
+    const at = pace(h, settled, 1, () => h.controller.flightElapsedS >= 3);
+    h.probe.presentationCadence = fallback;
+    pace(h, at, 2, () => h.finished.length > 0);
+    const { result } = h.finished[0]!;
+    const { pacing } = result;
+    expect(pacing).toMatchObject({
+      cadenceAtFlightStart: { frameCapHz: 60, divisor: 1, displayHz: 60, confirmed: true, fallbackHz: null },
+      cadenceAtEnd: { frameCapHz: 60, divisor: 2, displayHz: 60, confirmed: true, fallbackHz: 30 },
+      cadenceChanges: 1,
+      pacedHz: 30,
+    });
+    // 17 s at 30 fps after 3 s at 60 (180 frames), give or take the frame at each end.
+    expect(pacing.fallbackFrames).toBeGreaterThanOrEqual(509);
+    expect(pacing.fallbackFrames).toBeLessThanOrEqual(511);
+    expect(pacing.fallbackShare).toBeCloseTo(pacing.fallbackFrames / pacing.renderedFrames, 12);
+    expect(pacing.renderedFrames - pacing.fallbackFrames).toBeGreaterThanOrEqual(179);
+    expect(pacing.renderedFrames - pacing.fallbackFrames).toBeLessThanOrEqual(181);
+
+    for (const window of [result.windows.ground!, result.windows.air!]) {
+      // Every interval kept up with its own slot, the switch's 33.3 ms included...
+      expect(window.over.hitch.count, window.name).toBe(0);
+      expect(window.over.hitch.thresholdMs, window.name).toBeCloseTo(60, 9);
+      expect(window.missedRefresh, window.name).toEqual({ count: 0, per240: 0, longestStreak: 0 });
+      expect(window.vsyncBuckets, window.name).toMatchObject({ divisor: 1, x1: window.frames, offSlot: 0, irregular: 0 });
+    }
+    // ...though every one at 30 fps is over the plain 27.4 ms line.
+    const air = result.windows.air!;
+    expect(air.fps).toBeCloseTo(30, 1);
+    expect(air.over["27.4"].count).toBe(air.frames);
+    expect(air.displayCapped).toBe(true);
   });
 
   it("without a cadence, judges the flight as the bench always did", () => {

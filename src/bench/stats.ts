@@ -39,6 +39,15 @@ import type {
  * window by its own timestamp, so the controller should log the first frame
  * at or past the flight's end too, to close the last interval.
  *
+ * **Which cadence judges it** (`fly-high.bench/4`). Frame `i`'s interval is
+ * judged by the cadence frame `i + 1` was drawn under: its divisor sets the
+ * paced slot and its hitch threshold the slow-frame line. The frame pacer
+ * skips and draws by a new cadence from the tick it emits it, so that is the
+ * cadence that decided when frame `i` left the screen: the first 33.3 ms
+ * interval of the even fallback at 60 Hz is the fallback's slot, not a
+ * missed refresh of the old one. A log with no cadence logged (0 and NaN)
+ * reads the window context's divisor and threshold instead.
+ *
  * Percentiles are nearest-rank, the rule `frameTimingPercentile` uses
  * (QualityProfile.ts), so a p95 here and the renderer's p95 agree on the
  * same samples.
@@ -66,10 +75,16 @@ export function createFrameLog(capacity = FRAME_LOG_CAPACITY): BenchFrameLog {
     scaleStep: new Uint8Array(capacity),
     gpuMs: new Float32Array(capacity),
     overheadMs: new Float32Array(capacity),
+    divisor: new Uint8Array(capacity),
+    hitchMs: new Float64Array(capacity),
   };
 }
 
-/** Appends one frame; false (and `overflowed` set) when the log is full. */
+/**
+ * Appends one frame; false (and `overflowed` set) when the log is full.
+ * `divisor` and `hitchMs` are those of the cadence the renderer drew it
+ * under; left out, the window context's stand in.
+ */
 export function recordFrame(
   log: BenchFrameLog,
   frameTimeMs: number,
@@ -78,6 +93,8 @@ export function recordFrame(
   compiles: number,
   scaleStep: boolean,
   gpuMs: number | null,
+  divisor = 0,
+  hitchMs = Number.NaN,
 ): boolean {
   const index = log.length;
   if (index >= log.capacity) {
@@ -91,6 +108,8 @@ export function recordFrame(
   log.scaleStep[index] = scaleStep ? 1 : 0;
   log.gpuMs[index] = gpuMs ?? Number.NaN;
   log.overheadMs[index] = 0;
+  log.divisor[index] = Math.min(0xff, Math.max(0, Math.round(divisor)));
+  log.hitchMs[index] = hitchMs;
   log.length = index + 1;
   return true;
 }
@@ -145,14 +164,18 @@ export function onePercentLowFps(sorted: ArrayLike<number>): number | null {
   return 1_000 / (sum / count);
 }
 
-/** Intervals strictly over `thresholdMs`, per frame and per minute of the intervals' own time. */
-export function countOver(intervals: ArrayLike<number>, thresholdMs: number): BenchCount {
+/**
+ * Intervals strictly over `thresholdMs`, per frame and per minute of the
+ * intervals' own time. A finite entry of `thresholds` wins over the scalar
+ * for its interval (each frame's own hitch threshold, `/4`).
+ */
+export function countOver(intervals: ArrayLike<number>, thresholdMs: number, thresholds?: ArrayLike<number>): BenchCount {
   let count = 0;
   let totalMs = 0;
   for (let index = 0; index < intervals.length; index += 1) {
     const value = intervals[index]!;
     totalMs += value;
-    if (value > thresholdMs) count += 1;
+    if (value > thresholdAt(thresholds, index, thresholdMs)) count += 1;
   }
   return {
     count,
@@ -169,6 +192,18 @@ export function intervalHistogram(intervals: ArrayLike<number>): BenchHistogram 
     counts[bin]! += 1;
   }
   return { binMs: 1, counts };
+}
+
+/** Entry `index` of a per-interval threshold array where it holds a finite value, else `fallback`. */
+function thresholdAt(thresholds: ArrayLike<number> | undefined, index: number, fallback: number): number {
+  const value = thresholds?.[index];
+  return value !== undefined && Number.isFinite(value) ? value : fallback;
+}
+
+/** Entry `index` of a per-interval divisor array where it holds one (1 or more), else `fallback`. */
+function divisorAt(divisors: ArrayLike<number> | undefined, index: number, fallback: number): number {
+  const value = divisors?.[index];
+  return value !== undefined && value >= 1 ? value : fallback;
 }
 
 /** |a - b| / min(a, b): the repeatability measure. 10.0% passes, 10.1% voids. */
@@ -265,7 +300,11 @@ function displayHzOf(cadence: PresentationCadence | null): number | null {
   return hz === null ? null : Math.round(hz * 1e6) / 1e6;
 }
 
-/** A presentation cadence in the report's terms: its display rate in Hz rather than its period. */
+/**
+ * A presentation cadence in the report's terms: its display rate in Hz
+ * rather than its period, and the even fallback's rate as null, not absent,
+ * when the cadence is the setting's own.
+ */
 export function benchCadence(cadence: PresentationCadence | null): BenchCadence | null {
   if (cadence === null) return null;
   return {
@@ -273,6 +312,7 @@ export function benchCadence(cadence: PresentationCadence | null): BenchCadence 
     divisor: cadence.divisor,
     displayHz: displayHzOf(cadence),
     confirmed: cadence.periodConfirmed,
+    fallbackHz: cadence.fallbackHz ?? null,
   };
 }
 
@@ -297,16 +337,18 @@ export function vsyncToleranceMs(periodMs: number, granularityMs: number | null)
  * draws every refresh. Four or more slots is one bucket. With a divisor of 2
  * or more, a whole number of refreshes between two slots is a frame that
  * missed its slot by a refresh or more (`offSlot`). A VRR panel reads mostly
- * irregular, which is itself the finding.
+ * irregular, which is itself the finding. An entry of `divisors` (1 or
+ * more) wins over the scalar for its interval: the divisor of the cadence
+ * that paced it (`/4`).
  */
 export function vsyncBuckets(
   intervals: ArrayLike<number>,
   periodMs: number,
   granularityMs: number | null,
   divisor = 1,
+  divisors?: ArrayLike<number>,
 ): BenchVsyncBuckets {
   const toleranceMs = vsyncToleranceMs(periodMs, granularityMs);
-  const slotMs = divisor * periodMs;
   let x1 = 0;
   let x2 = 0;
   let x3 = 0;
@@ -315,6 +357,8 @@ export function vsyncBuckets(
   let irregular = 0;
   for (let index = 0; index < intervals.length; index += 1) {
     const value = intervals[index]!;
+    const paced = divisorAt(divisors, index, divisor);
+    const slotMs = paced * periodMs;
     if (value >= 3.5 * slotMs) {
       x4plus += 1;
       continue;
@@ -327,7 +371,7 @@ export function vsyncBuckets(
       continue;
     }
     const refreshes = Math.round(value / periodMs);
-    if (refreshes > divisor && Math.abs(value - refreshes * periodMs) <= toleranceMs) offSlot += 1;
+    if (refreshes > paced && Math.abs(value - refreshes * periodMs) <= toleranceMs) offSlot += 1;
     else irregular += 1;
   }
   return { divisor, x1, x2, x3, x4plus, offSlot, irregular, toleranceMs };
@@ -336,19 +380,21 @@ export function vsyncBuckets(
 /**
  * Intervals longer than the paced slot plus half a refresh period: at least
  * one refresh showed the same frame again. With a divisor of 1 that is 1.5
- * refresh periods.
+ * refresh periods. An entry of `divisors` (1 or more) wins over the scalar
+ * for its interval: the divisor of the cadence that paced it (`/4`), so at
+ * 60 Hz a 33.3 ms interval under the even fallback (divisor 2) is on time.
  */
 export function missedRefresh(
   intervals: ArrayLike<number>,
   periodMs: number,
   divisor = 1,
+  divisors?: ArrayLike<number>,
 ): { readonly count: number; readonly per240: number; readonly longestStreak: number } {
-  const limitMs = (divisor + 0.5) * periodMs;
   let count = 0;
   let streak = 0;
   let longestStreak = 0;
   for (let index = 0; index < intervals.length; index += 1) {
-    if (intervals[index]! > limitMs) {
+    if (intervals[index]! > (divisorAt(divisors, index, divisor) + 0.5) * periodMs) {
       count += 1;
       streak += 1;
       longestStreak = Math.max(longestStreak, streak);
@@ -367,13 +413,18 @@ export interface FrameWindowContext {
   readonly flightStartMs: number;
   /** The step's refresh period from its idle probe; null when it did not run. */
   readonly refreshMs: number | null;
-  /** The frame pacer's divisor at the flight's first frame: the game drew every Nth refresh. */
+  /**
+   * The frame pacer's divisor at the flight's first frame: the game drew
+   * every Nth refresh. It stands in for a frame the log holds no divisor
+   * for, and the vsync buckets report it.
+   */
   readonly divisor: number;
   readonly granularityMs: number | null;
   /**
    * `hitchThresholdMilliseconds` of the step's tier and its cadence at the
    * flight's first frame: 27.4 ms, or 60 ms on Ultra and at 30 fps where 30
    * divides the refresh rate (more where it does not: 62.8 ms at 144 Hz).
+   * It stands in for a frame the log holds no threshold for.
    */
   readonly tierThresholdMs: number;
 }
@@ -405,6 +456,47 @@ function intervalsOf(log: BenchFrameLog, frames: readonly number[]): Float64Arra
     intervals[slot] = intervalOf(log, frame);
   });
   return intervals;
+}
+
+/**
+ * The divisor and hitch threshold that judge each frame's interval: the
+ * next frame's entries, the cadence that decided when this one left the
+ * screen (see the header). 0 and NaN where the log holds none.
+ */
+function pacingOf(log: BenchFrameLog, frames: readonly number[]): { divisors: Uint8Array; thresholds: Float64Array } {
+  const divisors = new Uint8Array(frames.length);
+  const thresholds = new Float64Array(frames.length);
+  frames.forEach((frame, slot) => {
+    divisors[slot] = log.divisor[frame + 1]!;
+    thresholds[slot] = log.hitchMs[frame + 1]!;
+  });
+  return { divisors, thresholds };
+}
+
+/**
+ * The divisor that paced the window's median interval (nearest rank, over
+ * the same positive intervals `summarizeIntervals` ranks), or `fallback`
+ * for an empty window.
+ */
+function medianDivisor(intervals: Float64Array, divisors: Uint8Array, fallback: number): number {
+  const ranked: number[] = [];
+  for (let slot = 0; slot < intervals.length; slot += 1) {
+    const value = intervals[slot]!;
+    if (Number.isFinite(value) && value > 0) ranked.push(slot);
+  }
+  if (ranked.length === 0) return fallback;
+  ranked.sort((a, b) => intervals[a]! - intervals[b]! || a - b);
+  return divisorAt(divisors, ranked[Math.max(0, Math.ceil(ranked.length * 0.5) - 1)]!, fallback);
+}
+
+/** The largest threshold any interval is judged against: a finite entry, else the scalar. */
+function largestThreshold(thresholds: Float64Array, fallback: number): number {
+  if (thresholds.length === 0) return fallback;
+  let largest = Number.NEGATIVE_INFINITY;
+  for (let slot = 0; slot < thresholds.length; slot += 1) {
+    largest = Math.max(largest, thresholdAt(thresholds, slot, fallback));
+  }
+  return largest;
 }
 
 function splitSummary(intervals: readonly number[]): BenchWindowMetrics["compileSplit"]["withCompiles"] {
@@ -447,6 +539,9 @@ export function summarizeWindow(
   const period = context.refreshMs;
   const tolerance = period === null ? null : vsyncToleranceMs(period, context.granularityMs);
   const divisor = context.divisor;
+  // Each interval by the cadence that paced it (`/4`); the context stands in where the log holds none.
+  const { divisors, thresholds } = pacingOf(log, frames);
+  const hitchMs = largestThreshold(thresholds, context.tierThresholdMs);
 
   return {
     name: spec.name,
@@ -457,17 +552,17 @@ export function summarizeWindow(
     lowSample: frames.length < LOW_SAMPLE_FPS * windowSeconds,
     fps: summary === null ? null : 1_000 / summary.mean,
     displayCapped: summary !== null && period !== null && tolerance !== null
-      && Math.abs(summary.p50 - divisor * period) <= tolerance,
+      && Math.abs(summary.p50 - medianDivisor(intervals, divisors, divisor) * period) <= tolerance,
     intervalMs: summary,
     onePercentLowFps: onePercentLowFps(sorted),
     over: {
       "27.4": countOver(intervals, 27.4),
       "50": countOver(intervals, 50),
       "100": countOver(intervals, 100),
-      hitch: { ...countOver(intervals, context.tierThresholdMs), thresholdMs: context.tierThresholdMs },
+      hitch: { ...countOver(intervals, context.tierThresholdMs, thresholds), thresholdMs: hitchMs },
     },
-    missedRefresh: period === null ? null : missedRefresh(intervals, period, divisor),
-    vsyncBuckets: period === null ? null : vsyncBuckets(intervals, period, context.granularityMs, divisor),
+    missedRefresh: period === null ? null : missedRefresh(intervals, period, divisor, divisors),
+    vsyncBuckets: period === null ? null : vsyncBuckets(intervals, period, context.granularityMs, divisor, divisors),
     renderMs: renders.length === 0 ? null : {
       mean: mean(renders)!,
       p50: nearestRank(renders, 0.5)!,
