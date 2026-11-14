@@ -166,6 +166,60 @@ export const RENDERED_DENSITY_LAWS: readonly RenderedDensityLaw[] = Object.freez
  */
 export const DETAIL_NEAR_SWITCH_INSET_METERS = 50;
 
+/**
+ * The range, ending at the near switch, over which a tree's leaf cards change
+ * hands: the near shell (every card) gives way to the mid shell (one card in
+ * five, 1.9 times the size, on the same twigs).
+ *
+ * Each card is SCALED about its own pivot (its centre, the twig it grows
+ * from; a palm frond's petiole), the near shell's down to nothing and the mid
+ * shell's up from nothing, so every frame of the handoff is whole leaves at
+ * some size and a card fills only the pixels it shows. Until 2026-11-14 the
+ * near cards were dithered out instead, through a screen-door pattern whose
+ * half coverage was every other row of pixels, and the mid shell's vertex
+ * window opened only AT the near switch: a tree between 50 and 100 m was a
+ * bare crown hull under a haze of scan lines, and its mid cards then
+ * appeared whole in one frame. That ring is the middle distance of every
+ * view from the ground.
+ */
+export const DETAIL_CARD_HANDOFF_METERS = 50;
+
+/**
+ * How far the mid shell stands off its twigs during the handoff. A mid card
+ * shares its centre, normal and tangent with the near card on the same twig,
+ * so the two are coplanar while both draw, and two leaf pictures at one depth
+ * flicker pixel by pixel. Four centimetres is twenty times the depth
+ * buffer's step at 100 m and nothing a 2 m card shows.
+ */
+export const DETAIL_CARD_HANDOFF_LIFT_METERS = 0.04;
+
+/**
+ * The share of its cards' AREA a tree's leaf-card shell draws when the stem
+ * stands `stemRangeMeters` from the eye over the ground, the law
+ * `DetailInstanceMaterialPlugin` transliterates (it scales each card about
+ * its pivot by the square root). The two shells' shares sum to 1 at every
+ * range: linear in area, so the crown's leaf area, and the pixels its cards
+ * fill, run straight from the near shell's to the mid shell's (0.72 of it)
+ * with no dip and no bulge between.
+ */
+export function detailCardShellAreaShare(
+  shell: "near" | "mid",
+  stemRangeMeters: number,
+  nearRadiusMeters: number,
+): number {
+  if (!Number.isFinite(stemRangeMeters) || stemRangeMeters < 0) {
+    throw new RangeError("Card-shell range must be a non-negative finite number");
+  }
+  if (!Number.isFinite(nearRadiusMeters)
+    || nearRadiusMeters < DETAIL_NEAR_SWITCH_INSET_METERS + DETAIL_CARD_HANDOFF_METERS) {
+    throw new RangeError("Near radius must hold the near switch inset and the card handoff");
+  }
+  const nearSwitch = nearRadiusMeters - DETAIL_NEAR_SWITCH_INSET_METERS;
+  const nearShare = Math.min(1, Math.max(0,
+    (nearSwitch - stemRangeMeters) / DETAIL_CARD_HANDOFF_METERS));
+  return shell === "near" ? nearShare : 1 - nearShare;
+}
+
 /** Rendered share of the near cap at range d (the law's falloff curve). */
 export function renderedShareAtDistance(law: RenderedDensityLaw, distanceMeters: number): number {
   if (!Number.isFinite(distanceMeters) || distanceMeters < 0) {

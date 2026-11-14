@@ -5014,6 +5014,132 @@ gates in all, from `apron-hangar-variety` (SSIM 0.680), `grove-meadow-2m`
 bushes fill the frame, to the cruise shots at 0.999, which did not need it.
 The block culling moves none of them: its frames are `fa7889c`'s, as above.
 
+## Trees: solid trunks, and a leaf handoff without scan lines (2026-11-14)
+
+Jason, of the knee-height tree in the pull request's pictures: "it looks like
+there are cracks in the tree with green showing from it - please try to make
+trees more defined and less staticy". There were two causes, and only the
+second had ever been drawn on a Mac.
+
+**A whole number in an interpolated varying.** The vegetation shader carries
+the atlas layer and the fade byte in one lane of `detailAtlasData`
+(`layer + byte / 512`) and took them apart in the fragment stage with `floor`
+and `fract`. That is exact where it is written and not where it is read:
+WebGPU fixes no precision for interpolation, and a rasteriser that
+interpolates `value / w` and `1 / w` and divides returns a value that is the
+same at a triangle's three vertices a few units in the last place off.
+SwiftShader does, which is the renderer every cloud picture and every hosted
+gate is drawn on. A near trunk is bark layer 6 with fade byte 0, exactly 6.0.
+A fragment that received 5.9999995 decoded layer 5 and fade byte 511.99,
+which is band code 255, and `detailBandWindow` reads any code above 3.5 as a
+mid card shell, dithered away inside the near band: a hole through the
+trunk. The holes were a different set in every frame of one still pose,
+because the wind's sway moves the triangles under the pixels, which is the
+static. The same slip gave a mid leaf card (code 4) the near shell's code 3,
+which is culled past the near switch, and gave a crown hull (layer 16) the
+litter twig's texels (layer 15): dark and red specks over a crown at 80 m.
+The Mac's frames never showed any of it (the trunks in `grove-forest-2m`'s
+baseline are whole), so Metal evidently returns such a constant unchanged.
+Nothing says the next GPU will.
+
+Neither packed lane sits on an integer it is floored at any more. The fade
+byte rides half a step in, `layer + (byte + 0.5) / 512`, and is read back as
+`floor(fract(z) * 512)`; the occlusion rides a quarter in,
+`modifier + 0.25 + occlusion / 2`. Each is clear of its neighbours by 500
+times a float's last place at these magnitudes, and every packed layer and
+byte is a multiple of 1/1024, exact in f32, so a GPU that returned the
+constant unchanged decodes what it decoded before. The bytes that ride lanes
+of their own (`detailFadeByte`, the impostor's in `detailImpostorA.z`) are
+rounded to nearest where they are read. `detailPackAtlasLane` and its
+siblings are the CPU mirrors, and
+`tests/render.webgpu-detail-packed-lanes.test.ts` holds every layer, byte,
+modifier and occlusion through 64 units of error either way, and states the
+old packing's failure at one.
+
+**The leaf-card handoff.** A tree's visible canopy is leaf cards: a near
+shell with a card on every twig and a mid shell with one in five at 1.9
+times the size. They change hands over the 50 m that end at the near switch,
+which at Medium is 50 to 100 m from the eye: the middle distance of every
+view from the ground. Two things were wrong there, on main and on every
+GPU. The near shell was dithered out through the 8x8 ordered pattern, whose
+half coverage is every other row of pixels, so a fading card was drawn in
+scan lines two to four rendered rows apart (the striped patches against the
+sky in `grove-meadow-2m`, 4.6 pixels from stripe to stripe, in main's
+baseline as in this pull request's). And the mid shell's vertex window
+opened only AT the switch, although the fragment stage was written to dither
+it in as the near shell's complement, so nothing replaced the near cards as
+they went: a tree at 80 m was its bare crown hull under a haze of stripes,
+and its mid cards then appeared whole in one frame at 100 m.
+
+The handoff is now a change of size. Each card is scaled about its own
+pivot, which is its centre, the twig it grows from (a palm frond's is the
+petiole end of its rachis): the near shell's by the square root of the share
+of its area it still shows, the mid shell's by the square root of the rest
+(`detailCardShellAreaShare`, `renderedDensity.ts`). The shares sum to one
+whole shell at every range, so the crown's leaf area runs straight from the
+near shell's to the mid shell's with no dip between, and every frame of it
+is whole leaves at some size. A vertex cannot tell where the middle of its
+own card is, so it is told: each vertex of a leaf-card shell carries the
+vector from its card's pivot to itself in the tangent lane
+(`writeCardPivotOffsets`, `prototypeGeometry.ts`), which these meshes
+already upload and no vegetation shader reads, because none of these
+materials has a normal map. The vertex stage subtracts that vector times one
+minus the scale. It costs no vertex attribute, no output location and no
+byte, and the fragment stage does nothing for it. A mid card lies in the
+plane of the near card on the same twig, so while both draw the mid shell
+stands 4 cm off its twigs (`DETAIL_CARD_HANDOFF_LIFT_METERS`); otherwise two
+leaf pictures at one depth flicker pixel by pixel. Outside the handoff the
+scale is exactly 1 and nothing is subtracted: a tree nearer than 50 m or
+past 100 m is drawn as it was.
+
+Three things were tried first and are not here. Opening the mid shell's
+window so that the dither was the complement it was written to be put
+leaves back on the tree, as crosshatch: a 1.9x card at half coverage against
+grass is a mesh. Reordering the pattern's bits so that half coverage is a
+checkerboard made that mesh finer and no less a mesh. The pattern is as it
+was, and now serves only the outer cull fade and the single-edge crossfades
+of rocks and clutter. And the first cut of the scale was applied to the
+picture and not the card: the vertex stage divided the card's uv by it and
+the fragment stage dropped what fell outside the layer. That drew the same
+frames and cost more than the dither had. Both shells' whole cards were
+filled across the ring, 1.72 near shells of pixels where the dither had
+filled one, and on SwiftShader, where a dropped fragment costs what a kept
+one does, the main pass measured +7.2% (5.9% to 8.6%) at
+`forest-500ft-sunbehind` and +6.2% (4.5% to 7.7%) at `ground-2m-lowsun`
+against `ee332aa`, on the same draws and triangles. (The forest shot is
+taken 152 m up, and the bottom of its frame looks down on trees 50 to 100 m
+away over the ground, which is the range the bands go by.) A scaled card
+fills what it shows: the two shells together fill one near shell where the
+handoff starts and the mid shell's 0.72 of one where it ends, never more
+than the near shell alone.
+
+**Cost.** Draw calls, triangles and every other count of GPU work are
+unchanged: the mid shell's batches were already drawn, with every card
+inside the near switch folded to nothing in the vertex stage. Cloud A/B
+against `ee332aa` (SwiftShader, Medium / balanced, 16 rounds, gate 5%):
+
+| Shot | GPU time | Draw calls | Pixels that differ |
+| --- | --- | --- | --- |
+| `forest-500ft-sunbehind` | same +1.9% (+1.0% to +2.6%) | 247 → 247 | 5.8% |
+| `ground-2m-lowsun` | same +0.0% (-1.2% to +1.3%) | 113 → 113 | 23.3% |
+
+Both frames moved toward the Mac's baseline of the same shot (SSIM 0.963 →
+0.970 and 0.746 → 0.760), which is the packed lanes: SwiftShader now draws
+the leaf cards and trunk pixels the Mac always drew. Taken alone
+(`forest-500ft-sunbehind`, 10 rounds) the packed lanes read -3.6% (-6.4% to
+-0.8%) in the main pass, so the handoff itself is roughly 5% of that frame
+on SwiftShader: the leaves of the trees 50 to 100 m off, which were half
+missing before, and their mid shells' triangles, which were folded away
+there before. Its cards cover no more pixels than the near shell's alone
+(the dither rasterised every one of those and dropped half).
+
+**What is not changed.** Up close a lone oak still reads as a rounded hull
+with leaf clusters on it. The opaque core is an icosphere at 0.62 of the
+skeleton's envelope, and the envelope is set by the farthest twig, so the
+core is wider than where most of the cards sit. That is the tree model's
+shape on main, in every forest and in the impostors baked from it, and is
+not part of this change.
+
 ## In-app benchmark (?bench=1)
 
 `?bench=1` turns the game into a benchmark anyone can run in their own

@@ -58,6 +58,11 @@ export interface PrototypeGeometry {
   readonly positions: Float32Array;
   readonly normals: Float32Array;
   readonly uvs: Float32Array;
+  /**
+   * xyz + handedness. The surface tangent everywhere except on a tree's
+   * leaf-card shells (`buildCrownFringePrototype`), where xyz is the vector
+   * from the card's pivot to the vertex: see `writeCardPivotOffsets`.
+   */
   readonly tangents: Float32Array;
   readonly colors: Float32Array;
   readonly atlasLayer: Float32Array;
@@ -890,6 +895,63 @@ function emitSkeletonCards(
 }
 
 /**
+ * Gives every vertex of a leaf-card shell the vector from its card's pivot
+ * to itself, in the tangent lane.
+ *
+ * The vegetation shader hands a tree's leaves from the near shell to the mid
+ * shell by SIZE (`detailCardShellAreaShare`, renderedDensity.ts): each card
+ * shrinks to nothing about its pivot, or grows from it. A vertex cannot work
+ * out where its own card's middle is, so it is told, and the lane it is told
+ * in is one these meshes already carry and no vegetation shader reads (the
+ * materials have no normal map, so the tangent frame is never built). The
+ * shell costs no vertex attribute and no byte for it.
+ *
+ * A card's pivot is its centre, the twig it grows from. A palm frond's is
+ * the petiole end of its rachis, so a shrinking frond draws back to the
+ * crown and not to a point in mid-air. w stays 1.
+ */
+function writeCardPivotOffsets(
+  acc: GeometryAccumulator,
+  owners: readonly number[],
+  pivot: "centre" | "petiole",
+): void {
+  const vertexCount = acc.positions.length / 3;
+  if (owners.length !== vertexCount) {
+    throw new RangeError("Every leaf-card vertex needs an owner to find its pivot");
+  }
+  const pivots = new Map<number, { x: number; y: number; z: number; weight: number }>();
+  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+    const owner = owners[vertex]!;
+    const x = acc.positions[vertex * 3]!;
+    const y = acc.positions[vertex * 3 + 1]!;
+    const z = acc.positions[vertex * 3 + 2]!;
+    const held = pivots.get(owner);
+    if (pivot === "centre") {
+      // The mean of the card's corners.
+      if (held) {
+        held.x += x; held.y += y; held.z += z; held.weight += 1;
+      } else {
+        pivots.set(owner, { x, y, z, weight: 1 });
+      }
+      continue;
+    }
+    // The rachis vertex (u = 0.5) with the lowest v; weight holds that v.
+    if (Math.abs(acc.uvs[vertex * 2]! - 0.5) > 1e-6) continue;
+    const v = acc.uvs[vertex * 2 + 1]!;
+    if (!held || v < held.weight) pivots.set(owner, { x, y, z, weight: v });
+  }
+  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+    const held = pivots.get(owners[vertex]!);
+    if (!held) throw new RangeError("A leaf-card vertex has no pivot");
+    const scale = pivot === "centre" ? 1 / held.weight : 1;
+    acc.tangents[vertex * 4] = acc.positions[vertex * 3]! - held.x * scale;
+    acc.tangents[vertex * 4 + 1] = acc.positions[vertex * 3 + 1]! - held.y * scale;
+    acc.tangents[vertex * 4 + 2] = acc.positions[vertex * 3 + 2]! - held.z * scale;
+    acc.tangents[vertex * 4 + 3] = 1;
+  }
+}
+
+/**
  * Palm fronds as folded strips. Each kept frond meshes two half-strips that
  * meet at the rachis (u = 0.5) and fall away by the frond's fold angle to the
  * leaflet tips, so the crown keeps volume from below and from the side where
@@ -1488,9 +1550,11 @@ export function buildCrownFringePrototype(
     const diskGroups: number[] = [];
     emitPalmFronds(acc, skeleton, budget, spec.crownLayer, owners, disks, diskGroups);
     bakeSkyOcclusion(acc, disks, owners, diskGroups);
+    writeCardPivotOffsets(acc, owners, "petiole");
   } else {
     emitSkeletonCards(acc, skeleton, budget, spec.crownLayer, owners, disks);
     bakeSkyOcclusion(acc, disks, owners);
+    writeCardPivotOffsets(acc, owners, "centre");
   }
   // A SOFTENED version of the core's vertical ramp so shell and core still
   // shade as one canopy without compounding into near-black: the cards
