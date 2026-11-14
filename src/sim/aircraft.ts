@@ -469,22 +469,6 @@ export const FAST_JET: Readonly<AircraftDefinition> = Object.freeze({
   ]),
 });
 
-/**
- * The Bombardier Global 8000: an ultra-long-range business jet. Low swept wing
- * with winglets, T-tail, two GE Passport turbofans on the rear fuselage,
- * retractable tricycle gear.
- *
- * Dimensions, wing, thrust and Mach limits are the real aeroplane's. The MASS
- * is not its maximum: the type's MTOW is 52,163 kg and at that weight it needs
- * about 1,890 m of runway, while this world's only field is 1,320 m of pavement
- * (`src/world/airport.ts`). Flying it at a light ramp weight — part fuel, a few
- * passengers — is both a real configuration and the one that lets a pilot take
- * off, fly and land here, so that is what this definition carries. The MTOW is
- * recorded here rather than dropped, because the next person to touch these
- * numbers needs to know the gap is deliberate.
- */
-export const MAXIMUM_TAKEOFF_MASS_GLOBAL_8000 = 52_163;
-
 export const GLOBAL_8000: Readonly<AircraftDefinition> = Object.freeze({
   kind: "bizjet",
   name: "Bombardier Global 8000",

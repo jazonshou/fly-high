@@ -522,8 +522,6 @@ export const LANDCRUISER_76 = Object.freeze({
   ] as const satisfies readonly HullPart[]),
 });
 
-export type LandCruiser76 = typeof LANDCRUISER_76;
-
 /**
  * The drawn car's numbers in one place (what L2's visual reads): body-frame
  * axle positions, tracks, radii, the CG height at kerb ride, the travel each

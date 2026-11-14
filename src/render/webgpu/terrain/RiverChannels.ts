@@ -150,9 +150,3 @@ export function markCarvedSampler<T extends (...args: never[]) => unknown>(sampl
   (sampler as unknown as Record<symbol, boolean>)[CARVED_SAMPLER] = true;
   return sampler;
 }
-
-/** Whether a sampler reads carved ground. Total, and safe on any value. */
-export function isCarvedSampler(value: unknown): boolean {
-  if (typeof value !== "function") return false;
-  return (value as unknown as Record<symbol, boolean>)[CARVED_SAMPLER] === true;
-}

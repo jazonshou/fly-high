@@ -192,10 +192,6 @@ export function cross(a: Vec3, b: Vec3): Vec3 {
   return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 
-export function dot(a: Vec3, b: Vec3): number {
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
 export function normalize(v: Vec3): Vec3 {
   const l = length(v);
   return l > 0 ? [v[0] / l, v[1] / l, v[2] / l] : [0, 0, 0];
@@ -228,10 +224,4 @@ export function shade(colour: number, k: number): number {
   const bl = colour & 255;
   const f = (c: number) => Math.max(0, Math.min(255, Math.round(k <= 1 ? c * k : c + (255 - c) * (k - 1))));
   return (f(r) << 16) | (f(g) << 8) | f(bl);
-}
-
-/** Linear mix of two sRGB colours (in sRGB, which is what a palette pick wants). */
-export function mixColour(a: number, b: number, t: number): number {
-  const ch = (shift: number) => Math.round(((a >> shift) & 255) * (1 - t) + ((b >> shift) & 255) * t);
-  return (ch(16) << 16) | (ch(8) << 8) | ch(0);
 }

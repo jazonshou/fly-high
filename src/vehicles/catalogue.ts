@@ -1,5 +1,4 @@
 import {
-  aircraftSpec,
   type ChaseFramingSpec,
   type CinematicOrbitSpec,
   type CockpitEyeSpec,
@@ -8,7 +7,6 @@ import {
   type TopFrontViewSpec,
 } from "@/src/aircraft/catalogue";
 import {
-  isAircraftKind,
   SURFACE_VEHICLE_KINDS,
   type SurfaceVehicleKind,
   type VehicleClass,
@@ -149,30 +147,4 @@ export const SURFACE_VEHICLE_CATALOGUE: readonly SurfaceVehicleSpec[] = Object.f
 
 export function surfaceVehicleSpec(kind: SurfaceVehicleKind): SurfaceVehicleSpec {
   return SURFACE_VEHICLE_SPECS[kind];
-}
-
-const aircraftVehicleSpecs = new Map<VehicleKind, VehicleSpec>();
-
-/** The shared part of any vehicle's spec. Aircraft specs are adapted once and cached. */
-export function vehicleSpec(kind: VehicleKind): VehicleSpec {
-  if (!isAircraftKind(kind)) return surfaceVehicleSpec(kind);
-  let spec = aircraftVehicleSpecs.get(kind);
-  if (!spec) {
-    const aircraft = aircraftSpec(kind);
-    spec = Object.freeze({
-      kind,
-      vehicleClass: "aircraft",
-      name: aircraft.name,
-      description: aircraft.description,
-      follow: "aircraft",
-      chase: aircraft.chase,
-      cinematic: aircraft.cinematic,
-      topFront: aircraft.topFront,
-      cockpitEye: aircraft.cockpitEye,
-      engineReadout: aircraft.engineReadout,
-      engineSound: aircraft.engineSound,
-    } satisfies VehicleSpec);
-    aircraftVehicleSpecs.set(kind, spec);
-  }
-  return spec;
 }

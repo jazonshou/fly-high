@@ -2067,8 +2067,6 @@ export const CONTACT_SHEET_VIEWS = [
   "cavity",
 ] as const;
 
-export type ContactSheetView = (typeof CONTACT_SHEET_VIEWS)[number];
-
 export interface ContactSheet {
   readonly width: number;
   readonly height: number;

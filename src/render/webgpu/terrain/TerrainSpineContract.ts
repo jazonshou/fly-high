@@ -3,7 +3,6 @@ import {
   WORLD_PAGE_CHANNEL_CORE,
   WORLD_PAGE_GUTTER,
   WORLD_PAGE_HEIGHT_CORE,
-  WORLD_PAGE_LAYOUT,
   pageTexelSizeMeters,
 } from "@/src/render/webgpu/world/pageGeometry";
 import type { WorldPageKey } from "@/src/render/webgpu/world/pageKey";
@@ -12,7 +11,6 @@ import { SurfaceMaterial } from "./surfaceMaterials";
 import {
   WORLD_PAGE_GPU_CHANNELS,
   worldPageChannelBytesPerTexel,
-  worldPageChannelStoredEdge,
   type WorldPageChannelDescriptor,
 } from "@/src/render/webgpu/world/payload";
 
@@ -261,14 +259,6 @@ export function terrainHeightBytesPerTexel(): number {
   return worldPageChannelBytesPerTexel(height);
 }
 
-/**
- * The height slot edge, re-derived through the layout so a change to the page
- * geometry moves both this and `TERRAIN_HEIGHT_SLOT_EDGE` together.
- */
-export function terrainSlotStoredEdge(family: WorldPageChannelDescriptor): number {
-  return worldPageChannelStoredEdge(family, WORLD_PAGE_LAYOUT);
-}
-
 // ---------------------------------------------------------------------------
 // §5.6 — the CDLOD node record
 // ---------------------------------------------------------------------------
@@ -328,17 +318,6 @@ export const TERRAIN_NODE_ATTRIBUTE_STRIDE = 4;
 export const TERRAIN_CORNER_MORPH_BITS = 6;
 export const TERRAIN_CORNER_MORPH_LEVELS = (1 << TERRAIN_CORNER_MORPH_BITS) - 1;
 export const TERRAIN_CORNER_MORPH_PACKED_MAX = 2 ** (TERRAIN_CORNER_MORPH_BITS * 4) - 1;
-
-/** Lane meanings, as data, so the CPU writer and the WGSL reader cannot drift. */
-export const TERRAIN_NODE_LANES = Object.freeze({
-  a: Object.freeze(["slotIndex", "subNodeX", "subNodeZ", "level"] as const),
-  b: Object.freeze([
-    "morphK",
-    "parentSlotIndex",
-    "channelLane",
-    "packedCornerMorphs",
-  ] as const),
-});
 
 /**
  * `4.5-A3`: the PROVISIONAL ecotone axis — the material a node shades with
@@ -490,33 +469,6 @@ export const TERRAIN_HEIGHT_PARITY_CRITERIA = Object.freeze({
  * assertion. `5×10⁶ m` is struck.
  */
 export const TERRAIN_SUPPORTED_WORLD_RADIUS_METERS = 2_800_000;
-
-/**
- * Measured 2026-08-19 on the reference adapter by
- * `tests/gpu/terrain-height-parity.test.ts`, over 40,960 / 12,960 / 3,840
- * points × five filter widths:
- *
- * | radius | max |Δh| |
- * |---|---|
- * | ±10⁴ m | 3.78 mm |
- * | ±10⁵ m | 3.44 mm |
- * | ±2.8×10⁶ m | 2.37 mm |
- *
- * **The error does not grow with radius**, which is the whole point: naive f32
- * measured 4.5 mm / 60 mm / 3.47 m over the same probe, so split-origin
- * addressing did not merely improve the far field, it removed the
- * coordinate-magnitude term. What remains is f32 accumulation over ~50 terms
- * and is flat everywhere.
- *
- * The radius is therefore set by the LATTICE WRAP rather than by precision:
- * beyond ~2.8×10⁶ m the finest 43 m octave repeats by construction (0-4), so
- * the world tiles rather than diverges.
- */
-export const TERRAIN_HEIGHT_PARITY_MEASURED_METERS = Object.freeze({
-  nearMax: 0.00378,
-  farMax: 0.00344,
-  wrapMax: 0.00237,
-});
 
 // ---------------------------------------------------------------------------
 // §5.6 — the per-stage sampled-binding budget

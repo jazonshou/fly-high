@@ -233,34 +233,6 @@ export function climateProvinceStaircase(
   return result;
 }
 
-/** The raw 2-octave fields the staircases read, before the core mask. */
-export function sampleClimateProvinceFields(
-  seedHash: number,
-  x: number,
-  z: number,
-): { readonly temperature: number; readonly dryness: number } {
-  const t = CLIMATE_PROVINCE.temperature;
-  const d = CLIMATE_PROVINCE.dryness;
-  return {
-    temperature: fbm2D(
-      mixSeed(seedHash, t.channel),
-      x / t.baseWavelengthMeters,
-      z / t.baseWavelengthMeters,
-      t.octaves,
-      t.lacunarity,
-      t.persistence,
-    ),
-    dryness: fbm2D(
-      mixSeed(seedHash, d.channel),
-      x / d.baseWavelengthMeters,
-      z / d.baseWavelengthMeters,
-      d.octaves,
-      d.lacunarity,
-      d.persistence,
-    ),
-  };
-}
-
 /**
  * The natural province offsets at a point BEFORE the temperate-core mask: the
  * staircases at full strength. For consumers with a core of their own (the

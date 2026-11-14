@@ -349,10 +349,6 @@ export function jetPanelSection(): { x: number; y: number }[] {
   ];
 }
 
-export function jetPanelTopY(): number {
-  return jetPanelFace().topY;
-}
-
 /** The cove's foot: `jetCoveLength` down the dash's leaned face from its top (the round's aft tangent). */
 export function jetCoveFoot(): { x: number; y: number } {
   const face = jetPanelFace();

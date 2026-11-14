@@ -72,7 +72,6 @@ export const HULL_STATIONS: readonly HullStation[] = Object.freeze([
 
 /** Length from the transom's bottom edge to the stem head, and beam at the sheer. */
 export const HULL_LENGTH = 6.55;
-export const HULL_BEAM = 2.59;
 
 /**
  * The transom: a plane through the bottom edge at x = 0, raked 12 degrees
@@ -89,14 +88,6 @@ export const HULL_TRANSOM = Object.freeze({
 export function transomX(y: number): number {
   return Math.max(0, y) * Math.tan(HULL_TRANSOM.rakeDegrees * DEG);
 }
-
-/**
- * The stem profile, forefoot to stem head, as (x, y) pairs: the keel line of
- * the forward stations, listed separately for the renderer's stem bar.
- */
-export const HULL_STEM_PROFILE: readonly { readonly x: number; readonly y: number }[] = Object.freeze(
-  HULL_STATIONS.filter((station) => station.x >= 4.5).map((station) => Object.freeze({ x: station.x, y: station.keel })),
-);
 
 /**
  * A lifting strake: a small triangular rail on the bottom panel whose flat

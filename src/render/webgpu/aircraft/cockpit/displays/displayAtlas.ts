@@ -3,7 +3,6 @@ import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
-import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
 import { dropTextureCpuMirror } from "@/src/render/webgpu/core/TextureCpuMirror";
@@ -428,9 +427,4 @@ export function paintDisplays(atlas: DisplayAtlas, state: DisplayState): void {
   if (atlas.texture.getInternalTexture() === null) return;
   drawDisplayAtlas(atlas.context, atlas.width, atlas.height, atlas.slots, state);
   uploadDisplayAtlas(atlas);
-}
-
-/** Only the layout's own merged screens mesh may carry its atlas: a stray user would be a second draw state. */
-export function isScreensMesh(mesh: AbstractMesh, layout: DisplayLayout): boolean {
-  return mesh.name === layout.screensMesh;
 }
