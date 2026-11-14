@@ -72,6 +72,10 @@ Investigation write-ups, mostly September 2026.
 | `TRAINER_SKIN_RESOLUTION_2026_09_23.md` | The trainer's blurry skin |
 | `WATER_AGL_2026_09_20.md`, `WATER_COLOUR_2026_09_17.md`, `WATER_SUN_GLITTER_2026_09_19.md` | AGL over water, water colour, sun glitter |
 
+## Architecture decision log
+
+The dated decision log that ended `docs/architecture/ARCHITECTURE.md` (Gate A, Phases 4 to 7, the ocean correction, tree LOD and so on). Read it with `git show afa81e6:docs/architecture/ARCHITECTURE.md`.
+
 ## Status (`docs/status/`)
 
 Snapshots from early September 2026, superseded by [OVERVIEW.md](OVERVIEW.md): `PROJECT_OVERVIEW.md`, `PROJECT_CLOSEOUT_2026_09_02.md`, `HANDOVER_2026_09_02.md`, `WHAT_CHANGED_2026_09_01.md`, `PHASE_6_OUTCOME.md`.
