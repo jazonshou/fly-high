@@ -87,7 +87,6 @@ describe("every Vite and Vitest config uses the checkout's cache", () => {
       "tests/sim.vitest.config.ts",
       "tests/world.vitest.config.ts",
       "vite.config.ts",
-      "vite.static.config.ts",
       "vitest.config.ts",
       "vitest.gpu.config.ts",
       "vitest.perf.config.ts",

@@ -245,7 +245,7 @@ describe("the build stamp", () => {
   it("keeps the commit out of every bundled file, so a deploy renames no chunk", () => {
     // A define (or anything else bundled) holding the commit would change the
     // hash of the chunk it lands in and of every chunk that imports that one.
-    const config = readFileSync(new URL("../vite.static.config.ts", import.meta.url), "utf8");
+    const config = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
     expect(config).toContain("plugins: [react(), commitStamp(process.env.GITHUB_SHA)]");
     expect(config.match(/GITHUB_SHA/gu)).toHaveLength(2);
     expect(config).not.toMatch(/\bdefine\s*:/u);

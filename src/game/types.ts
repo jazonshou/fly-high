@@ -277,7 +277,6 @@ export type CarTyrePressure = "road" | "sand";
 
 /** The order of every per-wheel array in `CarVisualState`. */
 export const CAR_WHEELS = ["frontLeft", "frontRight", "rearLeft", "rearRight"] as const;
-export type CarWheel = (typeof CAR_WHEELS)[number];
 
 /**
  * What the HUD, the drawn car, its effects and its sound read from the sim.

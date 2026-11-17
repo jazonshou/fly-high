@@ -21,7 +21,6 @@ import {
 } from "./TerrainLandformKernel";
 import {
   TERRAIN_HEIGHT_PYRAMID_EDGE,
-  TERRAIN_HEIGHT_PYRAMID_SPAN_METERS,
   TERRAIN_HEIGHT_PYRAMID_TEXEL_METERS,
   TERRAIN_HORIZON_PYRAMID_EDGE,
   TERRAIN_HORIZON_PYRAMID_TEXEL_METERS,
@@ -528,6 +527,3 @@ export class GlobalHeightPyramid {
     this.horizonShader = null;
   }
 }
-
-/** How far the pyramid reaches from its centre, in metres. */
-export const GLOBAL_HEIGHT_PYRAMID_REACH_METERS = TERRAIN_HEIGHT_PYRAMID_SPAN_METERS / 2;

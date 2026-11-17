@@ -17,7 +17,6 @@ import { clamp } from "./math";
  */
 
 export const SEA_LEVEL_DENSITY = 1.225;
-export const SEA_LEVEL_PRESSURE = 101_325;
 export const SEA_LEVEL_TEMPERATURE = 288.15;
 const GAS_CONSTANT = 287.052_87;
 const HEAT_CAPACITY_RATIO = 1.4;

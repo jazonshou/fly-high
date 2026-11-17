@@ -82,9 +82,8 @@ describe("src/bench stays apart", () => {
   const benchImport = /["']@\/src\/bench\b|["'](\.\.?\/)+(src\/)?bench\//u;
 
   it("is imported by FlightGame alone, outside src/bench", () => {
-    // Every root a player's page or the Worker bundles: the app, the Pages
-    // entry (static/) and the Worker entry.
-    const roots = ["src", "app", "static", "worker"];
+    // Every root a player's page bundles: the app and its entry (static/).
+    const roots = ["src", "static"];
     const importers = roots.flatMap((root) => sourceFiles(join(projectRoot, root)))
       .filter((path) => !repoPath(path).startsWith("src/bench/"))
       .filter((path) => benchImport.test(readSource(path)))

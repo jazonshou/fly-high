@@ -22,7 +22,7 @@ import { areaShareInFrame, cockpitParts, projectPart, rowShareInFrame } from "./
  * rig's lens is an override and does not move at any aspect.
  *
  * The HUD half (the deck line's `min(50vw, 88.889vh)`) is held on geometry by
- * tests/ui.hud-cockpit-layout.test.ts, through this lens, at three 21:9 windows.
+ * tests/ui.hud-cockpit-layout.test.ts, through this lens, at a 21:9 window (2560 x 1080).
  */
 const DEG = 180 / Math.PI;
 const verticalDegrees = (horizontal: number, aspect: number) => 2 * Math.atan(Math.tan(horizontal / DEG / 2) / aspect) * DEG;

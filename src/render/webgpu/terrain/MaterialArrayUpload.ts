@@ -38,25 +38,17 @@ export interface SurfaceMaterialArrays {
 /**
  * The pure half of `createSurfaceMaterialArrays` (it lives here rather than
  * beside the recipes because `planMippedTextureArray` is a Babylon-importing
- * module). Array A reduces through the
- * plain box kernel (albedo and height are both linear quantities); array B
- * reduces through Toksvig, which is the whole reason `2-11`'s module grew a
- * third kernel.
+ * module). Array A reduces through `SURFACE_ALBEDO_MIP_KERNEL` (its rgb is a
+ * gamma-2.0 albedo and averages as light; its alpha is a linear height and
+ * takes the box); array B reduces through Toksvig, which is the whole reason
+ * `2-11`'s module grew a third kernel.
  */
 export function planSurfaceMaterialArrays(
   seed: WorldSeed,
   edge: number,
 ): SurfaceMaterialArrayPlans {
   const layers = synthesizeSurfaceMaterialLayers(seed, edge);
-  // Array A reduces through the plain box kernel, which averages the STORED
-  // gamma-2.0 bytes rather than the linear values they encode. That is the
-  // same approximation a GPU makes mipping an sRGB texture without an
-  // sRGB-aware reducer, and it is worth measuring rather than assuming:
-  // across the ten layers the mean LINEAR albedo drifts by at most 3.0% (shrub)
-  // from mip 0 to the 1x1 tail, most under 1%. A dedicated linearising kernel
-  // would cost a third reduction path in a performance-owned module to remove
-  // an error smaller than the seasonal tint.
-  const albedoHeight = planMippedTextureArray(layers.albedoHeight, edge, "box");
+  const albedoHeight = planMippedTextureArray(layers.albedoHeight, edge, SURFACE_ALBEDO_MIP_KERNEL);
   const normalMaterial = planMippedTextureArray(layers.normalMaterial, edge, {
     kind: "toksvig",
     roughnessGain: TOKSVIG_ROUGHNESS_GAIN,
@@ -68,6 +60,16 @@ export function planSurfaceMaterialArrays(
     totalBytes: albedoHeight.totalBytes + normalMaterial.totalBytes,
   };
 }
+
+/**
+ * Array A's reducer: the linear values its gamma-2.0 bytes encode, not the
+ * bytes. It was the plain box while every layer was nearly flat (the mean
+ * linear albedo drifted 3% at most from mip 0 to the tail). The sward layers
+ * now carry lit blades over shaded gaps, and boxing their bytes took 10 to 15%
+ * off a meadow's albedo between the ground at the camera's feet and the same
+ * ground at 30 m.
+ */
+export const SURFACE_ALBEDO_MIP_KERNEL = Object.freeze({ kind: "gamma2" as const });
 
 /**
  * `3-3`'s sampler requirement: 16x anisotropy. The terrain is seen at grazing
@@ -91,8 +93,18 @@ export function uploadSurfaceMaterialArrays(
   layers: { readonly albedoHeight: Uint8Array[]; readonly normalMaterial: Uint8Array[] },
   seed: WorldSeed,
   edge: number,
+  /**
+   * The array index of the ground grain, or -1 without one. Its channels are
+   * fields centred on 0.5, not an albedo, and stay on the plain box so each
+   * converges to exactly that.
+   */
+  grainLayerIndex = -1,
 ): SurfaceMaterialArrays {
-  const albedoHeightPlan = planMippedTextureArray(layers.albedoHeight, edge, "box");
+  const albedoHeightPlan = planMippedTextureArray(
+    layers.albedoHeight,
+    edge,
+    (index) => (index === grainLayerIndex ? "box" : SURFACE_ALBEDO_MIP_KERNEL),
+  );
   const normalMaterialPlan = planMippedTextureArray(layers.normalMaterial, edge, {
     kind: "toksvig",
     roughnessGain: TOKSVIG_ROUGHNESS_GAIN,

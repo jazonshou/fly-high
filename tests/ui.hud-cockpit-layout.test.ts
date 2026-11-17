@@ -35,19 +35,24 @@ import { EXTERIOR_CAMERAS, hudMarkupCases, renderHudCase } from "./support/hudMa
  *    the cockpit's differs from it by the class and `--deck-k` alone;
  *  - the stylesheet's cockpit rules are scoped to the cockpit class and carry the
  *    layout module's numbers;
- *  - on SEVEN window shapes (16:9 at three sizes, 4:3 and 21:9 at three), every
+ *  - on THREE window shapes, one per branch of the rule (16:9, 4:3 and 21:9), every
  *    deck's rows are where THE STYLESHEET says: Babylon's own camera, on the lens
  *    the renderer resolves for that window's aspect, finds the deck's first row
  *    within 2 px of the row flight.css computes. So a stylesheet that loses its
  *    21:9 term, or a lens that moves its breakpoint, fails here on geometry;
- *  - on those seven shapes, every deck, and the full, minimal and alert HUDs, no HUD
+ *  - on those three shapes, every deck, and the full, minimal and alert HUDs, no HUD
  *    element lies over a screen, bezel, glareshield or panel pixel, and none crosses
  *    the deck line. The element boxes are read from the stylesheet
  *    (tests/support/cockpitHudModel.ts), so a deleted layout rule sends its element
  *    back onto the screens, and this fails.
  */
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const SHAPES = [[1280, 720], [1600, 900], [1920, 1080], [1600, 1200], [1680, 720], [2560, 1080], [3440, 1440]] as const;
+// The row depends on the window's aspect, not its size, so one window per branch of the rule: the
+// smallest 16:9 (where 2 px is the most degrees), 4:3, and the common 21:9. Until 2026-11-14 this
+// swept seven, three of them 16:9 (1280 x 720, 1600 x 900, 1920 x 1080) and three about 21:9
+// (1680 x 720, 2560 x 1080, 3440 x 1440); the four repeats cost about 80 s of CI and caught nothing
+// the three below cannot.
+const SHAPES = [[1280, 720], [1600, 1200], [2560, 1080]] as const;
 const kOf = (deck: Deck) => cockpitDeckK(aircraftSpec(deck).cockpitDeckLineDegrees);
 
 describe("the HUD's markup", () => {

@@ -103,33 +103,6 @@ export function volcanicIndexBinRange(centerX: number, centerZ: number): {
   };
 }
 
-/**
- * Builds up to `maxBins` not-yet-cached bins of the index centred at (x, z)
- * and reports whether all are cached. Lets the renderer spread the first
- * visit of a volcanic area over frames (the 2 ms main-thread rule) and pack
- * only once every bin is warm.
- */
-export function warmVolcanicIndexBins(
-  world: WorldDefinition,
-  centerX: number,
-  centerZ: number,
-  maxBins: number,
-): boolean {
-  const range = volcanicIndexBinRange(centerX, centerZ);
-  let built = 0;
-  for (let j = 0; j < range.binsZ; j += 1) {
-    for (let i = 0; i < range.binsX; i += 1) {
-      const bi = range.bi0 + i;
-      const bj = range.bj0 + j;
-      if (volcanicBinCached(world, bi, bj)) continue;
-      if (built >= maxBins) return false;
-      volcanicBinSites(world, bi, bj);
-      built += 1;
-    }
-  }
-  return true;
-}
-
 /** The kernel's split origin (`buildTerrainKernelPageUniform`): integer cell plus the f64 remainder. */
 function latticeSplit(value: number): readonly [number, number] {
   const periods = Math.floor(value / NOISE_LATTICE_WRAP_PERIOD_CELLS + 0.5);

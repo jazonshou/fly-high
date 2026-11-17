@@ -29,16 +29,10 @@
  * Class P: pure arithmetic, no Babylon import, Node-tested.
  */
 
-import { DAYS_PER_YEAR, type EnvironmentClock } from "@/src/world/environmentClock";
+import type { EnvironmentClock } from "@/src/world/environmentClock";
 
 const DEGREES_TO_RADIANS = Math.PI / 180;
 
-/**
- * The anchor year. 2026-01-01 00:00 UT is JD 2461041.5 — 9,497 days after
- * J2000.0 (26 years, of which 2000, 2004, 2008, 2012, 2016, 2020 and 2024
- * were leap years).
- */
-export const EPHEMERIS_REFERENCE_YEAR = 2026;
 export const EPHEMERIS_REFERENCE_JULIAN_DAY = 2_461_041.5;
 
 /** Obliquity of the ecliptic at the reference epoch, degrees. */
@@ -228,6 +222,3 @@ export const MOONLIGHT_TINT: readonly [number, number, number] = Object.freeze([
 
 /** Synodic month, days — the period `moonState`'s phase must reproduce. */
 export const SYNODIC_MONTH_DAYS = 29.530589;
-
-/** Days in the ephemeris year, mirrored so callers do not re-derive it. */
-export const EPHEMERIS_DAYS_PER_YEAR = DAYS_PER_YEAR;

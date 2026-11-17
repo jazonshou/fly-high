@@ -408,6 +408,72 @@ export const TERRAIN_PAGE_SPLAT_MINIMUM_CONFIDENCE = 0.1;
 export const TERRAIN_MATERIAL_DETAIL_FULL_FOOTPRINT_METERS = 1.5;
 export const TERRAIN_MATERIAL_DETAIL_ZERO_FOOTPRINT_METERS = 10;
 
+/**
+ * The ground's MICRO read: the material a fragment shows most of, sampled a
+ * second time at a finer world scale, only where the first read is magnified.
+ *
+ * WHY. A 512 layer over a 2.3 m tile is a 4.5 mm texel. A walker's eye, a
+ * driver's and the last metres of a landing see the ground at their feet at 1
+ * to 2 mm a pixel, so the layer is stretched two to four times and the filter
+ * smooths it: the ground goes soft exactly where the eye is closest to it
+ * (2026-11-12, "the floor still looks very blurry, plasticy"). No larger
+ * texture fixes that inside the memory budget; the same texture read at a
+ * third of the scale does.
+ *
+ * WHAT IT COSTS, and why it is shaped as it is. Two trilinear taps a fragment
+ * (one from each array) on the pixels within about five metres of the camera;
+ * a GPU skips them everywhere else. The first cut read every layer a second
+ * time through the arrays' anisotropic sampler, inside `terrainSurfaceSample`:
+ * up to ten more anisotropic fetches wherever a rasteriser runs both sides of
+ * a branch, which the cloud A/B's does (SwiftShader, `ground-2m-lowsun`,
+ * +13.6% GPU time). So it is ONE read, after the layers are blended, of the
+ * layer with the largest share, at an explicit level: what the ground grain
+ * does (`GROUND_GRAIN_ANISOTROPY_LIMIT`).
+ *
+ * - `scale`: how much finer the second read is. Not an integer, and rotated,
+ *   so its lattice never lines up with the first read's.
+ * - `fullTexels`, `zeroTexels`: the fade, in first-read texels per pixel on the
+ *   footprint's short axis. Under `fullTexels` the first read is magnified and
+ *   the micro read is whole; past `zeroTexels` the first read resolves the
+ *   ground by itself and the fetches are skipped.
+ * - the gains: how far the micro read moves the blend's albedo (as a ratio to
+ *   its layer's mean, so it cannot shift the ground's colour), the normal's
+ *   slope and the cavity.
+ * - `levelMajorShare`: the level of the one tap. Its footprint is the
+ *   geometric mean of the pixel's two axes, and never less than this share of
+ *   the long one: across the line of sight it gives up at most a mip where
+ *   the ground is seen at 20 degrees, and along it the tap is never more than
+ *   1 / share texels from the next.
+ * - `takeoverZeroTexels`, `takeoverFullTexels`, `softenTexels`: the TAKEOVER.
+ *   A first read stretched three times shows its texels, however good the
+ *   layer: its blades are one texel wide, and a one-texel line magnified is a
+ *   staircase (the look straight down from 1.7 m, 2026-11-12). So as the
+ *   first read's magnification passes `takeoverZeroTexels` toward
+ *   `takeoverFullTexels`, the micro read's gains rise to 1 and every layer's
+ *   first read is taken from a coarser mip, as if its footprint were
+ *   `softenTexels` wide: the first read keeps what it can still draw, the
+ *   tone of a tuft and a hollow, and the micro read draws the blades, at a
+ *   pixel each. No fetch more; only gradients and gains change.
+ *
+ * The runway painter's asphalt and concrete (`RunwaySurface.ts`) take neither
+ * half: they are read as they always were.
+ */
+export const TERRAIN_MICRO_DETAIL = Object.freeze({
+  scale: 3.3,
+  rotationDegrees: 37.4,
+  fullTexels: 0.7,
+  zeroTexels: 1.6,
+  albedoGain: 0.45,
+  normalGain: 0.5,
+  cavityGain: 0.4,
+  levelMajorShare: 0.6,
+  takeoverZeroTexels: 0.7,
+  takeoverFullTexels: 0.25,
+  softenTexels: 2.5,
+  /** The mean cavity a layer stores; the micro read's cavity is a ratio to it. */
+  meanCavity: 0.65,
+});
+
 /** Coarse fallback's continuous alpine transition, mirroring the classifier. */
 export const TERRAIN_FALLBACK_ALPINE_START_METERS = 420;
 export const TERRAIN_FALLBACK_ALPINE_END_METERS = 980;
@@ -1211,6 +1277,8 @@ const PATCH_COS = Math.cos((DETILE_PATCH_DEGREES * Math.PI) / 180).toFixed(6);
 const PATCH_SIN = Math.sin((DETILE_PATCH_DEGREES * Math.PI) / 180).toFixed(6);
 const MICRO_COS = Math.cos((DETILE_MICRO_DEGREES * Math.PI) / 180).toFixed(6);
 const MICRO_SIN = Math.sin((DETILE_MICRO_DEGREES * Math.PI) / 180).toFixed(6);
+const MICRO_DETAIL_COS = Math.cos((TERRAIN_MICRO_DETAIL.rotationDegrees * Math.PI) / 180).toFixed(6);
+const MICRO_DETAIL_SIN = Math.sin((TERRAIN_MICRO_DETAIL.rotationDegrees * Math.PI) / 180).toFixed(6);
 
 const TERRAIN_MATERIAL_REFERENCE_WGSL = SURFACE_MATERIALS.map((spec) => {
   // Wave Q (plastic-ground fix): the convergence target at range is the
@@ -2337,6 +2405,28 @@ fn terrainSurfaceFetchNormal(layer: i32, uv: vec2f, ddx: vec2f, ddy: vec2f) -> v
 
 ${GROUND_GRAIN_WGSL}
 
+// Texels of a layer's first read per pixel, on the short axis the sampler
+// resolves as the anisotropy limit leaves it: under 1 the read is magnified.
+fn terrainSurfaceMicroTexels(ddx: vec2f, ddy: vec2f) -> f32 {
+  let lengthX = length(ddx);
+  let lengthY = length(ddy);
+  return max(
+    min(lengthX, lengthY),
+    max(lengthX, lengthY) * ${(1 / DEFAULT_ANISOTROPY_LIMIT).toFixed(4)},
+  ) * f32(textureDimensions(terrainSurfaceAlbedo).x);
+}
+
+// The takeover (TERRAIN_MICRO_DETAIL): 1 where a first read is stretched so
+// far it can only draw staircases.
+fn terrainSurfaceMicroTakeover(microTexels: f32, detailWeight: f32) -> f32 {
+  return (1.0 - smoothstep(
+    ${terrainWgslFloat(TERRAIN_MICRO_DETAIL.takeoverFullTexels)},
+    ${terrainWgslFloat(TERRAIN_MICRO_DETAIL.takeoverZeroTexels)},
+    microTexels)) * detailWeight;
+}
+
+// takeover: 1 for the ground's own layers, which the micro read
+// (terrainSurfaceMicro) completes; 0 reads the layer as it is stored.
 fn terrainSurfaceSample(
   materialIndex: i32,
   position: vec3f,
@@ -2344,6 +2434,7 @@ fn terrainSurfaceSample(
   worldDdx: vec3f,
   worldDdy: vec3f,
   detailWeight: f32,
+  takeover: f32,
 ) -> TerrainSurfaceLayer {
   let row = uniforms.terrainMaterialTiling[materialIndex];
   let inversePeriod = row.x;
@@ -2460,8 +2551,15 @@ fn terrainSurfaceSample(
     let uv = position.xz * (inversePeriod * stretch);
     let ddx = worldDdx.xz * (inversePeriod * stretch);
     let ddy = worldDdy.xz * (inversePeriod * stretch);
-    albedoTexel = terrainSurfaceFetchAlbedo(materialIndex, uv, ddx, ddy);
-    normalTexel = terrainSurfaceFetchNormal(materialIndex, uv, ddx, ddy);
+    // The takeover: this read gives up the detail it can only draw as
+    // staircases and keeps its tone, from a mip coarse enough to be smooth.
+    let microTexels = terrainSurfaceMicroTexels(ddx, ddy);
+    let microSoften = mix(
+      1.0,
+      max(1.0, ${terrainWgslFloat(TERRAIN_MICRO_DETAIL.softenTexels)} / max(microTexels, 0.02)),
+      terrainSurfaceMicroTakeover(microTexels, detailWeight) * takeover);
+    albedoTexel = terrainSurfaceFetchAlbedo(materialIndex, uv, ddx * microSoften, ddy * microSoften);
+    normalTexel = terrainSurfaceFetchNormal(materialIndex, uv, ddx * microSoften, ddy * microSoften);
     // C4: the tangent frame is the one implied by the planar XZ projection —
     // analytic and free. No vertex tangent attribute exists.
     let tangentNormal = terrainSurfaceDecodeNormal(normalTexel.xy);
@@ -2498,6 +2596,92 @@ fn terrainSurfaceSample(
   layer.f0 = row.z;
   layer.diffuseRoughness = row.w;
   return layer;
+}
+
+struct TerrainSurfaceMicro {
+  /** Multiplies the blended albedo: the layer's texel over the layer's mean. */
+  albedo: vec3f,
+  /** Multiplies the blended cavity. */
+  cavity: f32,
+  /** Added to the blended normal, in world space. */
+  normalOffset: vec3f,
+};
+
+// The micro read (TERRAIN_MICRO_DETAIL): ONE material, the one the fragment
+// shows most of, read finer where its first read is magnified. One trilinear
+// tap from each array at an explicit level, as the ground grain reads: under
+// a branch a GPU takes for the few metres about the camera, and cheap where a
+// rasteriser runs the branch regardless.
+fn terrainSurfaceMicro(
+  materialIndex: i32,
+  position: vec3f,
+  geometricNormal: vec3f,
+  worldDdx: vec3f,
+  worldDdy: vec3f,
+  detailWeight: f32,
+) -> TerrainSurfaceMicro {
+  var micro: TerrainSurfaceMicro;
+  micro.albedo = vec3f(1.0);
+  micro.cavity = 1.0;
+  micro.normalOffset = vec3f(0.0);
+
+  let row = uniforms.terrainMaterialTiling[materialIndex];
+#ifdef TERRAIN_SURFACE_PLANAR_ONLY
+  let planar = 1.0;
+  let stretch = 1.0 / clamp(abs(geometricNormal.y), 0.35, 1.0);
+#else
+  // A projected material (rock and gravel on a slope) keeps its first read:
+  // it was never softened, and a planar read would smear down the face.
+  let slope = 1.0 - clamp(abs(geometricNormal.y), 0.0, 1.0);
+  let planar = select(1.0, 0.0, row.y > 0.5 && slope > ${TRIPLANAR_SLOPE_THRESHOLD.toFixed(2)});
+  let stretch = 1.0;
+#endif
+  let uv = position.xz * (row.x * stretch);
+  let ddx = worldDdx.xz * (row.x * stretch);
+  let ddy = worldDdy.xz * (row.x * stretch);
+  let microTexels = terrainSurfaceMicroTexels(ddx, ddy);
+  let microWeight = (1.0 - smoothstep(
+    ${terrainWgslFloat(TERRAIN_MICRO_DETAIL.fullTexels)},
+    ${terrainWgslFloat(TERRAIN_MICRO_DETAIL.zeroTexels)},
+    microTexels)) * detailWeight * planar;
+  if (microWeight > 0.004) {
+    let microTakeover = terrainSurfaceMicroTakeover(microTexels, detailWeight);
+    let microFrame = mat2x2f(${MICRO_DETAIL_COS}, ${MICRO_DETAIL_SIN}, -${MICRO_DETAIL_SIN}, ${MICRO_DETAIL_COS})
+      * ${terrainWgslFloat(TERRAIN_MICRO_DETAIL.scale)};
+    let microUv = microFrame * uv + vec2f(0.37, 0.61);
+    // The tap's footprint in the micro read's texels (the frame is a rotation
+    // times a uniform scale, so the first read's lengths serve).
+    let microEdge = ${terrainWgslFloat(TERRAIN_MICRO_DETAIL.scale)}
+      * f32(textureDimensions(terrainSurfaceAlbedo).x);
+    let microMajor = max(length(ddx), length(ddy)) * microEdge;
+    let microMinor = min(length(ddx), length(ddy)) * microEdge;
+    let microLevel = log2(max(
+      max(sqrt(microMajor * microMinor), microMajor * ${terrainWgslFloat(TERRAIN_MICRO_DETAIL.levelMajorShare)}),
+      1.0));
+    let microA = textureSampleLevel(
+      terrainSurfaceAlbedo, terrainSurfaceAlbedoSampler, microUv, materialIndex, microLevel);
+    let microB = textureSampleLevel(
+      terrainSurfaceNormal, terrainSurfaceNormalSampler, microUv, materialIndex, microLevel);
+    let microReference = max(terrainSurfaceReference(materialIndex).rgb, vec3f(0.004));
+    micro.albedo = mix(
+      vec3f(1.0),
+      clamp(terrainSurfaceDecodeAlbedo(microA.rgb) / microReference, vec3f(0.4), vec3f(1.9)),
+      microWeight * mix(${terrainWgslFloat(TERRAIN_MICRO_DETAIL.albedoGain)}, 1.0, microTakeover));
+    micro.cavity = mix(
+      1.0,
+      microB.a * ${terrainWgslFloat(1 / TERRAIN_MICRO_DETAIL.meanCavity)},
+      microWeight * mix(${terrainWgslFloat(TERRAIN_MICRO_DETAIL.cavityGain)}, 1.0, microTakeover));
+    // The micro read's slope is in ITS rotated frame: turn it back, then into
+    // the frame the planar projection implies (terrainSurfaceSample's C4).
+    let microNormal = terrainSurfaceDecodeNormal(microB.xy);
+    let microSlope = mat2x2f(${MICRO_DETAIL_COS}, -${MICRO_DETAIL_SIN}, ${MICRO_DETAIL_SIN}, ${MICRO_DETAIL_COS})
+      * (microNormal.xy / max(microNormal.z, 0.32))
+      * (microWeight * mix(${terrainWgslFloat(TERRAIN_MICRO_DETAIL.normalGain)}, 1.0, microTakeover) * detailWeight);
+    let tangent = terrainSurfaceTangent(geometricNormal);
+    let bitangent = cross(tangent, geometricNormal);
+    micro.normalOffset = tangent * microSlope.x + bitangent * microSlope.y;
+  }
+  return micro;
 }
 
 // ---------------------------------------------------------------------------
@@ -3304,19 +3488,19 @@ var terrainKey2 = -1.0e9;
 if (terrainActive0) {
   terrainLayer0 = terrainSurfaceSample(
     i32(terrainLowerId), terrainSamplePosition, terrainGeometricNormal,
-    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
+    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight, 1.0);
   terrainKey0 = terrainLayer0.height + terrainWeight0;
 }
 if (terrainActive1) {
   terrainLayer1 = terrainSurfaceSample(
     i32(terrainUpperId), terrainSamplePosition, terrainGeometricNormal,
-    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
+    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight, 1.0);
   terrainKey1 = terrainLayer1.height + terrainWeight1;
 }
 if (terrainActive2) {
   terrainLayer2 = terrainSurfaceSample(
     i32(terrainThirdId + 0.5), terrainSamplePosition, terrainGeometricNormal,
-    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
+    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight, 1.0);
   terrainKey2 = terrainThirdWeight * (terrainLayer2.height + 1.0);
 }
 let terrainKeyMax = max(terrainKey0, max(terrainKey1, terrainKey2)) - terrainBlendDepth;
@@ -3408,6 +3592,11 @@ if (terrainFarSward) {
   terrainBlend1 = terrainAxisFraction * (1.0 - terrainThirdWeight);
   terrainBlend2 = terrainThirdWeight;
 }
+// The micro read's material: the candidate this fragment shows most of.
+let terrainMicroId = select(
+  select(i32(terrainThirdId + 0.5), i32(terrainUpperId), terrainBlend1 >= terrainBlend2),
+  i32(terrainLowerId),
+  terrainBlend0 >= max(terrainBlend1, terrainBlend2));
 var terrainAlbedo = terrainLayer0.albedo * terrainBlend0
   + terrainLayer1.albedo * terrainBlend1
   + terrainLayer2.albedo * terrainBlend2;
@@ -3512,13 +3701,13 @@ var terrainKey2 = -1.0e9;
 if (terrainWeight0 > 0.004) {
   terrainLayer0 = terrainSurfaceSample(
     i32(terrainPrimaryId), terrainSamplePosition, terrainGeometricNormal,
-    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
+    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight, 1.0);
   terrainKey0 = terrainLayer0.height + terrainWeight0;
 }
 if (terrainThirdWeight > 0.0) {
   terrainLayer2 = terrainSurfaceSample(
     i32(terrainThirdId + 0.5), terrainSamplePosition, terrainGeometricNormal,
-    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
+    terrainWorldDdx, terrainWorldDdy, terrainDetailWeight, 1.0);
   terrainKey2 = terrainThirdWeight * (terrainLayer2.height + 1.0);
 }
 let terrainKeyMax = max(terrainKey0, terrainKey2) - terrainBlendDepth;
@@ -3544,6 +3733,8 @@ if (!terrainUsePageSplat) {
     + terrainLayer0.albedo * fragmentInputs.terrainSplat.xyz;
 #endif
 }
+let terrainMicroId = select(
+  i32(terrainThirdId + 0.5), i32(terrainPrimaryId), terrainBlend0 >= terrainBlend2);
 var terrainAlbedo = terrainLayer0.albedo * terrainBlend0 + terrainLayer2.albedo * terrainBlend2;
 var terrainNormal = terrainLayer0.normal * terrainBlend0 + terrainLayer2.normal * terrainBlend2;
 var terrainRoughness = terrainLayer0.roughness * terrainBlend0
@@ -3585,6 +3776,14 @@ let terrainSnowShare = terrainSnowShareOf(i32(terrainPrimaryId)) * terrainBlend0
   + terrainSnowShareOf(i32(terrainThirdId + 0.5)) * terrainBlend2;
 let terrainTurfCover = terrainTurfShareOf(i32(terrainPrimaryId)) * terrainBlend0;
 #endif
+// The micro read, once a fragment, over the blend: every layer's first read
+// was softened where it is stretched, and this draws what they gave up.
+let terrainMicro = terrainSurfaceMicro(
+  terrainMicroId, terrainSamplePosition, terrainGeometricNormal,
+  terrainWorldDdx, terrainWorldDdy, terrainDetailWeight);
+terrainAlbedo = terrainAlbedo * terrainMicro.albedo;
+terrainCavity = min(1.0, terrainCavity * terrainMicro.cavity);
+terrainNormal = terrainNormal + terrainMicro.normalOffset;
 // W-1: mown airfield grass is not meadow. The graded surround comes from the
 // pavement SDF the runway painter already evaluates, so the two cannot
 // disagree about where the airfield is.

@@ -127,6 +127,7 @@ import {
   formatGpuUncapturedError,
   GpuUncapturedErrorGuard,
 } from "./webgpu/core/GpuUncapturedErrorGuard";
+import { GpuDeviceLossLatch } from "./webgpu/core/GpuDeviceLossLatch";
 import { installDeferredPassTiming } from "./webgpu/core/DeferredPassTiming";
 import { gpuTimingEnabledAtStartup } from "./webgpu/core/GpuTimingPolicy";
 import { inventoriedGpuBufferBytes } from "./webgpu/core/GpuBufferInventory";
@@ -1419,12 +1420,19 @@ export class FlightRenderer implements FlightRenderingSystem {
         formatGpuUncapturedError(failure),
       ),
     );
+    // A lost device is fatal from here, not only once the renderer exists:
+    // Babylon would restore it with the raw textures empty, since their CPU
+    // copies are dropped after upload (`TextureCpuMirror.ts`). Every startup
+    // wait below takes `signal`, which the loss aborts.
+    const deviceLoss = new GpuDeviceLossLatch(engine._device, options.signal);
+    const signal = deviceLoss.signal;
     const cleanup: Array<() => void> = [
       () => engine.dispose(),
       () => gpuUncapturedErrorGuard.dispose(),
+      () => deviceLoss.dispose(),
     ];
     try {
-      throwIfRendererStartupAborted(options.signal);
+      throwIfRendererStartupAborted(signal);
       engine.compatibilityMode = false;
       engine.useReverseDepthBuffer = true;
       engine.enableGPUTimingMeasurements = gpuTimingEnabled;
@@ -1543,7 +1551,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       checkpointRendererStartup("core scene and terrain construction", "sync");
       const evolutionResult = await awaitRendererStartup(
         terrainEvolutionPromise,
-        options.signal,
+        signal,
         "terrain macro evolution",
         TERRAIN_EVOLUTION_STARTUP_TIMEOUT_MILLISECONDS,
       );
@@ -1619,9 +1627,9 @@ export class FlightRenderer implements FlightRenderingSystem {
         bathymetry.initialize(
           options.world.airport?.centerX ?? 0,
           options.world.airport?.centerZ ?? 0,
-          options.signal,
+          signal,
         ),
-        options.signal,
+        signal,
         "bathymetry clipmap",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
@@ -1648,7 +1656,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       // The walker lives in car sessions only (the walking plan, D3): built
       // hidden, it appears once the state carries a walking session.
       const walkerBody = walkerBodyLoad && surfaceVehicle
-        ? await awaitRendererStartup(walkerBodyLoad, options.signal, "walker body", SCENE_STARTUP_TIMEOUT_MILLISECONDS)
+        ? await awaitRendererStartup(walkerBodyLoad, signal, "walker body", SCENE_STARTUP_TIMEOUT_MILLISECONDS)
         : null;
       const person = walkerBody
         ? createPersonVisual(scene, { asset: walkerBody, profile, pipelineCompiles })
@@ -1788,7 +1796,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       const channelGraph = evolutionResult.mode === "eroded"
         ? await awaitRendererStartup(
           evolutionResult.channelGraph,
-          options.signal,
+          signal,
           "terrain channel graph",
           TERRAIN_EVOLUTION_STARTUP_TIMEOUT_MILLISECONDS,
         )
@@ -1827,7 +1835,7 @@ export class FlightRenderer implements FlightRenderingSystem {
             ? { graphHydrology: channelGraphToHydrologyGeometry(channelGraph) }
             : {}),
         },
-        options.signal,
+        signal,
       );
       checkpointRendererStartup("hydrology startup", "async");
       cleanup.push(() => hydrology.dispose());
@@ -1848,7 +1856,7 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       cleanup.push(() => clouds.dispose());
       checkpointRendererStartup("atmosphere and cloud construction", "sync");
-      await clouds.whenReadyAsync(options.signal);
+      await clouds.whenReadyAsync(signal);
       checkpointRendererStartup("cloud pipeline startup", "async");
       // The sea's seed and wind come from the world and the weather alone,
       // the same inputs the sim's sea twin is built from, so a hull floats on
@@ -1862,7 +1870,7 @@ export class FlightRenderer implements FlightRenderingSystem {
         atmosphere.snapshot,
         options.world.prevailingWindRadians,
         seaSpectrumWindSpeed(options.world, options.weather ?? "breezy"),
-        options.signal,
+        signal,
         bathymetry,
       );
       checkpointRendererStartup("spectral ocean startup", "async");
@@ -1962,6 +1970,8 @@ export class FlightRenderer implements FlightRenderingSystem {
       terrain.setCloudShadow(initialCloudShadow);
       ocean.setCloudShadow(initialCloudShadow);
       hydrology.setCloudShadow(initialCloudShadow);
+      // Tree ground shadows: a crown under a cloud throws none.
+      detail.setCloudShadow(initialCloudShadow);
       ocean.setSunShadows(atmosphere.shadows);
       hydrology.setSunShadows(atmosphere.shadows);
       // Terrain occlusion of the reflected sky: the ground bounce's albedo,
@@ -2282,18 +2292,18 @@ export class FlightRenderer implements FlightRenderingSystem {
 
       await awaitRendererStartup(
         scene.whenReadyAsync(),
-        options.signal,
+        signal,
         "WebGPU scene startup",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
       checkpointRendererStartup("scene shader readiness", "async");
       gpuUncapturedErrorGuard.throwIfFailed();
-      throwIfRendererStartupAborted(options.signal);
+      throwIfRendererStartupAborted(signal);
       // The streamed roads round the start, primed beside everything above:
       // the pre-warm below bakes the first real page, and every page, cell
       // and tile after it bakes with them. The detail worker, started above,
       // is caught up when the renderer attaches the stream's consumers.
-      await awaitRendererStartup(roadsPrimed, options.signal, "road priming", SCENE_STARTUP_TIMEOUT_MILLISECONDS);
+      await awaitRendererStartup(roadsPrimed, signal, "road priming", SCENE_STARTUP_TIMEOUT_MILLISECONDS);
       checkpointRendererStartup("road priming", "async");
       // `4.5-C2(a)`: pay for the four terrain compute pipelines here, behind
       // the load screen. Babylon 9.21 calls `createComputePipeline`
@@ -2308,13 +2318,13 @@ export class FlightRenderer implements FlightRenderingSystem {
           options.world.airport?.centerX ?? 0,
           options.world.airport?.centerZ ?? 0,
         ),
-        options.signal,
+        signal,
         "terrain compute pre-warm",
         SCENE_STARTUP_TIMEOUT_MILLISECONDS,
       );
       checkpointRendererStartup("terrain compute pre-warm", "async");
       gpuUncapturedErrorGuard.throwIfFailed();
-      throwIfRendererStartupAborted(options.signal);
+      throwIfRendererStartupAborted(signal);
       // 2-10: the planar-reflection capture is retired — the environment
       // probe covers water reflections; the receiver contract stays bound to
       // a zero-confidence fallback texel inside each water material.
@@ -2371,14 +2381,19 @@ export class FlightRenderer implements FlightRenderingSystem {
       );
       if (person) renderer.installWalker(person);
       checkpointRendererStartup("renderer finalization", "sync");
+      // The renderer's own onContextLostObservable observer owns loss now.
+      deviceLoss.dispose();
       cleanup.length = 0;
       return renderer;
     } catch (error) {
+      // A lost device explains whatever failed after it (an aborted wait, a
+      // rejected map), so report the loss.
+      const failure = deviceLoss.error ?? error;
       releaseRendererResources(
         cleanup,
         "Unable to completely release a partial WebGPU renderer",
       );
-      throw error;
+      throw failure;
     }
   }
 
@@ -3722,6 +3737,7 @@ private texelBytes(type: number | undefined, format: number | undefined): number
         this.terrain.setCloudShadow(cloudShadow);
         this.ocean.setCloudShadow(cloudShadow);
         this.hydrology.setCloudShadow(cloudShadow);
+        this.detail.setCloudShadow(cloudShadow);
         this.cloudShadowReceivers.setProjection(
           cloudShadow,
           this.originX,
@@ -5063,6 +5079,9 @@ private texelBytes(type: number | undefined, format: number | undefined): number
       keySnapshot.sunIlluminanceNormalized
         * sunDirectionalHorizonGate(keySnapshot.sunDirection.y),
     );
+    // Tree ground shadows take out the direct share of the ground's light,
+    // which is the key light above against this sky light.
+    this.detail.setSkylight(keySnapshot.skylightIlluminanceNormalized);
     // Wave Q: the far band's hand-packed CSM receiver, on the same
     // forward-the-snapshot pattern. Impostors start inside the cascade
     // reach at every tier but cannot take Babylon's shadow varyings

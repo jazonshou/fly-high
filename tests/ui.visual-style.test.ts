@@ -6,7 +6,7 @@ const flightStyles = readFileSync(
   "utf8",
 );
 const globalStyles = readFileSync(
-  new URL("../app/globals.css", import.meta.url),
+  new URL("../static/globals.css", import.meta.url),
   "utf8",
 );
 

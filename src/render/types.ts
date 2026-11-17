@@ -179,8 +179,3 @@ export interface FlightRenderingSystem {
   startBudgetProbe(): boolean;
   dispose(): void;
 }
-
-/** Fast presence check; adapter/device creation remains authoritative. */
-export function supportsFlightWebGPU(): boolean {
-  return typeof navigator !== "undefined" && navigator.gpu !== undefined;
-}

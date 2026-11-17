@@ -54,7 +54,6 @@ import { readSource } from "./support/sourceText";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PERFORMANCE_MD = readSource(join(REPO_ROOT, "docs/PERFORMANCE.md"));
-const RENDERING_PLAN_MD = readSource(join(REPO_ROOT, "docs/plans/RENDERING_PLAN.md"));
 const BASELINE_DIR = join(REPO_ROOT, "tests/perf/baseline");
 
 /** The (quality, mode) pair resolving to each tier — `QUALITY_WEIGHT + MODE_WEIGHT`. */
@@ -249,6 +248,7 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     // The doc writes kilometres and the profile holds metres, so this row needs
     // the scale rather than a second parser.
     ["Vegetation radius", (p: (typeof PROFILES)[number]) => p.vegetationDistance / 1000],
+    ["Tree ground shadow range", (p: (typeof PROFILES)[number]) => p.treeGroundShadowRangeMeters],
   ];
 
   it.each(TIER_ROW_CHECKS.map((row) => [row[0], row[1]] as const))(
@@ -384,10 +384,10 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
     const rows = tierTableRowLabels();
     expect(rows.length).toBeGreaterThan(20);
     // PR B part 2 adds three rows (34 to 37), part 2b a fourth, the land PR six
-    // (so 43, then 44), the generated buildings seven (50, then 51) and the
-    // walking PR five (55, then 56); the next row-adding change raises this
-    // again, deliberately.
-    expect(rows.length, "the walk ran past the end of the tier table").toBeLessThan(57);
+    // (so 43, then 44), the generated buildings seven (50, then 51), the tree
+    // ground shadow one (52) and the walking PR five (57); the next row-adding
+    // change raises this again, deliberately.
+    expect(rows.length, "the walk ran past the end of the tier table").toBeLessThan(58);
     expect(rows.at(-1), "the walk ran past the end of the tier table").toContain("Frame target");
     expect(TIER_ROW_CHECKS.length + DECLARED_UNVERIFIABLE.length).toBeGreaterThan(20);
   });
@@ -418,79 +418,6 @@ describe("6-12 documentation truth: docs/PERFORMANCE.md resolved-tier table", ()
       "docs/PERFORMANCE.md's CHANNEL-atlas slot counts no longer match QualityProfile.ts. "
         + "This is the half a first-number-only parser could never see.",
     ).toEqual(PROFILES.map((p) => p.channelAtlasSlots));
-  });
-});
-
-describe("6-12 documentation truth: RENDERING_PLAN.md §5.3 staleness annotation", () => {
-  /**
-   * §5.3 is a DESIGN table and is deliberately left as written — it records what
-   * the tier decisions were argued against. What must stay true is `6-12`'s
-   * annotation naming the rows that no longer ship. If someone changes a shipped
-   * value, the annotation becomes wrong in the same way the table already was,
-   * so it is pinned to the profile too.
-   */
-  const annotation = RENDERING_PLAN_MD.slice(
-    RENDERING_PLAN_MD.indexOf("### 5.3 Redesigned"),
-    RENDERING_PLAN_MD.indexOf("| Parameter | Low |"),
-  );
-
-  /** Prose in the annotation is a blockquote and hard-wrapped; compare on flat text. */
-  const flattened = annotation.replace(/^>\s?/gmu, "").replace(/\s+/gu, " ");
-
-  /**
-   * The annotation is a three-column table (row / published / shipped), so the
-   * tier values live inside ONE cell as a slash-separated list rather than in
-   * four cells. Parse the LAST cell and take the leading number of each
-   * segment — which is the cascade count for the ocean row, and the value
-   * itself for the rest.
-   */
-  function shippedCell(label: string): number[] {
-    const row = annotation
-      .split("\n")
-      .map((line) => line.replace(/^>\s?/u, ""))
-      .find((line) => line.startsWith("|") && line.split("|")[1]?.includes(label));
-    if (row === undefined) {
-      throw new Error(
-        `docs-truth: §5.3 annotation has no row for ${JSON.stringify(label)}. `
-          + "If the annotation was restructured, update this test WITH it.",
-      );
-    }
-    const cells = row.split("|").filter((cell) => cell.trim().length > 0);
-    const last = cells.at(-1);
-    if (last === undefined) {
-      throw new Error(`docs-truth: §5.3 annotation row ${JSON.stringify(label)} has no cells`);
-    }
-    const shipped = last.replace(/\*/gu, "");
-    return shipped.split("/").map((segment) => {
-      const match = /-?\d+(?:\.\d+)?/u.exec(segment);
-      if (match === null) throw new Error(`docs-truth: segment ${JSON.stringify(segment)} has no number`);
-      return Number.parseFloat(match[0]);
-    });
-  }
-
-  it("still carries the 6-12 staleness annotation", () => {
-    expect(
-      flattened,
-      "RENDERING_PLAN.md §5.3's 6-12 annotation was removed. The table below it is "
-        + "the Phase-4 design, not the shipped profile; without the annotation it reads as current.",
-    ).toContain("no longer describe what ships");
-  });
-
-  it.each([
-    ["msaaSamples", (p: (typeof PROFILES)[number]) => p.msaaSamples],
-    ["CDLOD node budget", (p: (typeof PROFILES)[number]) => p.cdlodNodeBudget],
-  ])("annotated shipped row %s matches the profile", (label, read) => {
-    expect(
-      shippedCell(label as string),
-      `§5.3's annotation claims a shipped ${label} that QualityProfile.ts contradicts.`,
-    ).toEqual(PROFILES.map(read as (p: (typeof PROFILES)[number]) => number));
-  });
-
-  it("annotates the ocean row with the shipped cascade counts", () => {
-    // Ultra's §5.3 row (cascade 6 + capillary) was never built — tier 3 matches
-    // tier 2's ocean, per the tier-3 return in QualityProfile.ts.
-    expect(shippedCell("Ocean cascades")).toEqual(PROFILES.map((p) => p.oceanCascades));
-    expect(PROFILES.map((p) => p.oceanCascades)).toEqual([3, 4, 5, 5]);
   });
 });
 

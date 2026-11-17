@@ -3,7 +3,6 @@ import { ROAD_JOIN_BLEND_METERS, roadCrossOffset } from "../roadEarthworkProfile
 import type { WorldDefinition } from "../types";
 import {
   ROAD_CLASS,
-  ROAD_PRIORITY,
   roadClass,
   roadFormationHalfWidth,
   type RoadClassId,
@@ -1291,9 +1290,6 @@ export class RoadNetwork {
     return pads;
   }
 }
-
-/** The composition priority a pad takes. */
-export const ROAD_PAD_PRIORITY = ROAD_PRIORITY.junction;
 
 /**
  * The tightest line a car is held to between two roads at a node, metres:

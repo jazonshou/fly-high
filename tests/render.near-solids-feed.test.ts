@@ -5,6 +5,7 @@ import { resolveWebGpuQualityProfile } from "../src/render/webgpu/core/QualityPr
 import { DetailGenerationClient } from "../src/render/webgpu/detail/DetailGenerationClient";
 import { detailCellKey } from "../src/render/webgpu/detail/generation";
 import { selectNearSolids } from "../src/render/webgpu/detail/nearSolidsSelection";
+import { packDetailCell } from "../src/render/webgpu/detail/packedCell";
 import { detailTreeCanopyRankOrder, type DetailPresentationBuildCatalog } from "../src/render/webgpu/detail/presentationBuild";
 import type { GeneratedDetailCell } from "../src/render/webgpu/detail/types";
 import { WorldDetailRuntime } from "../src/render/webgpu/detail/WorldDetailRuntime";
@@ -101,7 +102,7 @@ describe("near-solids feed", () => {
     if (answer.event.type !== "nearSolids") throw new Error(`expected near solids, got ${answer.event.type}`);
     expect(answer.event.requestId).toBe(7);
     const expected = selectNearSolids(
-      { ...SELECTION, ...center, residents: [{ cell, treeCanopyRank: detailTreeCanopyRankOrder(cell.trees) }] },
+      { ...SELECTION, ...center, residents: [{ cell: packDetailCell(cell), treeCanopyRank: detailTreeCanopyRankOrder(cell.trees) }] },
       catalog,
     );
     expect(expected.length / NEAR_SOLID_STRIDE).toBeGreaterThan(20);

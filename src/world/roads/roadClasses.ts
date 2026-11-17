@@ -184,10 +184,6 @@ export function roadFormationHalfWidth(spec: RoadClassSpec): number {
   return spec.carriageHalfWidth + spec.shoulderWidth;
 }
 
-/** Batter grades, run per metre of rise: 1:1.5 in cut, 1:2 in fill. */
-export const ROAD_CUT_RUN = 1.5;
-export const ROAD_FILL_RUN = 2;
-
 /**
  * Superelevation on a curve of `radius` metres: e = V^2 / (127 R) less the
  * side friction the class's design speed allows, capped at the class's

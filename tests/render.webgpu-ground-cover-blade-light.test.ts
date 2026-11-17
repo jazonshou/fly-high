@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   GROUND_COVER_NEAR_NORMAL_BLEND,
   GROUND_COVER_ROOT_ALBEDO,
+  GROUND_COVER_TIP_ALBEDO,
   GroundCoverMaterialPlugin,
 } from "@/src/render/webgpu/detail/GroundCoverMaterialPlugin";
 
@@ -44,10 +45,16 @@ describe("D-2 blade lighting", () => {
     expect(code("fragment")).toContain("normalW = vec3f(normalW.x, abs(normalW.y), normalW.z);");
   });
 
-  it("does not count a root's occlusion twice", () => {
-    // The shadow map and the ambient term already darken a root.
-    expect(GROUND_COVER_ROOT_ALBEDO).toBeGreaterThan(0.6);
-    expect(GROUND_COVER_ROOT_ALBEDO).toBeLessThan(0.9);
-    expect(code("fragment")).toContain(`mix(${GROUND_COVER_ROOT_ALBEDO.toFixed(2)}, 1.32,`);
+  it("runs a blade from under its sward's tone to a little over it", () => {
+    // The ground a blade stands on is a sward drawn in depth, shaded between
+    // its tufts. A root paler than that shade is a stick stood on the turf,
+    // one near black is the spike D-2 removed, and a tip far over the sward's
+    // mean is the pale blade the 0.7 and 1.32 pair drew on it.
+    expect(GROUND_COVER_ROOT_ALBEDO).toBeGreaterThan(0.35);
+    expect(GROUND_COVER_ROOT_ALBEDO).toBeLessThan(0.6);
+    expect(GROUND_COVER_TIP_ALBEDO).toBeGreaterThan(0.95);
+    expect(GROUND_COVER_TIP_ALBEDO).toBeLessThan(1.2);
+    expect(code("fragment")).toContain(
+      `mix(${GROUND_COVER_ROOT_ALBEDO.toFixed(2)}, ${GROUND_COVER_TIP_ALBEDO.toFixed(2)},`);
   });
 });

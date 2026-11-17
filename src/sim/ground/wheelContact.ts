@@ -217,12 +217,6 @@ export function findWheelContact(
   return out;
 }
 
-/** sqrt(1 - (a.n)^2): how far a unit disc reaches towards a plane of normal n. */
-export function discReach(axle: Readonly<Vec3>, n: Readonly<Vec3>): number {
-  const an = axle.x * n.x + axle.y * n.y + axle.z * n.z;
-  return Math.sqrt(Math.max(0, 1 - an * an));
-}
-
 export function groundNormal(point: GroundPoint, out: Vec3): Vec3 {
   const inverse = 1 / Math.sqrt(point.dhdx * point.dhdx + 1 + point.dhdz * point.dhdz);
   out.x = -point.dhdx * inverse;

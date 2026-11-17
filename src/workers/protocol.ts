@@ -28,10 +28,6 @@ export type SurfaceSpawnKind = "dock" | "airfield" | "foot";
 /** Where a flight starts: an aircraft's or a surface vehicle's. */
 export type SpawnKind = AircraftSpawnKind | SurfaceSpawnKind;
 
-export function isAircraftSpawn(kind: SpawnKind): kind is AircraftSpawnKind {
-  return kind === "airborne" || kind === "runway";
-}
-
 export function isSurfaceSpawn(kind: SpawnKind): kind is SurfaceSpawnKind {
   return kind === "dock" || kind === "airfield" || kind === "foot";
 }

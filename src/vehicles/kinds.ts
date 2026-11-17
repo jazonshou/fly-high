@@ -32,10 +32,6 @@ export function isSurfaceVehicleKind(kind: unknown): kind is SurfaceVehicleKind 
   return (SURFACE_VEHICLE_KINDS as readonly unknown[]).includes(kind);
 }
 
-export function isVehicleKind(kind: unknown): kind is VehicleKind {
-  return isAircraftKind(kind) || isSurfaceVehicleKind(kind);
-}
-
 export function vehicleClass(kind: VehicleKind): VehicleClass {
   if (isAircraftKind(kind)) return "aircraft";
   switch (kind) {

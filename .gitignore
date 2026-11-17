@@ -13,10 +13,11 @@
 # testing
 /coverage
 
-# next.js
+# left behind by the old Next.js / Cloudflare Worker build
 /.next/
 /.vinext/
-/out/
+/.wrangler/
+next-env.d.ts
 
 # misc
 .claude/scheduled_tasks.lock
@@ -32,14 +33,9 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
-# vercel
-.vercel
-
-# typescript
-next-env.d.ts
+# build output
 /dist/
 /dist-pages/
-/.wrangler/
 /outputs/
 /work/
 tests/perf/artifacts/

@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import { checkoutCacheDir } from "../scripts/checkoutCacheDir";
 
-// Kept independent of the app's Vite/Cloudflare plugins so the numerical core
+// Kept independent of the app's Vite config so the numerical core
 // can be exercised in a plain Node process.
 export default defineConfig({
   // Not Vite's default, which every worktree shares; see scripts/checkoutCacheDir.ts.
