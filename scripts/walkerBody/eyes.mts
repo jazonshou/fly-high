@@ -14,10 +14,10 @@ import { BONE } from "../../src/render/webgpu/person/skeleton";
 import type { FittedBody } from "./body.mts";
 import type { Part } from "./parts.mts";
 import type { V3 } from "./math.mts";
-import { parseMhclo, parseObj, type SOURCE_FILES } from "./sources.mts";
+import { parseMhclo, parseObj, type SourceFile } from "./sources.mts";
 import { EYE_RECT } from "./swatches.mts";
 
-type Read = (path: (typeof SOURCE_FILES)[number]) => string;
+type Read = (path: SourceFile) => string;
 
 export interface EyeFit {
   /** The eyeball's middle, and its half-sizes along each axis (the fitting scales it a little unevenly). */

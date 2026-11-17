@@ -2,6 +2,7 @@ import { DOUBLE_ZERO } from "@/src/sim/ground/doubleZero";
 import type { PersonMode, PersonVisualState } from "@/src/game/types";
 import { PERSON } from "@/src/vehicles/person";
 import { ActionChannels, rollKeyedSeconds, STAND, smoothstep } from "./actions";
+import { reachFor } from "./armReach";
 import { CarSeatMotion, SEAT, type BoardingFrom } from "./carSeat";
 import { applyChannels, CH, createChannels, LIMB_OFFSET, mixChannels, SIDE_BASE } from "./channels";
 import { PROPORTIONS } from "./figureProportions";
@@ -10,8 +11,8 @@ import { dimensionlessSpeed, strideLength } from "./gait";
 import { WALK_GROUP_SPEED } from "./gaitData";
 import { setGlobalRotation, solveTwoBone } from "./ik";
 import { GaitChannels } from "./locomotion";
-import { blendPoses, FigurePose, multiplyQuaternions, rotateVector, rotationBetween, setAxisAngle, setEuler } from "./pose";
-import { BIND_POSITIONS, BONE, SIDES } from "./skeleton";
+import { blendPoses, FigurePose, multiplyQuaternions, rotateVector, setAxisAngle, setEuler } from "./pose";
+import { BONE, SIDES } from "./skeleton";
 
 /**
  * The walker's motion: from the sim's `PersonVisualState` and the root's own
@@ -25,9 +26,10 @@ import { BIND_POSITIONS, BONE, SIDES } from "./skeleton";
  * the mantle, and the car (boarding and seated). Moving between families
  * cross-fades from the pose the figure was last drawn in; within the ground
  * family nothing is faded, the gait's phase and the planted feet carry on.
- * Into and out of the car there is no fade either: the root changes frames
- * (the feet point and the seat frame), and the boarding moves start and end
- * exactly where the walker stands.
+ * Into and out of the car the root changes frames (the feet point and the
+ * seat frame) at the same place in the world, the boarding moves starting
+ * and ending exactly where the walker stands: the root bone cuts to the new
+ * frame's and the body under it fades as between any two families.
  *
  * WHAT IS PUBLISHED and what is not: the walking and running joint curves,
  * cadence and stride (`gaitData.ts`, `gait.ts`); the swimming, landing,
@@ -87,6 +89,43 @@ const FADE_INTO: Readonly<Record<Family, number>> = Object.freeze({
   mantle: 0.25,
   car: 0,
 });
+/** The arm from the shoulder to the wrist, straight. */
+/** Seconds a foot takes off the ground to its place in a getting-in's pose (up to the car's step, after the body off the ground). */
+const CAR_PICK_UP_SECONDS = 0.32;
+/** Seconds the body takes to fade across the car's frame change, in or out. */
+const CAR_FADE = 0.25;
+/** Seconds the body takes to come up from behind the root, where a walker's is drawn, as he turns to the car. */
+const CAR_CATCH_UP = 0.4;
+/**
+ * How fast he settles into standing at ease and comes out of it, 1/s: over a third of a second, where the gait
+ * takes hold in three frames of a start (and the stand is there at once out of the car or off a landing).
+ */
+const EASE_RESPONSE = 8;
+/** The share of a foot's swing after which the body starts down to its strike. */
+const LANDING_FROM = 0.4;
+/** A foot that comes down this far behind the other, the way the walker is going, is the stride's back foot (`matchStride`), metres. */
+const STRIDE_SWAP_BEHIND = 0.06;
+/** Seconds the body takes to fade into the stride's other half then. */
+const STRIDE_SWAP_FADE = 0.2;
+/** How quickly the drawn body follows the root's turn on foot, rad/s (the spring's natural frequency). */
+const TURN_RESPONSE = 20;
+/** The most the body leans into a turn, radians. */
+const MAX_TURN_LEAN = 0.25;
+/**
+ * The lean into a turn is the physical one (the body in line with gravity
+ * and the turn's pull) up to what a body does at its speed: the sim turns a
+ * walker 540 degrees a second, which would lay him over like a motorcycle.
+ * Radians at a stand and more per m/s; and how fast the lean follows, 1/s.
+ */
+const TURN_LEAN_STANDING = 0.03;
+const TURN_LEAN_PER_SPEED = 0.045;
+const TURN_LEAN_RESPONSE = 12;
+/**
+ * The stride's phase a walk starts from: the left foot in mid stance under
+ * the body, the right lifting to step (or the mirror image, half a stride
+ * on), which is how feet stood side by side begin.
+ */
+const START_PHASE = 0.3;
 
 const GRAVITY = 9.80665;
 const DEG = Math.PI / 180;
@@ -105,6 +144,21 @@ const CRAWL_INCLINE = 0.22;
 const VERY_SLOW = WALK_GROUP_SPEED[0]!;
 /** Speeds under this stand (both feet planted, stepping only to turn or settle). */
 const STAND_SPEED = 0.1;
+/**
+ * How fast the drawn body follows the root over the ground, 1/s (a
+ * critically damped spring; faster in proportion above a walk's speed, so a
+ * run trails no further than a walk). The sim starts a walk in under a fifth
+ * of a second and stops it in a tenth, within 8 cm; a body does neither: it
+ * leans into its first step, and stopping it carries on over its front foot
+ * and brings the other up. The body trails a steady walk by 2 v / response,
+ * 0.16 m, and comes to rest on the root.
+ */
+const BODY_RESPONSE = 18;
+/** The share of the gait's swing a hard stop cuts off the step it catches him in. */
+const BRAKING_SHORTENS = 0.5;
+const BRAKING_RESPONSE = 25;
+/** How fast the lean into an acceleration follows it, 1/s, twice over. */
+const LEAN_RESPONSE = 8;
 /**
  * How fast the pelvis may rise off the feet out of a landing's crouch, a
  * climb or a seat, m/s: the move's own rising, not a foot letting the
@@ -137,6 +191,8 @@ export class PersonMotion {
   private readonly target = new FigurePose();
   private readonly from = new FigurePose();
   private readonly ch = createChannels();
+  /** The pose the walker stands at the car's door in, while he walks to it (the gait plays over it). */
+  private readonly doorCh = createChannels();
   private readonly extra = createChannels();
   private readonly gait = new GaitChannels();
   private readonly actions = new ActionChannels();
@@ -157,7 +213,42 @@ export class PersonMotion {
   private runBlend = DOUBLE_ZERO;
   private lastSpeed = DOUBLE_ZERO;
   private acceleration = DOUBLE_ZERO;
+  private accelerationFelt = DOUBLE_ZERO;
+  /**
+   * On foot, the body's place off the root (the root's frame, metres
+   * forward and right) and its own velocity over the ground, m/s: it
+   * follows the root as a spring does (`BODY_RESPONSE`).
+   */
+  private lagX = DOUBLE_ZERO;
+  private lagZ = DOUBLE_ZERO;
+  private lagRateX = DOUBLE_ZERO;
+  private lagRateZ = DOUBLE_ZERO;
+  private lagFresh = true;
+  /** 0..1: how hard he is pulling up (the root slower than the body), eased. */
+  private braking = DOUBLE_ZERO;
+  /** The speed the gait plays at: the body's own, held up through a reversal (see `groundFamily`). */
+  private gaitSpeed = DOUBLE_ZERO;
+  /** 0..1: how far he has settled into standing at ease (`ActionChannels.idle`), eased. */
+  private atEase = DOUBLE_ZERO;
+  /** How far the pelvis stands to the body's right, at ease on that leg, metres. */
+  private sway = DOUBLE_ZERO;
+  /** Where the body was drawn off the root as he left the ground for the car (its lag, turn and lean): eased out there. */
+  private leftLagX = DOUBLE_ZERO;
+  private leftLagZ = DOUBLE_ZERO;
+  private leftTurn = DOUBLE_ZERO;
+  private leftRoll = DOUBLE_ZERO;
   private roll = DOUBLE_ZERO;
+  private rollFelt = DOUBLE_ZERO;
+  /**
+   * On foot the sim turns the walker at a fixed rate from one frame to the
+   * next (`PERSON.turnRateWalk`); the drawn body picks a turn up and settles
+   * out of it. Its facing to the right of the root's, radians, and its own
+   * turn rate, rad/s.
+   */
+  private turnLag = DOUBLE_ZERO;
+  private turnLagRate = DOUBLE_ZERO;
+  /** The body's facing in the root's frame last frame (`FootSolveOptions.facing`). */
+  private facing = DOUBLE_ZERO;
   private strokeCycle = DOUBLE_ZERO;
   private crawlBlend = DOUBLE_ZERO;
   private airSeconds = DOUBLE_ZERO;
@@ -175,15 +266,26 @@ export class PersonMotion {
   private groundOnTerrain = true;
   /** Both feet were on the ground as this family began, and the planter keeps them there. */
   private feetKept = false;
+  /** This family began with the root changing frames (into or out of the car). */
+  private rootCut = false;
+  /** 0..1 through the fade into the stride's other half (`matchStride`), from the channels it changed at. */
+  private swapFade = DOUBLE_ZERO;
+  private readonly swapCh = new Float64Array(STAND.length);
   private readonly solveOptions: Mutable<FootSolveOptions> = {
-    stance: [true, true], standing: true, ground: flatGround, deltaSeconds: DOUBLE_ZERO, weight: DOUBLE_ZERO, riseRate: MAX_RISE,
-    fallRate: DOUBLE_ZERO,
+    stance: [true, true], standing: true, upright: true, ground: flatGround, deltaSeconds: DOUBLE_ZERO, weight: DOUBLE_ZERO, riseRate: MAX_RISE,
+    fallRate: DOUBLE_ZERO, facing: DOUBLE_ZERO, landing: [DOUBLE_ZERO, DOUBLE_ZERO], strikeIn: DOUBLE_ZERO, step: -1,
+    stepX: DOUBLE_ZERO, stepZ: DOUBLE_ZERO, pickUpSeconds: DOUBLE_ZERO,
   };
+  /** Each foot's share of the way down to the ground (the planter's `landing`), left then right. */
+  private readonly landing: [number, number] = [DOUBLE_ZERO, DOUBLE_ZERO];
+  /** Seconds until the gait's next foot strike (the planter's `strikeIn`), or 0. */
+  private strikeIn = DOUBLE_ZERO;
   /** The ground family's frame: whether it stands, each foot's stance, the strike strength. */
   private readonly groundResult = { standing: false, stanceL: true, stanceR: true, strength: DOUBLE_ZERO };
 
   constructor() {
     this.fade = 1;
+    this.swapFade = 1;
     this.lookWeight = 1;
   }
 
@@ -232,6 +334,21 @@ export class PersonMotion {
     this.groundOnTerrain = Math.abs(input.ground(0, 0)) < OFF_TERRAIN;
     let ground: GroundOffset = this.stoodOn;
     let lookWeight = 1;
+    this.landing[0] = 0;
+    this.landing[1] = 0;
+    this.strikeIn = 0;
+    if (family !== "ground") {
+      this.turnLag = 0;
+      this.turnLagRate = 0;
+      this.lagX = 0;
+      this.lagZ = 0;
+      this.lagFresh = true;
+      this.braking = 0;
+      this.gaitSpeed = 0;
+      this.swapFade = 1;
+      this.atEase = 0;
+      this.sway = 0;
+    }
     switch (family) {
       case "ground": {
         const result = this.groundFamily(input, dt, ch);
@@ -240,7 +357,8 @@ export class PersonMotion {
         stanceL = result.stanceL;
         stanceR = result.stanceR;
         strikeStrength = result.strength;
-        this.setRoot(target, 0, 0, 0, 0, 0, this.roll);
+        // (The pelvis over the leg he stands on: to his own right, as he faces.)
+        this.setRoot(target, this.lagX - Math.sin(this.turnLag) * this.sway, 0, this.lagZ + Math.cos(this.turnLag) * this.sway, this.turnLag, 0, this.roll);
         break;
       }
       case "air": {
@@ -303,14 +421,19 @@ export class PersonMotion {
       case "car": {
         const place = this.seat.update(person.boarding, input.steeringWheel, input.boardingFrom, input.boardingDoor, dt, ch);
         if (place.walkSpeed > 0) {
-          // Walking to the door: the gait at the walk's speed, its phase turning with the distance.
+          // Walking to the door: the gait at the walk's speed, its phase turning with the distance, over the
+          // pose he stands at the door in, which takes over as he arrives.
           const speed = place.walkSpeed;
           this.phase += (speed * dt) / Math.max(0.3, strideLength(speed, false));
+          const atDoor = this.doorCh;
+          atDoor.set(ch);
           this.gait.write(ch, this.phase, speed, 0, walkAmplitude(speed));
+          for (let i = 0; i < ch.length; i += 1) ch[i] = atDoor[i]! + (ch[i]! - atDoor[i]!) * place.gait;
           const footOff = this.gait.footOff(speed, 0);
           stanceL = fraction(this.phase) < footOff;
           stanceR = fraction(this.phase + 0.5) < footOff;
           standing = speed < STAND_SPEED;
+          if (!standing) this.land(footOff, Math.max(0.3, strideLength(speed, false)) / speed);
           strikeStrength = 0.35;
         } else {
           standing = true;
@@ -321,7 +444,20 @@ export class PersonMotion {
         groundWeight = place.ground;
         ground = this.seatGround;
         lookWeight = person.boarding ? 0.3 : 1;
-        this.setRoot(target, place.x, place.y - PROPORTIONS.hipHeight, place.z, place.yaw, 0, 0);
+        // A walker's body is drawn behind the root (`groundFamily`), and the move starts at the root: it starts
+        // from where he was drawn, and that eases out.
+        const behind = input.boardingFrom ? 1 - smooth01(Math.min(1, this.familyAge / CAR_CATCH_UP)) : 0;
+        const facingC = input.boardingFrom ? Math.cos(input.boardingFrom.facing) : 1;
+        const facingS = input.boardingFrom ? Math.sin(input.boardingFrom.facing) : 0;
+        this.setRoot(
+          target,
+          place.x + (this.leftLagX * facingC - this.leftLagZ * facingS) * behind,
+          place.y - PROPORTIONS.hipHeight,
+          place.z + (this.leftLagX * facingS + this.leftLagZ * facingC) * behind,
+          place.yaw + this.leftTurn * behind,
+          0,
+          this.leftRoll * behind,
+        );
         break;
       }
     }
@@ -329,7 +465,18 @@ export class PersonMotion {
     applyChannels(target, ch);
     if (family === "swim" || family === "dive") this.anchorEye(target);
 
+    // On foot the root faces the way the sim's walker does and the body turns after it; in the seat frame the
+    // body turns in it. Feet on the ground stay as they are under either turn.
+    const facing = family === "car" ? this.seat.placement.yaw : family === "ground" ? this.turnLag : 0;
+    this.feet.turn(facing - this.facing);
+    this.facing = facing;
+
     const pose = this.pose;
+    if (this.fade < 1 && this.rootCut) {
+      // Across the car's frame change the root bone is the new frame's from the start: only the body under it fades.
+      for (let i = 0; i < 4; i += 1) this.from.rotations[i] = target.rotations[i]!;
+      for (let i = 0; i < 3; i += 1) this.from.offsets[i] = target.offsets[i]!;
+    }
     blendPoses(this.from, target, smooth01(this.fade), pose);
     pose.computeGlobals();
 
@@ -337,30 +484,64 @@ export class PersonMotion {
       const options = this.solveOptions;
       options.stance = stanceFlags(stanceL, stanceR);
       options.standing = standing;
+      options.upright = family === "ground" || family === "car";
       options.ground = ground;
       options.deltaSeconds = dt;
       // Feet still on the ground from the family before (a landing's crouch, a climb) stay there through the fade.
       options.weight = groundWeight * (FADE_INTO[family] > 0 && !this.feetKept ? smooth01(this.fade) : 1);
       // A landing, a climb or a seat stands up off its crouch at its own pace.
-      options.riseRate = family === "ground" ? MAX_RISE : ACTION_RISE;
+      // (The walk to a car's door is a walk.)
+      const walking = family === "ground" || (family === "car" && this.seat.placement.walkSpeed > 0);
+      options.riseRate = walking || (family === "car" && this.seat.placement.afoot) ? MAX_RISE : ACTION_RISE;
       options.fallRate = family === "car" ? ACTION_RISE : Number.POSITIVE_INFINITY;
+      options.facing = facing;
+      options.landing = this.landing;
+      options.strikeIn = this.strikeIn;
+      options.step = family === "car" ? this.seat.placement.step : -1;
+      options.stepX = this.seat.placement.stepX;
+      options.stepZ = this.seat.placement.stepZ;
+      options.pickUpSeconds = family === "car" && !walking ? CAR_PICK_UP_SECONDS : 0;
       const result = this.feet.solve(pose, options);
       if (result.strikes > 0 && family !== "land") {
         output.footStrikes += result.strikes;
         output.strikeStrength = standing ? 0.15 : strikeStrength;
         output.strikeFoot = result.strikeSide === 0 ? "left" : "right";
       }
+      if (family === "ground" && !standing && result.strikes === 1) this.matchStride(result.strikeSide, input);
     } else {
       this.feet.release();
     }
     if (family === "car") this.reachSeatTargets(pose);
     if (family === "mantle" && this.climbing) this.reachLedge(pose, Math.min(1, this.familyAge / PERSON.mantleSeconds));
-    this.look(pose, input.lookYaw, input.lookPitch, this.lookWeight);
+    this.look(pose, input.lookYaw - (family === "ground" ? this.turnLag : 0), input.lookPitch, this.lookWeight);
     if (this.firstPerson) {
       // The head (and the face) shrink into the neck: the eye sits inside it.
       pose.scales[BONE.head] = 0.001;
     }
     pose.computeGlobals();
+  }
+
+  /**
+   * A foot has just come down with the other still on the ground. Walking on
+   * a line it comes down ahead of the other; turned about over his feet (the
+   * sim turns a walker round in a third of a second) it comes down behind it,
+   * the way he is now going, and it is the other that is under him. The
+   * stride then changes halves: the foot behind is the next to lift, as a
+   * man who turns about steps off with the foot he has left behind him.
+   */
+  private matchStride(struck: 0 | 1, input: MotionInput): void {
+    const down = this.feet.feet[struck];
+    const other = this.feet.feet[1 - struck]!;
+    if (!other.planted) return;
+    const rootSpeed = Math.hypot(input.forward, input.right);
+    const wayX = rootSpeed > STAND_SPEED ? input.forward / rootSpeed : 1;
+    const wayZ = rootSpeed > STAND_SPEED ? input.right / rootSpeed : 0;
+    const ahead = (down.ax - other.ax) * wayX + (down.az - other.az) * wayZ;
+    if (ahead > -STRIDE_SWAP_BEHIND) return;
+    this.phase += 0.5;
+    // (The feet are where they are; the rest of him fades into the other half from the angles drawn.)
+    this.swapCh.set(this.ch);
+    this.swapFade = 0;
   }
 
   private readonly seatGround: GroundOffset = () => SEAT.ground;
@@ -422,36 +603,112 @@ export class PersonMotion {
     const previous = this.family;
     this.family = family;
     this.familyAge = 0;
+    const walked = previous === "ground";
+    // (Where the body was drawn: behind the root, and over the leg he stood on.)
+    this.leftLagX = walked ? this.lagX - Math.sin(this.turnLag) * this.sway : 0;
+    this.leftLagZ = walked ? this.lagZ + Math.cos(this.turnLag) * this.sway : 0;
+    this.leftTurn = walked ? this.turnLag : 0;
+    this.leftRoll = walked ? this.roll : 0;
     this.feetKept = family === "ground" && this.feet.feet[0].planted && this.feet.feet[1].planted;
-    // The first frame, and the car's frame change, cut; everything else fades from the drawn pose.
-    if (previous === null || family === "car" || previous === "car") {
+    // The first frame cuts; everything else fades from the drawn pose. Into and out of the car the root changes
+    // frames (the feet point and the seat frame) at the same place in the world: the root bone cuts to the new
+    // frame's, the body under it fades, and the feet are planted afresh where they are drawn.
+    this.rootCut = previous !== null && (family === "car" || previous === "car");
+    if (previous === null) {
       this.fade = 1;
       this.fadeSeconds = 0;
       this.feet.release();
     } else {
       this.from.copyFrom(this.pose);
       this.fade = 0;
-      this.fadeSeconds = FADE_INTO[family];
+      this.fadeSeconds = this.rootCut ? CAR_FADE : FADE_INTO[family];
+      if (this.rootCut) this.feet.release();
     }
     if (family === "air") this.airSeconds = 0;
     if (family === "swim" || family === "dive") this.feet.release();
   }
 
+  /**
+   * Each foot's `landing` for the planter at the gait's phase: coming down
+   * over the end of its swing, down while it takes the weight, and let go of
+   * through the rest of its stance (it is the only foot on the ground by then).
+   */
+  private land(footOff: number, strideSeconds: number): void {
+    let next = 1;
+    for (let side = 0; side < 2; side += 1) {
+      const phase = fraction(this.phase + side * 0.5);
+      this.landing[side] =
+        phase < footOff ? 1 - smoothstep(0.5 * footOff, 0.8 * footOff, phase) : smoothstep(LANDING_FROM, 1, (phase - footOff) / (1 - footOff));
+      next = Math.min(next, 1 - phase);
+    }
+    this.strikeIn = next * strideSeconds;
+  }
+
   private groundFamily(input: MotionInput, dt: number, ch: Float64Array): { standing: boolean; stanceL: boolean; stanceR: boolean; strength: number } {
     const person = input.person;
-    const speed = Math.max(0, person.speed);
+    // The body follows the root as a critically damped spring does (`BODY_RESPONSE`), over this frame's steady
+    // travel of the root exactly, as the turn below: it trails a steady walk by the lag that holds, picks its
+    // speed up and loses it over a step, and comes to rest on the root. The lag and the body's own velocity
+    // stay where they are in the world as the root turns.
+    const turned = input.turnRate * dt;
+    const turnC = Math.cos(turned);
+    const turnS = Math.sin(turned);
+    const rootSpeed = Math.hypot(input.forward, input.right);
+    if (this.lagFresh) {
+      this.lagFresh = false;
+      this.lagRateX = input.forward;
+      this.lagRateZ = input.right;
+    }
+    const response = BODY_RESPONSE * Math.max(1, rootSpeed / PERSON.walkSpeed);
+    const bodyDecay = Math.exp(-response * dt);
+    const lagX = this.lagX * turnC + this.lagZ * turnS;
+    const lagZ = -this.lagX * turnS + this.lagZ * turnC;
+    const rateX = this.lagRateX * turnC + this.lagRateZ * turnS;
+    const rateZ = -this.lagRateX * turnS + this.lagRateZ * turnC;
+    const heldX = (-2 * input.forward) / response;
+    const heldZ = (-2 * input.right) / response;
+    const closingX = rateX - input.forward + response * (lagX - heldX);
+    const closingZ = rateZ - input.right + response * (lagZ - heldZ);
+    this.lagX = heldX + (lagX - heldX + closingX * dt) * bodyDecay;
+    this.lagZ = heldZ + (lagZ - heldZ + closingZ * dt) * bodyDecay;
+    this.lagRateX = input.forward + (rateX - input.forward - closingX * response * dt) * bodyDecay;
+    this.lagRateZ = input.right + (rateZ - input.right - closingZ * response * dt) * bodyDecay;
+    if (rootSpeed <= 0 && Math.hypot(this.lagX, this.lagZ) < 1e-4 && Math.hypot(this.lagRateX, this.lagRateZ) < 1e-3) {
+      this.lagX = 0;
+      this.lagZ = 0;
+      this.lagRateX = 0;
+      this.lagRateZ = 0;
+    }
+    // The gait plays at the body's own speed over the ground, not the root's: the sim stops a walk within a
+    // tenth of a second, and the legs and arms finish the step they were in as the body comes to rest.
+    const moving = Math.hypot(this.lagRateX, this.lagRateZ);
+    // (Slowing, only as far as the root has slowed: turning about, the body's speed passes through nothing on
+    // its way to the other direction, which is not a stop, and the legs go on stepping through it.)
+    this.gaitSpeed = moving >= this.gaitSpeed ? moving : Math.max(moving, Math.min(this.gaitSpeed, rootSpeed));
+    const speed = this.gaitSpeed;
     const runTarget = person.mode === "run" ? 1 : 0;
     this.runBlend += (runTarget - this.runBlend) * Math.min(1, dt / 0.3);
     if (Math.abs(this.runBlend - runTarget) < 1e-3) this.runBlend = runTarget;
     const rb = this.runBlend;
-    const amplitude = walkAmplitude(speed) * (1 - rb) + rb;
+    // Pulling up (the root slower than the body still is), the step he is in is cut short: it comes down nearer
+    // under him, where he is coming to rest, not a full stride on.
+    const braking = Math.min(1, Math.max(0, (moving - rootSpeed) / Math.max(moving, 0.3)));
+    this.braking += (braking - this.braking) * (1 - Math.exp(-dt * BRAKING_RESPONSE));
+    const amplitude = (walkAmplitude(speed) * (1 - rb) + rb) * (1 - BRAKING_SHORTENS * this.braking);
     const stride = strideLength(speed, false) * (1 - rb) + strideLength(Math.max(speed, PERSON.walkRunSpeed), true) * rb;
-    if (speed > 1e-3) this.phase += (speed * dt) / Math.max(0.05, stride);
+    if (amplitude <= 0) {
+      // Standing, the stride is nowhere: the next walk starts on the foot the last one stopped nearer to.
+      const stopped = fraction(this.phase - START_PHASE + 0.25);
+      this.phase = stopped < 0.5 ? START_PHASE : START_PHASE + 0.5;
+    } else {
+      this.phase += (speed * dt) / Math.max(0.05, stride);
+    }
     this.gait.write(ch, this.phase, speed, rb, amplitude);
     const footOff = this.gait.footOff(speed, rb);
     const standing = speed < STAND_SPEED && rb < 0.5;
     const stanceL = fraction(this.phase) < footOff;
     const stanceR = fraction(this.phase + 0.5) < footOff;
+    if (!standing) this.land(footOff, Math.max(0.05, stride) / speed);
 
     // Wading: knees lifted higher through the swing, arms out for balance, leaning into the water.
     const depth = Math.min(1, Math.max(0, person.waterDepth / H - PERSON.wadeDepthFraction * 0.5) / (PERSON.swimDepthFraction - 0.5 * PERSON.wadeDepthFraction));
@@ -471,18 +728,35 @@ export class PersonMotion {
     }
 
     // Leaning: forward with speed and acceleration, into a slope, into a turn.
-    const accel = dt > 0 ? (speed - this.lastSpeed) / dt : 0;
-    this.lastSpeed = speed;
-    this.acceleration += (accel - this.acceleration) * Math.min(1, dt * 4);
+    // (The acceleration through two easings, one after the other: the lean starts and ends without a jerk.)
+    const accel = dt > 0 ? (moving - this.lastSpeed) / dt : 0;
+    this.lastSpeed = moving;
+    const ease = 1 - Math.exp(-dt * LEAN_RESPONSE);
+    this.accelerationFelt += (accel - this.accelerationFelt) * ease;
+    this.acceleration += (this.accelerationFelt - this.acceleration) * ease;
     const lean = 1.5 + rb * (3 + 1.5 * Math.max(0, speed - PERSON.walkRunSpeed));
     const slopeLean = Math.atan(person.slope) / DEG * (person.slope > 0 ? 0.35 : 0.2);
     const accelLean = Math.min(8, Math.max(-5, this.acceleration * 2.5));
     ch[CH.spineFlex] = ch[CH.spineFlex]! + (lean + slopeLean + accelLean) * Math.min(1, amplitude + 0.3);
-    const turnLean = Math.atan((speed * input.turnRate) / GRAVITY);
-    const rollTarget = Math.min(0.35, Math.max(-0.35, turnLean));
-    this.roll += (rollTarget - this.roll) * Math.min(1, dt * 8);
-    // Standing still: breathing and a slow weight shift.
-    this.actions.idle(this.time, 1 - amplitude, ch);
+    // The turn: the body's facing follows the root's as a critically damped spring does (`TURN_RESPONSE`), over
+    // this frame's steady turn of the root exactly (whatever the frame's length): about the lag that turn
+    // holds it at, the spring's own motion dies away.
+    const held = (-2 * input.turnRate) / TURN_RESPONSE;
+    const off = this.turnLag - held;
+    const closing = this.turnLagRate - input.turnRate + TURN_RESPONSE * off;
+    const decay = Math.exp(-TURN_RESPONSE * dt);
+    this.turnLag = held + (off + closing * dt) * decay;
+    this.turnLagRate = input.turnRate + (this.turnLagRate - input.turnRate - closing * TURN_RESPONSE * dt) * decay;
+    const turnLean = Math.atan((moving * this.turnLagRate) / GRAVITY);
+    // (No more than a walker leans turning on the spot, more at a run; eased twice over, as the lean above.)
+    const mostLean = Math.min(MAX_TURN_LEAN, TURN_LEAN_STANDING + TURN_LEAN_PER_SPEED * moving);
+    const rollTarget = Math.min(mostLean, Math.max(-mostLean, turnLean));
+    const rollEase = 1 - Math.exp(-dt * TURN_LEAN_RESPONSE);
+    this.rollFelt += (rollTarget - this.rollFelt) * rollEase;
+    this.roll += (this.rollFelt - this.roll) * rollEase;
+    // Standing still: at ease on one leg, breathing.
+    this.atEase += (1 - amplitude - this.atEase) * (1 - Math.exp(-dt * EASE_RESPONSE));
+    this.sway = this.actions.idle(this.time, this.atEase, ch);
     // A soft landing still bends the knees a moment.
     const age = person.landingAge;
     if (age < 0.35 && person.landingSpeed > 1.5) {
@@ -493,6 +767,11 @@ export class PersonMotion {
         ch[base + LIMB_OFFSET.ankle] = ch[base + LIMB_OFFSET.ankle]! + 18 * dip;
       }
       ch[CH.spineFlex] = ch[CH.spineFlex]! + 10 * dip;
+    }
+    if (this.swapFade < 1) {
+      this.swapFade = Math.min(1, this.swapFade + dt / STRIDE_SWAP_FADE);
+      const share = smooth01(this.swapFade);
+      for (let i = 0; i < ch.length; i += 1) ch[i] = this.swapCh[i]! + (ch[i]! - this.swapCh[i]!) * share;
     }
     const result = this.groundResult;
     result.standing = standing;
@@ -586,58 +865,15 @@ export class PersonMotion {
     if (!rolling) setEuler(target.rotations, 0, 0, 0, 0);
   }
 
-  /** Hands to the wheel or the car's handles, feet to the step or the pedals. */
+  /** Hands to the wheel or the car's door (`reachFor`), feet to the step or the pedals. */
   private reachSeatTargets(pose: FigurePose): void {
     const place = this.seat.placement;
+    reachFor(pose, place.holds[0], place.holds[1]);
     const t = place.targets;
     const w = place.weights;
     const gp = pose.globalPositions;
-    const q = this.q;
     for (let side = 0; side < 2; side += 1) {
       const bones = SIDES[side]!;
-      const hand = w[side]!;
-      if (hand > 0) {
-        // The wrist a palm's length short of the grip, toward the shoulder.
-        const sx = gp[bones.upperArm * 3]!;
-        const sy = gp[bones.upperArm * 3 + 1]!;
-        const sz = gp[bones.upperArm * 3 + 2]!;
-        const gx = t[side * 3]!;
-        const gy = t[side * 3 + 1]!;
-        const gz = t[side * 3 + 2]!;
-        const d = Math.hypot(gx - sx, gy - sy, gz - sz) || 1;
-        const palm = 0.075;
-        const wx = gx - ((gx - sx) / d) * palm;
-        const wy = gy - ((gy - sy) / d) * palm;
-        const wz = gz - ((gz - sz) / d) * palm;
-        const ex = gp[bones.hand * 3]!;
-        const ey = gp[bones.hand * 3 + 1]!;
-        const ez = gp[bones.hand * 3 + 2]!;
-        solveTwoBone(pose, bones.upperArm, bones.forearm, bones.hand, ex + (wx - ex) * hand, ey + (wy - ey) * hand, ez + (wz - ez) * hand);
-        // The hand points at the grip.
-        const hx = BIND_POSITIONS[bones.fingers * 3]! - BIND_POSITIONS[bones.hand * 3]!;
-        const hy = BIND_POSITIONS[bones.fingers * 3 + 1]! - BIND_POSITIONS[bones.hand * 3 + 1]!;
-        const hz = BIND_POSITIONS[bones.fingers * 3 + 2]! - BIND_POSITIONS[bones.hand * 3 + 2]!;
-        const hl = Math.hypot(hx, hy, hz);
-        const px = gx - gp[bones.hand * 3]!;
-        const py = gy - gp[bones.hand * 3 + 1]!;
-        const pz = gz - gp[bones.hand * 3 + 2]!;
-        const pl = Math.hypot(px, py, pz) || 1;
-        rotationBetween(hx / hl, hy / hl, hz / hl, px / pl, py / pl, pz / pl, q, 0);
-        const current = pose.globalRotations;
-        const o = bones.hand * 4;
-        // nlerp(current, aim, hand) into q[4..7]
-        const dot = current[o]! * q[0]! + current[o + 1]! * q[1]! + current[o + 2]! * q[2]! + current[o + 3]! * q[3]!;
-        const sign = dot < 0 ? -1 : 1;
-        let length = 0;
-        for (let i = 0; i < 4; i += 1) {
-          q[4 + i] = current[o + i]! * (1 - hand) + q[i]! * hand * sign;
-          length += q[4 + i]! * q[4 + i]!;
-        }
-        length = Math.sqrt(length) || 1;
-        for (let i = 0; i < 4; i += 1) q[4 + i] = q[4 + i]! / length;
-        setGlobalRotation(pose, bones.hand, q, 4);
-        pose.computeGlobals();
-      }
       const foot = w[2 + side]!;
       if (foot > 0) {
         const ex = gp[bones.foot * 3]!;

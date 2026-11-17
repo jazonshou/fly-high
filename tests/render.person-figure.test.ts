@@ -100,9 +100,9 @@ describe("the walker's figure meshes", () => {
     const { min, max } = bounds(BUILT[level]!);
     expect(min[1]!).toBeGreaterThanOrEqual(0);
     expect(min[1]!).toBeLessThan(0.003);
-    // The crown under the hair at the stature, the hair a few millimetres over it.
+    // The crown under the hair at the stature, the hair pushed up to three centimetres over it.
     expect(max[1]!).toBeGreaterThan(PERSON.stature - 0.01);
-    expect(max[1]!).toBeLessThan(PERSON.stature + 0.015);
+    expect(max[1]!).toBeLessThan(PERSON.stature + 0.03);
     expect(max[2]! - min[2]!).toBeLessThan(0.7);
     expect(max[2]!).toBeCloseTo(-min[2]!, 2);
     // The boots' toes ahead, the heels behind the feet point.

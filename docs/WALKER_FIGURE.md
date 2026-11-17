@@ -23,32 +23,60 @@ the ground between the heels (seated: the driver's hip point). The sim's
   the mesh is fitted to the same joints.
 - **Mesh** (`walkerBody.ts`, baked by `scripts/bake-walker-body.mts`): a
   real person's anatomy from MakeHuman's base mesh, not a likeness of anyone.
-  MakeHuman's young-male macro targets for African, Asian and European
-  ancestry are averaged a third each, so the face belongs to no group and no
-  one; the result is scaled and fitted joint by joint onto the skeleton above
-  and skinned with MakeHuman's own weights, its 160-odd bones folded onto our
-  27. Its high-poly eyes go in the sockets. Over the body the bake builds the
-  clothes as shells lifted off it (the skin they cover removed): an
-  olive-grey soft-shell jacket with a stand-up collar, zip, hem and cuff
-  bands; stone trousers; brown leather boots with laces; a short dark cut of
-  hair rising off the scalp only where it is thick, its thin edge painted on
-  the skin.
+  He is one particular man, designed like a casting sheet
+  (`scripts/walkerBody/design.mts`): about forty and used to working
+  outdoors, broad in the shoulder, a long square-jawed head, a strong brow
+  over deep-set eyes, a prominent nose with a bump on the bridge, a wide
+  mouth, a short full beard, and nothing in the face quite symmetric. The
+  first realistic figure was a third each of MakeHuman's three population
+  targets and nothing else, the mean of the means: a face with no feature
+  stronger than any other, which read as a mask. `SHAPE` in that file lists
+  his MakeHuman targets and their weights (macro, detail, a little
+  asymmetry). The result is scaled and fitted joint by joint onto the
+  skeleton above and skinned with MakeHuman's own weights, its 160-odd bones
+  folded onto our 27. Its high-poly eyes go in the sockets, the irises where
+  MakeHuman's eye bones look, which is where its lids frame them. The hands
+  are posed relaxed after the fit (`hands.mts`). Over the body the bake
+  builds the clothes as shells lifted off it (the skin they cover removed),
+  each cut along its own edges rather than the mesh's steps (`clip` in
+  `clothes.mts`), eased and draped. They are a man's own clothes, not a
+  uniform, and they give him his outline: a brown leather flight jacket cut
+  short, its shoulders built out a little, its knitted waistband and cuffs
+  drawn in snug so the leather blouses over them, its collar laid down (a
+  part of its own, standing up the back of the neck, folded over, its two
+  points lying either side of the throat) and its zip left open at the top
+  over a white T-shirt (painted on the skin there); straight-legged indigo
+  jeans that hang from the thigh; brown leather boots with laces. The first
+  outfit, a soft-shell zipped to the chin over slim trousers, made him a
+  barrel on thin legs, and its hem below the hip joints bent with every
+  step; the jacket's hem is now above them. The hair is a mesh
+  of its own (`hair.mts`): the scalp's faces where the hair is thick, divided
+  finer, cut along the hairline and lifted by the cut's length into locks,
+  pushed up at the front and across; its thin edge is painted on the skin.
 - **Sources**: MakeHuman's files are fetched at bake time from its GitHub
   repository at a pinned commit (`MAKEHUMAN_COMMIT` in
   `scripts/walkerBody/sources.mts`) into `node_modules/.cache/walker-body/`.
   Every asset bundled with MakeHuman is CC0 1.0 (its `LICENSE.md`, section
   C); the bake checks that text before using anything. Only the baked files
   are in the repository.
-- **Levels of detail**: MEASURED 33,112 triangles, then 10,000, 3,000 and
-  996, simplified with meshoptimizer keeping UV seams, normals and UVs
-  (errors 0.14%, 0.62% and 3.1% of the figure's size). The figure switches
+- **Levels of detail**: MEASURED 33,978 triangles, then 9,999, 3,000 and
+  1,000, simplified with meshoptimizer keeping UV seams, normals and UVs
+  (errors 0.15%, 0.68% and 3.5% of the figure's size). The figure switches
   at 10, 25 and 80 m (`FIGURE_LOD_DISTANCES`, with 1.5 m either side). Low
   tier starts at the second (`personFigureFinestLod`).
 - **Maps**: one atlas in MakeHuman's UV layout, painted by the bake from
-  measured surface points: albedo (skin tone and mottle, redder cheeks, nose
-  and ears, stubble, lips, brows, lashes, irises; the jacket's fabric, seams
-  and folds; the trousers' twill; leather with toe wear), a normal map from
-  the same painters' heights (pores, creases, weave, grain, laces), and
+  measured surface points: albedo (sun-browned skin and its mottle, redder
+  cheeks, nose and ears, the beard and the heavy brows, greying hair, lips,
+  lashes, irises; the T-shirt; the jacket's hide, paler along every seam,
+  edge and fold and at the elbows, with its seams and topstitching, flap
+  pockets, shoulder straps, back yoke, brass zip and snaps, and the ribbed
+  knit of its waistband and cuffs; the jeans' indigo, faded on the thighs,
+  knees and seat and along every crease, with their seams, yoke, pockets,
+  fly, copper rivets and gold thread; the boots' leather with toe wear), a
+  normal map from the same painters' heights (pores, the leather's grain
+  and creases, the knit's ribs, the denim's twill, folds at the elbows, the
+  waist, the hips, behind the knees and stacked over the boots, seams,
+  stitches, the zip's teeth, laces), and
   occlusion, roughness and metalness. The occlusion is ray-traced against the
   whole figure (32 rays a texel at half size) and also darkens the albedo a
   little. Each is baked at 2,048 texels and halved for 1,024 and 512; the
@@ -58,8 +86,8 @@ the ground between the heels (seated: the driver's hip point). The sim's
   The figure builds the mip chains itself, in linear light,
   renormalising the normals and widening the roughness where they spread
   (Toksvig).
-- **Files** (`src/render/webgpu/person/assets/`, 2.8 MB): `walker-body.bin`
-  (742 KB: the shared vertices quantised to 16 bits, four bone indices and
+- **Files** (`src/render/webgpu/person/assets/`, 3.6 MB): `walker-body.bin`
+  (757 KB: the shared vertices quantised to 16 bits, four bone indices and
   weights in bytes, 16-bit triangles per level) and three JPEGs per size
   (albedo q90, normal q94 and occlusion-roughness-metal q92, 4:4:4 for the
   last two). The renderer loads only the tier's size, alongside the scene,
@@ -117,13 +145,49 @@ cross-fades from the last drawn pose:
   4.5 m/s). Both PUBLISHED; the curves between the running keys and their
   frontal and transverse channels are ESTIMATES. Walk and run switch at the
   sim's 2.0 m/s: double support walking, a flight phase running.
+- **The body behind the root.** The sim's walker is a point that reaches
+  walking speed in a sixth of a second, stops in an eighth and turns at 540
+  degrees a second. A body drawn rigidly on it starts, stops and turns like a
+  chess piece. The drawn body follows the root instead, as a critically
+  damped spring does (`BODY_RESPONSE`, `TURN_RESPONSE`; each stepped exactly
+  for the frame, so a long frame cannot overshoot): it trails a steady walk
+  by about 15 cm, picks its speed up and loses it over a step, and turns over
+  a tenth of a second. The gait plays at the body's own speed, so the legs
+  finish the step they are in as he comes to rest, and the step he pulls up
+  in is cut short (`BRAKING_SHORTENS`). His lean into a start, a stop and a
+  turn is eased twice over, and a turn's lean is no more than his speed
+  earns. ESTIMATES, set by eye and by the accelerations of the pelvis, head,
+  hands and feet over a course of starts, stops and turns.
+- **Turning about.** Thrown the other way, the body's speed passes through
+  nothing on its way round. That is not a stop: the gait's speed is held up
+  through it (`gaitSpeed`). The foot that then comes down behind the other,
+  the way he is now going, is the stride's back foot; the stride changes
+  halves there (`matchStride`) and the rest of him fades into it, so he
+  pivots on the foot under him and steps off with the one left behind.
+- **At ease** (`ActionChannels.idle`): nobody stands square on both feet.
+  His weight rests on one leg, that hip up and the other knee let go, the
+  shoulders tipped the other way over it, and every several seconds goes
+  over to the other; the arms hang by the thighs with loose hands
+  (`ARM_HANG`), not as a pair. He settles into it over a third of a second
+  and comes out of it as slowly (`EASE_RESPONSE`): the gait takes hold in
+  three frames of a start, and out of the car or off a landing the stand
+  would otherwise be there at once, the pelvis put 3 cm to one side in a
+  frame. ESTIMATES.
 - **Planted feet** (`footPlant.ts`): a stance foot holds its world point and
   the ground's height and slope; the pelvis drops so the leg reaches, and the
   heel lifts when it cannot. Slip is under 1 cm on flat ground and on 10 and
   20 degree slopes at the sim's Tobler speeds. The figure's ground is the
   drawn terrain; where the sim's feet stand more than 12 cm off it (a pontoon,
   a ledge, the colliders it does not draw) the motion stands on a flat plane
-  at the root instead.
+  at the root instead. A foot leaves the ground from where it stood at the
+  speed it had (its offset from the gait's path dies away, carried on at its
+  speed against the path's), so neither jumps at toe-off, and one let go of
+  far behind comes on no faster than `RELEASE_SPEED`. A foot comes down
+  where it is drawn. Coming to a stand with a foot in the air, it steps to
+  where it will stand and is not put there. A standing foot too far from
+  under its hip, or turned too far, steps back, one foot at a time. The
+  first flight of a run, which does not yet know where it comes down, goes
+  no lower than puts a foot on the ground.
 - **Air, landings, roll**: a jump's tuck and reach, a crouch after landings
   at 5 m/s or more (`PERSON.landingHardSeconds`) deepening with speed, and a
   roll at 8 m/s or more (`landingRollSeconds`). ESTIMATES.
@@ -141,10 +205,32 @@ cross-fades from the last drawn pose:
   standing. The climb's height is read from the root's rise, and the hands
   are placed on the top by IK. ESTIMATES fitted to the sim's path (up over
   the first 60%, over in the last 70%).
-- **Car** (`carSeat.ts`): walking to the door, stepping up, sitting and
-  swinging the legs in, the reverse, and seated with the hands on the rim
-  (each re-gripping a third of a turn back as the wheel turns) and the feet
-  on the pedals. ESTIMATES.
+- **Car** (`carSeat.ts`): the walk to the door, getting in, getting out,
+  and seated with the hands on the rim (each re-gripping a third of a turn
+  back as the wheel turns) and the feet on the pedals. Getting in is one
+  move from wherever he stood within reach: he walks up to the door's handle
+  at a walking pace (`boardingWalkSeconds`, carrying on from the velocity he
+  had), takes it with the outer hand as he arrives and pulls the door open,
+  the hand sliding back along it and round its trailing edge to the armrest
+  inside; he steps into the opening with the near foot, puts the other up on
+  the step, hauls himself in by the wheel's rim with the inner hand, ducks
+  in, sits and draws the door shut by the armrest (2.4 s after the walk).
+  Getting out (2.4 s): he pushes the door open from the armrest, turns out
+  on the seat with that hand to his knee, steps down with the other hand on
+  the door's top beside him, and shuts the door with it. The door opens to
+  its check strap's first stop (50 degrees), so it stays within his reach.
+  His feet are the planter's throughout: the step into the opening is a step
+  to a place asked for, a foot going up to the step is picked up from rest,
+  and neither foot leaves the ground while the other is in the air.
+  **A hand holds only what its arm reaches** (`armReach.ts`): the elbow is a
+  hinge that hangs down, out and a little back and never quite straightens
+  (35 degrees of bend at the least), the chest and the shoulder go a little
+  way after a far hold before the arm strains for it, and a hand is laid on
+  a hold either end on (a handle, the wheel's rim) or palm down (the
+  armrest, the door's top), the forearm taking most of the hand's roll.
+  A hold comes on and goes off by its weight, the arm swinging between its
+  own pose and the reach. The sim's door, the drawn door and the hands read
+  one opening (`boardingDoorOpening`). ESTIMATES.
 - **Look**: the head and neck turn toward the camera's aim (up to 70
   degrees either way, 40 up, 45 down, the neck taking 40%); looking back past
   100 degrees eases the head to the front.
@@ -179,6 +265,21 @@ Foot strikes (count, strength, foot) go back to the renderer for the sounds.
   swimmer's eye; the seated hands and feet; getting in and out continuous
   with the seat; landings, the roll, the climb; first person and the look.
 - `tests/render.person-motion-budget.test.ts`: the frame budget.
+- `tests/render.person-motion-fluid.test.ts`: nothing on him jumps. A start,
+  a walk and a stop, an about-turn, a turn on the spot, getting in and
+  getting out are run at 60 Hz with the root moved as the sim and the
+  renderer move it, and the pelvis, head, hands and feet are each held to an
+  acceleration from one frame to the next (35 to 180 m/s2 by part and move;
+  one frame's 3 cm jump is 108).
+- `tests/render.person-arm-reach.test.ts`: the reaching arm. A grip taken
+  end on brings the wrist a palm short of it with the elbow bent and below
+  the line; the arm never straightens and draws out to a far hold without a
+  snap; the chest and shoulder go after it; a palm is laid flat on a ledge,
+  fingers the way the forearm comes or the way the hold says. Getting in
+  and out by either door: a hand at full weight is within its arm's reach
+  and on its hold, the elbows keep over 30 degrees of bend, no wrist or palm
+  passes through the door's slab, and the handle is reached for only from
+  near it.
 - `tests/gpu/person-figure.test.ts`: compile and inter-stage audit, draws
   per tier, the skin following the bones, the maps lit the way the bake
   made them (the image's top at the top, the normal map's X and Y), the

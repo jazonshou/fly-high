@@ -17,7 +17,7 @@ import {
 } from "../src/sim/surface";
 import { sampleGroundContact, sampleGroundHeight } from "../src/sim/terrainGrid";
 import { CalmWaterSurface } from "../src/sim/water";
-import { CAR_SEATING, PERSON } from "../src/vehicles/person";
+import { boardingWalkSeconds, CAR_SEATING, PERSON } from "../src/vehicles/person";
 import { createWorld, type WorldDefinition } from "../src/world";
 
 /**
@@ -119,7 +119,8 @@ describe("walking session", () => {
     expect(state.vehicle.boarding?.action).toBe("getOut");
     expect(state.walking?.car?.vehicle?.kind).toBe("car");
 
-    rig.run(0.4);
+    // He pushes the door open from the seat over the first quarter of the move.
+    rig.run(PERSON.getOutSeconds * 0.3);
     expect(rig.state().walking?.doors[0]).toBeGreaterThan(0.9);
     rig.run(PERSON.getOutSeconds);
     state = rig.state();
@@ -195,7 +196,8 @@ describe("walking session", () => {
     const boarding = rig.state();
     if (boarding.vehicle?.kind !== "person") throw new Error("person payload");
     expect(boarding.vehicle.boarding?.action).toBe("getIn");
-    rig.run(PERSON.getInSeconds / 2 + 0.05);
+    // The walk to the door comes first: from within reach, never longer than from the reach's edge.
+    rig.run(PERSON.getInSeconds / 2 + boardingWalkSeconds(PERSON.doorReach) + 0.05);
     expect(rig.switches).toBe(switches + 1);
     const state = rig.state();
     expect(state.walking?.driven).toBe("car");

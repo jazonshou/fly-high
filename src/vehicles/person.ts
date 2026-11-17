@@ -69,7 +69,10 @@ export interface PersonSpec {
   /** Getting in: within this distance of the door, with the car slower than `boardingCarSpeed`. */
   readonly doorReach: number;
   readonly boardingCarSpeed: number;
-  /** Seconds to get in and to get out, and how long X is held to get out. */
+  /**
+   * Seconds to get in from the door stand (the walk to it comes first,
+   * `boardingWalkSeconds`) and to get out, and how long X is held to get out.
+   */
   readonly getInSeconds: number;
   readonly getOutSeconds: number;
   readonly getOutHoldSeconds: number;
@@ -114,8 +117,13 @@ const STATURE = 1.76;
  * diving and wading speeds are ESTIMATES. The landing speeds are the plan's
  * equal drops v^2 / 2g: under 1.3 m normal, to 3.3 m a crouch, past it a
  * roll; the mantle's and the landings' durations, the climb height and the
- * swimming turn rate are ESTIMATES for the figure's motions to fit. The
- * camera numbers are measured on the built figure (at `cinematic` below).
+ * swimming turn rate are ESTIMATES for the figure's motions to fit. Getting
+ * in from the door stand and getting out take 2.4 s each (ESTIMATES): the
+ * times a person takes to open the door, climb up off the side step and sit,
+ * pulling the door shut, and to slide out, step down and swing it shut,
+ * unhurried; the walk to the door comes on top (`boardingWalkSeconds`). At
+ * the first build's 2.0 and 1.6 s, walk included, the body moved at 5 m/s.
+ * The camera numbers are measured on the built figure (at `cinematic` below).
  */
 export const PERSON: PersonSpec = Object.freeze({
   stature: STATURE,
@@ -148,8 +156,8 @@ export const PERSON: PersonSpec = Object.freeze({
   turnRateSwim: 180 * DEGREES,
   doorReach: 1.2,
   boardingCarSpeed: 0.5,
-  getInSeconds: 2.0,
-  getOutSeconds: 1.6,
+  getInSeconds: 2.4,
+  getOutSeconds: 2.4,
   getOutHoldSeconds: 0.4,
   doorBlockedWaterDepth: 1.0,
   camera: Object.freeze({
@@ -215,15 +223,56 @@ export interface BodyPoint {
  * `render/webgpu/person/carSeat.ts`): the SAE H-point 0.135 m ahead of the
  * backrest's face and 0.09 m over the pressed cushion, 1.09 m above the
  * ground over the seat's middle. The door stand's `up` is not read: the
- * walker stands on the ground at its `forward` and `right`.
+ * walker stands on the ground at its `forward` and `right`. It is behind
+ * the door's trailing edge and 0.3 m outside the arc that edge swings on
+ * (1.12 m about the hinge), so the door opens and shuts past a walker stood
+ * there, who reaches its handle with an arm out.
  */
 export const CAR_SEATING = Object.freeze({
   cgAboveGround: 0.8,
   driverHip: Object.freeze({ forward: -0.4, up: 0.29, right: 0.37 }) as BodyPoint,
-  doorStand: Object.freeze({ forward: -0.25, up: 0, right: 1.4 }) as BodyPoint,
+  doorStand: Object.freeze({ forward: -0.55, up: 0, right: 1.45 }) as BodyPoint,
   bodyBox: Object.freeze({
     kind: "box",
     center: Object.freeze({ x: -0.265, y: 0.32, z: 0 }),
     halfExtents: Object.freeze({ x: 2.455, y: 0.82, z: 0.935 }),
   }) as ColliderBox,
 });
+
+/**
+ * Getting in begins with the walk from where the walker stands to the door
+ * stand: its seconds for `distance` metres, at an easy walking pace (1.25 m/s
+ * between a start and a stop), and never less than the moment it takes to
+ * turn to the door from right beside it. ESTIMATE.
+ */
+export function boardingWalkSeconds(distance: number): number {
+  return 0.45 + Math.max(0, distance) / 1.25;
+}
+
+/** The share of a getting-in's progress its walk to the door takes (`PersonBoardingState.walkShare`). */
+export function boardingWalkShare(distance: number): number {
+  const walk = boardingWalkSeconds(distance);
+  return walk / (walk + PERSON.getInSeconds);
+}
+
+/**
+ * How far open the boarding door stands (0 shut .. 1) at a boarding progress:
+ * the one timing the sim's doors, the drawn door and the figure's hands all
+ * read. Getting in (after the walk's share of the progress), the walker pulls
+ * it open from the stand at its handle (to 0.22 of the rest) and it comes in
+ * with the hand on its armrest as he climbs in and sits (0.4 to 0.9, never
+ * further shut than his body in the doorway leaves room for); getting out, he
+ * pushes it open from the seat (0.06 to 0.3) and draws it round after him as
+ * he steps clear, letting it swing shut (0.7 to 0.95).
+ */
+export function boardingDoorOpening(action: "getIn" | "getOut", progress: number, walkShare = 0): number {
+  const p = Math.min(1, Math.max(0, progress));
+  if (action === "getOut") return Math.min(doorRamp(p, 0.06, 0.3), 1 - doorRamp(p, 0.7, 0.95));
+  const q = (p - walkShare) / (1 - walkShare);
+  return Math.min(doorRamp(q, 0, 0.22), 1 - doorRamp(q, 0.4, 0.9));
+}
+
+function doorRamp(value: number, start: number, end: number): number {
+  const t = Math.min(1, Math.max(0, (value - start) / (end - start)));
+  return t * t * (3 - 2 * t);
+}

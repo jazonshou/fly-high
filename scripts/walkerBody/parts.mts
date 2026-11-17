@@ -6,7 +6,7 @@
  */
 import { add, cross, normalize, sub, type V3 } from "./math.mts";
 
-export type PartKind = "skin" | "jacket" | "trousers" | "boots" | "hair" | "eyes";
+export type PartKind = "skin" | "jacket" | "collar" | "trousers" | "boots" | "hair" | "eyes";
 
 export interface Part {
   readonly name: string;

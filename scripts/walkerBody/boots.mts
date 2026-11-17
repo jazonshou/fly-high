@@ -327,7 +327,7 @@ function buildBoot(body: FittedBody, sign: number, footBone: number, rect: UvRec
   // Weld, smooth (Taubin, the sole's underside kept flat), simplify.
   const welded = weld(positions, tris);
   taubin(welded.positions, welded.indices, 16);
-  const simplified = simplify(welded.positions, welded.indices, 3200);
+  const simplified = simplify(welded.positions, welded.indices, 2700);
 
   // Skin weights: from the nearest skin vertices (squashed, as the boot was grown round them).
   const near = [...used];

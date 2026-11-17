@@ -6,6 +6,7 @@ import type { PersonVisual } from "./types";
 import type { WalkerBodyAsset } from "./walkerBody";
 
 export type { PersonAnimationInput, PersonAnimationOutput, PersonVisual } from "./types";
+export type { BoardingFrom as PersonBoardingFrom } from "./carSeat";
 export { loadWalkerBody, type WalkerBodyAsset } from "./walkerBody";
 
 /** What the figure is built for: its body (`loadWalkerBody` at the tier's texture size), the session's tier, and the renderer's pipeline compiles to warm with. */

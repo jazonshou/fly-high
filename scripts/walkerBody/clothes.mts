@@ -1,22 +1,25 @@
 /**
  * The walker's clothes and hair, made from the fitted body itself so they fit
- * it and move with it: each garment is the patch of skin it covers lifted off
- * by its ease, then draped (concavities filled, the trousers hanging straight
- * from the knee, the jacket straight from the chest, the sleeves from the
- * elbow), keeping the body's UVs and skin weights. Every open edge (a hem, a
- * cuff, the collar's top) gets a band turned in toward the body, so the
- * garment has a thickness and no gap shows into it. The skin they hide is
- * removed, but for a margin under each edge.
+ * it and move with it: each garment is the patch of skin it covers, cut along
+ * its own edges (a hem, a cuff, the open throat: `clip`), lifted off by its
+ * ease, then draped (concavities filled, the jeans hanging straight from the
+ * thigh, the jacket from the chest, the sleeves from the elbow), keeping the
+ * body's UVs and skin weights. Every open edge gets a band turned in toward
+ * the body, so the garment has a thickness and no gap shows into it. The skin
+ * they hide is removed, but for a margin under each edge.
  *
- * The outfit (the old figure's, kept): an olive-grey soft-shell jacket with a
- * stand-up collar, closed; stone trousers; brown leather boots (`boots.mts`);
- * short dark-brown hair.
+ * The outfit is a man's own clothes, not a uniform: a brown leather flight
+ * jacket cut short, its knitted waistband and cuffs drawn in snug, its collar
+ * laid down and the zip left open at the throat over a T-shirt (painted on
+ * the skin there); straight-legged indigo jeans; brown leather boots
+ * (`boots.mts`). The hair is `hair.mts`'s.
  */
 import { BIND_POSITIONS, BONE, SIDES } from "../../src/render/webgpu/person/skeleton";
-import { dot, normalize, scale, sub, type V3 } from "./math.mts";
+import { add, cross, dot, lerp, normalize, scale, sub, type V3 } from "./math.mts";
 import type { FittedBody } from "./body.mts";
 import { adjacency, boundaryLoops, vertexNormals, vertexOf, type Part, type PartKind } from "./parts.mts";
 import { SWATCH, type SwatchCursor } from "./swatches.mts";
+import { buildHair } from "./hair.mts";
 
 const bind = (bone: number): V3 => [BIND_POSITIONS[bone * 3]!, BIND_POSITIONS[bone * 3 + 1]!, BIND_POSITIONS[bone * 3 + 2]!];
 const smoothstep = (a: number, b: number, x: number) => {
@@ -26,17 +29,27 @@ const smoothstep = (a: number, b: number, x: number) => {
 
 /** Heights and lines, metres, walker frame. */
 export const OUTFIT = Object.freeze({
-  /** The jacket's hem, over the hips. */
-  jacketHem: 0.855,
-  /** The trousers' waistband, a little under the navel (hidden under the jacket). */
+  /** The jacket's hem: the lower edge of its knitted waistband, at the belt (above the hip joints, so it does not bend with the thighs). */
+  jacketHem: 0.95,
+  /** The knitted waistband's and the knitted cuffs' widths. */
+  waistband: 0.06,
+  knitCuff: 0.055,
+  /** The jacket is open at the throat: the zip is done up to this height, and above it each front falls open by this much per metre up. */
+  zipTop: 1.355,
+  openSlope: 0.44,
+  /** The collar: how far it stands up the neck at the back before it folds over, how far it falls from the fold, and its points' fall at the front. */
+  collarStand: 0.03,
+  collarFall: 0.058,
+  collarPoint: 0.074,
+  /** The T-shirt's neck: this far under the jacket's neckline round the neck's base. */
+  shirtNeck: 0.01,
+  /** The jeans' waistband, a little under the navel (under the jacket's). */
   trouserWaist: 1.0,
-  /** The trouser hem: lower at the heel than over the instep (the break). */
+  /** The jeans' hem: lower at the heel than over the instep (the break). */
   trouserHemFront: 0.1,
   trouserHemBack: 0.072,
   /** The boots' shaft top, over the ankle bone. */
   bootTop: 0.16,
-  /** The stand-up collar's height above the neckline (the neck's base, where it meets the shoulders and the chest), on average. */
-  collarHeight: 0.054,
   /** Where a sleeve ends: this far along the forearm past the wrist joint (negative: short of it). */
   cuff: -0.004,
   /** Skin kept under an edge, metres. */
@@ -60,29 +73,128 @@ const necklineAt = (q: V3) => {
   const a = Math.atan2(q[2] - NECK_AXIS[2], q[0] - NECK_AXIS[0]);
   return 1.47125 - 0.0175 * Math.cos(a) - 0.01875 * Math.cos(2 * a);
 };
-/** The collar's height over the neckline: a little lower on the sides, where the neckline rises up the neck. */
-const collarHeightAt = (q: V3) => {
-  const a = Math.atan2(q[2] - NECK_AXIS[2], q[0] - NECK_AXIS[0]);
-  return OUTFIT.collarHeight + 0.006 * Math.cos(2 * a);
-};
 const neckRadiusOf = (q: V3) => Math.hypot(q[0] - NECK_AXIS[0], q[2] - NECK_AXIS[2]);
+const neckAngleOf = (q: V3) => Math.atan2(q[2] - NECK_AXIS[2], q[0] - NECK_AXIS[0]);
+/**
+ * The jacket's open throat: how far a point is outside the V its two fronts
+ * leave above the zip's top (metres across; negative inside it).
+ */
+export const outsideThroat = (q: V3) => (q[0] > 0 ? Math.abs(q[2]) - OUTFIT.openSlope * (q[1] - OUTFIT.zipTop) : Infinity);
+/** The jeans' hem at a point this far forward of the ankle: lower at the heel than over the instep. */
+export const trouserHemAt = (x: number) => (x > 0.02 ? OUTFIT.trouserHemFront : x < -0.02 ? OUTFIT.trouserHemBack : OUTFIT.trouserHemBack + ((x + 0.02) / 0.04) * (OUTFIT.trouserHemFront - OUTFIT.trouserHemBack));
+/** The T-shirt's neck: the height its edge lies at round the neck's base. */
+export const shirtNeckAt = (q: V3) => necklineAt(q) - OUTFIT.shirtNeck;
 
 interface Region {
   readonly faces: number[][];
   readonly faceUvs: number[][];
 }
 
+/**
+ * The body's skin as the garments are cut from it: its own vertices, and the
+ * ones the cuts add along the garments' edges (each between two of them).
+ */
+interface Cloth {
+  readonly P: number[];
+  readonly N: number[];
+  readonly bones: number[];
+  readonly weights: number[];
+}
+
+/** What the painters need of the clothes' shape. */
+export interface GarmentMarks {
+  /** The collar's outer edge and its fold, as lines round the neck from one point to the other. */
+  readonly collarEdge: readonly V3[];
+  readonly collarFold: readonly V3[];
+}
+
 export interface Garments {
   readonly skin: Part;
   readonly jacket: Part;
+  readonly collar: Part;
   readonly trousers: Part;
   readonly hair: Part;
+  readonly marks: GarmentMarks;
   readonly report: readonly string[];
 }
 
+/**
+ * The faces where `field` is positive, cut along where it is zero: a face
+ * the line crosses is trimmed to it, on new vertices placed along its edges
+ * (shared between the faces either side), so a garment's edge is the line
+ * meant and not the mesh's own steps. A face touching a `never` vertex is
+ * left out whole.
+ */
+function clip(mesh: Cloth, faces: readonly number[][], faceUvs: readonly number[][], field: (v: number) => number, never: (v: number) => boolean = () => false): Region {
+  const values = new Map<number, number>();
+  const at = (v: number) => {
+    let x = values.get(v);
+    if (x === undefined) values.set(v, (x = field(v)));
+    return x;
+  };
+  const cuts = new Map<string, { index: number; t: number }>();
+  /** The vertex where the line crosses the edge from `inside` to `outside`, and how far along it. */
+  const cut = (inside: number, outside: number) => {
+    const key = inside < outside ? `${inside},${outside}` : `${outside},${inside}`;
+    let c = cuts.get(key);
+    if (c) return c;
+    const fa = at(inside);
+    const fb = at(outside);
+    // Not within a twelfth of either end: no slivers.
+    const t = Math.min(0.92, Math.max(0.08, fa / (fa - fb)));
+    const index = mesh.P.length / 3;
+    const n = normalize(lerp(vertexOf(mesh.N, inside), vertexOf(mesh.N, outside), t));
+    const q = lerp(vertexOf(mesh.P, inside), vertexOf(mesh.P, outside), t);
+    mesh.P.push(q[0], q[1], q[2]);
+    mesh.N.push(n[0], n[1], n[2]);
+    const blended = new Map<number, number>();
+    for (const [v, share] of [[inside, 1 - t], [outside, t]] as const)
+      for (let k = 0; k < 4; k += 1) blended.set(mesh.bones[v * 4 + k]!, (blended.get(mesh.bones[v * 4 + k]!) ?? 0) + mesh.weights[v * 4 + k]! * share);
+    const top = [...blended.entries()].filter(([, w]) => w > 0).sort((x, y) => y[1] - x[1]).slice(0, 4);
+    const total = top.reduce((sum, [, w]) => sum + w, 0);
+    for (let k = 0; k < 4; k += 1) {
+      mesh.bones.push(top[k]?.[0] ?? 0);
+      mesh.weights.push(top[k] ? top[k]![1] / total : 0);
+    }
+    values.set(index, 0);
+    cuts.set(key, (c = { index, t }));
+    return c;
+  };
+  const out: Region = { faces: [], faceUvs: [] };
+  faces.forEach((face, f) => {
+    if (face.some(never)) return;
+    const uv = faceUvs[f]!;
+    const inside = face.map((v) => at(v) > 0);
+    if (inside.every((x) => x)) {
+      out.faces.push([...face]);
+      out.faceUvs.push([...uv]);
+      return;
+    }
+    if (!inside.some((x) => x)) return;
+    const polygon: number[] = [];
+    const polygonUv: number[] = [];
+    for (let k = 0; k < face.length; k += 1) {
+      const j = (k + 1) % face.length;
+      if (inside[k]) {
+        polygon.push(face[k]!);
+        polygonUv.push(uv[k * 2]!, uv[k * 2 + 1]!);
+      }
+      if (inside[k] === inside[j]) continue;
+      const from = inside[k] ? k : j;
+      const to = inside[k] ? j : k;
+      const c = cut(face[from]!, face[to]!);
+      polygon.push(c.index);
+      polygonUv.push(uv[from * 2]! + (uv[to * 2]! - uv[from * 2]!) * c.t, uv[from * 2 + 1]! + (uv[to * 2 + 1]! - uv[from * 2 + 1]!) * c.t);
+    }
+    if (polygon.length < 3) return;
+    out.faces.push(polygon);
+    out.faceUvs.push(polygonUv);
+  });
+  return out;
+}
+
 export function buildGarments(body: FittedBody, swatches: SwatchCursor): Garments {
-  const P = body.positions;
-  const count = P.length / 3;
+  const count = body.positions.length / 3;
   const bodyFaces: number[][] = [];
   const bodyUvs: number[][] = [];
   for (const f of body.faces) {
@@ -90,16 +202,17 @@ export function buildGarments(body: FittedBody, swatches: SwatchCursor): Garment
     bodyFaces.push([...f.vertices]);
     bodyUvs.push(f.uvs.flatMap((t) => [body.uvs[t * 2]!, body.uvs[t * 2 + 1]!]));
   }
-  const N = vertexNormals(P, bodyFaces, count);
-  const W = body.weights;
+  const bodyNormals = vertexNormals(body.positions, bodyFaces, count);
+  // The skin, and room for the vertices the cuts add.
+  const mesh: Cloth = { P: Array.from(body.positions), N: Array.from(bodyNormals), bones: Array.from(body.weights.bones), weights: Array.from(body.weights.weights) };
   const share = (v: number, bones: ReadonlySet<number>) => {
     let s = 0;
-    for (let k = 0; k < 4; k += 1) if (bones.has(W.bones[v * 4 + k]!)) s += W.weights[v * 4 + k]!;
+    for (let k = 0; k < 4; k += 1) if (bones.has(mesh.bones[v * 4 + k]!)) s += mesh.weights[v * 4 + k]!;
     return s;
   };
   const ARM = new Set(SIDES.flatMap((s) => [s.upperArm, s.forearm, s.hand, s.fingers, s.thumb]));
   const FOOT = new Set(SIDES.flatMap((s) => [s.foot, s.toe]));
-  const p = (v: number) => vertexOf(P, v);
+  const p = (v: number) => vertexOf(mesh.P, v);
   const report: string[] = [];
 
   // Along the forearm past the wrist joint, for an arm vertex.
@@ -112,7 +225,7 @@ export function buildGarments(body: FittedBody, swatches: SwatchCursor): Garment
   };
   const isArm = (v: number) => share(v, ARM) > 0.5;
   const isFoot = (v: number) => share(v, FOOT) > 0.5 || p(v)[1] < OUTFIT.bootTop;
-  // The neck: its radius per sector round its axis a little under the jaw, and per sector the height where the body narrows to it.
+  // The neck: its radius per sector round its axis a little under the jaw.
   const neckRadius = new Float64Array(NECK_SECTORS);
   for (let v = 0; v < count; v += 1) {
     const q = p(v);
@@ -122,145 +235,121 @@ export function buildGarments(body: FittedBody, swatches: SwatchCursor): Garment
     neckRadius[k] = neckRadius[k] === 0 ? neckRadiusOf(q) : Math.min(neckRadius[k]!, neckRadiusOf(q));
   }
   // Sectors the mesh left empty take their neighbours'.
-  for (const table of [neckRadius]) {
+  {
     const empty = (x: number) => x === 0 || !Number.isFinite(x);
-    for (let pass = 0; pass < NECK_SECTORS && Array.from(table).some(empty); pass += 1) {
-      const copy = Float64Array.from(table);
+    for (let pass = 0; pass < NECK_SECTORS && Array.from(neckRadius).some(empty); pass += 1) {
+      const copy = Float64Array.from(neckRadius);
       for (let k = 0; k < NECK_SECTORS; k += 1) {
         if (!empty(copy[k]!)) continue;
         const near = [copy[(k + 1) % NECK_SECTORS]!, copy[(k + NECK_SECTORS - 1) % NECK_SECTORS]!].filter((x) => !empty(x));
-        if (near.length) table[k] = near.reduce((a, b) => a + b, 0) / near.length;
+        if (near.length) neckRadius[k] = near.reduce((a, b) => a + b, 0) / near.length;
       }
     }
   }
-  const trouserHem = (x: number) => (x > 0.02 ? OUTFIT.trouserHemFront : x < -0.02 ? OUTFIT.trouserHemBack : OUTFIT.trouserHemBack + ((x + 0.02) / 0.04) * (OUTFIT.trouserHemFront - OUTFIT.trouserHemBack));
 
-  const inJacket = (v: number) => {
+  // How far inside each garment a vertex is (metres; its edge where this is zero).
+  const insideJacket = (v: number) => {
     const q = p(v);
-    if (isArm(v)) return alongForearm(v) < OUTFIT.cuff;
-    return q[1] >= OUTFIT.jacketHem && q[1] < necklineAt(q);
+    if (isArm(v)) return OUTFIT.cuff - alongForearm(v);
+    return Math.min(q[1] - OUTFIT.jacketHem, necklineAt(q) - q[1], outsideThroat(q));
   };
-  const inTrousers = (v: number) => {
+  const insideTrousers = (v: number) => {
     const q = p(v);
-    if (isArm(v)) return false;
-    return q[1] <= OUTFIT.trouserWaist && q[1] >= trouserHem(q[0]) && !(share(v, FOOT) > 0.5);
+    return Math.min(OUTFIT.trouserWaist - q[1], q[1] - trouserHemAt(q[0]));
   };
   const skinShows = (v: number) => {
     const q = p(v);
     if (isArm(v)) return alongForearm(v) > OUTFIT.cuff - OUTFIT.skinMargin;
     if (isFoot(v)) return false;
-    // The neck, and a margin under the jacket's neckline.
-    return q[1] > necklineAt(q) - OUTFIT.skinMargin;
-  };
-
-  const select = (keep: (face: number[]) => boolean): Region => {
-    const faces: number[][] = [];
-    const faceUvs: number[][] = [];
-    bodyFaces.forEach((f, i) => {
-      if (!keep(f)) return;
-      faces.push(f);
-      faceUvs.push(bodyUvs[i]!);
-    });
-    return { faces, faceUvs };
+    // The neck, the open throat, and a margin under the jacket's edge round both.
+    return q[1] > necklineAt(q) - OUTFIT.skinMargin || (q[1] > OUTFIT.zipTop - OUTFIT.skinMargin && outsideThroat(q) < OUTFIT.skinMargin);
   };
 
   // --- the jacket
   const torsoAxis: V3 = [0.01, 0, 0];
-  const jacketRegion = select((f) => f.every(inJacket));
-  const jacket = shell("jacket", "jacket", jacketRegion, P, N, W, {
+  const jacket = shell("jacket", "jacket", clip(mesh, bodyFaces, bodyUvs, insideJacket), mesh, {
     ease: (v) => {
-      if (isArm(v)) return 0.014;
       const q = p(v);
-      // Light on the shoulders, where the fabric rests.
-      const shoulder = smoothstep(1.36, 1.42, q[1]);
-      return 0.016 - 0.008 * shoulder;
+      const side = q[2] < 0 ? SIDES[0]! : SIDES[1]!;
+      // Built out a little at the shoulder's point, as a jacket's shoulder is: it squares his.
+      const joint = bind(side.upperArm);
+      const point = 0.01 * Math.exp(-((q[0] - joint[0]) ** 2 + (q[1] - joint[1] - 0.035) ** 2 + (q[2] - joint[2] - side.sign * 0.01) ** 2) / (2 * 0.06 ** 2));
+      if (isArm(v)) return 0.012 + point;
+      // Light on the top of the shoulders by the neck, where the leather rests, and at the open throat, where the fronts lie on the chest.
+      const rests = Math.max(smoothstep(1.38, 1.44, q[1]) * smoothstep(0.13, 0.07, Math.abs(q[2])), q[1] > OUTFIT.zipTop - 0.03 ? smoothstep(0.045, 0.005, outsideThroat(q)) : 0);
+      return 0.016 - 0.009 * rests + point;
     },
     minEase: (v) => (isArm(v) ? 0.008 : 0.006),
+    // (The throat's edges stay where they were cut, so its V keeps its point.)
+    fixBoundary: (v) => {
+      const q = p(v);
+      return !isArm(v) && outsideThroat(q) < 0.003 && outsideThroat(q) < necklineAt(q) - q[1];
+    },
     hang: (v) => {
       if (isArm(v)) {
         const q = p(v);
         const side = q[2] < 0 ? SIDES[0]! : SIDES[1]!;
-        // A sleeve hangs from the elbow to the cuff, loose round the forearm, snug at the cuff.
+        // A sleeve hangs from the elbow to the cuff, loose round the forearm, gathered into the cuff.
         const elbow = bind(side.forearm);
         const wrist = bind(side.hand);
-        return { origin: elbow, axis: normalize(sub(wrist, elbow)), start: -0.02, taper: 0.993, group: side.sign < 0 ? 1 : 2 };
+        return { origin: elbow, axis: normalize(sub(wrist, elbow)), start: -0.02, taper: 0.988, group: side.sign < 0 ? 1 : 2 };
       }
-      return { origin: [torsoAxis[0], 1.3, 0], axis: [0, -1, 0], start: 0, taper: 0.9985, group: 0 };
+      // From the chest it falls in toward the waist: cut to a man's shape, not a box.
+      return { origin: [torsoAxis[0], 1.3, 0], axis: [0, -1, 0], start: 0, taper: 0.9975, group: 0 };
     },
     iterations: 24,
   });
-  const collarTop = standUpCollar(jacket, P, N, swatches, (q) => neckRadius[neckSector(q)]!);
-  // A snug cuff: the sleeve's last 4 cm pulled in toward the wrist.
+  // The knitted cuffs and waistband: drawn in snug to the wrist and the hips, the leather blousing over them.
   for (let i = 0; i < jacket.bodyVertex.length; i += 1) {
     const v = jacket.bodyVertex[i]!;
-    if (!isArm(v)) continue;
-    const s = alongForearm(v);
-    const snug = smoothstep(OUTFIT.cuff - 0.05, OUTFIT.cuff - 0.005, s);
+    const snug = isArm(v) ? smoothstep(OUTFIT.cuff - OUTFIT.knitCuff - 0.025, OUTFIT.cuff - OUTFIT.knitCuff, alongForearm(v)) : smoothstep(OUTFIT.jacketHem + OUTFIT.waistband + 0.03, OUTFIT.jacketHem + OUTFIT.waistband, p(v)[1]);
     if (snug <= 0) continue;
-    const q = vertexOf(jacket.part.positions, i);
-    const side = q[2] < 0 ? SIDES[0]! : SIDES[1]!;
-    const wrist = bind(side.hand);
-    const dir = normalize(sub(wrist, bind(side.forearm)));
-    const onAxis = sub(sub(q, wrist), scale(dir, dot(sub(q, wrist), dir)));
-    const r = Math.hypot(...onAxis);
-    const body = sub(sub(p(v), wrist), scale(dir, dot(sub(p(v), wrist), dir)));
-    const want = Math.hypot(...body) + 0.006;
-    const rr = r + (Math.min(r, want) - r) * snug;
-    const k = rr / (r || 1);
-    for (let a = 0; a < 3; a += 1) jacket.part.positions[i * 3 + a] = wrist[a]! + dir[a]! * dot(sub(q, wrist), dir) + onAxis[a]! * k;
+    const off = isArm(v) ? 0.006 : 0.011;
+    for (let a = 0; a < 3; a += 1) {
+      const worn = mesh.P[v * 3 + a]! + mesh.N[v * 3 + a]! * off;
+      jacket.part.positions[i * 3 + a]! += (worn - jacket.part.positions[i * 3 + a]!) * snug;
+    }
   }
-  addBands(jacket, P, N, swatches, SWATCH.jacket, 0.004, new Set(collarTop));
-  report.push(`jacket: ${jacket.part.faces.length} faces, ${jacket.loops} edges banded`);
+  const collar = foldedCollar(jacket, mesh, swatches, (q) => neckRadius[neckSector(q)]!);
+  addBands(jacket, mesh, swatches, SWATCH.jacket, 0.004);
+  report.push(`jacket: ${jacket.part.faces.length} faces, ${jacket.loops} edges banded; collar: ${collar.part.faces.length} faces round ${(collar.length * 100).toFixed(0)} cm`);
 
-  // --- the trousers
-  const trousersRegion = select((f) => f.every(inTrousers));
-  const trousers = shell("trousers", "trousers", trousersRegion, P, N, W, {
+  // --- the jeans
+  const trousers = shell("trousers", "trousers", clip(mesh, bodyFaces, bodyUvs, insideTrousers, (v) => isArm(v) || share(v, FOOT) > 0.5), mesh, {
     ease: (v) => {
       const q = p(v);
-      // Snug at the seat and the waist, easier down the thigh.
-      return 0.006 + 0.006 * smoothstep(0.85, 0.6, q[1]);
+      // Snug at the seat and the waist, easy down the thigh.
+      return 0.006 + 0.008 * smoothstep(0.9, 0.7, q[1]);
     },
     minEase: () => 0.004,
     hang: (v) => {
       const q = p(v);
       const side = q[2] < 0 ? SIDES[0]! : SIDES[1]!;
-      if (q[1] > 0.54) return null;
-      return { origin: [0, 0.54, side.sign * Math.abs(bind(side.thigh)[2])], axis: [0, -1, 0], start: 0, taper: 0.9935, group: side.sign < 0 ? 1 : 2 };
+      // Straight legs: from the thigh the denim falls on its own, in a little to the hem.
+      if (q[1] > 0.72) return null;
+      return { origin: [0, 0.72, side.sign * Math.abs(bind(side.thigh)[2])], axis: [0, -1, 0], start: 0, taper: 0.993, group: side.sign < 0 ? 1 : 2 };
     },
     iterations: 20,
   });
-  addBands(trousers, P, N, swatches, SWATCH.trousers, 0.003);
+  addBands(trousers, mesh, swatches, SWATCH.trousers, 0.003);
   report.push(`trousers: ${trousers.part.faces.length} faces, ${trousers.loops} edges banded`);
 
   // --- the hair
-  // The shell stands up only where the hair is thick: the thin edge of the cut is painted on the skin (the
-  // texture bake's hairline), so the shell's edge, stepped along the body's faces, rises from where both
-  // already show the same hair and casts no line of shadow on the skin.
-  const hairFactor = hairline(body);
-  const hairRegion = select((f) => f.every((v) => hairFactor(v) > HAIR_SHELL_FROM));
-  // And it rises over the three rings of vertices in from its edge, wherever along the edge the cut is thick.
-  const fromEdge = ringsFromEdge(hairRegion.faces);
-  const thick = (v: number) => smoothstep(HAIR_SHELL_FROM, 1, hairFactor(v)) * Math.min(1, (fromEdge.get(v) ?? 0) / 3);
-  const hair = shell("hair", "hair", hairRegion, P, N, W, {
-    ease: (v) => {
-      const n: V3 = [N[v * 3]!, N[v * 3 + 1]!, N[v * 3 + 2]!];
-      // Longer on top, short at the sides and the nape (a short taper cut).
-      const top = smoothstep(0.2, 0.85, n[1]);
-      return 0.0005 + thick(v) * (0.005 + 0.007 * top);
-    },
-    minEase: (v) => 0.0004 + thick(v) * 0.004,
-    hang: () => null,
-    iterations: 6,
-    fixBoundary: true,
-  });
-  report.push(`hair: ${hair.part.faces.length} faces`);
+  const hair = buildHair(body, bodyFaces, bodyUvs, bodyNormals);
+  report.push(hair.report);
 
-  // --- the skin that shows
-  const skinRegion = select((f) => f.some(skinShows));
-  const skin = shell("skin", "skin", skinRegion, P, N, W, { ease: () => 0, minEase: () => 0, hang: () => null, iterations: 0 });
+  // --- the skin that shows (and the T-shirt painted on it in the open throat)
+  const skinFaces: number[][] = [];
+  const skinUvs: number[][] = [];
+  bodyFaces.forEach((f, i) => {
+    if (!f.some(skinShows)) return;
+    skinFaces.push(f);
+    skinUvs.push(bodyUvs[i]!);
+  });
+  const skin = shell("skin", "skin", { faces: skinFaces, faceUvs: skinUvs }, mesh, { ease: () => 0, minEase: () => 0, hang: () => null, iterations: 0 });
   report.push(`skin: ${skin.part.faces.length} faces`);
 
-  return { skin: skin.part, jacket: jacket.part, trousers: trousers.part, hair: hair.part, report };
+  return { skin: skin.part, jacket: jacket.part, collar: collar.part, trousers: trousers.part, hair: hair.part, marks: { collarEdge: collar.edge, collarFold: collar.fold }, report };
 }
 
 interface Hang {
@@ -279,7 +368,8 @@ interface ShellOptions {
   readonly minEase: (v: number) => number;
   readonly hang: (v: number) => Hang | null;
   readonly iterations: number;
-  readonly fixBoundary?: boolean;
+  /** Vertices on an open edge that the smoothing leaves where they were cut. */
+  readonly fixBoundary?: (v: number) => boolean;
 }
 
 interface Shell {
@@ -289,7 +379,8 @@ interface Shell {
   loops: number;
 }
 
-function shell(name: string, kind: PartKind, region: Region, P: Float64Array, N: Float64Array, W: FittedBody["weights"], options: ShellOptions): Shell {
+function shell(name: string, kind: PartKind, region: Region, mesh: Cloth, options: ShellOptions): Shell {
+  const { P, N } = mesh;
   const index = new Map<number, number>();
   const bodyVertex: number[] = [];
   const faces = region.faces.map((f) =>
@@ -394,7 +485,7 @@ function shell(name: string, kind: PartKind, region: Region, P: Float64Array, N:
     for (let it = 0; it < iterations; it += 1) {
       const next = positions.slice();
       for (let i = 0; i < n; i += 1) {
-        if (onBoundary[i] && options.fixBoundary) continue;
+        if (onBoundary[i] && options.fixBoundary?.(bodyVertex[i]!)) continue;
         const list = onBoundary[i] ? boundaryNeighbours[i]! : neighbours[i]!;
         if (list.length === 0) continue;
         for (let a = 0; a < 3; a += 1) {
@@ -428,101 +519,191 @@ function shell(name: string, kind: PartKind, region: Region, P: Float64Array, N:
   const weights: number[] = [];
   for (const v of bodyVertex) {
     for (let k = 0; k < 4; k += 1) {
-      bones.push(W.bones[v * 4 + k]!);
-      weights.push(W.weights[v * 4 + k]!);
+      bones.push(mesh.bones[v * 4 + k]!);
+      weights.push(mesh.weights[v * 4 + k]!);
     }
   }
   return { part: { name, kind, positions, bones, weights, faces, faceUvs: region.faceUvs.map((uv) => [...uv]) }, bodyVertex, loops: 0 };
 }
 
+interface Collar {
+  readonly part: Part;
+  readonly edge: V3[];
+  readonly fold: V3[];
+  /** Its length round the neck, metres. */
+  readonly length: number;
+}
+
 /**
- * The jacket's stand-up collar, closed (zipped to the top): a band of
- * fabric rising from the neckline, out from the neck by its ease, a little
- * in toward it at the top, its top edge turned in to the neck. Its weights
- * go from the neckline's to a share of the neck's at the top, so it turns a
- * little with the head.
+ * The jacket's collar, laid down: a strip of leather sewn to the neckline
+ * from one front round the back of the neck to the other. It stands a little
+ * way up the neck (most at the back), folds over, and falls outward onto the
+ * shoulders and the chest, where its two points lie either side of the open
+ * throat. A part of its own, so the painter knows it from the jacket under
+ * it. Its foot follows the neckline's skin weights; the fold takes a share of
+ * the neck's, so it gives a little as the head turns.
  */
-/** Returns the collar's turned-in top edge, which needs no band (it already meets the neck). */
-function standUpCollar(target: Shell, P: Float64Array, N: Float64Array, swatches: SwatchCursor, neckRadiusAt: (q: V3) => number): number[] {
-  const part = target.part;
-  const loops = boundaryLoops(part.faces);
-  // The neckline: the open edge highest up the body.
-  const meanY = (loop: number[]) => loop.reduce((s, i) => s + part.positions[i * 3 + 1]!, 0) / loop.length;
-  const neckline = loops.reduce((best, loop) => (meanY(loop) > meanY(best) ? loop : best));
-  const RINGS = 6;
-  const rings: number[][] = [neckline];
+function foldedCollar(jacket: Shell, mesh: Cloth, swatches: SwatchCursor, neckRadiusAt: (q: V3) => number): Collar {
+  const cloth = jacket.part.positions;
+  const loops = boundaryLoops(jacket.part.faces);
+  // The jacket's edge round the neck and the throat: the open edge highest up the body.
+  const meanY = (loop: number[]) => loop.reduce((s, i) => s + cloth[i * 3 + 1]!, 0) / loop.length;
+  const opening = loops.reduce((best, loop) => (meanY(loop) > meanY(best) ? loop : best));
+  // The seam: the part of that edge that lies on the neckline (the rest is the two fronts, down the throat).
+  const onSeam = opening.map((i) => {
+    const q = vertexOf(mesh.P, jacket.bodyVertex[i]!);
+    return necklineAt(q) - q[1] < outsideThroat(q);
+  });
+  const first = onSeam.findIndex((x, k) => x && !onSeam[(k + onSeam.length - 1) % onSeam.length]);
+  if (first < 0) throw new Error("walker body: the jacket's neckline has no ends (is the throat open?)");
+  const seam: number[] = [];
+  for (let k = 0; k < opening.length && onSeam[(first + k) % opening.length]; k += 1) seam.push(opening[(first + k) % opening.length]!);
+  const skinAt = (i: number) => vertexOf(mesh.P, jacket.bodyVertex[i]!);
   const along = [0];
-  for (let k = 1; k <= neckline.length; k += 1) along.push(along[k - 1]! + Math.hypot(...sub(vertexOf(part.positions, neckline[k % neckline.length]!), vertexOf(part.positions, neckline[k - 1]!))));
+  for (let k = 1; k < seam.length; k += 1) along.push(along[k - 1]! + Math.hypot(...sub(skinAt(seam[k]!), skinAt(seam[k - 1]!))));
+  const length = along[seam.length - 1]!;
+
+  // The jacket's surface near a point: the plane of the vertices nearest it.
+  const clothNormals = vertexNormals(cloth, jacket.part.faces);
+  const near: number[] = [];
+  for (let i = 0; i < jacket.bodyVertex.length; i += 1) if (cloth[i * 3 + 1]! > 1.2) near.push(i);
+  const onCloth = (g: V3): { q: V3; n: V3 } => {
+    const best: [number, number][] = [];
+    for (const i of near) {
+      const d = (cloth[i * 3]! - g[0]) ** 2 + (cloth[i * 3 + 1]! - g[1]) ** 2 + (cloth[i * 3 + 2]! - g[2]) ** 2;
+      if (best.length < 6) best.push([d, i]);
+      else if (d < best[5]![0]) best[5] = [d, i];
+      else continue;
+      best.sort((x, y) => x[0] - y[0]);
+    }
+    let total = 0;
+    let middle: V3 = [0, 0, 0];
+    let normal: V3 = [0, 0, 0];
+    for (const [d, i] of best) {
+      const w = 1 / (d + 1e-6);
+      total += w;
+      middle = add(middle, scale(vertexOf(cloth, i), w));
+      normal = add(normal, scale(vertexOf(clothNormals, i), w));
+    }
+    const n = normalize(normal);
+    middle = scale(middle, 1 / total);
+    return { q: sub(g, scale(n, dot(sub(g, middle), n))), n };
+  };
+  /** From a point on the jacket, `distance` over its surface the way `heading` leans. */
+  const over = (start: V3, heading: V3, distance: number): { q: V3; n: V3 } => {
+    let here = onCloth(start);
+    for (let left = distance; left > 1e-6; left -= 0.008) {
+      const way = normalize(sub(heading, scale(here.n, dot(heading, here.n))));
+      here = onCloth(add(here.q, scale(way, Math.min(0.008, left))));
+    }
+    return here;
+  };
+
+  const COLUMNS = 48;
+  // Per ring: the neck's share of its weights.
+  const NECK_SHARE = [0, 0.3, 0.3, 0.22, 0.12, 0.05, 0.05];
+  const RINGS = NECK_SHARE.length;
+  const part: Part = { name: "collar", kind: "collar", positions: [], bones: [], weights: [], faces: [], faceUvs: [] };
+  const rings: number[][] = Array.from({ length: RINGS }, () => []);
+  const across: number[][] = [];
+  const edge: V3[] = [];
+  const fold: V3[] = [];
   const addVertex = (q: V3, from: number, neckShare: number): number => {
     const index = part.positions.length / 3;
     part.positions.push(q[0], q[1], q[2]);
-    // Blend the neckline vertex's weights toward the neck bone's.
+    const v = jacket.bodyVertex[from]!;
     const blended = new Map<number, number>();
-    for (let k = 0; k < 4; k += 1) {
-      const b = part.bones[from * 4 + k]!;
-      blended.set(b, (blended.get(b) ?? 0) + part.weights[from * 4 + k]! * (1 - neckShare));
-    }
+    for (let k = 0; k < 4; k += 1) blended.set(mesh.bones[v * 4 + k]!, (blended.get(mesh.bones[v * 4 + k]!) ?? 0) + mesh.weights[v * 4 + k]! * (1 - neckShare));
     blended.set(BONE.neck, (blended.get(BONE.neck) ?? 0) + neckShare);
-    const top = [...blended.entries()].filter(([, w]) => w > 0).sort((a, b) => b[1] - a[1]).slice(0, 4);
-    const total = top.reduce((s, [, w]) => s + w, 0);
+    const top = [...blended.entries()].filter(([, w]) => w > 0).sort((x, y) => y[1] - x[1]).slice(0, 4);
+    const total = top.reduce((sum, [, w]) => sum + w, 0);
     for (let k = 0; k < 4; k += 1) {
       part.bones.push(top[k]?.[0] ?? 0);
       part.weights.push(top[k] ? top[k]![1] / total : 0);
     }
-    target.bodyVertex.push(target.bodyVertex[from]!);
     return index;
   };
-  for (let j = 1; j <= RINGS; j += 1) {
-    const f = j / RINGS;
-    rings.push(
-      neckline.map((i) => {
-        const s = vertexOf(part.positions, i);
-        const dx = s[0] - NECK_AXIS[0];
-        const dz = s[2] - NECK_AXIS[2];
-        const r0 = Math.hypot(dx, dz) || 1;
-        const rTop = Math.max(neckRadiusAt(s) + 0.013, r0 * 0.86);
-        const r = r0 + (rTop - r0) * smoothstep(0, 0.6, f);
-        const y = s[1] + collarHeightAt(s) * f;
-        return addVertex([NECK_AXIS[0] + (dx / r0) * r, y, NECK_AXIS[2] + (dz / r0) * r], i, 0.35 * f);
-      }),
-    );
+  for (let c = 0; c < COLUMNS; c += 1) {
+    const s = (length * c) / (COLUMNS - 1);
+    let k = 0;
+    while (k + 2 < seam.length && along[k + 1]! < s) k += 1;
+    const t = Math.min(1, Math.max(0, (s - along[k]!) / (along[k + 1]! - along[k]! || 1)));
+    const nearest = t < 0.5 ? seam[k]! : seam[k + 1]!;
+    // The seam on the skin and on the jacket, and the skin's normal there.
+    const skin = lerp(skinAt(seam[k]!), skinAt(seam[k + 1]!), t);
+    const skinNormal = normalize(lerp(vertexOf(mesh.N, jacket.bodyVertex[seam[k]!]!), vertexOf(mesh.N, jacket.bodyVertex[seam[k + 1]!]!), t));
+    const worn = lerp(vertexOf(cloth, seam[k]!), vertexOf(cloth, seam[k + 1]!), t);
+    const angle = neckAngleOf(skin);
+    const out: V3 = [Math.cos(angle), 0, Math.sin(angle)];
+    // How far from the nearer point, and how much of a collar there is there: none stands at the points themselves.
+    const fromEnd = Math.min(s, length - s);
+    const body = smoothstep(0, 0.07, fromEnd);
+    const stand = 0.011 + (OUTFIT.collarStand - 0.004 * Math.cos(angle) ** 2 - 0.011) * body;
+    const fall = OUTFIT.collarPoint + (OUTFIT.collarFall - OUTFIT.collarPoint) * smoothstep(0.0, 0.1, fromEnd);
+    // The fold: up the neck from the seam, a finger off the neck.
+    const reach = neckRadiusOf(skin);
+    const foldRadius = Math.min(reach + 0.006, Math.max(reach - 0.02, neckRadiusAt(skin) + 0.014));
+    const inner: V3 = [NECK_AXIS[0] + out[0] * (reach + (foldRadius - reach) * body), skin[1] + stand, NECK_AXIS[2] + out[2] * (reach + (foldRadius - reach) * body)];
+    const crest = add(inner, [out[0] * 0.007, 0.0015, out[2] * 0.007]);
+    // The leaf: out and down over the jacket to its edge, lifted off it less and less (and hardly at all at the points, which lie flat).
+    const heading = normalize([out[0], -0.35, out[2]]);
+    const beyond = Math.max(0.014, fall - stand);
+    const lift = 0.3 + 0.7 * smoothstep(0, 0.03, fromEnd);
+    const leaf = [0.34, 0.68, 1].map((share, j) => {
+      const at = over(worn, heading, beyond * share);
+      return add(at.q, scale(at.n, lift * ([0.004 + 0.5 * stand, 0.004 + 0.18 * stand, 0.0045][j]!)));
+    });
+    const last = over(worn, heading, beyond - 0.005);
+    const under = add(last.q, scale(last.n, lift * 0.0012));
+    const column: V3[] = [add(skin, scale(skinNormal, 0.0015)), inner, crest, leaf[0]!, leaf[1]!, leaf[2]!, under];
+    const run = [0];
+    column.forEach((q, j) => {
+      rings[j]!.push(addVertex(q, nearest, NECK_SHARE[j]!));
+      if (j > 0) run.push(run[j - 1]! + Math.hypot(...sub(q, column[j - 1]!)));
+    });
+    across.push(run.map((x) => x / run[RINGS - 1]!));
+    edge.push(leaf[2]!);
+    fold.push(crest);
   }
-  // The top edge turned in: down a little to the neck's skin.
-  const inner = neckline.map((i, k) => {
-    const s = vertexOf(part.positions, rings[RINGS]![k]!);
-    const dx = s[0] - NECK_AXIS[0];
-    const dz = s[2] - NECK_AXIS[2];
-    const r0 = Math.hypot(dx, dz) || 1;
-    const r = Math.min(r0 - 0.004, neckRadiusAt(s) + 0.002);
-    return addVertex([NECK_AXIS[0] + (dx / r0) * r, s[1] - 0.006, NECK_AXIS[2] + (dz / r0) * r], i, 0.4);
-  });
-  rings.push(inner);
-  // The collar, near the face, takes the swatch's whole width (about as many texels per metre as the jacket's body).
-  const strip = swatches.strip(SWATCH.jacket, along[neckline.length]!, 0.03, 1);
-  for (let j = 0; j + 1 < rings.length; j += 1) {
-    const lower = rings[j]!;
-    const upper = rings[j + 1]!;
-    const v0 = strip.v0 + ((strip.v1 - strip.v0) * j) / (rings.length - 1);
-    const v1 = strip.v0 + ((strip.v1 - strip.v0) * (j + 1)) / (rings.length - 1);
-    for (let k = 0; k < neckline.length; k += 1) {
-      const k1 = (k + 1) % neckline.length;
-      // The neckline runs a -> b in the jacket's faces; the collar takes it b -> a.
-      part.faces.push([lower[k1]!, lower[k]!, upper[k]!, upper[k1]!]);
-      const u0 = strip.u(along[k]!);
-      const u1 = strip.u(along[k + 1]!);
-      part.faceUvs.push([u1, v0, u0, v0, u0, v1, u1, v1]);
+  // The leaf faces up and out; the stand's inside, the neck. Which way round that is depends on the way the seam runs.
+  const probe = (c: number) => {
+    const a = vertexOf(part.positions, rings[3]![c]!);
+    const b = vertexOf(part.positions, rings[3]![c + 1]!);
+    const d = vertexOf(part.positions, rings[4]![c]!);
+    return cross(sub(b, a), sub(d, a));
+  };
+  const middle = Math.floor(COLUMNS / 2);
+  const outward = sub(vertexOf(part.positions, rings[3]![middle]!), [NECK_AXIS[0], vertexOf(part.positions, rings[3]![middle]!)[1] - 0.05, NECK_AXIS[2]]);
+  const flip = dot(probe(middle), outward) < 0;
+  // The collar is next to the face: it takes the swatch's whole width.
+  const strip = swatches.strip(SWATCH.jacket, length, 0.05, 1);
+  for (let j = 0; j + 1 < RINGS; j += 1) {
+    for (let c = 0; c + 1 < COLUMNS; c += 1) {
+      const u0 = strip.u((length * c) / (COLUMNS - 1));
+      const u1 = strip.u((length * (c + 1)) / (COLUMNS - 1));
+      const v = (column: number, ring: number) => strip.v0 + (strip.v1 - strip.v0) * across[column]![ring]!;
+      const quad = [rings[j]![c]!, rings[j]![c + 1]!, rings[j + 1]![c + 1]!, rings[j + 1]![c]!];
+      const uv = [u0, v(c, j), u1, v(c + 1, j), u1, v(c + 1, j + 1), u0, v(c, j + 1)];
+      if (flip) {
+        part.faces.push([quad[3]!, quad[2]!, quad[1]!, quad[0]!]);
+        part.faceUvs.push([uv[6]!, uv[7]!, uv[4]!, uv[5]!, uv[2]!, uv[3]!, uv[0]!, uv[1]!]);
+      } else {
+        part.faces.push(quad);
+        part.faceUvs.push(uv);
+      }
     }
   }
-  return inner;
+  return { part, edge, fold, length };
 }
 
 /**
  * A band at each open edge, from the edge in toward the skin (`inset` off
  * it), so the garment shows a thickness there and nothing shows through.
  */
-function addBands(target: Shell, P: Float64Array, N: Float64Array, swatches: SwatchCursor, swatch: (typeof SWATCH)[keyof typeof SWATCH], inset: number, skip: ReadonlySet<number> = new Set()): void {
+function addBands(target: Shell, mesh: Cloth, swatches: SwatchCursor, swatch: (typeof SWATCH)[keyof typeof SWATCH], inset: number): void {
+  const { P, N } = mesh;
   const part = target.part;
-  const loops = boundaryLoops(part.faces).filter((loop) => !loop.every((i) => skip.has(i)));
+  const loops = boundaryLoops(part.faces);
   for (const loop of loops) {
     const inner = loop.map((i) => {
       const v = target.bodyVertex[i]!;
@@ -552,115 +733,4 @@ function addBands(target: Shell, P: Float64Array, N: Float64Array, swatches: Swa
     }
   }
   target.loops = loops.length;
-}
-
-/** The hair shell covers the faces whose every corner carries more hair than this (`hairlineAt`). */
-export const HAIR_SHELL_FROM = 0.4;
-
-/** Per vertex of a region, how many edges in it is from its open edge (0 on the edge). */
-function ringsFromEdge(faces: readonly number[][]): Map<number, number> {
-  const edges = new Map<string, number>();
-  const neighbours = new Map<number, Set<number>>();
-  for (const f of faces)
-    for (let k = 0; k < f.length; k += 1) {
-      const a = f[k]!;
-      const b = f[(k + 1) % f.length]!;
-      const key = a < b ? `${a},${b}` : `${b},${a}`;
-      edges.set(key, (edges.get(key) ?? 0) + 1);
-      if (!neighbours.has(a)) neighbours.set(a, new Set());
-      if (!neighbours.has(b)) neighbours.set(b, new Set());
-      neighbours.get(a)!.add(b);
-      neighbours.get(b)!.add(a);
-    }
-  const rings = new Map<number, number>();
-  let front: number[] = [];
-  for (const [key, count] of edges) {
-    if (count !== 1) continue;
-    for (const v of key.split(",").map(Number)) {
-      if (rings.has(v)) continue;
-      rings.set(v, 0);
-      front.push(v);
-    }
-  }
-  for (let ring = 1; front.length > 0; ring += 1) {
-    const next: number[] = [];
-    for (const v of front)
-      for (const w of neighbours.get(v)!) {
-        if (rings.has(w)) continue;
-        rings.set(w, ring);
-        next.push(w);
-      }
-    front = next;
-  }
-  return rings;
-}
-
-/**
- * How much hair a scalp vertex carries, 0 to 1: a short man's cut, the
- * hairline across the top of the forehead, receding a little at the temples,
- * sideburns down to the middle of the ear, round above the ears and down to
- * the nape.
- */
-function hairline(body: FittedBody): (v: number) => number {
-  const at = hairlineAt(body);
-  return (v) => at(vertexOf(body.positions, v));
-}
-
-/** The same for any point on the head. */
-export function hairlineAt(body: FittedBody): (q: V3) => number {
-  const P = body.positions;
-  const eyes = ["helper-l-eye", "helper-r-eye"].map((g) => {
-    const seen = new Set<number>();
-    for (const f of body.faces) if (f.group === g) for (const v of f.vertices) seen.add(v);
-    const c: V3 = [0, 0, 0];
-    for (const v of seen) for (let a = 0; a < 3; a += 1) c[a]! += P[v * 3 + a]! / seen.size;
-    return c;
-  });
-  const eyeY = (eyes[0]![1] + eyes[1]![1]) / 2;
-  const eyeX = (eyes[0]![0] + eyes[1]![0]) / 2;
-  // The head's vertical axis, over the ears.
-  const cx = eyeX - 0.095;
-  // (azimuth from the front, degrees; hairline height above the eyes, metres)
-  const line: [number, number][] = [
-    [0, 0.054],
-    [22, 0.056],
-    [40, 0.05],
-    [58, 0.032],
-    // The sideburn, in front of the ear (which spans about 70 to 95 degrees round, up to 12 mm over the eyes).
-    [65, 0.006],
-    [70, -0.014],
-    [75, -0.008],
-    // Round over the ear, close above it.
-    [82, 0.012],
-    [92, 0.018],
-    [104, 0.014],
-    [118, -0.012],
-    [134, -0.044],
-    [150, -0.066],
-    [165, -0.076],
-    [180, -0.079],
-  ];
-  const heightAt = (azimuth: number) => {
-    const a = Math.min(180, Math.abs(azimuth));
-    for (let k = 1; k < line.length; k += 1) {
-      if (a <= line[k]![0]) {
-        const [a0, h0] = line[k - 1]!;
-        const [a1, h1] = line[k]!;
-        const t = (a - a0) / (a1 - a0);
-        return h0 + (h1 - h0) * (0.5 - 0.5 * Math.cos(Math.PI * t));
-      }
-    }
-    return line[line.length - 1]![1];
-  };
-  const headBone = bind(BONE.head);
-  return (q) => {
-    if (q[1] < headBone[1] - 0.06) return 0;
-    const azimuth = (Math.atan2(Math.abs(q[2]), q[0] - cx) * 180) / Math.PI;
-    // The ear itself carries none: it stands off the skull's side (the skull's 73 to 76 mm out from the axis
-    // there, the ear's rim 79 to 87).
-    const out = Math.hypot(q[0] - cx, q[2]);
-    const ear = smoothstep(66, 72, azimuth) * smoothstep(128, 122, azimuth) * smoothstep(0.0765, 0.0785, out) * smoothstep(eyeY + 0.018, eyeY + 0.012, q[1]) * smoothstep(eyeY - 0.056, eyeY - 0.046, q[1]);
-    const h = eyeY + heightAt(azimuth);
-    return smoothstep(h - 0.002, h + 0.012, q[1]) * (1 - ear);
-  };
 }

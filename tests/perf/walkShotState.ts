@@ -29,7 +29,7 @@ import { headingVectorFromYaw, type PerfCaptureCarRun, type PerfCaptureWalkRun }
 export const WALK_SHOT_STATURE = 1.76;
 export const WALK_SHOT_EYE_HEIGHT = 0.936 * 1.76;
 /** CAR_SEATING.doorStand, the driver's door's stand point (body frame: forward, right), and .cgAboveGround, metres. */
-export const WALK_SHOT_DOOR_STAND = Object.freeze({ forward: -0.25, right: 1.4 });
+export const WALK_SHOT_DOOR_STAND = Object.freeze({ forward: -0.55, right: 1.45 });
 export const WALK_SHOT_CAR_CG_ABOVE_GROUND = 0.8;
 /** `PERSON_SURFACE_WATER`: `PersonVisualState.surface` for a foot in water. */
 export const WALK_SHOT_SURFACE_WATER = -2;
