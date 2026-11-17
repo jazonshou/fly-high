@@ -564,6 +564,7 @@ export class DetailWorkerRuntime {
         bytes,
         minimum: batch.bounds.minimum(),
         maximum: batch.bounds.maximum(),
+        blocks: batch.bounds.blockExtents(),
       });
     }
     this.post({

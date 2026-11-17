@@ -759,6 +759,21 @@ describe("terrain surface plugin (3-2)", () => {
       expect(source).toContain("reference.rgb,");
       expect(source).toContain("layer.height = mix(0.5, albedoTexel.a, detailWeight);");
       expect(source).toContain("layer.cavity = mix(1.0, normalTexel.a, detailWeight);");
+      // The micro read rides on the same fade: its weight and its takeover are
+      // multiples of detailWeight, so past the fade it is 1, 1 and no offset.
+      expect(source).toContain("microTexels)) * detailWeight * planar;");
+      expect(source).toContain("microTexels)) * detailWeight;");
+      // One read a fragment, after the blend, of the layer with the largest
+      // share; one tap from each array at an explicit level. A rasteriser
+      // that runs both sides of a branch pays for every fetch in the source.
+      expect(source.match(/terrainSurfaceMicro\(\n/gu)).toHaveLength(2);
+      expect(source.match(/textureSampleLevel\(\n\s+terrainSurface(?:Albedo|Normal), /gu)).toHaveLength(2);
+      const sample = source.slice(
+        source.indexOf("fn terrainSurfaceSample("), source.indexOf("struct TerrainSurfaceMicro"));
+      expect(sample.match(/terrainSurfaceFetchAlbedo\(/gu)).toHaveLength(4);
+      expect(sample).not.toContain("textureSampleLevel");
+      expect(source).toContain("terrainAlbedo = terrainAlbedo * terrainMicro.albedo;");
+      expect(source).toContain("terrainCavity = min(1.0, terrainCavity * terrainMicro.cavity);");
       expect(source).toContain(
         "layer.roughness = clamp(mix(reference.w, normalTexel.b, detailWeight)",
       );

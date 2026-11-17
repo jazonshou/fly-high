@@ -2,6 +2,7 @@ import type {
   DetailPresentationBuildCatalog,
   DetailPresentationChunkStatistics,
 } from "@/src/render/webgpu/detail/presentationBuild";
+import { isDetailCullBlockList } from "@/src/render/webgpu/detail/instanceFormat";
 import type { RenderedDensityLaw } from "@/src/render/webgpu/detail/renderedDensity";
 import type {
   DetailFloatingOrigin,
@@ -57,6 +58,14 @@ export interface DetailWorkerPresentationBuildInput {
    * which is the CPU-only path CI's hosted runner always takes.
    */
   readonly groundCoverFieldRadiusMeters?: number;
+  /** Metres inside which each drawn tree also emits a ground shadow record; 0 or absent emits none. */
+  readonly treeGroundShadowRangeMeters?: number;
+  /** The tier's cap on how far a bush's body or a boulder is drawn; absent is the near radius. */
+  readonly groundObjectRangeMeters?: number;
+  /** A tighter cap for boulders alone; absent is the cap above. */
+  readonly boulderRangeMeters?: number;
+  /** The tier's open-ground bush cap, per hectare; absent is `SHRUB_OPEN_DRAWN_PER_HECTARE`. */
+  readonly shrubOpenDrawnPerHectare?: number;
   readonly observerX: number;
   readonly observerZ: number;
 }
@@ -68,6 +77,11 @@ export interface DetailWorkerPresentationBatch {
   readonly bytes: Uint8Array;
   readonly minimum: readonly [number, number, number];
   readonly maximum: readonly [number, number, number];
+  /**
+   * `DetailInstanceBounds.blockExtents()`: the batch's culling blocks, six
+   * numbers a block, never empty. Its backing buffer transfers to main.
+   */
+  readonly blocks: Float64Array;
 }
 
 export interface DetailWorkerPresentationResult {
@@ -231,6 +245,7 @@ export function detailWorkerEventTransferables(event: DetailWorkerEvent): Transf
   const transfers = new Set<ArrayBuffer>();
   for (const batch of event.batches) {
     if (batch.bytes.buffer instanceof ArrayBuffer) transfers.add(batch.bytes.buffer);
+    if (batch.blocks.buffer instanceof ArrayBuffer) transfers.add(batch.blocks.buffer);
   }
   return [...transfers];
 }
@@ -301,7 +316,12 @@ function isPresentationBatch(value: unknown): value is DetailWorkerPresentationB
     && value.count > 0
     && value.bytes instanceof Uint8Array
     && value.bytes.byteLength === value.count * 32
-    && isOrderedBounds(value.minimum, value.maximum);
+    && isOrderedBounds(value.minimum, value.maximum)
+    && isDetailCullBlockList(
+      value.blocks,
+      value.minimum as readonly [number, number, number],
+      value.maximum as readonly [number, number, number],
+    );
 }
 
 /** Runtime guard for messages crossing the worker boundary. */

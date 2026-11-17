@@ -69,7 +69,7 @@ const EDGE = generatedCell(12, 2);
  * presentation build never reads them.
  */
 interface ReadCell extends Omit<GeneratedDetailCell, "trees" | "clutter"> {
-  readonly trees: readonly Omit<DetailTreePlacement, "trunkRadiusMeters" | "windPhaseRadians" | "standAge">[];
+  readonly trees: readonly Omit<DetailTreePlacement, "windPhaseRadians" | "standAge">[];
   readonly clutter: readonly Omit<DetailClutterPlacement, "selection">[];
 }
 
@@ -85,7 +85,7 @@ function omit<Value extends object, Key extends keyof Value>(
 function readFields(cell: GeneratedDetailCell): ReadCell {
   return {
     ...cell,
-    trees: cell.trees.map((tree) => omit(tree, ["trunkRadiusMeters", "windPhaseRadians", "standAge"])),
+    trees: cell.trees.map((tree) => omit(tree, ["windPhaseRadians", "standAge"])),
     clutter: cell.clutter.map((piece) => omit(piece, ["selection"])),
   };
 }
@@ -117,9 +117,12 @@ function unpack(packed: PackedDetailCell): ReadCell {
         yawRadians: tree.yawRadians,
         heightMeters: tree.heightMeters,
         crownRadiusMeters: tree.crownRadiusMeters,
+        trunkRadiusMeters: tree.trunkRadiusMeters,
         windResponse: tree.windResponse,
         color: [...tree.color] as [number, number, number, number],
         selection: tree.selection,
+        groundSlopeX: tree.groundSlopeX,
+        groundSlopeZ: tree.groundSlopeZ,
       };
     }),
     shrubs: range(packed.shrubs.count).map((index) => {
@@ -137,6 +140,9 @@ function unpack(packed: PackedDetailCell): ReadCell {
         windResponse: shrub.windResponse,
         color: [...shrub.color] as [number, number, number, number],
         selection: shrub.selection,
+        canopyClosure: shrub.canopyClosure,
+        groundSlopeX: shrub.groundSlopeX,
+        groundSlopeZ: shrub.groundSlopeZ,
       };
     }),
     rocks: range(packed.rocks.count).map((index) => {
@@ -306,6 +312,32 @@ describe("packed detail cells", () => {
         .toEqual({ ...cell, trees: [], shrubs: [], rocks: [], clutter: [], groundCover: [] });
     }
     expect(new Set(FOREST.groundCover.map((node) => node.archetype)).size).toBeGreaterThan(2);
+  });
+
+  it("packs the ground shadow's and the bushes' fields, and 0 for one a placement leaves out", () => {
+    // The generator writes them on every tree and bush, and not all as zero:
+    // the equality above would pass on columns of zeros otherwise.
+    for (const field of ["trunkRadiusMeters", "groundSlopeX", "groundSlopeZ"] as const) {
+      expect(FOREST.trees.every((tree) => typeof tree[field] === "number"), field).toBe(true);
+      expect(FOREST.trees.some((tree) => tree[field] !== 0), field).toBe(true);
+    }
+    for (const field of ["canopyClosure", "groundSlopeX", "groundSlopeZ"] as const) {
+      expect(FOREST.shrubs.every((shrub) => typeof shrub[field] === "number"), field).toBe(true);
+      expect(FOREST.shrubs.some((shrub) => shrub[field] !== 0), field).toBe(true);
+    }
+    // A hand-built placement may leave the optional ones out. The build read
+    // an absent one as 0 (level ground, open ground), and 0 is what is packed.
+    const bare = {
+      ...FOREST,
+      trees: [omit(FOREST.trees[0]!, ["groundSlopeX", "groundSlopeZ"])],
+      shrubs: [omit(FOREST.shrubs[0]!, ["canopyClosure", "groundSlopeX", "groundSlopeZ"])],
+    };
+    const packed = packDetailCell(bare);
+    const tree = new PackedTreeView().at(packed.trees, 0);
+    const shrub = new PackedShrubView().at(packed.shrubs, 0);
+    expect([tree.groundSlopeX, tree.groundSlopeZ]).toEqual([0, 0]);
+    expect([shrub.canopyClosure, shrub.groundSlopeX, shrub.groundSlopeZ]).toEqual([0, 0, 0]);
+    expect(tree.trunkRadiusMeters).toBe(FOREST.trees[0]!.trunkRadiusMeters);
   });
 
   it("stores numbers as Float64 columns and names as codes, with no placement objects", () => {

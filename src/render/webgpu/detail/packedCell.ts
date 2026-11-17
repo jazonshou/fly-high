@@ -22,7 +22,10 @@ import type {
  * compression boxes one by one. A heap snapshot of the detail worker on the
  * Low bench found 89 retained cells holding 133 MiB that way. Columns hold
  * the values the build reads in ~103 B per placement (88 such cells:
- * 38 MiB).
+ * 38 MiB). That was measured before the build drew ground shadows and solid
+ * bushes, which read three more numbers of every tree and of every bush:
+ * 24 B more for each of those, 23% more column bytes over six cells of the
+ * same world. The bench's heap was not snapshotted again.
  *
  * Every number is a Float64Array element, so it is the exact double the
  * generator produced, and every name is its index in a fixed code table
@@ -75,18 +78,26 @@ function encode<Name extends string>(
 
 /**
  * The fields the presentation build reads, and only those. Not packed:
- * a tree's trunk radius, wind phase (its phase lane carries the stem's LOD
- * key) and stand age, and a clutter piece's selection. A view has no getter
- * for them, so a build that starts reading one fails to compile instead of
- * reading a value nobody packed.
+ * a tree's wind phase (its phase lane carries the stem's LOD key) and stand
+ * age, and a clutter piece's selection. A view has no getter for them, so a
+ * build that starts reading one fails to compile instead of reading a value
+ * nobody packed.
+ *
+ * A tree's trunk radius and ground slope are read by its ground shadow
+ * (`treeGroundShadowRecord`); a bush's canopy closure decides whose budget it
+ * is drawn on and its ground slope lays its shadow (`presentationBuild.ts`).
+ * The generator always writes them. Where a hand-built placement leaves one
+ * out, 0 is packed, which is what the build read for an absent one.
  */
 const TREE_FIELDS = [
-  "x", "y", "z", "yawRadians", "heightMeters", "crownRadiusMeters", "windResponse",
-  "colorR", "colorG", "colorB", "colorA", "selection",
+  "x", "y", "z", "yawRadians", "heightMeters", "crownRadiusMeters", "trunkRadiusMeters",
+  "windResponse", "colorR", "colorG", "colorB", "colorA", "selection",
+  "groundSlopeX", "groundSlopeZ",
 ] as const;
 const SHRUB_FIELDS = [
   "x", "y", "z", "yawRadians", "heightMeters", "radiusMeters", "windPhaseRadians",
   "windResponse", "colorR", "colorG", "colorB", "colorA", "selection",
+  "canopyClosure", "groundSlopeX", "groundSlopeZ",
 ] as const;
 const ROCK_FIELDS = [
   "x", "y", "z", "yawRadians", "radiusMeters", "flattening", "colorR", "colorG", "colorB",
@@ -154,12 +165,15 @@ function packTrees(trees: readonly DetailTreePlacement[]): PackedTreeColumns {
     columns.yawRadians[index] = tree.yawRadians;
     columns.heightMeters[index] = tree.heightMeters;
     columns.crownRadiusMeters[index] = tree.crownRadiusMeters;
+    columns.trunkRadiusMeters[index] = tree.trunkRadiusMeters;
     columns.windResponse[index] = tree.windResponse;
     columns.colorR[index] = tree.color[0];
     columns.colorG[index] = tree.color[1];
     columns.colorB[index] = tree.color[2];
     columns.colorA[index] = tree.color[3];
     columns.selection[index] = tree.selection;
+    columns.groundSlopeX[index] = tree.groundSlopeX ?? 0;
+    columns.groundSlopeZ[index] = tree.groundSlopeZ ?? 0;
   });
   return columns;
 }
@@ -181,6 +195,9 @@ function packShrubs(shrubs: readonly DetailShrubPlacement[]): PackedShrubColumns
     columns.colorB[index] = shrub.color[2];
     columns.colorA[index] = shrub.color[3];
     columns.selection[index] = shrub.selection;
+    columns.canopyClosure[index] = shrub.canopyClosure ?? 0;
+    columns.groundSlopeX[index] = shrub.groundSlopeX ?? 0;
+    columns.groundSlopeZ[index] = shrub.groundSlopeZ ?? 0;
   });
   return columns;
 }
@@ -293,8 +310,11 @@ export class PackedTreeView {
   get yawRadians(): number { return this.columns!.yawRadians[this.index]!; }
   get heightMeters(): number { return this.columns!.heightMeters[this.index]!; }
   get crownRadiusMeters(): number { return this.columns!.crownRadiusMeters[this.index]!; }
+  get trunkRadiusMeters(): number { return this.columns!.trunkRadiusMeters[this.index]!; }
   get windResponse(): number { return this.columns!.windResponse[this.index]!; }
   get selection(): number { return this.columns!.selection[this.index]!; }
+  get groundSlopeX(): number { return this.columns!.groundSlopeX[this.index]!; }
+  get groundSlopeZ(): number { return this.columns!.groundSlopeZ[this.index]!; }
   get color(): readonly [number, number, number, number] {
     return fillTint(this.tint, this.columns!, this.index);
   }
@@ -321,6 +341,9 @@ export class PackedShrubView {
   get windPhaseRadians(): number { return this.columns!.windPhaseRadians[this.index]!; }
   get windResponse(): number { return this.columns!.windResponse[this.index]!; }
   get selection(): number { return this.columns!.selection[this.index]!; }
+  get canopyClosure(): number { return this.columns!.canopyClosure[this.index]!; }
+  get groundSlopeX(): number { return this.columns!.groundSlopeX[this.index]!; }
+  get groundSlopeZ(): number { return this.columns!.groundSlopeZ[this.index]!; }
   get color(): readonly [number, number, number, number] {
     return fillTint(this.tint, this.columns!, this.index);
   }

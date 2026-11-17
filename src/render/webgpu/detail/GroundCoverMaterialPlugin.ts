@@ -51,8 +51,18 @@ function archetypeVertexTableWgsl(): string {
 
 /** `D-2`: how much of the GROUND's normal a blade carries even at the camera's feet. */
 export const GROUND_COVER_NEAR_NORMAL_BLEND = 0.6;
-/** `D-2`: albedo multiplier at a blade's root; the tip stays at 1.32. */
-export const GROUND_COVER_ROOT_ALBEDO = 0.7;
+/**
+ * Albedo multiplier at a blade's root and at its tip.
+ *
+ * 0.7 and 1.32 until 2026-11-12, which put a lit blade at about three times
+ * the ground it stood on (display-linear green 0.27 against 0.083, Medium,
+ * 1.7 m eye, sun at 62 degrees): the ground's albedo is a sward's with its
+ * own shade in it, cavity and crunch dim it further, and nothing shades a
+ * blade but the shadow map. A blade is the lit top of the same sward, so it
+ * runs from under the ground's tone at the root to a little over it at the tip.
+ */
+export const GROUND_COVER_ROOT_ALBEDO = 0.45;
+export const GROUND_COVER_TIP_ALBEDO = 1.05;
 
 /**
  * Wave G — the blade material plugin.
@@ -286,7 +296,7 @@ varying groundTint: vec4f;
 // D-2: root 0.5 -> 0.7. The root is already darkened by the shadow map and by
 // the ambient term; halving its albedo as well counted the same occlusion twice.
 surfaceAlbedo = fragmentInputs.groundTint.rgb
-  * mix(${GROUND_COVER_ROOT_ALBEDO.toFixed(2)}, 1.32, pow(clamp(fragmentInputs.groundTint.w, 0.0, 1.0), 1.5));
+  * mix(${GROUND_COVER_ROOT_ALBEDO.toFixed(2)}, ${GROUND_COVER_TIP_ALBEDO.toFixed(2)}, pow(clamp(fragmentInputs.groundTint.w, 0.0, 1.0), 1.5));
 `,
       CUSTOM_FRAGMENT_BEFORE_LIGHTS: /* wgsl */ `
 // D-2: a blade never takes light from underneath. twoSidedLighting negates the

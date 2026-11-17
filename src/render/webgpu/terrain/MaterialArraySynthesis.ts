@@ -534,6 +534,7 @@ function fillBase(
 // --- Grass -----------------------------------------------------------------
 
 const GRASS_SOIL: Rgb = [0.062, 0.052, 0.038];
+const GRASS_THATCH: Rgb = [0.105, 0.088, 0.05];
 const GRASS_BLADE_DARK: Rgb = [0.052, 0.098, 0.03];
 const GRASS_BLADE_MID: Rgb = [0.088, 0.152, 0.044];
 const GRASS_BLADE_LIGHT: Rgb = [0.145, 0.215, 0.07];
@@ -541,23 +542,66 @@ const GRASS_STRAW_DARK: Rgb = [0.135, 0.115, 0.05];
 const GRASS_STRAW_LIGHT: Rgb = [0.255, 0.225, 0.098];
 
 /**
- * `W-2` — the sward's METRE-scale contrast, as a recipe parameter.
+ * The sward's three storeys, bottom up: what a tuft of grass is from above.
  *
- * The clump field is a 1 m fbm, and every colour it drives lands in the tile's
- * |k| <= 4 band — the band whose energy IS the tiling repeat, because it
- * survives every mip the ground is ever seen through. Measured at seed "s3",
- * edge 256: DryGrass carried 1.13e-4 of low-|k| albedo power against Grass's
- * 2.66e-5, four times as much, and that is the fine repeating grid the near
- * field shows over dry ground. The cause is the straw ramp: at strawShare 0.8
- * the colour runs the WHOLE straw pair (0.135 -> 0.255 luma, nearly 2x) across
- * one metre-scale field, and the bare-soil mask opens on the same field, so
- * the two reinforce. `MaterialArraySynthesis.ts`'s own note called this out and
- * left it for a sward retune: this is that retune.
+ * `cover` is the storey's summed blade area as a share of the tile (blades
+ * overlap, so it runs past 1), `lengthMeters` and `height` the range a blade's
+ * length and tip height are drawn from, `blades` the count in one tuft and
+ * `fan` how much of a full circle a tuft's blades splay over.
+ */
+const SWARD_STOREYS: readonly {
+  readonly cover: number;
+  readonly lengthMeters: readonly [number, number];
+  readonly height: readonly [number, number];
+  readonly blades: readonly [number, number];
+  readonly fan: number;
+  /** Blade width, metres: the upper storeys are the broad leaves a walker sees. */
+  readonly widthMeters: readonly [number, number];
+}[] = Object.freeze([
+  // The understorey: short shoots and the bases of everything above them.
+  { cover: 1.7, lengthMeters: [0.025, 0.06], height: [0.16, 0.42], blades: [3, 6], fan: 1, widthMeters: [0.0035, 0.0058] },
+  // The body of the sward.
+  { cover: 0.9, lengthMeters: [0.05, 0.1], height: [0.4, 0.74], blades: [4, 8], fan: 0.85, widthMeters: [0.005, 0.008] },
+  // The blades that stand clear and catch the light.
+  { cover: 0.5, lengthMeters: [0.07, 0.14], height: [0.66, 1], blades: [3, 7], fan: 0.7, widthMeters: [0.007, 0.011] },
+]);
+
+/** Thin and thick patches to the tile edge: about a quarter of a metre each. */
+const SWARD_PATCH_CYCLES = 9;
+/** How dark the sward's floor reads against a blade in the open, in albedo. */
+export const SWARD_FLOOR_SHADE = 0.56;
+/** How open to the sky the floor is: the cavity the ambient light reads. */
+export const SWARD_FLOOR_OPENNESS = 0.72;
+/**
+ * Holds the layer's mean cavity where it shipped (0.65): `packLayers` folds
+ * its own openness term in, and over a field with this much relief that term
+ * alone averages lower than it did over the flat one. The ground's ambient
+ * light is tuned against that mean, so the depth moves the spread and not it.
+ * It is not a detail: at 1.24 the two layers' means were 0.635 against 0.652
+ * and 0.658, and every meadow in the world, to the far hills, drew 3.5%
+ * darker (the cavity dims sun and sky both, and the layer's mip tail is read
+ * out to a ten-metre footprint).
+ */
+const SWARD_CAVITY_LIFT = 1.3;
+
+/**
+ * A sward seen from above: tufts of blades in three storeys over a dark floor.
  *
- * Compressing the field's COLOUR authority is the fix that keeps what the
- * recipe is for. Blade density, blade lie and the height channel still read the
- * full clump — the sward keeps its patchiness at blade scale, which is where a
- * real sward's variation lives — while the metre-scale albedo swing narrows.
+ * WHY IT IS BUILT IN DEPTH. The first recipe laid one-texel blades on a base of
+ * the sward's own colour, so a blade differed from what it lay on by a shade
+ * and the whole layer came out as flat paint: 10% luminance contrast on Grass,
+ * 6% on DryGrass, and a cavity channel that never moved (2026-11-12, seed
+ * "open-skies", edge 512). Standing on it, that is the green sheet the grass
+ * blades and the trees looked glued to. What makes grass read as grass from
+ * eye height is depth: lit blades over the shade between them. So the floor is
+ * thatch and soil, each storey is drawn over the one below with a height test,
+ * and a blade's colour, its height, its cavity and its normal all come from
+ * where it stands in that depth.
+ *
+ * `W-2` — the metre-scale contrast, as a recipe parameter, is kept: the clump
+ * field still thins and thickens the sward, and `clumpContrast` still
+ * compresses how far that moves its COLOUR, because the colour it moves lands
+ * in the band that shows the tile's repeat.
  */
 function synthesizeSward(
   context: RecipeContext,
@@ -567,98 +611,110 @@ function synthesizeSward(
 ): void {
   const { canvas, seed, random, texelsPerMeter } = context;
   const edge = canvas.edge;
-  // The base is the sward's own colour, not soil. An earlier draft used a
-  // metre-scale clump field to open big windows of bare ground, and the
-  // contact sheet showed exactly what that is: camouflage blotches. A real
-  // sward's colour variation is mostly at BLADE scale, with only a gentle
-  // patchiness above it — so the clump field lost most of its contrast and
-  // the blade layer gained the density it should have had.
+  const litterCells = cellsForFeature(edge, context.spec.tilingPeriodMeters, 0.03);
+  // The floor: thatch over soil, in the sward's own shade.
   fillBase(
     context,
-    (u, v) => {
-      const clump = periodicFbm(u, v, 3, 4, 0.5, seed + 11);
-      // `1 − smoothstep(0.2, 0.44, clump)`, not `smoothstep(0.44, 0.2, clump)`.
-      // The reversed form degenerates into a hard step at 0.44 (see
-      // `smoothstep`), rising rather than falling, so `bare` was full soil
-      // wherever the clump field was HIGH — the exact inverse of the intent,
-      // AND a hard edge. The blotches the comment above says an earlier draft
-      // was rewritten to remove were therefore still being drawn, with their
-      // boundaries at their sharpest: at seed "fly-high", edge 512, the lit
-      // DryGrass tile was unmistakable camouflage. Fixed, the same field opens
-      // soil gently in the thin patches, which is what the comment describes.
-      //
-      // The amplitude is left at the drawn `0.18 + bareShare * 0.5` — it had
-      // never been exercised, so it is being applied here for the first time —
-      // but it now REINFORCES the straw ramp above instead of opposing it (thin
-      // patches are both darker straw and more visible soil, where before they
-      // were darker straw and LESS soil). At seed "s3", edge 512, that doubles
-      // DryGrass's metre-scale albedo power: |k| <= 4 carries 1.00e-4 against
-      // 5.02e-5 before, which is the tiling-repeat signature
-      // `flattenLowFrequency` exists to suppress. Halving `bare` recovers only
-      // a fifth of it and costs the layer the "~25% bare soil" its reference
-      // note asks for, because the dominant coarse source is not this term but
-      // the clump-driven straw ramp above. Compressing that ramp is the real
-      // fix and is a sward retune, not a mask repair; left for one.
-      // W-2: the colour reads a COMPRESSED clump, centred on the same mean, so
-      // the ramp keeps its direction and loses the amplitude that repeats.
-      const tone = saturate(0.5 + (clump - 0.5) * clumpContrast);
-      const bare = saturate(
-        (1 - smoothstep(0.2, 0.44, clump)) * (0.18 + bareShare * 0.5) * clumpContrast,
-      );
-      const sward = mixRgb(
-        mixRgb(GRASS_BLADE_DARK, GRASS_BLADE_MID, tone),
-        mixRgb(GRASS_STRAW_DARK, GRASS_STRAW_LIGHT, tone),
-        strawShare * 0.85,
-      );
-      return mixRgb(sward, GRASS_SOIL, bare);
-    },
-    (u, v) => 0.35 + periodicFbm(u, v, 3, 4, 0.5, seed + 11) * 0.3,
-    (u, v) => 0.72 + periodicValue(u, v, 24, seed + 12) * 0.2,
+    (u, v) => mixRgb(GRASS_SOIL, GRASS_THATCH, periodicValue(u, v, litterCells, seed + 12) * (0.35 + strawShare * 0.5)),
+    (u, v) => periodicValue(u, v, litterCells, seed + 14) * 0.08,
+    (u, v) => 0.78 + periodicValue(u, v, 24, seed + 12) * 0.16,
   );
 
-  // Blades: 4–12 cm, 2–4 mm wide, leaning along a slowly varying lie field so
-  // the sward has a grain instead of reading as isotropic fuzz. Density is
-  // what makes this read as grass at 2 m and as a mat at 20 m, so it is high.
-  const bladeCount = Math.round((edge * edge) / 22);
-  for (let blade = 0; blade < bladeCount; blade += 1) {
-    const x = random() * edge;
-    const y = random() * edge;
-    const u = x / edge;
-    const v = y / edge;
-    const clump = periodicFbm(u, v, 3, 4, 0.5, seed + 11);
-    if (random() > 0.55 + clump * 0.6) continue;
-    const lie = periodicValue(u, v, 3, seed + 13) * Math.PI * 2;
-    const angle = lie + (random() - 0.5) * 1.5;
-    const lengthMeters = mix(0.04, 0.12, random() * random());
-    const length = lengthMeters * texelsPerMeter;
-    const width = Math.max(0.8, mix(0.002, 0.004, random()) * texelsPerMeter);
-    const isStraw = random() < strawShare;
-    const shade = random();
-    const colour = isStraw
-      ? mixRgb(GRASS_STRAW_DARK, GRASS_STRAW_LIGHT, shade)
-      : mixRgb(
-        mixRgb(GRASS_BLADE_DARK, GRASS_BLADE_MID, shade),
-        GRASS_BLADE_LIGHT,
-        shade * shade,
-      );
-    const rise = mix(0.1, 0.3, random());
-    const gloss = isStraw ? 0.06 : -0.05 + shade * 0.06;
-    stampStroke(
-      canvas,
-      x,
-      y,
-      x + Math.cos(angle) * length,
-      y + Math.sin(angle) * length,
-      width,
-      (texel, falloff, along) => {
-        const weight = saturate(falloff * (0.65 + along * 0.5));
-        writeAlbedo(canvas, texel, colour, weight);
-        canvas.height[texel] = (canvas.height[texel] ?? 0) + rise * weight * along;
-        canvas.roughness[texel] = mix(canvas.roughness[texel] ?? 0, 0.92 + gloss, weight);
-        // A blade lying over the sward shades what is under it.
-        canvas.cavity[texel] = (canvas.cavity[texel] ?? 1) * (1 - 0.28 * weight);
-      },
-    );
+  for (let storeyIndex = 0; storeyIndex < SWARD_STOREYS.length; storeyIndex += 1) {
+    const storey = SWARD_STOREYS[storeyIndex]!;
+    const meanLength = (storey.lengthMeters[0] + storey.lengthMeters[1]) * 0.5 * texelsPerMeter;
+    const meanBlades = (storey.blades[0] + storey.blades[1]) * 0.5;
+    const meanWidth = Math.max(1.15, (storey.widthMeters[0] + storey.widthMeters[1]) * 0.5 * texelsPerMeter);
+    const tufts = Math.round((storey.cover * edge * edge) / (meanLength * meanWidth * meanBlades));
+    for (let tuft = 0; tuft < tufts; tuft += 1) {
+      const centreX = random() * edge;
+      const centreY = random() * edge;
+      const u = centreX / edge;
+      const v = centreY / edge;
+      // Thin patches lose their upper storeys first and open the floor: the
+      // bare share a dry sward is asked for, as gaps between tufts and not as
+      // a wash over them. The patches are a quarter of a metre across, nine
+      // and more to the tile: a metre-scale field here is energy in the band
+      // that shows the repeat (W-2), and the first cut of this recipe drew
+      // the tile as a lattice of pale blotches from 12 m up.
+      const clump = periodicFbm(u, v, SWARD_PATCH_CYCLES, 2, 0.5, seed + 11);
+      const thin = 1 - smoothstep(0.25, 0.5, clump);
+      const keep = 1 - thin * (0.12 + bareShare * 1.5) * (0.5 + storeyIndex * 0.35);
+      const strawTuft = random() < strawShare * (0.55 + thin * 0.45);
+      const tuftShade = saturate(0.5 + (random() - 0.5) * 0.9 + (clump - 0.5) * clumpContrast * 0.5);
+      const lie = periodicValue(u, v, 3, seed + 13) * Math.PI * 2;
+      const facing = lie + (random() - 0.5) * 2.4;
+      const count = Math.round(mix(storey.blades[0], storey.blades[1], random()));
+      if (random() > keep) {
+        // Burn the same draws a kept tuft would, so thinning one patch does not
+        // move every tuft after it.
+        for (let burn = 0; burn < count * 6; burn += 1) random();
+        continue;
+      }
+      for (let blade = 0; blade < count; blade += 1) {
+        const angle = facing + (random() - 0.5) * Math.PI * 2 * storey.fan;
+        const length = mix(storey.lengthMeters[0], storey.lengthMeters[1], random()) * texelsPerMeter;
+        const width = Math.max(1.15, mix(storey.widthMeters[0], storey.widthMeters[1], random()) * texelsPerMeter);
+        const tipHeight = mix(storey.height[0], storey.height[1], random());
+        const rootHeight = tipHeight * 0.42;
+        const shade = saturate(tuftShade + (random() - 0.5) * 0.5);
+        const isStraw = strawTuft ? random() < 0.85 : random() < strawShare * 0.2;
+        const colour = isStraw
+          ? mixRgb(GRASS_STRAW_DARK, GRASS_STRAW_LIGHT, shade)
+          : mixRgb(
+            mixRgb(GRASS_BLADE_DARK, GRASS_BLADE_MID, shade),
+            GRASS_BLADE_LIGHT,
+            shade * shade,
+          );
+        const gloss = isStraw ? 0.06 : -0.05 + shade * 0.06;
+        const rootOffset = random() * 0.012 * texelsPerMeter;
+        const startX = centreX + Math.cos(angle) * rootOffset;
+        const startY = centreY + Math.sin(angle) * rootOffset;
+        stampStroke(
+          canvas,
+          startX,
+          startY,
+          startX + Math.cos(angle) * length,
+          startY + Math.sin(angle) * length,
+          width,
+          (texel, falloff, along) => {
+            // A blade arches: it climbs fast from the tuft's heart and levels off.
+            const height = rootHeight + (tipHeight - rootHeight) * Math.pow(along, 0.6);
+            // Under a taller blade already drawn: hidden from above.
+            if (height < (canvas.height[texel] ?? 0) - 0.05) return;
+            const weight = saturate(falloff * 1.7);
+            // Paler and a little yellower toward the tip, as a blade is.
+            const tone = 0.74 + along * 0.4;
+            writeAlbedo(
+              canvas,
+              texel,
+              [colour[0] * tone * (1 + along * 0.06), colour[1] * tone, colour[2] * tone * (1 - along * 0.1)],
+              weight,
+            );
+            canvas.height[texel] = mix(canvas.height[texel] ?? 0, height, weight);
+            canvas.roughness[texel] = mix(canvas.roughness[texel] ?? 0, 0.92 + gloss, weight);
+          },
+        );
+      }
+    }
+  }
+
+  // Depth becomes shade. A texel low in the sward, or lower than what stands
+  // round it, sees little sun and less sky: the albedo carries the first (no
+  // term in the shader shadows a blade by its neighbour) and the cavity the
+  // second.
+  const texels = edge * edge;
+  const surround = boxBlur(canvas.height, edge, Math.max(1, Math.round(0.011 * texelsPerMeter)));
+  for (let texel = 0; texel < texels; texel += 1) {
+    const height = canvas.height[texel] ?? 0;
+    const depth = smoothstep(0.04, 0.8, height);
+    const proud = saturate(0.5 + (height - (surround[texel] ?? 0)) * 2.6);
+    const shade = mix(SWARD_FLOOR_SHADE, 1, depth) * mix(0.8, 1.1, proud);
+    const at = texel * 3;
+    canvas.albedo[at] = (canvas.albedo[at] ?? 0) * shade;
+    canvas.albedo[at + 1] = (canvas.albedo[at + 1] ?? 0) * shade;
+    canvas.albedo[at + 2] = (canvas.albedo[at + 2] ?? 0) * shade;
+    canvas.cavity[texel] = mix(SWARD_FLOOR_OPENNESS, 1, depth) * SWARD_CAVITY_LIFT;
   }
 }
 
@@ -1807,8 +1863,16 @@ function suppressTilingBand(
 
 /** The tiling band: lines with |k| at or under this many cycles per tile. */
 export const TILING_BAND_CYCLES = 4;
-/** How much of the band a sward keeps. */
-export const SWARD_TILING_BAND_KEEP = 0.3;
+/**
+ * How much of the band a sward keeps.
+ *
+ * 0.3 while the swards were nearly flat paint. Drawn in depth they carry
+ * nine times the contrast, and the same tufts scattered at random put that
+ * much more power on every line, the band's included: at 0.3 DryGrass came
+ * to 9.4e-6 against the 2.1e-6 it had shipped at. 0.1 takes both layers to
+ * or under what they shipped with (Grass 0.9e-6, DryGrass 1.1e-6).
+ */
+export const SWARD_TILING_BAND_KEEP = 0.1;
 /** The layers the notch applies to: the two that carpet open country. */
 export const TILING_BAND_NOTCHED_MATERIALS: readonly SurfaceMaterialId[] = Object.freeze([
   SurfaceMaterial.Grass,

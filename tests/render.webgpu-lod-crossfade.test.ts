@@ -10,11 +10,20 @@ import {
   detailMetricTreeBarkV,
 } from "../src/render/webgpu/detail/DetailInstanceMaterialPlugin";
 import {
+  DETAIL_CARD_HANDOFF_LIFT_METERS,
+  DETAIL_CARD_HANDOFF_METERS,
+  DETAIL_NEAR_SWITCH_INSET_METERS,
   RENDERED_DENSITY_LAWS,
+  detailCardShellAreaShare,
   drawnShareAtDistance,
   impostorFillStartMeters,
   renderedShareAtDistance,
 } from "../src/render/webgpu/detail/renderedDensity";
+import {
+  TREE_VARIANT_COUNTS,
+  buildCrownFringePrototype,
+} from "../src/render/webgpu/detail/prototypeGeometry";
+import type { TreeSpecies } from "../src/render/webgpu/detail/types";
 import {
   DETAIL_CULL_FADE_MARGIN_METERS,
   DETAIL_FADE_MARGIN_METERS,
@@ -42,6 +51,23 @@ function bayer8(x: number, y: number): number {
     | ((py & 2) << 2) | ((xor & 2) << 1)
     | ((py & 4) >> 1) | ((xor & 4) >> 2);
   return (index + 0.5) / 64;
+}
+
+/**
+ * TS mirror of the leaf-card shells' vertex windows (`detailBandWindowEmpty`,
+ * codes 3 near and 4 mid): whether the shell draws a stem at this range.
+ */
+function cardShellOpen(shell: "near" | "mid", stemRange: number, farSwitchUnit = 0.5): boolean {
+  const nearSwitch = LAW.near.outerRadiusMeters - DETAIL_NEAR_SWITCH_INSET_METERS;
+  const farSwitch = LAW.mid.outerRadiusMeters
+    - DETAIL_FADE_MARGIN_METERS + farSwitchUnit * DETAIL_FADE_MARGIN_METERS;
+  if (shell === "near") return stemRange < nearSwitch;
+  return stemRange >= nearSwitch - DETAIL_CARD_HANDOFF_METERS && stemRange < farSwitch;
+}
+
+/** TS mirror of the scale the position hook gives a shell's cards. */
+function cardShellScale(shell: "near" | "mid", stemRange: number): number {
+  return Math.sqrt(detailCardShellAreaShare(shell, stemRange, LAW.near.outerRadiusMeters));
 }
 
 /**
@@ -166,6 +192,126 @@ describe("band-window fades (2-17 close)", () => {
     expect(seen.size).toBe(64);
   });
 
+  it("hands a tree's leaf cards from the near shell to the mid shell by size, not by dither", () => {
+    // The near shell (every card) and the mid shell (one in five, 1.9 times
+    // the size, on the same twigs) change hands across the 50 m that end at
+    // the near switch. Until 2026-11-14 the near cards were dithered out
+    // there and the mid shell's vertex window opened only AT the switch: a
+    // tree 50 to 100 m off was a bare hull under a haze of scan lines, and
+    // its mid cards then appeared whole in one frame.
+    const near = LAW.near.outerRadiusMeters;
+    const nearSwitch = near - DETAIL_NEAR_SWITCH_INSET_METERS;
+    const start = nearSwitch - DETAIL_CARD_HANDOFF_METERS;
+    expect(start).toBeGreaterThan(0);
+    let previousNear = 1;
+    for (let range = 0; range < nearSwitch + 200; range += 0.25) {
+      const nearShare = detailCardShellAreaShare("near", range, near);
+      const midShare = detailCardShellAreaShare("mid", range, near);
+      // The two shells' areas sum to one whole shell at every range, so the
+      // crown's leaf area never dips between them.
+      expect(nearShare + midShare, `range ${range}`).toBeCloseTo(1, 12);
+      expect(nearShare).toBeLessThanOrEqual(previousNear);
+      previousNear = nearShare;
+      // A shell with any area to show is one the vertex window draws, and a
+      // shell at full size is the only one drawn.
+      if (nearShare > 0) expect(cardShellOpen("near", range), `range ${range}`).toBe(true);
+      if (midShare > 0) expect(cardShellOpen("mid", range), `range ${range}`).toBe(true);
+      if (range < start) {
+        expect(nearShare).toBe(1);
+        expect(cardShellOpen("mid", range)).toBe(false);
+        expect(cardShellScale("near", range)).toBe(1);
+      }
+      if (range >= nearSwitch) {
+        expect(midShare).toBe(1);
+        expect(cardShellOpen("near", range)).toBe(false);
+        expect(cardShellScale("mid", range)).toBe(1);
+      }
+    }
+    // Linear in AREA: half each at the middle, where each card is drawn at
+    // 0.71 of its size.
+    const middle = nearSwitch - DETAIL_CARD_HANDOFF_METERS / 2;
+    expect(detailCardShellAreaShare("near", middle, near)).toBeCloseTo(0.5, 12);
+    expect(cardShellScale("near", middle)).toBeCloseTo(Math.SQRT1_2, 12);
+    expect(cardShellScale("mid", middle)).toBeCloseTo(Math.SQRT1_2, 12);
+    // Outside the handoff a card is untouched: the scale is exactly 1, so the
+    // shader subtracts exactly nothing from the corner it was given.
+    expect(1 - cardShellScale("near", start - 1)).toBe(0);
+    expect(1 - cardShellScale("mid", nearSwitch + 1)).toBe(0);
+    // And a shell opens and closes on cards of no size at all.
+    expect(cardShellScale("mid", start)).toBe(0);
+    expect(cardShellScale("near", nearSwitch)).toBe(0);
+    // The pixels the two shells' cards fill, in near shells: the mid shell is
+    // one card in five at 1.9 times the edge, 0.72 of the near shell's area.
+    // Scaled cards fill their share and no more, so the handoff never fills
+    // more than the near shell alone did (which is what it filled, dithered,
+    // across the whole of this range before).
+    const midArea = 1.9 ** 2 / 5;
+    for (let range = start; range <= nearSwitch; range += 0.5) {
+      const filled = detailCardShellAreaShare("near", range, near)
+        + detailCardShellAreaShare("mid", range, near) * midArea;
+      expect(filled).toBeLessThanOrEqual(1);
+      expect(filled).toBeGreaterThanOrEqual(midArea - 1e-12);
+    }
+    expect(DETAIL_CARD_HANDOFF_LIFT_METERS).toBeGreaterThan(0.01);
+    expect(DETAIL_CARD_HANDOFF_LIFT_METERS).toBeLessThan(0.1);
+    expect(() => detailCardShellAreaShare("near", -1, near)).toThrow(RangeError);
+    expect(() => detailCardShellAreaShare("near", 10, 60)).toThrow(RangeError);
+  });
+
+  it("tells every leaf-card vertex where its card's pivot is", () => {
+    // The shader scales a card about its pivot from one vertex at a time, so
+    // each vertex of a shell carries the vector from that pivot to itself in
+    // the tangent lane (writeCardPivotOffsets).
+    for (const species of Object.keys(TREE_VARIANT_COUNTS) as TreeSpecies[]) {
+      for (const band of ["near", "mid"] as const) {
+        const shell = buildCrownFringePrototype(species, 0, 3, band);
+        const vertexCount = shell.positions.length / 3;
+        expect(vertexCount).toBeGreaterThan(0);
+        const pivotOf = (vertex: number): [number, number, number] => [
+          shell.positions[vertex * 3]! - shell.tangents[vertex * 4]!,
+          shell.positions[vertex * 3 + 1]! - shell.tangents[vertex * 4 + 1]!,
+          shell.positions[vertex * 3 + 2]! - shell.tangents[vertex * 4 + 2]!,
+        ];
+        let longest = 0;
+        for (let index = 0; index < shell.indices.length; index += 3) {
+          // The three corners of a triangle name one pivot: scaled by any
+          // share, the triangle stays a triangle of the same shape.
+          const a = pivotOf(shell.indices[index]!);
+          for (const corner of [shell.indices[index + 1]!, shell.indices[index + 2]!]) {
+            const b = pivotOf(corner);
+            expect(Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]),
+              `${species} ${band}`).toBeLessThan(1e-5);
+          }
+        }
+        const fronds = shell.indices.length / 3 !== vertexCount / 2;
+        for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+          expect(shell.tangents[vertex * 4 + 3]).toBe(1);
+          longest = Math.max(longest, Math.hypot(
+            shell.tangents[vertex * 4]!,
+            shell.tangents[vertex * 4 + 1]!,
+            shell.tangents[vertex * 4 + 2]!,
+          ));
+        }
+        // No card reaches further from its pivot than a crown is tall
+        // (prototypes are a unit high), and a card is not a point.
+        expect(longest).toBeGreaterThan(0.01);
+        expect(longest).toBeLessThan(fronds ? 1.2 : 0.6);
+        if (fronds) continue;
+        // A card's pivot is the mean of its four corners: the offsets of a
+        // quad sum to nothing, so it shrinks to its own middle.
+        for (let base = 0; base < vertexCount; base += 4) {
+          for (let axis = 0; axis < 3; axis += 1) {
+            let sum = 0;
+            for (let corner = 0; corner < 4; corner += 1) {
+              sum += shell.tangents[(base + corner) * 4 + axis]!;
+            }
+            expect(Math.abs(sum)).toBeLessThan(1e-5);
+          }
+        }
+      }
+    }
+  });
+
   it("assigns every pixel to exactly one band before the outer cull fade", () => {
     // At any camera range inside the fully populated field, exactly one LOD
     // owns the entire stem: no overlapping opaque hulls and no coverage gap.
@@ -283,12 +429,19 @@ describe("crossfade shader surface (2-17 close)", () => {
       const definitions = fragment["CUSTOM_FRAGMENT_DEFINITIONS"]!;
       expect(definitions).toContain("fn detailBayer8");
       expect(definitions).toContain("fn detailBandWindow");
+      // The leaf-card shells do not dither: their handoff is a scale.
+      expect(definitions).toContain("if (bandCode > 2.5) { return true; }");
+      expect(definitions).not.toContain("fringeFade");
+      expect(definitions).not.toContain("inFade");
       // The WGSL inlines the margins as literals — they must mirror the
       // runtime constants or the shader and appender disagree about where
       // memberships are needed.
       expect(definitions).toContain(`/ ${DETAIL_CULL_FADE_MARGIN_METERS.toFixed(1)}`);
       const albedo = fragment["CUSTOM_FRAGMENT_UPDATE_ALBEDO"]!;
       expect(albedo).toContain("detailBandWindow");
+      // The handoff scales the card itself, so the fragment stage has no
+      // cut to make: a card's uv is the one it was authored with.
+      expect(albedo).not.toContain("detailCardUv");
       // The single-edge baked path survives for rocks/shrubs/clutter/grass.
       expect(albedo).toContain("detailDitherSurvives");
       expect(albedo).toContain("detailLeafHash");
@@ -323,6 +476,11 @@ describe("crossfade shader surface (2-17 close)", () => {
       // 2026-09-13: the switch seed is the stem's LOD key, read through the
       // per-stem hash — the drawn population is a key prefix, so the raw lane
       // would collapse the 100 m stagger to a ring.
+      // The mid card shell is drawn from the START of the card handoff.
+      expect(vertexDefinitions).toContain(
+        `return bandRange < nearSwitch - ${DETAIL_CARD_HANDOFF_METERS.toFixed(1)}\n`
+          + "      || bandRange >= farSwitch",
+      );
       expect(vertexDefinitions).toContain("let farSwitchHash = detailStemHash(stemKey)");
       expect(vertexDefinitions).toContain("fn detailStemHash(lane: f32) -> f32");
       expect(vertexDefinitions).toContain("fract(lane * 157.31 + 0.371)");
@@ -335,6 +493,28 @@ describe("crossfade shader surface (2-17 close)", () => {
       });
       expect(vertexDefinitions).not.toContain("dot(tintRgb");
       const position = vertex["CUSTOM_VERTEX_UPDATE_POSITION"]!;
+      // The card handoff: the area share by the stem's range, and each
+      // vertex drawn toward its card's pivot (the tangent lane) by one minus
+      // the share's square root, in the instance's own scale.
+      expect(position).toContain(
+        `/ ${DETAIL_CARD_HANDOFF_METERS.toFixed(1)},\n    0.0, 1.0);`,
+      );
+      expect(position).toContain(
+        "let detailCardShare = select(\n"
+          + "    detailCardNearShare, 1.0 - detailCardNearShare, detailCardCode > 3.5);",
+      );
+      expect(position).toContain(
+        "detailLocal -= vertexInputs.tangent.xyz\n"
+          + "    * vec3f(detailHeight * detailRadial, detailHeight, detailHeight * detailRadial)\n"
+          + "    * (1.0 - sqrt(detailCardShare));",
+      );
+      expect(position).not.toContain("detailAtlasUvOut = detailCardPivot");
+      // Before the lean and the broken top, so they move the shrunken card.
+      expect(position.indexOf("detailLocal -= vertexInputs.tangent.xyz"))
+        .toBeLessThan(position.indexOf("detailLocal.x += detailLocal.y * detailLeanAngle"));
+      expect(position).toContain(
+        `detailLocal += normalize(vertexInputs.normal) * ${DETAIL_CARD_HANDOFF_LIFT_METERS.toFixed(2)};`,
+      );
       expect(position).not.toContain("detailOpaqueBandScale");
       // WGSL swizzles are values, not assignable l-values. A direct
       // `detailLocal.xz = ...` made the opaque-crown vertex module invalid,

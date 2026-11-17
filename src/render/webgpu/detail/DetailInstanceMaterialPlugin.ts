@@ -14,6 +14,12 @@ import {
 // terrain's canopy ramp fades in over exactly the window the impostors fade
 // out over, and two literals cannot be made to agree by inspection.
 import { DETAIL_FAR_CULL_FADE_METERS } from "./densityField";
+import { SHRUB_BODY_CORE_SHADE } from "./groundObjects";
+import {
+  DETAIL_CARD_HANDOFF_LIFT_METERS,
+  DETAIL_CARD_HANDOFF_METERS,
+  DETAIL_NEAR_SWITCH_INSET_METERS,
+} from "./renderedDensity";
 import { HORIZON_FIELD_LOOKUP_WGSL } from "@/src/render/webgpu/terrain/HorizonField";
 import {
   TREE_BARK_LAYER_MIN,
@@ -40,6 +46,94 @@ export interface DetailSunShadowSnapshot {
   readonly valid: boolean;
   /** The generator's depth map; bound as a depth-comparison array. */
   readonly map: RenderTargetTexture | null;
+}
+
+/**
+ * The two packed lanes of `detailAtlasData` (z: atlas layer + fade byte,
+ * w: modifier + occlusion) hold a whole number in the integer part and a
+ * second value in the fraction, and the fragment stage takes them apart with
+ * `floor` and `fract`.
+ *
+ * A value that is the SAME at a triangle's three vertices does not have to
+ * arrive at a fragment bit-identical. WebGPU fixes no precision for
+ * interpolation; a rasteriser that interpolates `value / w` and `1 / w` and
+ * divides (SwiftShader, and by the same arithmetic any GPU that does not
+ * special-case a constant) hands back the value a few units in the last
+ * place off. That is harmless everywhere except at an integer: a near trunk
+ * carries layer 6 and fade byte 0, which packed to exactly 6.0, and a
+ * fragment that received 5.9999995 decoded layer 5 (the conifer's bark on an
+ * oak) and fade byte 511.99, band code 255, which `detailBandWindow` reads as
+ * a mid card shell inside the near band and discards. Seen 2026-11-14 on
+ * SwiftShader, an oak 7 m from a 0.6 m eye: pixel holes through the trunk,
+ * the ground and the sky showing in them, a different set every frame as the
+ * wind swayed it. The same slip gave a mid card (code 4) the near shell's
+ * code 3, which is culled past the near edge, and a crown hull (layer 16)
+ * the litter twig's texels (layer 15): dark and red specks over a far crown.
+ * The Mac's captures never showed any of it, so Metal evidently returns such
+ * a constant unchanged; nothing says the next GPU will.
+ *
+ * So neither lane may sit ON an integer it is floored at. The fade byte
+ * rides half a step in (`(byte + 0.5) / 512`, 0.001 clear of the layer on
+ * either side, and `floor(fract * 512)` recovers the byte from half a step
+ * either way); the occlusion rides a quarter in (`modifier + 0.25 +
+ * occlusion / 2`, a quarter clear on both sides). Every packed layer and
+ * byte is a multiple of 1/1024 below 32, exact in f32, so a rasteriser that
+ * DOES return a constant unchanged decodes the layer and byte it decoded
+ * before, and an occlusion that differs in the last place at most.
+ */
+export const DETAIL_PACKED_FADE_STEPS = 512;
+/** Half a fade step: the packed fade byte's distance from either neighbour. */
+export const DETAIL_PACKED_FADE_BIAS = 0.5;
+/** The packed occlusion's distance from the modifier's integer, both sides. */
+export const DETAIL_PACKED_OCCLUSION_BIAS = 0.25;
+
+/** CPU mirror of the vertex stage's `detailAtlasData.z`. */
+export function detailPackAtlasLane(atlasLayer: number, fadeByte: number): number {
+  if (!Number.isInteger(atlasLayer) || atlasLayer < -1 || atlasLayer > 31) {
+    throw new RangeError("Atlas layer must be an integer in -1..31");
+  }
+  if (!Number.isInteger(fadeByte) || fadeByte < 0 || fadeByte > 255) {
+    throw new RangeError("Fade byte must be an integer in 0..255");
+  }
+  return atlasLayer + (fadeByte + DETAIL_PACKED_FADE_BIAS) / DETAIL_PACKED_FADE_STEPS;
+}
+
+/** CPU mirror of the fragment stage's decode of `detailAtlasData.z`. */
+export function detailUnpackAtlasLane(packed: number): {
+  readonly atlasLayer: number;
+  readonly textured: boolean;
+  readonly fadeByte: number;
+} {
+  const fraction = packed - Math.floor(packed);
+  return {
+    atlasLayer: Math.floor(Math.max(packed, 0)),
+    textured: packed >= 0,
+    fadeByte: Math.floor(fraction * DETAIL_PACKED_FADE_STEPS),
+  };
+}
+
+/** CPU mirror of the vertex stage's `detailAtlasData.w`. */
+export function detailPackOcclusionLane(modifier: number, occlusion: number): number {
+  if (!Number.isInteger(modifier) || modifier < 0 || modifier > 7) {
+    throw new RangeError("Modifier must be an integer in 0..7");
+  }
+  if (!(occlusion >= 0 && occlusion <= 1)) {
+    throw new RangeError("Occlusion must be in 0..1");
+  }
+  return modifier + DETAIL_PACKED_OCCLUSION_BIAS + occlusion * 0.5;
+}
+
+/** CPU mirror of the fragment stage's decode of `detailAtlasData.w`. */
+export function detailUnpackOcclusionLane(packed: number): {
+  readonly modifier: number;
+  readonly occlusion: number;
+} {
+  const modifier = Math.floor(packed);
+  return {
+    modifier,
+    occlusion: Math.min(1, Math.max(0,
+      (packed - modifier - DETAIL_PACKED_OCCLUSION_BIAS) * 2)),
+  };
 }
 
 /** World-space scale of one vertical bark-tile repeat on live tree trunks. */
@@ -125,10 +219,11 @@ varying detailInstanceTint: vec4f;
 attribute uv: vec2f;
 attribute atlasLayer: f32;
 // One packed varying — PBR with 4-cascade shadows sits near the 16-location
-// vertex output limit: (uv.x, uv.y, atlasLayer + fadeByte/512, modifier +
-// occlusion·0.5). The 2-14 fade byte hides in the layer's fraction so the
-// atlas path adds NO output location; layers stay ≤ 15, so layer + byte/512
-// is exact in f32 and floor() recovers the integer.
+// vertex output limit: (uv.x, uv.y, atlasLayer + (fadeByte + 0.5)/512,
+// modifier + 0.25 + occlusion·0.5). The 2-14 fade byte hides in the layer's
+// fraction so the atlas path adds NO output location. Each packed value is
+// exact in f32 HERE, but not after interpolation: see
+// DETAIL_PACKED_FADE_STEPS for why neither lane may sit on an integer.
 varying detailAtlasData: vec4f;
 #else
 #ifndef DETAIL_IMPOSTOR
@@ -220,19 +315,23 @@ fn detailBandWindowEmpty(
   geometryCoexists: bool,
 ) -> bool {
   let bandRange = distance(instancePosition.xz, scene.vEyePosition.xz);
-  let nearSwitch = uniforms.detailBandRadii.x - 50.0;
+  let nearSwitch = uniforms.detailBandRadii.x - ${DETAIL_NEAR_SWITCH_INSET_METERS.toFixed(1)};
   let farSwitchHash = detailStemHash(stemKey);
   let farSwitch = uniforms.detailBandRadii.y - 100.0 + farSwitchHash * 100.0;
-  // Code 4: the MID-band leaf-card shell (wave T). Lives between the near
-  // switch and the per-stem far switch; the fragment dissolves the near edge so
-  // the near/mid card handoff and the impostor handoff both stay gradual.
+  // Code 4: the MID-band leaf-card shell (wave T). Lives from the START of
+  // the card handoff (DETAIL_CARD_HANDOFF_METERS inside the near switch) to
+  // the per-stem far switch. Across the handoff its cards grow from nothing
+  // as the near shell's shrink to nothing (the position hook scales both),
+  // so it has to be drawn there: opened at the near switch itself, as it
+  // was, this shell appeared whole in one frame.
   if (bandCode > 3.5) {
-    return bandRange < nearSwitch || bandRange >= farSwitch
+    return bandRange < nearSwitch - ${DETAIL_CARD_HANDOFF_METERS.toFixed(1)}
+      || bandRange >= farSwitch
       || stemKey > detailGeometryShare(bandRange);
   }
-  // Code 3: the near-band card shell. Same hard vertex cull as near, but
-  // the FRAGMENT dissolves it over the preceding 50 m (detailBandWindow), so
-  // the cards never vanish in one frame at the switch radius.
+  // Code 3: the near-band card shell. Same hard vertex cull as near; its
+  // cards have shrunk to nothing over the preceding 50 m (the card handoff),
+  // so nothing vanishes in one frame at the switch radius.
   if (bandCode > 2.5) { return bandRange >= nearSwitch; }
   // Mid and far are not identical representations (skeletal mesh vs species
   // impostor), so a shared radial threshold makes an entire forest ring pop
@@ -363,6 +462,80 @@ let detailOrientation = normalize(vertexInputs.instanceOrientation);
 let detailTip = clamp(positionUpdated.y, 0.0, 1.0);
 var detailLocal = positionUpdated
   * vec3f(detailHeight * detailRadial, detailHeight, detailHeight * detailRadial);
+#if defined(DETAIL_BAND_FADES) && defined(DETAIL_FOLIAGE_ATLAS) && !defined(DETAIL_OPAQUE_CROWN) && defined(TANGENT)
+// The leaf-card handoff (renderedDensity.ts's detailCardShellAreaShare,
+// transliterated; the TS is the authority). Over the 50 m that end at the
+// near switch the near shell (code 3) draws a falling share of its cards'
+// area and the mid shell (code 4) the rest, each by SCALING every card about
+// its own pivot, by the square root of the share. A shell's vertices carry
+// the vector from their card's pivot to themselves in the tangent lane
+// (prototypeGeometry.ts's writeCardPivotOffsets; nothing else here reads a
+// tangent), in the prototype's units, so it takes the instance's scale as
+// the position does and the lean and the broken top below move the shrunken
+// card as they would the whole one. Every frame of the handoff is whole
+// leaves at some size, and a card fills only the pixels it shows. It used to
+// be a screen-door dither, which drew every tree between 50 and 100 m in
+// scan lines and filled every near card to do it.
+let detailCardCode = floor(floor(vertexInputs.instanceState.x * 255.0 + 0.5) / 2.0);
+if (detailCardCode > 2.5) {
+  let detailCardNearShare = clamp(
+    (uniforms.detailBandRadii.x - ${DETAIL_NEAR_SWITCH_INSET_METERS.toFixed(1)}
+      - distance(detailInstancePositionW.xz, scene.vEyePosition.xz))
+      / ${DETAIL_CARD_HANDOFF_METERS.toFixed(1)},
+    0.0, 1.0);
+  let detailCardShare = select(
+    detailCardNearShare, 1.0 - detailCardNearShare, detailCardCode > 3.5);
+  detailLocal -= vertexInputs.tangent.xyz
+    * vec3f(detailHeight * detailRadial, detailHeight, detailHeight * detailRadial)
+    * (1.0 - sqrt(detailCardShare));
+#ifdef NORMAL
+  // A mid card lies in the plane of the near card on the same twig. While
+  // both draw, stand it off the twig so the two never share a depth.
+  if (detailCardCode > 3.5 && detailCardNearShare > 0.0) {
+    detailLocal += normalize(vertexInputs.normal) * ${DETAIL_CARD_HANDOFF_LIFT_METERS.toFixed(2)};
+  }
+#endif
+}
+#endif
+#ifdef DETAIL_SIZE_RANGE
+// groundObjects.ts's reach law, transliterated (the TS is the authority): an
+// object is drawn out to a range in proportion to its own height, capped by
+// the tier, and grows in over the last share of that range instead of
+// dithering in, so the opaque path keeps its early-Z and nothing pops. The
+// range is the true distance, not the ground range the tree bands use: what
+// matters is how large the object stands on screen, from the air as well.
+// The record's fade lane scales the reach (1 on every record but a bush body
+// under closed canopy, which goes with its cards). Only the opaque path may
+// write less than 1 there: the others dither by the same lane.
+let detailSizeReach = min(
+  detailHeight * uniforms.detailSizeRange.x, uniforms.detailSizeRange.y)
+  * (floor(floor(vertexInputs.instanceState.x * 255.0 + 0.5) / 2.0) / 127.0);
+let detailSizeGrow = clamp(
+  (detailSizeReach - distance(detailInstancePositionW, scene.vEyePosition.xyz))
+    / max(detailSizeReach * uniforms.detailSizeRange.z, 1.0),
+  0.0, 1.0);
+detailLocal = detailLocal * mix(uniforms.detailSizeRange.w, 1.0, detailSizeGrow);
+// A bush's body is the whole bush at range and only its core up close: inside
+// the core's own reach (groundObjects.ts) it shrinks to what the leaf cards
+// standing on it hide, and darkens to the shade behind them (below, where the
+// occlusion and the tint leave this stage). Off (a reach of 0) for every
+// material that is not a body.
+let detailCoreReach = min(
+  detailHeight * uniforms.detailSizeCore.x, uniforms.detailSizeCore.y);
+let detailCoreGrow = clamp(
+  (detailCoreReach - distance(detailInstancePositionW, scene.vEyePosition.xyz))
+    / max(detailCoreReach * uniforms.detailSizeCore.z, 1.0),
+  0.0, 1.0);
+detailLocal = detailLocal * mix(1.0, uniforms.detailSizeCore.w, detailCoreGrow);
+// A stand-in draws only past where the mesh it stands in for starts to shrink
+// away: that mesh's own reach, from the same height lane and cap, times the
+// share of it drawn at full size. Off (a reach of 0) for everything else.
+let detailInnerReach = min(
+  detailHeight * uniforms.detailSizeInner.x, uniforms.detailSizeInner.y)
+  * uniforms.detailSizeInner.z;
+let detailInsideInner =
+  distance(detailInstancePositionW, scene.vEyePosition.xyz) < detailInnerReach;
+#endif
 // Read the phase lane through the per-stem hash: tree records carry their
 // canopy key here, and the raw key is a prefix, not a phase.
 let detailStemPhase = detailStemHash(vertexInputs.instanceState.z);
@@ -413,9 +586,14 @@ detailLocal.y = detailCrownPivot
 // x/z only is watertight by construction: shared vertices share azimuth,
 // and on-axis vertices are unmoved.
 let detailWobbleAzimuth = atan2(detailLocal.z, detailLocal.x);
-let detailWobble = 1.0
+var detailWobble = 1.0
   + 0.085 * sin(detailWobbleAzimuth * 3.0 + detailWindPhaseRadians * 2.317)
   + 0.05 * sin(detailWobbleAzimuth * 7.0 + detailWindPhaseRadians * 5.61);
+#ifdef DETAIL_SIZE_RANGE
+// A bush body is one mesh for every bush: a second harmonic stretches each
+// along its own axis, so a hillside of them is not a hillside of one shape.
+detailWobble += 0.2 * sin(detailWobbleAzimuth * 2.0 + detailWindPhaseRadians * 3.71);
+#endif
 detailLocal = vec3f(
   detailLocal.x * detailWobble,
   detailLocal.y,
@@ -486,6 +664,9 @@ if (detailBandWindowEmpty(
   false,
 )) { positionUpdated = vec3f(0.0, -100000.0, 0.0); }
 #endif
+#ifdef DETAIL_SIZE_RANGE
+if (detailSizeGrow <= 0.0 || detailInsideInner) { positionUpdated = vec3f(0.0, -100000.0, 0.0); }
+#endif
 #ifdef DETAIL_FOLIAGE_ATLAS
 // Baked crown occlusion rides the prototype's vertex-colour alpha; a dead
 // top bleaches upward.
@@ -508,13 +689,27 @@ if (detailAtlasLayerOut >= ${TREE_BARK_LAYER_MIN.toFixed(1)}
     / ${(DETAIL_TREE_BARK_AUTHORED_V_REPEATS * DETAIL_TREE_BARK_REPEAT_METERS).toFixed(1)};
 }
 #endif
+var detailOcclusionOut = clamp(vertexInputs.color.a, 0.0, 1.0);
+#ifdef DETAIL_SIZE_RANGE
+// A body that has shrunk to its core is the inside of the bush: fully
+// occluded, and darker still.
+detailOcclusionOut = detailOcclusionOut * (1.0 - detailCoreGrow);
+#endif
 vertexOutputs.detailAtlasData = vec4f(
   detailAtlasUvOut.x,
   detailAtlasUvOut.y,
-  detailAtlasLayerOut + floor(vertexInputs.instanceState.x * 255.0 + 0.5) / 512.0,
-  detailModifierBits + clamp(vertexInputs.color.a, 0.0, 1.0) * 0.5,
+  detailAtlasLayerOut
+    + (floor(vertexInputs.instanceState.x * 255.0 + 0.5) + ${DETAIL_PACKED_FADE_BIAS.toFixed(1)})
+    / ${DETAIL_PACKED_FADE_STEPS.toFixed(1)},
+  detailModifierBits + ${DETAIL_PACKED_OCCLUSION_BIAS.toFixed(2)} + detailOcclusionOut * 0.5,
 );
 var detailTintOut = vertexInputs.instanceTint;
+#ifdef DETAIL_SIZE_RANGE
+detailTintOut = vec4f(
+  detailTintOut.rgb * mix(1.0, ${SHRUB_BODY_CORE_SHADE.toFixed(2)}, detailCoreGrow),
+  detailTintOut.a,
+);
+#endif
 if (detailModifierBits == 4.0) {
   let detailBleach = clamp((positionUpdated.y - vertexInputs.instancePosition.y)
     / max(detailHeight, 0.001) - 0.55, 0.0, 0.45) * 1.6;
@@ -841,7 +1036,10 @@ fn detailBayer8(pixel: vec2u) -> f32 {
 // which is per-stem and identical in BOTH bands; pixels are render-target
 // coordinates, so a governor render-scale step cannot make the pattern
 // swim against the output.
-fn detailDitherSurvives(fadeByte: f32, pixel: vec2f, tintRgb: vec3f) -> bool {
+fn detailDitherSurvives(fadeByteLane: f32, pixel: vec2f, tintRgb: vec3f) -> bool {
+  // The impostor's byte arrives on an interpolated lane (detailImpostorA.z):
+  // a rounding error below an odd byte would read the direction bit as 0.
+  let fadeByte = floor(fadeByteLane + 0.5);
   if (fadeByte >= 254.0) { return true; }
   if (fadeByte <= 1.0) { return false; }
   let incoming = fadeByte - floor(fadeByte / 2.0) * 2.0 >= 1.0;
@@ -857,38 +1055,11 @@ fn detailDitherSurvives(fadeByte: f32, pixel: vec2f, tintRgb: vec3f) -> bool {
 // The vertex helper owns the hard switch from the stem centre. Re-evaluating
 // that edge per fragment clips half a billboard as its centre crosses the
 // boundary. Near/mid fragments therefore survive wholesale; far fragments
-// dither only through the outer 420 m cull edge.
+// (code 2, the impostor) dither only through the outer 420 m cull edge.
 fn detailBandWindow(bandCode: f32, positionW: vec3f, pixel: vec2f, tintRgb: vec3f) -> bool {
-  // Code 4 — the mid-band card shell (wave T): dither IN over the 50 m after
-  // the near switch (exact complement of code 3's dither OUT, same Bayer and
-  // hash, so the near/mid card handoff covers every pixel exactly once). The
-  // far edge is the vertex window's per-stem hashed switch, same as mid bark.
-  if (bandCode > 3.5) {
-    let cardRange = distance(positionW.xz, scene.vEyePosition.xz);
-    let nearEdge = uniforms.detailBandRadii.x - 50.0;
-    let inFade = clamp((nearEdge - cardRange) / 50.0, 0.0, 1.0);
-    let cardHash = fract(dot(tintRgb, vec3f(12.9898, 78.233, 37.719)) * 43758.5453);
-    let cardOffset = vec2u(u32(cardHash * 5.0), u32(fract(cardHash * 7.0) * 5.0));
-    if (inFade > 0.0) {
-      // Complement of code 3's survival: threshold >= fade keeps the pixels
-      // the outgoing near cards released.
-      return detailBayer8(vec2u(pixel) + cardOffset) >= inFade;
-    }
-    return true;
-  }
-  // Code 3 — the near card shell's dither dissolve over the last 50 m of the
-  // near band. Without it every stem's cards popped off in one frame at the
-  // switch radius (the reported "trees jump").
-  if (bandCode > 2.5) {
-    let fringeRange = distance(positionW.xz, scene.vEyePosition.xz);
-    let fringeEdge = uniforms.detailBandRadii.x - 50.0;
-    let fringeFade = clamp((fringeEdge - fringeRange) / 50.0, 0.0, 1.0);
-    if (fringeFade >= 1.0) { return true; }
-    if (fringeFade <= 0.0) { return false; }
-    let fringeHash = fract(dot(tintRgb, vec3f(12.9898, 78.233, 37.719)) * 43758.5453);
-    let fringeOffset = vec2u(u32(fringeHash * 5.0), u32(fract(fringeHash * 7.0) * 5.0));
-    return detailBayer8(vec2u(pixel) + fringeOffset) < fringeFade;
-  }
+  // Codes 3 and 4 — the leaf-card shells. Their handoff is a scale of each
+  // card, applied in the vertex stage; nothing of theirs dithers.
+  if (bandCode > 2.5) { return true; }
   if (bandCode < 1.5) { return true; }
   let bandRange = distance(positionW.xz, scene.vEyePosition.xz);
   let fCull = clamp(
@@ -958,10 +1129,14 @@ if (impostorBlend.a < 0.5) { discard; }
 surfaceAlbedo = impostorBlend.rgb / max(impostorBlend.a, 0.25)
   * fragmentInputs.detailInstanceTint.rgb;
 #else
+// A whole number that rode an interpolated varying is recovered by ROUNDING,
+// never by a bare floor: the packed lane carries its byte half a step in
+// (DETAIL_PACKED_FADE_STEPS), the spare lane is rounded to nearest.
 #ifdef DETAIL_FOLIAGE_ATLAS
-let detailFadeByteDecoded = fract(fragmentInputs.detailAtlasData.z) * 512.0;
+let detailFadeByteDecoded = floor(
+  fract(fragmentInputs.detailAtlasData.z) * ${DETAIL_PACKED_FADE_STEPS.toFixed(1)});
 #else
-let detailFadeByteDecoded = fragmentInputs.detailFadeByte;
+let detailFadeByteDecoded = floor(fragmentInputs.detailFadeByte + 0.5);
 #endif
 #ifdef DETAIL_OPAQUE_CROWN
 // Fix-pack F1: the leaf-cluster field, shared by the albedo modulation below
@@ -971,8 +1146,13 @@ let detailFadeByteDecoded = fragmentInputs.detailFadeByte;
 // canopy's pattern popped on every 2,048 m origin move), each octave faded
 // by its own pixel-footprint Nyquist so mid-band crowns converge to the
 // texture instead of carrying per-pixel shimmer.
-let detailClusterCoord = fragmentInputs.vPositionW.xz + uniforms.detailWorldOrigin.xy
-  + vec2f(fragmentInputs.vPositionW.y * 0.53, fragmentInputs.vPositionW.y * 0.31);
+// detailClusterGrain is the surface's grain (setClusterGrain): how many times
+// finer than a crown's the clumps are, the tone a crevice and a lit clump
+// take, and the normal's strength. A crown's is (1, 0.84, 0.32, 1), which is
+// the arithmetic this block had before a bush's body shared it.
+let detailClusterCoord = (fragmentInputs.vPositionW.xz + uniforms.detailWorldOrigin.xy
+  + vec2f(fragmentInputs.vPositionW.y * 0.53, fragmentInputs.vPositionW.y * 0.31))
+  * uniforms.detailClusterGrain.x;
 let detailClusterFootprint = max(
   length(dpdx(detailClusterCoord)), length(dpdy(detailClusterCoord)));
 let detailClusterFadeA = 1.0 - smoothstep(0.15, 0.55, detailClusterFootprint);
@@ -1001,7 +1181,10 @@ if (!detailDitherSurvives(
 #endif
 #ifdef DETAIL_FOLIAGE_ATLAS
 let detailModifierDecoded = floor(fragmentInputs.detailAtlasData.w);
-let detailOcclusionDecoded = (fragmentInputs.detailAtlasData.w - detailModifierDecoded) * 2.0;
+let detailOcclusionDecoded = clamp(
+  (fragmentInputs.detailAtlasData.w - detailModifierDecoded
+    - ${DETAIL_PACKED_OCCLUSION_BIAS.toFixed(2)}) * 2.0,
+  0.0, 1.0);
 // Sampled UNCONDITIONALLY: WGSL forbids implicit-derivative samples in
 // non-uniform control flow. Untextured vertices (layer −1) clamp to layer 0
 // and simply ignore the texel.
@@ -1020,7 +1203,7 @@ if (fragmentInputs.detailAtlasData.z >= 0.0) {
   // crevices — which the deliberately restrained dense layer cannot supply
   // alone; the companion normal perturbation lands before lights.
   surfaceAlbedo = surfaceAlbedo * detailCard.rgb
-    * (0.84 + 0.32 * detailClusterMix);
+    * (uniforms.detailClusterGrain.y + uniforms.detailClusterGrain.z * detailClusterMix);
 #else
   let detailAtlasLayer = floor(max(fragmentInputs.detailAtlasData.z, 0.0));
   // Bark (5..7) and dense near-crown layers (16..17) texture closed geometry,
@@ -1067,19 +1250,21 @@ surfaceAlbedo = surfaceAlbedo * fragmentInputs.detailInstanceTint.rgb;
 // the shading normal with the same world-locked cluster field the albedo
 // modulation uses (recomputed here — the hook scopes are separate), so the
 // hull lights as thousands of leaf clumps facing every direction.
-let crownClusterCoord = fragmentInputs.vPositionW.xz + uniforms.detailWorldOrigin.xy
-  + vec2f(fragmentInputs.vPositionW.y * 0.53, fragmentInputs.vPositionW.y * 0.31);
+let crownClusterCoord = (fragmentInputs.vPositionW.xz + uniforms.detailWorldOrigin.xy
+  + vec2f(fragmentInputs.vPositionW.y * 0.53, fragmentInputs.vPositionW.y * 0.31))
+  * uniforms.detailClusterGrain.x;
 let crownClusterFootprint = max(
   length(dpdx(crownClusterCoord)), length(dpdy(crownClusterCoord)));
 let crownClusterFadeA = 1.0 - smoothstep(0.15, 0.55, crownClusterFootprint);
 let crownClusterFadeB = 1.0 - smoothstep(0.06, 0.2, crownClusterFootprint);
 let crownClusterA = detailClusterGrad(crownClusterCoord * 1.35);
 let crownClusterB = detailClusterGrad(crownClusterCoord * 3.7 + vec2f(17.1, 3.3));
-let crownClusterSlope = vec2f(crownClusterA.y, crownClusterA.z) * 0.4 * crownClusterFadeA
-  + vec2f(crownClusterB.y, crownClusterB.z) * 0.3 * crownClusterFadeB;
+let crownClusterSlope = (vec2f(crownClusterA.y, crownClusterA.z) * 0.4 * crownClusterFadeA
+  + vec2f(crownClusterB.y, crownClusterB.z) * 0.3 * crownClusterFadeB)
+  * uniforms.detailClusterGrain.w;
 normalW = normalize(normalW + vec3f(
   crownClusterSlope.x,
-  (crownClusterA.x - 0.5) * 0.5 * crownClusterFadeA,
+  (crownClusterA.x - 0.5) * 0.5 * crownClusterFadeA * uniforms.detailClusterGrain.w,
   crownClusterSlope.y,
 ));
 #endif
@@ -1196,7 +1381,8 @@ if (detailBacklit > 0.0) {
   // Baked crown occlusion gates it: an interior leaf sits behind several
   // others and transmits a fraction of what a rim leaf does.
   let detailBacklitOcclusion =
-    (fragmentInputs.detailAtlasData.w - floor(fragmentInputs.detailAtlasData.w)) * 2.0;
+    (fragmentInputs.detailAtlasData.w - floor(fragmentInputs.detailAtlasData.w)
+      - ${DETAIL_PACKED_OCCLUSION_BIAS.toFixed(2)}) * 2.0;
   finalDiffuse += surfaceAlbedo * uniforms.detailKeyLightColor.rgb
     * (detailBacklit * mix(0.15, 1.0, clamp(detailBacklitOcclusion, 0.0, 1.0)));
 }
@@ -1298,6 +1484,29 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
    */
   private bandGeometryFloorShare = 1;
   private bandImpostorFloorShare = 1;
+  /**
+   * The reach law for bushes and boulders (`groundObjects.ts`): metres of
+   * range per metre of height, the tier's cap, the share of the reach an
+   * object grows in over, and the scale it starts from. Off until set.
+   */
+  private sizeRangeEnabled = false;
+  private sizeRangeMetersPerMeter = 0;
+  private sizeRangeCapMeters = 0;
+  private sizeRangeGrowShare = 1;
+  private sizeRangeStartScale = 1;
+  /** A bush body's core rule: its cards' reach law, and the scale it shrinks to inside it. */
+  private sizeCoreMetersPerMeter = 0;
+  private sizeCoreCapMeters = 0;
+  private sizeCoreGrowShare = 1;
+  private sizeCoreScale = 1;
+  private sizeInnerMetersPerMeter = 0;
+  private sizeInnerCapMeters = 0;
+  private sizeInnerShare = 1;
+  /** `detailClusterGrain`: a crown's, until `setClusterGrain` says otherwise. */
+  private clusterGrainFrequency = 1;
+  private clusterGrainToneFloor = 0.84;
+  private clusterGrainToneSpan = 0.32;
+  private clusterGrainNormal = 1;
   /** 2-13: (dirX, dirZ, strength01, gust01) from the shared wind field. */
   private windDirectionX = 0.70710678;
   private windDirectionZ = 0.70710678;
@@ -1326,6 +1535,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
         DETAIL_IMPOSTOR: false,
         DETAIL_BAND_FADES: false,
         DETAIL_OPAQUE_CROWN: false,
+        DETAIL_SIZE_RANGE: false,
         // The impostor band's CASCADE-shadow receiver. Declared for exactly the
         // reason the next comment gives, and it was NOT — so `#ifdef
         // DETAIL_SUN_SHADOW` never compiled and the far vegetation band shipped
@@ -1463,6 +1673,84 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       : 1;
   }
 
+  /**
+   * Draws each instance out to a range set by its own height
+   * (`groundObjectReachMeters`), growing in over the last `growShare` of it
+   * from `startScale`. A cap of 0 turns the rule off and every record draws.
+   */
+  setSizeRange(
+    metersPerMeter: number,
+    capMeters: number,
+    growShare: number,
+    startScale: number,
+  ): void {
+    const enable = Number.isFinite(metersPerMeter) && metersPerMeter > 0
+      && Number.isFinite(capMeters) && capMeters > 0;
+    if (enable !== this.sizeRangeEnabled) this.markAllDefinesAsDirty();
+    this.sizeRangeEnabled = enable;
+    this.sizeRangeMetersPerMeter = enable ? metersPerMeter : 0;
+    this.sizeRangeCapMeters = enable ? capMeters : 0;
+    this.sizeRangeGrowShare = Number.isFinite(growShare)
+      ? Math.min(1, Math.max(1e-3, growShare))
+      : 1;
+    this.sizeRangeStartScale = Number.isFinite(startScale)
+      ? Math.min(1, Math.max(0, startScale))
+      : 1;
+  }
+
+  /**
+   * A bush body only: close enough that its leaf cards carry the bush
+   * (`SHRUB_BODY_CORE_REACH_METERS_PER_METER`, per metre of the BODY's
+   * height) it shrinks to `coreScale` and darkens to the shade behind the
+   * cards, over the nearer `growShare` of that range. A cap of 0 turns the
+   * rule off.
+   */
+  setSizeCore(
+    metersPerMeter: number,
+    capMeters: number,
+    growShare: number,
+    coreScale: number,
+  ): void {
+    const enable = Number.isFinite(metersPerMeter) && metersPerMeter > 0
+      && Number.isFinite(capMeters) && capMeters > 0;
+    this.sizeCoreMetersPerMeter = enable ? metersPerMeter : 0;
+    this.sizeCoreCapMeters = enable ? capMeters : 0;
+    this.sizeCoreGrowShare = Number.isFinite(growShare)
+      ? Math.min(1, Math.max(1e-3, growShare))
+      : 1;
+    this.sizeCoreScale = Number.isFinite(coreScale) ? Math.min(1, Math.max(0, coreScale)) : 1;
+  }
+
+  /**
+   * A stand-in only: it draws from where the mesh it replaces starts to
+   * shrink away, which is that mesh's reach (`metersPerMeter` per metre of
+   * height, capped) times `fullShare`, the share of the reach it is drawn at
+   * full size. A cap of 0 turns the rule off.
+   */
+  setSizeInner(metersPerMeter: number, capMeters: number, fullShare: number): void {
+    const enable = Number.isFinite(metersPerMeter) && metersPerMeter > 0
+      && Number.isFinite(capMeters) && capMeters > 0;
+    this.sizeInnerMetersPerMeter = enable ? metersPerMeter : 0;
+    this.sizeInnerCapMeters = enable ? capMeters : 0;
+    this.sizeInnerShare = Number.isFinite(fullShare) ? Math.min(1, Math.max(0, fullShare)) : 1;
+  }
+
+  /**
+   * The opaque crown path's leaf-cluster grain. A crown's clumps are 0.74 m
+   * and 0.27 m across, which on a bush a metre tall are the bush's own lumps:
+   * it reads as a mossy boulder. `frequency` is how many times finer than a
+   * crown's the clumps are; `toneFloor` and `toneSpan` are the tone of a
+   * crevice and the span up to a lit clump's (a crown's are 0.84 and 0.32);
+   * `normal` scales the shading normal's perturbation. Each octave still
+   * fades at its own pixel footprint, so a finer grain is gone sooner.
+   */
+  setClusterGrain(frequency: number, toneFloor: number, toneSpan: number, normal: number): void {
+    this.clusterGrainFrequency = Number.isFinite(frequency) ? Math.max(1e-3, frequency) : 1;
+    this.clusterGrainToneFloor = Number.isFinite(toneFloor) ? Math.max(0, toneFloor) : 0.84;
+    this.clusterGrainToneSpan = Number.isFinite(toneSpan) ? Math.max(0, toneSpan) : 0.32;
+    this.clusterGrainNormal = Number.isFinite(normal) ? Math.max(0, normal) : 1;
+  }
+
   override prepareDefines(defines: MaterialDefines): void {
     defines["DETAIL_FOLIAGE_ATLAS"] = this.foliageAtlas !== null;
     defines["DETAIL_IMPOSTOR"] = this.impostorAtlas !== null;
@@ -1478,6 +1766,7 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       && this.horizonAtlasB !== null;
     defines["DETAIL_BAND_FADES"] = this.bandFadesEnabled;
     defines["DETAIL_OPAQUE_CROWN"] = this.opaqueCrown;
+    defines["DETAIL_SIZE_RANGE"] = this.sizeRangeEnabled;
     // forcedInstanceCount routes the draw through Babylon's thin-instance
     // path, which compiles PBR with INSTANCES/THIN_INSTANCES and rebuilds
     // finalWorld from world0..world3 instance attributes. No matrix buffer
@@ -1659,6 +1948,21 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
         // law's floors for the per-stem band windows. Define-independent
         // layout, the house rule.
         { name: "detailBandShares", size: 4, type: "vec4" },
+        // (metres of range per metre of height, cap in metres, grow share,
+        // start scale) for `DETAIL_SIZE_RANGE`. Define-independent layout.
+        { name: "detailSizeRange", size: 4, type: "vec4" },
+        // A bush body's core rule: (metres of range per metre of the body's
+        // height inside which it is a core, the cap on that, the share of it
+        // the change takes, the core's scale).
+        { name: "detailSizeCore", size: 4, type: "vec4" },
+        // A stand-in's inner edge: (metres of range per metre of height of
+        // the mesh it stands in for, the cap on that, the share of that
+        // reach drawn at full size, 0).
+        { name: "detailSizeInner", size: 4, type: "vec4" },
+        // The opaque crown path's leaf-cluster grain: (how many times finer
+        // than a crown's, a crevice's tone, the span up to a lit clump's,
+        // the normal's strength). Define-independent layout.
+        { name: "detailClusterGrain", size: 4, type: "vec4" },
         { name: "detailKeyLight", size: 4, type: "vec4" },
         { name: "detailKeyLightColor", size: 4, type: "vec4" },
         {
@@ -1723,6 +2027,34 @@ export class DetailInstanceMaterialPlugin extends MaterialPluginBase {
       this.bandImpostorFloorShare,
       0,
       0,
+    );
+    uniformBuffer.updateFloat4(
+      "detailSizeRange",
+      this.sizeRangeMetersPerMeter,
+      this.sizeRangeCapMeters,
+      this.sizeRangeGrowShare,
+      this.sizeRangeStartScale,
+    );
+    uniformBuffer.updateFloat4(
+      "detailSizeCore",
+      this.sizeCoreMetersPerMeter,
+      this.sizeCoreCapMeters,
+      this.sizeCoreGrowShare,
+      this.sizeCoreScale,
+    );
+    uniformBuffer.updateFloat4(
+      "detailSizeInner",
+      this.sizeInnerMetersPerMeter,
+      this.sizeInnerCapMeters,
+      this.sizeInnerShare,
+      0,
+    );
+    uniformBuffer.updateFloat4(
+      "detailClusterGrain",
+      this.clusterGrainFrequency,
+      this.clusterGrainToneFloor,
+      this.clusterGrainToneSpan,
+      this.clusterGrainNormal,
     );
     uniformBuffer.updateFloat4(
       "detailKeyLight",

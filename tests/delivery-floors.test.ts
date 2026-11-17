@@ -383,7 +383,8 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
    * the check cannot reach anyone for the one shot that stopped being
    * checked**, which is the shape this file has now met five times.
    *
-   * Today the uncovered set is exactly the PROBES: shots carrying
+   * Today the uncovered set is exactly the PROBES and, since 2026-11-13, one
+   * motion shot (`DECLARED_DELIVERY_ONLY` below). The probes are shots carrying
    * `ceilings: null`, deliberately unpinned on the DELIVERY axes because they
    * frame something nothing else frames and have no predecessor to be a delta
    * against. Most of them also carry `comparesToBaseline: false`; W-11's
@@ -422,7 +423,52 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
    */
   const DECLARED_DRAW_ONLY: readonly string[] = ["water-400ft-glitter"];
 
-  it("a shot is outside draw-call coverage IF AND ONLY IF it is an unpinned probe", () => {
+  /**
+   * The converse: shots pinned on delivery and NOT on draws, by name and with
+   * the reason. Only a `kind: "motion"` shot can be one.
+   *
+   * "Draw counts are host-independent" holds for a shot that streams and
+   * settles at the pose it is read at. A motion shot is read at the pose its
+   * motion ENDS on, and the vegetation drawn there can depend on where in the
+   * last 64 m of travel the chunk straddling a band edge was last re-baked,
+   * which frame and worker timing decide (`PerfCaptureShot.drawCallCeiling`).
+   *
+   * `motion-banked-turn` is the one where it does. It read 247 in three macOS
+   * captures of 7beb285 and 249 in the capture of 873e3a0, with the same
+   * rendering code; at its final camera a bake 43, 32, 21 or 0 m back along
+   * the track draws 12, 15, 17 or 18 vegetation batches. An exact ceiling on
+   * a count like that fails a pull request that changed nothing, and
+   * `drawCallCeilingFrom` rightly refuses its samples. docs/PERFORMANCE.md,
+   * "The banked turn has no draw ceiling".
+   *
+   * The other two motion shots are NOT here and keep exact ceilings, each for
+   * a measured reason written on the shot. A still shot can never be here:
+   * its count is its pose's, so a still shot that disagrees with itself is a
+   * defect to find, not an exception to declare.
+   */
+  const DECLARED_DELIVERY_ONLY: readonly string[] = ["motion-banked-turn"];
+
+  it("a shot pinned on delivery and not on draws is a declared motion shot", () => {
+    for (const name of DECLARED_DELIVERY_ONLY) {
+      const shot = PERF_CAPTURE_SHOTS.find((candidate) => candidate.name === name);
+      expect(shot?.kind, `${name} is declared delivery-only but is not a motion shot`).toBe("motion");
+      expect(
+        shot?.drawCallCeiling,
+        `${name} is declared delivery-only but carries a draw-call ceiling`,
+      ).toBeUndefined();
+      // Losing the draw ceiling is all the declaration grants. The shot's own
+      // gates are its delivery floors and its temporal floors.
+      expect(shot?.ceilings, `${name} is declared delivery-only but has no floors`).not.toBeNull();
+      expect(shot?.temporalFloors, `${name} lost its temporal floors`).toBeDefined();
+      expect(DRAW_CALL_SAMPLES[name], `${name} has no ceiling but still has samples`).toBeUndefined();
+      expect(
+        PREVIOUS_DRAW_CALL_CEILINGS[name],
+        `${name} has no ceiling but is still in the ratchet's snapshot`,
+      ).toBeUndefined();
+    }
+  });
+
+  it("a shot is outside draw-call coverage IF AND ONLY IF it is an unpinned probe or declared delivery-only", () => {
     const noDrawCeiling = PERF_CAPTURE_SHOTS
       .filter((shot) => shot.drawCallCeiling === undefined)
       .map((shot) => shot.name)
@@ -431,6 +477,7 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
       .filter((shot) => shot.ceilings === null)
       .map((shot) => shot.name)
       .filter((name) => !DECLARED_DRAW_ONLY.includes(name))
+      .concat(DECLARED_DELIVERY_ONLY)
       .toSorted();
     // Every declared exception must ACTUALLY be in that state, or the list is
     // an excuse rather than a declaration.
@@ -444,10 +491,12 @@ describe("draw-call ceilings are the measured count, not a margin", () => {
     }
     expect(
       noDrawCeiling,
-      "A shot has no draw-call ceiling but IS a pinned shot, or a probe grew one. "
-      + "Draw calls are host-independent, so a pinned shot without a ceiling is the "
-      + "one kind of growth nothing in this repository can see: it is absent from "
-      + "SHOTS_WITH_DRAW_CEILINGS, so every test in this block passes without it.",
+      "A shot has no draw-call ceiling but IS a pinned shot, or a probe or a "
+      + "declared delivery-only shot grew one. Draw calls are host-independent at a "
+      + "pose a shot settled at, so a pinned shot without a ceiling is the one kind "
+      + "of growth nothing in this repository can see: it is absent from "
+      + "SHOTS_WITH_DRAW_CEILINGS, so every test in this block passes without it. "
+      + "The one exception is declared by name in DECLARED_DELIVERY_ONLY.",
     ).toEqual(probes);
   });
 
