@@ -120,13 +120,6 @@ export function airportReachWorldBounds(reach: AirportReach): WorldBounds {
   return { minX, minZ, maxX, maxZ };
 }
 
-/** Whether a world point lies inside the reach (boundary included). */
-export function airportReachContains(reach: AirportReach, x: number, z: number): boolean {
-  const local = worldToRunway(reach.airport, x, z);
-  return local.along >= reach.minAlong && local.along <= reach.maxAlong
-    && local.across >= reach.minAcross && local.across <= reach.maxAcross;
-}
-
 /**
  * Whether the reach and a world rectangle share any point — the separating-axis
  * test for two rectangles, so exact rather than a bounding-box approximation.

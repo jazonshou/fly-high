@@ -50,17 +50,13 @@ npm run verify        # lint, typecheck, tests, and production build
 npm test              # deterministic test suite
 npm run test:gpu      # WebGPU tests (needs a real GPU)
 npm run perf:capture  # screenshot and frame-time capture suite
-npm run build         # production bundle (Cloudflare Worker)
-npm run build:pages   # static bundle for GitHub Pages
+npm run build         # production bundle (deployed to GitHub Pages)
+npm start             # serve the production bundle locally
 ```
 
 ## Documentation
 
-- [docs/FLIGHT_MODEL.md](docs/FLIGHT_MODEL.md), [docs/CALIBRATION.md](docs/CALIBRATION.md), [docs/PERFORMANCE.md](docs/PERFORMANCE.md): how the aircraft, its calibration, and the performance budgets work.
-- [docs/architecture/](docs/architecture/): the architecture contract the code must satisfy.
-- [docs/plans/](docs/plans/): the rendering programme and each phase's execution plan.
-- [docs/findings/](docs/findings/): audits, measured defects, and review briefs.
-- [docs/status/](docs/status/): closeout, handover, and outcome records. Start with [PROJECT_CLOSEOUT_2026_09_02.md](docs/status/PROJECT_CLOSEOUT_2026_09_02.md).
+Start with [docs/OVERVIEW.md](docs/OVERVIEW.md): what the game does, how the code fits together, and how it is checked. It links the deeper docs on performance, architecture, and the aircraft, car and boat models.
 
 ## License
 

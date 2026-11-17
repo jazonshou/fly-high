@@ -61,13 +61,6 @@ export const SCOTOPIC_WEIGHTS: readonly [number, number, number] = Object.freeze
   0.55,
 ]);
 
-/** Photopic luminance weights (Rec. 709), for the cone path. */
-export const PHOTOPIC_WEIGHTS: readonly [number, number, number] = Object.freeze([
-  0.2126,
-  0.7152,
-  0.0722,
-]);
-
 /**
  * The perceived hue of rod-only vision. Rods are achromatic — they cannot
  * carry colour at all — but the residual blue-grey of a night scene is a

@@ -302,10 +302,6 @@ const SPECIES_PRESETS: Readonly<Record<BranchingTreeSpecies, SpeciesPreset>> = O
   },
 });
 
-export function treeSkeletonPreset(species: BranchingTreeSpecies): SpeciesPreset {
-  return SPECIES_PRESETS[species];
-}
-
 /** Weber & Penn's ShapeRatio for the flavours the presets use. */
 function shapeRatio(shape: SpeciesPreset["shape"], ratio: number): number {
   const t = clamp(ratio, 0, 1);

@@ -3,9 +3,9 @@
 **Created 2026-09-01. Owner: Senior Principal Engineer (flight-simulator-78), per
 Jason's direct mandate ("you should lead in architecting how things look at
 night"), ratified by the PM with the Phase 7 Lead's 7-4a work and measured
-constants as load-bearing inputs.** Binding order: `ARCHITECTURE.md` decision
-log → this document → `PHASE_7_EXECUTION_PLAN.md` §5 (7-4) where they touch.
-Deviations land in the Phase 7 §11 log per house rule.
+constants as load-bearing inputs.** Binding order: `ARCHITECTURE.md` →
+this document. The Phase 7 plan it was written alongside is archived (see
+`docs/ARCHIVE.md`).
 
 ---
 

@@ -174,21 +174,3 @@ export function structureToWorld(
   out.z = record.z - lx * s + lz * c;
   return out;
 }
-
-/** A world point to the building frame (the inverse of `structureToWorld`). `out` is returned. */
-export function worldToStructure(
-  record: Pick<StructureRecord, "x" | "z" | "heading" | "floorY">,
-  x: number,
-  y: number,
-  z: number,
-  out: { x: number; y: number; z: number },
-): { x: number; y: number; z: number } {
-  const c = Math.cos(record.heading);
-  const s = Math.sin(record.heading);
-  const dx = x - record.x;
-  const dz = z - record.z;
-  out.x = dx * c - dz * s;
-  out.y = y - record.floorY;
-  out.z = dx * s + dz * c;
-  return out;
-}

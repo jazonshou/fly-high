@@ -95,9 +95,3 @@ export function pitchBarOffsetMetres(pitchDegrees: number, ballRadiusMetres: num
   const scale = ballRadiusMetres / PITCH_BAR_REFERENCE_RADIUS_METRES;
   return -clamp(finiteOr(pitchDegrees, 0), -PITCH_BAR_LIMIT_DEGREES, PITCH_BAR_LIMIT_DEGREES) * PITCH_BAR_METRES_PER_DEGREE * scale;
 }
-
-/** The reading a needle angle stands for: the inverse of the mapping, for tests that measure a needle and ask what it says. */
-export const readingFromAngle = Object.freeze({
-  airspeedKnots: (degrees: number, fullScaleKnots: number): number => ((degrees + 150) / 300) * fullScaleKnots,
-  altimeterFeetModulo: (degrees: number): number => (((degrees % 360) + 360) % 360 / 360) * ALTIMETER_FEET_PER_TURN,
-});

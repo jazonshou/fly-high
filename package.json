@@ -7,10 +7,9 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
-    "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
-    "build:pages": "vite build --config vite.static.config.ts",
-    "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
+    "dev": "vite",
+    "build": "vite build",
+    "start": "vite preview",
     "test": "vitest run --config vitest.config.ts",
     "test:sim": "vitest run --config tests/sim.vitest.config.ts",
     "test:world": "vitest run --config tests/world.vitest.config.ts",
@@ -18,7 +17,7 @@
     "typecheck": "tsc --noEmit",
     "benchmark": "vitest run --config vitest.config.ts tests/sim.flight.test.ts",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-pages --ignore-pattern .next",
+    "lint": "eslint .",
     "perf:cold-start": "vitest run --config vitest.perf.config.ts tests/perf/cold-start.test.ts",
     "perf:capture": "npm run perf:cold-start && vitest run --config vitest.perf.config.ts tests/perf/perf-capture.test.ts",
     "perf:capture:candidate": "npm run perf:cold-start && VITE_PERF_REBASELINE=1 vitest run --config vitest.perf.config.ts tests/perf/perf-capture.test.ts",
@@ -29,28 +28,25 @@
   },
   "dependencies": {
     "@babylonjs/core": "9.21.2",
-    "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
-    "@vitejs/plugin-rsc": "0.5.26",
     "@vitest/browser-playwright": "^4.1.10",
     "@webgpu/types": "^0.1.71",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-plugin-react": "7.37.5",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "16.4.0",
     "playwright": "^1.62.1",
-    "react-server-dom-webpack": "19.2.6",
     "typescript": "5.9.3",
-    "vinext": "0.0.50",
+    "typescript-eslint": "8.59.3",
     "vite": "8.0.13",
-    "vitest": "^4.1.10",
-    "wrangler": "4.92.0"
+    "vitest": "^4.1.10"
   },
   "type": "module"
 }

@@ -194,9 +194,6 @@ export const WATER_SUN_IRRADIANCE_SCALE = PEAK_SUN_INTENSITY / Math.PI;
  */
 export const WATER_SKY_IRRADIANCE_FRACTION = 0.55;
 
-/** Rec. 709 luminance weights — used only to reduce a colour to one scalar. */
-export const WATER_LUMINANCE_WEIGHTS = Object.freeze([0.2126, 0.7152, 0.0722] as const);
-
 /**
  * The water path a backlit crest transmits through, metres. The crest tint is
  * `exp(-a * this)` normalised to unit luminance, so a peat-stained tarn glows
@@ -4106,17 +4103,6 @@ export function waterGlintExpectedCount(
   const facets = footprintArea / (WATER_GLINT_FACET_LENGTH_METERS * WATER_GLINT_FACET_LENGTH_METERS);
   const captureSolidAngle = Math.PI * (sunAngularRadius * 0.5) ** 2;
   return facets * waterGgxDistribution(nDotH, alpha) * Math.max(nDotH, 0) * captureSolidAngle;
-}
-
-/**
- * CPU mirror of `waterCoxMunkSlopeVariance`: the total mean-square slope of a
- * clean sea at this wind, the anchor the far field's roughness is held to.
- */
-export function waterCoxMunkSlopeVariance(windSpeedMetersPerSecond: number): number {
-  if (!Number.isFinite(windSpeedMetersPerSecond) || windSpeedMetersPerSecond < 0) {
-    throw new RangeError("Water wind speed must be finite and non-negative");
-  }
-  return WATER_COX_MUNK_BASE_VARIANCE + WATER_COX_MUNK_WIND_SLOPE * windSpeedMetersPerSecond;
 }
 
 /**

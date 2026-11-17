@@ -110,7 +110,6 @@ export const TERRAIN_HEIGHT_AUTHORITY_LADDER = Object.freeze([
   "macro",
   "analytic",
 ] as const);
-export type TerrainHeightAuthority = (typeof TERRAIN_HEIGHT_AUTHORITY_LADDER)[number];
 
 export interface TerrainHeightAuthorityCounters {
   readonly readbackServed: number;

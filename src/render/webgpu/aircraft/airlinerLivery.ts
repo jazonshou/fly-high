@@ -126,7 +126,6 @@ export type LiveryRgb = readonly [number, number, number];
 
 /** The cheatline's linear-space navy, the rudder's own colour. */
 export const CHEATLINE_LINEAR: LiveryRgb = [0.011, 0.042, 0.147];
-export const LIVERY_WHITE: LiveryRgb = [255, 255, 255];
 /** `CHEATLINE_LINEAR` encoded: 27, 58, 107. */
 export const LIVERY_NAVY: LiveryRgb = [
   srgbByte(CHEATLINE_LINEAR[0]),
@@ -161,7 +160,6 @@ export const WING_ROOT_SHADE = 0.88;
  * band could not make: its ~0.8 m blur could not be placed to 0.42 m.
  */
 export const MAIN_DECK_WINDOW_Y = 0.2;
-export const MAIN_DECK_WINDOW_HEIGHT = 0.36;
 
 /**
  * The cheatline. Station ends follow the deleted vertex band exactly: full

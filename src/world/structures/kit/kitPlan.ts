@@ -638,8 +638,3 @@ export function roomsAlong(
   }
   return out.sort((a, b) => a.lo - b.lo);
 }
-
-/** The stair's tread count and geometry helpers. */
-export function stairTreadTop(index: number): number {
-  return (index + 1) * STRUCTURE_STAIR_RISE;
-}
