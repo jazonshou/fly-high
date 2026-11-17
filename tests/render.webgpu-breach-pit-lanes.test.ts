@@ -20,6 +20,19 @@ import { BREACH_SURVEY_PAGE_SETS } from "./support/erosionSurveyPages";
 const RADIUS = TERRAIN_EROSION_PRODUCTION_CONFIG.pitBreachRadiusTexels;
 const EPSILON = TERRAIN_EROSION_PRODUCTION_CONFIG.drainageEpsilonMetersPerTexel;
 
+/**
+ * The pages compared on every run: five of the survey's sixteen. A page costs 2.5-8 s
+ * to seed (`buildTerrainErosionSeedFields`) and under 0.1 s to compare, and the real
+ * build's five level 0 and 1 pages carry 16 pits between them. Kept: the fixture's
+ * cost-test page and its densest page, and the real build's pages at levels 2, 3 and 4:
+ * 1,882 pits of the sixteen pages' 3,640 (measured 2026-11-14). The tie case above, and
+ * tests/gpu/breach-pit-parallel-identity.test.ts on the GPU, are unchanged.
+ */
+const CHECKED_PAGES: Readonly<Record<string, readonly string[]>> = {
+  fixture: ["L3 -3,5", "L5 -1,1"],
+  real: ["L2 2,2", "L3 1,-2", "L4 0,0"],
+};
+
 function sameBits(a: ArrayLike<number>, b: ArrayLike<number>): number {
   let differences = 0;
   for (let index = 0; index < a.length; index += 1) if (!Object.is(a[index], b[index])) differences += 1;
@@ -60,10 +73,14 @@ describe("breach pit lanes: the reduction picks the serial search's target", () 
 
   for (const set of BREACH_SURVEY_PAGE_SETS) {
     it(`carves every pit of the ${set.name} survey pages exactly as breachLocalPits does`, () => {
+      const checked = CHECKED_PAGES[set.name] ?? [];
+      const pages = set.pages.filter((address) => checked.includes(`L${address.level} ${address.x},${address.z}`));
+      // Every kept page is still in the survey, so a renamed or moved page fails here, not silently.
+      expect(pages.length, `${set.name}: checked pages found in the survey`).toBe(checked.length);
       const world = set.world();
       const macro = set.macro(world);
       let pits = 0;
-      for (const address of set.pages) {
+      for (const address of pages) {
         const seed = buildTerrainErosionSeedFields(world, macro, address);
         const serial = breachLocalPits(seed.scratchEdge, seed.sourceHeight, RADIUS, EPSILON, { erosionMask: seed.erosionMask });
         const lanes = laneReducedBreach(seed.scratchEdge, seed.sourceHeight, seed.erosionMask, RADIUS, EPSILON);
@@ -73,7 +90,7 @@ describe("breach pit lanes: the reduction picks the serial search's target", () 
         pits += lanes.pits;
       }
       // Non-vacuity: the pages carry pits, or the comparison proved nothing.
-      expect(pits).toBeGreaterThan(set.name === "fixture" ? 1_000 : 100);
+      expect(pits).toBeGreaterThan(set.name === "fixture" ? 1_000 : 300);
     }, 300_000);
   }
 });
