@@ -18,7 +18,6 @@ import { LC76_GEOMETRY } from "@/src/vehicles/landcruiser76";
  * dimensioned; the drawn parts use `y = GROUND_Y + h`.
  */
 
-export const LC76_WHEELBASE = LC76_GEOMETRY.wheelbase;
 export const LC76_FRONT_AXLE_X = LC76_GEOMETRY.frontAxleX;
 export const LC76_REAR_AXLE_X = LC76_GEOMETRY.rearAxleX;
 export const LC76_FRONT_TRACK = LC76_GEOMETRY.frontTrack;
@@ -26,17 +25,10 @@ export const LC76_REAR_TRACK = LC76_GEOMETRY.rearTrack;
 /** The centre of gravity above flat ground at kerb ride. */
 export const LC76_CG_HEIGHT = LC76_GEOMETRY.cgHeight;
 export const GROUND_Y = -LC76_CG_HEIGHT;
-/** 265/70R16: a 777 mm tyre, 0.37 m loaded under the car's weight. */
-export const LC76_TYRE_FREE_RADIUS = LC76_GEOMETRY.freeTyreRadius;
 export const LC76_TYRE_LOADED_RADIUS = LC76_GEOMETRY.loadedTyreRadius;
 export const LC76_TYRE_WIDTH = LC76_GEOMETRY.tyreWidth;
-/** The steel rim: 16 inches across the bead seat, 7 inches wide. */
-export const LC76_RIM_RADIUS = 0.2032;
-export const LC76_RIM_WIDTH = 0.178;
 /** The wheel centres' height with no axle travel. */
 export const LC76_WHEEL_CENTRE_Y = LC76_GEOMETRY.wheelCentreY;
-export const LC76_BUMP_TRAVEL = LC76_GEOMETRY.bumpTravel;
-export const LC76_DROOP_TRAVEL = LC76_GEOMETRY.droopTravel;
 
 /** A height above flat ground in the body frame. */
 export function h(heightAboveGround: number): number {

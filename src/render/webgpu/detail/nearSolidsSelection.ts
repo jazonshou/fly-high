@@ -10,14 +10,21 @@ import {
   yawLeanQuaternion,
   type DetailPresentationBuildCatalog,
 } from "./presentationBuild";
+import {
+  PackedClutterView,
+  PackedRockView,
+  PackedTreeView,
+  type PackedDetailCell,
+} from "./packedCell";
 import { buildTreeSkeleton } from "./treeSkeleton";
-import type { GeneratedDetailCell, TreeSpecies } from "./types";
+import type { TreeSpecies } from "./types";
 
 /**
  * The near solids (`src/sim/person/nearSolids.ts`) of the cells round a
  * point: what the walker and the character camera meet among the plants and
  * stones the near view draws. Pure and Babylon-free, so the detail worker
- * runs it on the cells it retains, and the runtime on inline cells.
+ * runs it on the cells it retains, and the runtime on inline cells: both
+ * packed (`packDetailCell`), read through the presentation build's cursors.
  *
  * Every solid follows the record the presentation build writes for it
  * (`buildPresentationChunk`), so the walker meets what is drawn:
@@ -31,7 +38,9 @@ import type { GeneratedDetailCell, TreeSpecies } from "./types";
  *   turned by the stem's yaw and lean. Two capsules follow that trunk: from
  *   half a metre under the base to 2.5 m up, with the drawn trunk's radius
  *   1.2 m up, then on to the lowest branch (a palm's crown) with its radius
- *   halfway. Wind sway and the crown wobble's few per cent are left out.
+ *   halfway. Wind sway and the crown wobble's few per cent are left out,
+ *   and so is the near model's root flare (`TRUNK_ROOT_FLARE_RINGS`): it
+ *   stays soft, as roots do.
  * - **Rocks.** The drawn rock is a displaced unit icosphere at the placement
  *   (sunk into the ground), squashed to the rock's height: its top and its
  *   ring at the placement fix a sphere whose cap above the ground is the
@@ -76,7 +85,7 @@ export const STUMP_PROTOTYPE_RADIUS = 0.17;
 const STUMP_ROOT = 0.25;
 
 export interface NearSolidsSelectionResident {
-  readonly cell: GeneratedDetailCell;
+  readonly cell: PackedDetailCell;
   /** Canopy rank of each stem in `cell.trees` (`detailTreeCanopyRankOrder`). */
   readonly treeCanopyRank: Float32Array;
 }
@@ -177,6 +186,11 @@ class SolidWriter {
   }
 }
 
+/** Cursors over the packed placements; the selection runs to the end without yielding. */
+const treeView = new PackedTreeView();
+const rockView = new PackedRockView();
+const clutterView = new PackedClutterView();
+
 /** `rotate`'s answer. */
 const rotated = { x: 0, y: 0, z: 0 };
 
@@ -231,9 +245,9 @@ export function selectNearSolids(
       || cell.maxZ < centerZ - radius || cell.minZ > centerZ + radius
     ) continue;
     const cellHectares = (cell.cellSizeMeters * cell.cellSizeMeters) / 10_000;
-    const stemsPerHa = cell.trees.length / Math.max(cellHectares, 1e-6);
-    for (let index = 0; index < cell.trees.length; index += 1) {
-      const tree = cell.trees[index]!;
+    const stemsPerHa = cell.trees.count / Math.max(cellHectares, 1e-6);
+    for (let index = 0; index < cell.trees.count; index += 1) {
+      const tree = treeView.at(cell.trees, index);
       const dx = tree.x - centerX;
       const dz = tree.z - centerZ;
       if (dx * dx + dz * dz > radiusSquared) continue;
@@ -321,7 +335,9 @@ export function selectNearSolids(
   }
 
   for (const resident of input.residents) {
-    for (const rock of resident.cell.rocks) {
+    const rocks = resident.cell.rocks;
+    for (let index = 0; index < rocks.count; index += 1) {
+      const rock = rockView.at(rocks, index);
       const dx = rock.x - centerX;
       const dz = rock.z - centerZ;
       if (dx * dx + dz * dz > radiusSquared) continue;
@@ -347,7 +363,9 @@ export function selectNearSolids(
   }
 
   for (const resident of input.residents) {
-    for (const piece of resident.cell.clutter) {
+    const clutter = resident.cell.clutter;
+    for (let index = 0; index < clutter.count; index += 1) {
+      const piece = clutterView.at(clutter, index);
       if (piece.clutterKind !== "log" && piece.clutterKind !== "stump") continue;
       const dx = piece.x - centerX;
       const dz = piece.z - centerZ;

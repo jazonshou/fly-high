@@ -6,6 +6,8 @@ import {
   buildTreePrototype,
   buildCrownFringePrototype,
   buildShrubPrototype,
+  buildShrubBodyFarPrototype,
+  buildShrubBodyPrototype,
   buildRockPrototype,
   buildGrassPatchPrototype,
   buildClutterPrototype,
@@ -228,6 +230,10 @@ function cases(): ReadonlyArray<readonly [string, Geo]> {
   for (const species of ["juniper", "hazel", "sage"] as const) {
     out.push([`shrub.${species}`, buildShrubPrototype(species, 0, 1) as unknown as Geo]);
   }
+  // The bush's solid body: opaque and back-face culled, so an inverted body
+  // would draw its far wall and nothing else.
+  out.push(["shrub.body", buildShrubBodyPrototype(1) as unknown as Geo]);
+  out.push(["shrub.body-far", buildShrubBodyFarPrototype(1) as unknown as Geo]);
   for (const variant of ["granite", "limestone", "dark"] as const) {
     out.push([`rock.${variant}`, buildRockPrototype(variant, 1) as unknown as Geo]);
   }

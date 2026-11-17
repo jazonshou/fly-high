@@ -1,11 +1,5 @@
 export type Vec2 = readonly [number, number];
 export type Vec3 = readonly [number, number, number];
-export type Mat4 = readonly [
-  number, number, number, number,
-  number, number, number, number,
-  number, number, number, number,
-  number, number, number, number,
-];
 
 export function isPowerOfTwo(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0 && (value & (value - 1)) === 0;
@@ -71,11 +65,6 @@ export function assertAscending(values: readonly number[], path: string): void {
   }
 }
 
-export function freezeTuple2(value: Vec2): Vec2 {
-  return Object.freeze([value[0], value[1]]) as Vec2;
-}
-
 export function freezeTuple3(value: Vec3): Vec3 {
   return Object.freeze([value[0], value[1], value[2]]) as Vec3;
 }
-

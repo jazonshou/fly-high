@@ -922,18 +922,6 @@ export function sampleCarvedTerrainHeight(
   return sampleTerrainHeight(world, x, z) - channelCarveDepth(channels, x, z);
 }
 
-/** Band-limited render-path height with channels carved in. See above. */
-export function sampleCarvedFilteredTerrainHeight(
-  world: WorldDefinition,
-  channels: CarvedChannelSet,
-  x: number,
-  z: number,
-  filterWidthMeters: number,
-): number {
-  return sampleFilteredTerrainHeight(world, x, z, filterWidthMeters)
-    - channelCarveDepth(channels, x, z);
-}
-
 /**
  * Render-path height with band-limiting (1B-2): the tile generator passes
  * its grid spacing so a coarse mesh is a blurred version of the fine one,

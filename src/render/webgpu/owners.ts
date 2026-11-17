@@ -969,6 +969,31 @@ export const ARCHITECTURAL_OWNERS: readonly ArchitecturalOwner[] = [
       + "format returning; 2-12..2-17 extend the RECORD, never fork it.",
   },
   {
+    // The boxes a batch is frustum-tested by after its one whole box: a box
+    // a 256 m block, accumulated with the records and read by the mesh.
+    artifact: "detail-cull-blocks",
+    owner: "vegetation",
+    definitionSites: [
+      "src/render/webgpu/detail/instanceFormat.ts",
+      "src/render/webgpu/detail/blockFrustumTest.ts",
+    ],
+    consumers: ["vegetation", "performance"],
+    ownedSymbols: [
+      "DETAIL_CULL_BLOCK_METERS",
+      "DETAIL_CULL_BLOCK_SLOTS",
+      "isDetailCullBlockList",
+      "detailCullBlocksIntersectFrustum",
+      "installDetailBlockFrustumTest",
+    ],
+    notes:
+      "The blocks are unions of the SAME per-instance bounds the whole box "
+      + "is, taken in the same pass, so the block test can only reject a "
+      + "batch with nothing to rasterise. A second accumulation (a walk over "
+      + "packed records, a padding guessed from the batch's extremes) is how "
+      + "a block ends up smaller than an instance in it and a tree vanishes "
+      + "at the edge of the screen.",
+  },
+  {
     // Wave T: the tree skeleton generator — ONE skeleton per (species,
     // variant, seed) feeds every mesh detail level and the leaf-card shell.
     artifact: "tree-skeleton-generator",

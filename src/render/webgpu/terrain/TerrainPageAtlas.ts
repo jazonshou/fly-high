@@ -763,41 +763,6 @@ export class TerrainPageAtlas {
 /** Floats per slot in each of the two indirection arrays. */
 export const TERRAIN_INDIRECTION_STRIDE = 4;
 
-/**
- * `(slotU, slotV, originX, originZ)` and `(texelSize, minH, maxH,
- * maxDeviationFromParent)` per slot, as two `array<vec4f>`s.
- *
- * A CDLOD node passes its slot index as a thin-instance attribute, so the
- * vertex shader needs no indirection FETCH to find its page — these tables
- * exist for the fragment stage and the CPU-tile fallback path, which only
- * know a page key.
- */
-export function writeTerrainIndirection(
-  atlas: TerrainPageAtlas,
-  originX: number,
-  originZ: number,
-  addressing: Float32Array,
-  bounds: Float32Array,
-): void {
-  addressing.fill(0);
-  bounds.fill(0);
-  for (const slot of atlas.residency.entries) {
-    if (slot.lifecycle.state !== "resident") continue;
-    const texel = atlas.slotOrigin(slot.slotIndex);
-    const pageBounds = worldPageBounds(slot.address, WORLD_PAGE_BASE_EXTENT_METERS);
-    const base = slot.slotIndex * TERRAIN_INDIRECTION_STRIDE;
-    addressing[base] = texel.u;
-    addressing[base + 1] = texel.v;
-    // Camera-relative, like every other world position the shaders see.
-    addressing[base + 2] = pageBounds.minX - originX;
-    addressing[base + 3] = pageBounds.minZ - originZ;
-    bounds[base] = terrainTexelSizeMeters(slot.address.level);
-    bounds[base + 1] = slot.stats.minHeightMeters;
-    bounds[base + 2] = slot.stats.maxHeightMeters;
-    bounds[base + 3] = slot.stats.maxDeviationFromParent;
-  }
-}
-
 /** The two slot keys a page needs resident for a season-keyed family. */
 export function seasonSlotKeys(
   page: WorldPageKey,

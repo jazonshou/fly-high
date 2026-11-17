@@ -4109,17 +4109,6 @@ export function waterGlintExpectedCount(
 }
 
 /**
- * CPU mirror of `waterCoxMunkSlopeVariance`: the total mean-square slope of a
- * clean sea at this wind, the anchor the far field's roughness is held to.
- */
-export function waterCoxMunkSlopeVariance(windSpeedMetersPerSecond: number): number {
-  if (!Number.isFinite(windSpeedMetersPerSecond) || windSpeedMetersPerSecond < 0) {
-    throw new RangeError("Water wind speed must be finite and non-negative");
-  }
-  return WATER_COX_MUNK_BASE_VARIANCE + WATER_COX_MUNK_WIND_SLOPE * windSpeedMetersPerSecond;
-}
-
-/**
  * CPU mirror of `waterWhitecapCoverage`: Monahan & O'Muircheartaigh's
  * `3.84e-6 U^3.41`, with Callaghan's threshold faded in over 3.7-5 m/s.
  */

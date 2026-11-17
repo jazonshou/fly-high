@@ -14,7 +14,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
  * every capture run overwrites (`ARTIFACT_DIR` in the driver). So a citation to
  * it does not name a frame — it names "whatever was captured most recently".
  *
- * **Measured, and this is why it matters:** `RESOLUTION_PLAN.md` cites
+ * **Measured, and this is why it matters:** `RESOLUTION_PLAN.md` (since removed) cited
  * `tests/perf/artifacts/cdlod-transition.png` for *"cyan rectangles over a
  * headland"*. That path resolves today, and the frame at it is a clean
  * coastline from a later run. **A reader following the citation sees no defect
@@ -32,16 +32,10 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
  */
 
 /** Mutable-path citations that predate this rule, each with what now carries the claim. */
-const DECLARED_STALE_CITATIONS: readonly (readonly [string, string])[] = [
-  ["docs/plans/RESOLUTION_PLAN.md",
-    "A-1/A-2/A-3 cite four fixed artifact paths. The frames they described have "
-    + "been overwritten by later runs — the files resolve and show clean scenes. "
-    + "A-1's claim is now carried by the COMMITTED baseline "
-    + "tests/perf/baseline/coast-10km-lowsun.png, which still exhibits the "
-    + "artifact and is immutable by review. Do not 'fix' these citations by "
-    + "regenerating: a fresh capture is a different frame and cannot support a "
-    + "claim made about the original."],
-];
+// RESOLUTION_PLAN.md, the one declared document, was removed with the other
+// finished-work plans (see docs/ARCHIVE.md). Declare a document here only with
+// what now carries its claim.
+const DECLARED_STALE_CITATIONS: readonly (readonly [string, string])[] = [];
 
 function docCitations(): { path: string; doc: string; pinned: boolean }[] {
   const docs = execFileSync("git", ["ls-files", "*.md", "docs/*.md"], { cwd: ROOT })
@@ -51,10 +45,10 @@ function docCitations(): { path: string; doc: string; pinned: boolean }[] {
     const lines = readFileSync(join(ROOT, doc), "utf8").split("\n");
     lines.forEach((line, i) => {
       for (const m of line.matchAll(/tests\/perf\/artifacts\/[A-Za-z0-9._/-]+\.(?:png|json)/gu)) {
-        // PHASE_4_5's pattern: name the mutable path only to say why it is NOT
+        // The pinned pattern: name the mutable path only to say why it is NOT
         // the source, and pin the real evidence in docs/evidence/. A mention
         // accompanied by a pin is the CORRECT form, not an offence — the guard
-        // must not punish the one document that already does this right.
+        // must not punish a document that does this right.
         const context = lines.slice(Math.max(0, i - 2), i + 3).join(" ");
         out.push({ path: m[0], doc, pinned: context.includes("docs/evidence/") });
       }
@@ -86,10 +80,9 @@ describe("evidence cited by documents is immutable", () => {
       offenders,
       "A document cites tests/perf/artifacts/<name>, which EVERY capture run "
       + "overwrites. THE QUESTION IS NOT HOW TO MAKE THIS GREEN. Cite something "
-      + "that cannot change under the reader. THE PROJECT ALREADY HAS THIS "
-      + "PATTERN and exactly one document uses it: PHASE_4_5_EXECUTION_PLAN.md "
-      + "pins its numbers at docs/evidence/<name>-<ISO>.json and names the "
-      + "mutable path only to explain why it is not the source. Copy that: pin "
+      + "that cannot change under the reader: pin the numbers at "
+      + "docs/evidence/<name>-<ISO>.json and name the mutable path only to "
+      + "explain why it is not the source. So: pin "
       + "into docs/evidence/, or cite tests/perf/baseline/<shot>.png (committed, "
       + "changes only by review) or a timestamped rebaseline-candidates/<ISO>/. If the frame you meant is gone, "
       + "add the document to DECLARED_STALE_CITATIONS and say what now carries "

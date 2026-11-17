@@ -1,4 +1,4 @@
-import { isWorldPageKey, type WorldPageKey } from "./pageKey";
+import type { WorldPageKey } from "./pageKey";
 import {
   estimateWorldPagePayloadBytes,
   WORLD_PAGE_SCHEMA_VERSION,
@@ -115,41 +115,6 @@ export function isWorldPageCacheCompatible(
     (expected.key === undefined || metadata.key === expected.key) &&
     (expected.contentRevision === undefined ||
       metadata.contentRevision === expected.contentRevision)
-  );
-}
-
-export function isWorldPageCacheMetadata(value: unknown): value is WorldPageCacheMetadata {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    candidate.metadataVersion === WORLD_PAGE_CACHE_METADATA_VERSION &&
-    candidate.pageSchemaVersion === WORLD_PAGE_SCHEMA_VERSION &&
-    isWorldPageKey(candidate.key) &&
-    typeof candidate.worldRevision === "string" &&
-    candidate.worldRevision.length > 0 &&
-    typeof candidate.contentRevision === "string" &&
-    candidate.contentRevision.length > 0 &&
-    typeof candidate.cpuByteLength === "number" &&
-    Number.isSafeInteger(candidate.cpuByteLength) &&
-    candidate.cpuByteLength >= 0 &&
-    typeof candidate.gpuByteLengthEstimate === "number" &&
-    Number.isSafeInteger(candidate.gpuByteLengthEstimate) &&
-    candidate.gpuByteLengthEstimate >= 0 &&
-    typeof candidate.createdAtMs === "number" &&
-    Number.isFinite(candidate.createdAtMs) &&
-    candidate.createdAtMs >= 0 &&
-    typeof candidate.lastAccessedAtMs === "number" &&
-    Number.isFinite(candidate.lastAccessedAtMs) &&
-    candidate.lastAccessedAtMs >= candidate.createdAtMs &&
-    (candidate.lastVisibleAtMs === null ||
-      (typeof candidate.lastVisibleAtMs === "number" &&
-        Number.isFinite(candidate.lastVisibleAtMs) &&
-        candidate.lastVisibleAtMs >= candidate.createdAtMs &&
-        candidate.lastVisibleAtMs <= candidate.lastAccessedAtMs)) &&
-    typeof candidate.accessCount === "number" &&
-    Number.isSafeInteger(candidate.accessCount) &&
-    candidate.accessCount >= 0 &&
-    typeof candidate.pinned === "boolean"
   );
 }
 

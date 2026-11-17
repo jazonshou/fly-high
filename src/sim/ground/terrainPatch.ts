@@ -200,14 +200,3 @@ export function catmullRom(p0: number, p1: number, p2: number, p3: number, amoun
     )
   );
 }
-
-/** d/d(amount) of `catmullRom`. */
-export function catmullRomSlope(p0: number, p1: number, p2: number, p3: number, amount: number): number {
-  return 0.5 * (
-    p2 - p0
-    + amount * (
-      2 * (2 * p0 - 5 * p1 + 4 * p2 - p3)
-      + amount * 3 * (3 * (p1 - p2) + p3 - p0)
-    )
-  );
-}

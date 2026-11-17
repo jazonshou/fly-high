@@ -24,9 +24,9 @@ jobs:
       - uses: actions/checkout@v7
 
       # Node 24 (LTS) ships npm 11.x. Node 22 ships npm 10.9.x, which crashes
-      # with "Exit handler never called!" resolving the 38 libc-gated optional
-      # binaries in package-lock.json (sharp, rolldown, lightningcss, swc,
-      # unrs-resolver). That path is Linux-only, so it never fires on macOS.
+      # with "Exit handler never called!" resolving the libc-gated optional
+      # binaries in package-lock.json (rolldown, lightningcss). That path is
+      # Linux-only, so it never fires on macOS.
       # The lockfile is authored by npm 11; keep CI on npm 11 to match.
       - uses: actions/setup-node@v7
         with:
@@ -42,6 +42,20 @@ jobs:
         if: failure()
         run: cat "$(npm config get cache)"/_logs/*-debug-0.log || true
 
+      # Vitest starts the files it has timings for slowest first; with none it
+      # starts the largest first. On 2026-11-12 that left a 79-line file that
+      # runs 132 s to start at 732 s of 864 and run alone for the last 100 s.
+      # The timings live in node_modules (vitest.config.ts's cacheDir), which
+      # `npm ci` empties, so they are restored after the install. Each run
+      # saves its own under a fresh key and the newest restores; a pull
+      # request falls back to main's.
+      - name: Restore Vitest's file timings
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.vite-node-*/vitest/*/results.json
+          key: vitest-timings-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: vitest-timings-${{ runner.os }}-
+
       - name: Lint
         run: npm run lint
 
@@ -54,13 +68,10 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Build (Cloudflare Worker)
-        run: npm run build
-
       - name: Build (static site for GitHub Pages)
         env:
           PAGES_BASE: /${{ github.event.repository.name }}/
-        run: npm run build:pages
+        run: npm run build
 
       # Uploaded on every run so the artifact is build-verified on PRs too; only
       # the deploy job below (main pushes) publishes it.

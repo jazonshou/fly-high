@@ -47,11 +47,19 @@
  *   `rough' = sqrt(rough² + roughnessGain · (1 − |avgN|))`. Unlike `coverage`,
  *   each level reduces the level ACTUALLY EMITTED above it, so the roughening
  *   accumulates down the chain instead of being recomputed against mip 0.
+ * - `gamma2` — for the terrain albedo/height array, whose RGB is stored as
+ *   `sqrt(linear)`: average the LINEAR values the bytes encode and store the
+ *   root of that, with alpha a plain box. Boxing the stored bytes averages
+ *   roots, and the square of a mean of roots is under the mean: a layer whose
+ *   texels differ by a few per cent loses under 3% of its albedo down the
+ *   chain, but a sward of lit blades over shaded gaps (63% contrast) lost 10
+ *   to 15%, so the same meadow was darker from 30 m than from 2 m.
  */
 export type MipKernel =
   | "box"
   | { readonly kind: "coverage"; readonly alphaTestThreshold: number }
-  | { readonly kind: "toksvig"; readonly roughnessGain: number };
+  | { readonly kind: "toksvig"; readonly roughnessGain: number }
+  | { readonly kind: "gamma2" };
 
 /** Below this alpha a texel is transparent for dilation purposes. */
 const DILATE_TRANSPARENT_BELOW_ALPHA = 40;
@@ -108,6 +116,33 @@ function boxReduce(src: Uint8Array, srcEdge: number): Uint8Array {
           (src[a + channel]! + src[b + channel]! + src[c + channel]! + src[d + channel]!) / 4,
         );
       }
+    }
+  }
+  return dst;
+}
+
+/**
+ * 2×2 reduction of one level whose RGB is `sqrt(linear)`: RGB averaged as the
+ * linear values, alpha as stored. `srcEdge` must be even.
+ */
+export function gamma2Reduce(src: Uint8Array, srcEdge: number): Uint8Array {
+  const dstEdge = srcEdge >> 1;
+  const dst = new Uint8Array(dstEdge * dstEdge * RGBA_CHANNELS);
+  for (let y = 0; y < dstEdge; y += 1) {
+    const rowA = 2 * y * srcEdge;
+    const rowB = rowA + srcEdge;
+    for (let x = 0; x < dstEdge; x += 1) {
+      const a = (rowA + 2 * x) * RGBA_CHANNELS;
+      const b = a + RGBA_CHANNELS;
+      const c = (rowB + 2 * x) * RGBA_CHANNELS;
+      const d = c + RGBA_CHANNELS;
+      const out = (y * dstEdge + x) * RGBA_CHANNELS;
+      for (let channel = 0; channel < 3; channel += 1) {
+        const squares = src[a + channel]! * src[a + channel]! + src[b + channel]! * src[b + channel]!
+          + src[c + channel]! * src[c + channel]! + src[d + channel]! * src[d + channel]!;
+        dst[out + channel] = Math.round(Math.sqrt(squares / 4));
+      }
+      dst[out + 3] = Math.round((src[a + 3]! + src[b + 3]! + src[c + 3]! + src[d + 3]!) / 4);
     }
   }
   return dst;
@@ -262,6 +297,7 @@ export function buildMipChain(
 
   const preserveCoverage = kernel !== "box" && kernel.kind === "coverage";
   const toksvig = kernel !== "box" && kernel.kind === "toksvig";
+  const gamma2 = kernel !== "box" && kernel.kind === "gamma2";
   const threshold = preserveCoverage ? kernel.alphaTestThreshold : 0;
   if (preserveCoverage && (threshold < 0 || threshold > 1)) {
     throw new RangeError(
@@ -281,7 +317,7 @@ export function buildMipChain(
       levels.push(filtered);
       continue;
     }
-    filtered = boxReduce(filtered, levelEdge);
+    filtered = gamma2 ? gamma2Reduce(filtered, levelEdge) : boxReduce(filtered, levelEdge);
     if (preserveCoverage) {
       const scale = solveCoverageAlphaScale(filtered, threshold, targetCoverage);
       levels.push(withScaledAlpha(filtered, scale));
@@ -388,7 +424,7 @@ export interface MippedTextureArrayPlan {
 export function planMippedTextureArray(
   layers: readonly Uint8Array[],
   edge: number,
-  kernel: MipKernel,
+  kernel: MipKernel | ((layerIndex: number) => MipKernel),
 ): MippedTextureArrayPlan {
   if (layers.length === 0) {
     throw new RangeError("planMippedTextureArray: at least one layer is required");
@@ -397,7 +433,7 @@ export function planMippedTextureArray(
 
   const layerChains = layers.map((layer, index) => {
     requireSquareRgba(layer, edge, `planMippedTextureArray layer ${index}`);
-    return buildMipChain(layer, edge, kernel);
+    return buildMipChain(layer, edge, typeof kernel === "function" ? kernel(index) : kernel);
   });
 
   const mipLevelCount = layerChains[0]!.length;

@@ -164,9 +164,11 @@ what is drawn:
   radius 1.2 m up (the walker's chest), then on to the lowest branch (a
   palm's crown, never past 0.9 of the height, nor a broken top's 0.72) with
   its radius halfway. Wind sway and the crown wobble's few per cent are
-  left out. Up to 2.5 m the capsules sit on the drawn bark: over every
-  trunk within 48 m of a forest cell, the median ratio of a bark vertex's
-  distance from the axis to the capsule's radius is between 0.8 and 1.2.
+  left out, and so is the near model's root flare (`TRUNK_ROOT_FLARE_RINGS`):
+  it stays soft, as roots do. Up to 2.5 m and above the flare the capsules
+  sit on the drawn bark: over every trunk within 48 m of a forest cell, the
+  median ratio of a bark vertex's distance from the axis to the capsule's
+  radius is between 0.8 and 1.2.
 - **Rocks.** A drawn rock is a displaced icosphere squashed to the rock's
   height and sunk into the ground: its top and its ring at the placement
   fix a sphere whose cap above the ground is the rock, tilted with it.
@@ -332,6 +334,12 @@ water and -1 in the air.
 - The near solids leave out wind sway and the crown wobble, and a trunk is
   two straight capsules: a strongly curved trunk is followed to within the
   bark fit's spread above.
+- The root flare is not a collider. Over the trunks within 48 m in the
+  near-solids test's forest cell, it reaches past the trunk's capsule by
+  0.14 m at the median and up to 0.47 m at the ground, but by under 0.07 m
+  from 0.3 m up (0.15 m at most). So the walker's feet can stand in the
+  lowest part of a big tree's roots. A low solid there would be climbed as
+  a step.
 - No breath limit and no fall damage (D5).
 
 ## Sources

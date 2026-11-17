@@ -177,8 +177,9 @@ export interface AircraftSpec {
    * the deck's top sits `(width / 2) * tan(this) / tan(lens / 2)` pixels below the
    * centre row — which is how the rule holds for any window shape.
    *
-   * Asserted by ray against the built kit in tests/ui.hud-cockpit-deck-line.test.ts,
-   * so a kit that moves its deck moves this with it.
+   * Asserted by ray against the built kit, so a kit that moves its deck moves this
+   * with it: the trainer's in tests/ui.hud-cockpit-deck-line.test.ts, the others' in
+   * their tests/render.cockpit-*.test.ts.
    */
   readonly cockpitDeckLineDegrees: number;
   readonly spawn: SpawnSpec;
@@ -519,8 +520,8 @@ const AIRLINER: AircraftSpec = Object.freeze({
   cockpitEye: Object.freeze({ forward: 29.85, up: 2.93, right: -0.5 }),
   // The glareshield's lip: a line along z at the panel's face, so it is ONE row across the whole
   // frame, the deck's highest, by tests/support/cockpitFootprints.ts's instrument and straight
-  // ahead by ray (tests/render.cockpit-airliner.test.ts and tests/ui.hud-cockpit-deck-line.test.ts
-  // hold both). The sill above it, up to the window, is frame, not deck.
+  // ahead by ray (tests/render.cockpit-airliner.test.ts holds both). The sill above it, up to the
+  // window, is frame, not deck.
   cockpitDeckLineDegrees: 18.57,
   spawn: Object.freeze({
     // 205 m/s. Faster looked reasonable on paper and is above the speed this

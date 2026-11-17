@@ -9,6 +9,7 @@ import {
   detailTreeCanopyRankOrder,
   type DetailPresentationBuildCatalog,
 } from "../../src/render/webgpu/detail/presentationBuild";
+import { packDetailCell, type PackedDetailCell } from "../../src/render/webgpu/detail/packedCell";
 import {
   buildRockPrototype,
   buildTreePrototype,
@@ -98,9 +99,14 @@ function forestNormal(x: number, z: number): { x: number; y: number; z: number }
  * A generated cell of gently sloping mixed forest (6,700 stems), with rocks,
  * logs, stumps, branch litter and moss strewn within 20 m of
  * (`minX + 240`, `minZ + 270`): the generator places too few of them for a
- * test to find near one point.
+ * test to find near one point. `cell` is packed, as the cell owners retain
+ * it; `generated` is the same cell as the generator's placements.
  */
-export function forestCell(cellX = 3, cellZ = -2): { cell: GeneratedDetailCell; treeCanopyRank: Float32Array } {
+export function forestCell(cellX = 3, cellZ = -2): {
+  cell: PackedDetailCell;
+  treeCanopyRank: Float32Array;
+  generated: GeneratedDetailCell;
+} {
   const generated = generateDetailCell({
     worldSeed: "ecology-seed-a",
     cellX,
@@ -126,7 +132,6 @@ export function forestCell(cellX = 3, cellZ = -2): { cell: GeneratedDetailCell; 
     const flattening = 0.45 + ((i * 0.61) % 1) * 0.45;
     rocks.push({
       kind: "rock",
-      id: `strewn/rock/${i}`,
       variant: ROCK_VARIANTS[i % 3]!,
       x,
       y: forestHeight(x, z) - radius * flattening * (0.12 + 0.02 * i),
@@ -148,7 +153,6 @@ export function forestCell(cellX = 3, cellZ = -2): { cell: GeneratedDetailCell; 
     const clutterKind = kinds[i % kinds.length]!;
     clutter.push({
       kind: "clutter",
-      id: `strewn/clutter/${i}`,
       clutterKind,
       x,
       y: forestHeight(x, z),
@@ -161,5 +165,5 @@ export function forestCell(cellX = 3, cellZ = -2): { cell: GeneratedDetailCell; 
     });
   }
   const cell: GeneratedDetailCell = { ...generated, rocks, clutter };
-  return { cell, treeCanopyRank: detailTreeCanopyRankOrder(cell.trees) };
+  return { cell: packDetailCell(cell), treeCanopyRank: detailTreeCanopyRankOrder(cell.trees), generated: cell };
 }

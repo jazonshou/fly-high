@@ -61,12 +61,6 @@ import {
  * clear-weather luminance transmittance at 45 km is ≈4.6% (τ_green ≈ 3.1).
  */
 
-export interface AerialPerspectiveVec3 {
-  readonly r: number;
-  readonly g: number;
-  readonly b: number;
-}
-
 export interface AerialPerspectiveCoefficients {
   readonly rayleighScattering: [number, number, number];
   readonly mieScattering: [number, number, number];
@@ -1976,4 +1970,3 @@ export function applyAerialPerspectiveToShaderMaterial(
     binding.strength,
   );
 }
-

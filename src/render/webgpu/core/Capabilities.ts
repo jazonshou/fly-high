@@ -144,21 +144,6 @@ export function findWebGpuLimitShortfalls(
   return shortfalls;
 }
 
-/** Throws, naming every shortfall, when a device cannot host Phase 4's atlases. */
-export function assertWebGpuLimits(
-  reported: Readonly<Record<string, number>>,
-  required: Readonly<Record<string, number>> = ALL_DECLARED_WEBGPU_LIMITS,
-): void {
-  const shortfalls = findWebGpuLimitShortfalls(reported, required);
-  if (shortfalls.length === 0) return;
-  throw new Error(
-    "This GPU does not meet the limits the renderer declares: "
-    + shortfalls
-      .map((entry) => `${entry.limit} ${entry.reported} < ${entry.required}`)
-      .join(", "),
-  );
-}
-
 export interface WebGpuCapabilityReport {
   readonly supported: boolean;
   readonly reason: string | null;

@@ -111,13 +111,6 @@ export function getWorldPageStoredDimensions(
   };
 }
 
-export function decodeWorldPageHeight(height: QuantizedHeightPage, sample: number): number {
-  if (!Number.isInteger(sample) || sample < 0 || sample > 65_535) {
-    throw new RangeError("Quantized height sample must be an unsigned 16-bit integer");
-  }
-  return height.offsetMeters + sample * height.metersPerUnit;
-}
-
 export function decodeWorldPageFlowAccum(
   hydrology: QuantizedHydrologyPage,
   sample: number,

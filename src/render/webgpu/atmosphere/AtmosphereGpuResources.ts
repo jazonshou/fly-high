@@ -9,6 +9,7 @@ import { DepthRenderer } from "@babylonjs/core/Rendering/depthRenderer";
 import type { Camera } from "@babylonjs/core/Cameras/camera";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh";
 import type { Scene } from "@babylonjs/core/scene";
+import { dropTextureCpuMirror } from "@/src/render/webgpu/core/TextureCpuMirror";
 import {
   DEFAULT_ENVIRONMENT_STATE,
 } from "@/src/render/webgpu/nature/EnvironmentState";
@@ -147,6 +148,8 @@ export class AtmosphereGpuResources {
       Constants.TEXTURETYPE_HALF_FLOAT,
     );
     this.transmittanceLut.name = "atmosphere-transmittance-lut";
+    // Uploaded once: Babylon's CPU copy is for a restore this game never runs.
+    dropTextureCpuMirror(this.transmittanceLut);
     this.transmittanceLut.wrapU = Texture.CLAMP_ADDRESSMODE;
     this.transmittanceLut.wrapV = Texture.CLAMP_ADDRESSMODE;
     if (
@@ -168,6 +171,7 @@ export class AtmosphereGpuResources {
       Constants.TEXTURETYPE_UNSIGNED_BYTE,
     );
     this.blueNoise.name = "cloud-blue-noise";
+    dropTextureCpuMirror(this.blueNoise);
     this.blueNoise.wrapU = Texture.WRAP_ADDRESSMODE;
     this.blueNoise.wrapV = Texture.WRAP_ADDRESSMODE;
 

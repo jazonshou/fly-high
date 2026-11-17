@@ -1,19 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { readSource } from "./support/sourceText";
 
 /**
- * The two deployment targets render the same game from two document shells:
- * `app/layout.tsx` + `app/page.tsx` (server-rendered by the Cloudflare Worker)
- * and `static/index.html` (the GitHub Pages bundle). Everything below the
- * `FlightGame` root is shared, so this is the whole surface that can drift —
- * and it drifts silently, because neither build reads the other.
+ * The page shell: `static/index.html` and the entry `static/main.tsx` that
+ * mounts the game into it. Everything below the `FlightGame` root is the game.
  */
-const layout = readFileSync(
-  new URL("../app/layout.tsx", import.meta.url),
-  "utf8",
-);
-const page = readSource(new URL("../app/page.tsx", import.meta.url));
 const staticHtml = readFileSync(
   new URL("../static/index.html", import.meta.url),
   "utf8",
@@ -29,59 +20,8 @@ function capture(source: string, pattern: RegExp, label: string): string {
   return match?.[1] ?? "";
 }
 
-function metaContent(name: string): string {
-  return capture(
-    staticHtml,
-    new RegExp(`<meta\\s+name="${name}"\\s+content="([^"]+)"`),
-    `<meta name="${name}"> in static/index.html`,
-  );
-}
-
-describe("static shell matches the server-rendered shell", () => {
-  it("uses the same document title", () => {
-    // A page title is rendered through the layout's template, not as written:
-    // "fly high" under "%s · fly high" renders "fly high · fly high". Without
-    // one, the layout's default renders unchanged.
-    const defaultTitle = capture(
-      layout,
-      /default:\s*"([^"]+)"/,
-      "app/layout.tsx default title",
-    );
-    const template = capture(
-      layout,
-      /template:\s*"([^"]+)"/,
-      "app/layout.tsx title template",
-    );
-    const pageTitle = page.match(/title:\s*"([^"]+)"/)?.[1];
-    const renderedTitle = pageTitle
-      ? template.replace("%s", pageTitle)
-      : defaultTitle;
-    const htmlTitle = capture(
-      staticHtml,
-      /<title>([^<]+)<\/title>/,
-      "static/index.html <title>",
-    );
-
-    expect(htmlTitle).toBe(renderedTitle);
-  });
-
-  it("uses the same application name and description", () => {
-    expect(metaContent("application-name")).toBe(
-      capture(layout, /applicationName:\s*"([^"]+)"/, "applicationName"),
-    );
-    expect(metaContent("description")).toBe(
-      capture(page, /description:\s*\n?\s*"([^"]+)"/, "app/page.tsx description"),
-    );
-  });
-
-  it("declares the same theme color", () => {
-    expect(metaContent("theme-color")).toBe(
-      capture(layout, /themeColor:\s*"([^"]+)"/, "themeColor"),
-    );
-  });
-
-  it("mounts the same root component into a container the shell provides", () => {
-    expect(page).toContain("<FlightGame />");
+describe("the page shell", () => {
+  it("mounts the game root into a container the page provides", () => {
     expect(staticEntry).toContain("<FlightGame />");
 
     const containerId = capture(
@@ -92,8 +32,7 @@ describe("static shell matches the server-rendered shell", () => {
     expect(staticHtml).toContain(`id="${containerId}"`);
   });
 
-  it("loads the shared global stylesheet", () => {
-    expect(layout).toContain('import "./globals.css"');
-    expect(staticEntry).toContain('globals.css"');
+  it("loads the global stylesheet", () => {
+    expect(staticEntry).toContain('import "./globals.css"');
   });
 });

@@ -1,7 +1,5 @@
 import { clamp } from "./math";
 import {
-  VERTICAL_PITCH_I,
-  VERTICAL_PITCH_P,
   VERTICAL_SPEED_FLOOR,
   VerticalSpeedPitchTrim,
 } from "./verticalSpeedPitch";
@@ -130,13 +128,6 @@ export const ATTRACT_TURN_SAFE_CLEARANCE = 150;
 export const ATTRACT_MIN_CLEARANCE_SECONDS = 6;
 /** Clearance error to vertical-speed demand. 100 m of error asks for 3 m/s. */
 export const ATTRACT_CLIMB_GAIN = 0.03;
-/**
- * The PI gains and the speed floor moved to `verticalSpeedPitch.ts` when Scenic
- * grew a hold of its own. Re-exported under their old names because the numbers
- * were measured here and the docs cite them from here; there is one definition.
- */
-export const ATTRACT_PITCH_P = VERTICAL_PITCH_P;
-export const ATTRACT_PITCH_I = VERTICAL_PITCH_I;
 /**
  * Speed floor as a multiple of stall speed. Below this the hold stops being an
  * altitude hold: it lowers the nose and adds power whatever the altitude error

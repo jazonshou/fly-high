@@ -17,6 +17,11 @@ import {
   buildTreePrototype,
 } from "../src/render/webgpu/detail/prototypeGeometry";
 import { RENDERED_DENSITY_LAWS } from "../src/render/webgpu/detail/renderedDensity";
+import {
+  buildTreeSkeleton,
+  TRUNK_ROOT_FLARE_SEGMENT_SHARE,
+  TRUNK_ROOT_FLARE_TOP_RISE,
+} from "../src/render/webgpu/detail/treeSkeleton";
 import type { TreeSpecies } from "../src/render/webgpu/detail/types";
 import { createColliderSweepHit } from "../src/sim/colliders";
 import {
@@ -156,7 +161,7 @@ describe("near solids", () => {
         .map(trunkBase)
         .filter((base) => horizontal(base) <= 25);
       // The forest is dense enough that the cap, not the authored field, sets what is drawn.
-      expect(forest.cell.trees.filter((tree) => horizontal(tree) <= 25).length).toBeGreaterThan(trunks.length * 2);
+      expect(forest.generated.trees.filter((tree) => horizontal(tree) <= 25).length).toBeGreaterThan(trunks.length * 2);
       expect(trunks.length).toBeGreaterThan(5);
       expect(solids.length).toBe(trunks.length);
       const unmatched = [...solids];
@@ -205,12 +210,12 @@ describe("near solids", () => {
     expect(solids.every((solid) => (Object.values(NEAR_SOLID_KIND) as number[]).includes(solid.kind))).toBe(true);
   });
 
-  it("fit each trunk capsule to the drawn bark up to 2.5 m", () => {
+  it("fit each trunk capsule to the drawn bark up to 2.5 m, above the root flare", () => {
     const tier = TIERS[2]!;
     const trunks = drawn(tier.law, tier.cap, tier.mode).filter((entry) => /^tree-.*-trunk-near$/.test(entry.key) && horizontal(entry.record) <= 48);
     const solids = solidsOf(selectNearSolids(selection(tier.law, tier.cap, tier.mode), catalog))
       .filter((solid) => solid.kind === NEAR_SOLID_KIND.trunk);
-    const prototypes = new Map<string, Float32Array>();
+    const prototypes = new Map<string, { positions: Float32Array; flareTop: number }>();
     let leaning = 0;
     for (const { key, record } of trunks) {
       const solid = solids.find((candidate) => {
@@ -218,11 +223,32 @@ describe("near solids", () => {
         return Math.hypot(base.x - record.x, base.y - record.y, base.z - record.z) < 0.01;
       })!;
       const [, species, variant] = /^tree-(\w+)-v(\d+)-trunk-near$/.exec(key)!;
-      let positions = prototypes.get(key);
-      if (!positions) {
-        positions = buildTreePrototype(species as TreeSpecies, Number(variant), DETAIL_PROTOTYPE_SEED).trunk.positions;
-        prototypes.set(key, positions);
+      let prototype = prototypes.get(key);
+      if (!prototype) {
+        // The root flare (the bole's first rings on the near model) is left
+        // out: like roots and litter it stays soft, and the capsule follows
+        // the bole above it. The flare's last ring, where the prototype ends
+        // it, is round at the base's radius and is kept; half a base radius
+        // of slack takes in the ring's tilt with the bole.
+        const skeleton = buildTreeSkeleton(species as TreeSpecies, Number(variant), DETAIL_PROTOTYPE_SEED);
+        const bole = skeleton.stems[0]!;
+        const first = bole.points[0]!;
+        const next = bole.points[1]!;
+        const base = bole.radii[0]!;
+        const along = Math.min(
+          TRUNK_ROOT_FLARE_TOP_RISE * base,
+          Math.hypot(next.x - first.x, next.y - first.y, next.z - first.z) * TRUNK_ROOT_FLARE_SEGMENT_SHARE,
+        );
+        const flareTop = skeleton.rootFlare > 0
+          ? first.y + bole.axes[0]!.y * along - base * 0.5
+          : Number.NEGATIVE_INFINITY;
+        prototype = {
+          positions: buildTreePrototype(species as TreeSpecies, Number(variant), DETAIL_PROTOTYPE_SEED).trunk.positions,
+          flareTop,
+        };
+        prototypes.set(key, prototype);
       }
+      const { positions, flareTop } = prototype;
       // The vertex shader's transform, without wind and wobble.
       const height = record.heightScaleMeters;
       const across = height * record.radialScale;
@@ -233,7 +259,7 @@ describe("near solids", () => {
       const ratios: number[] = [];
       for (let at = 0; at < positions.length; at += 3) {
         const y = positions[at + 1]! * height;
-        if (y > 2.5) continue;
+        if (y > 2.5 || positions[at + 1]! < flareTop) continue;
         const local = rotate(record.quaternion, positions[at]! * across + y * shear, y, positions[at + 2]! * across);
         const distance = segmentDistance({ x: record.x + local.x, y: record.y + local.y, z: record.z + local.z }, solid.a, solid.b);
         // Leave out the branches' bark: whatever stands well off the trunk.

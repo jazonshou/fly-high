@@ -136,23 +136,6 @@ export function createCarSurface(): CarSurface {
   return surface;
 }
 
-export function copyCarSurface(out: CarSurface, from: Readonly<CarSurface>): void {
-  out.material = from.material;
-  out.soilModel = from.soilModel;
-  out.friction = from.friction;
-  out.rollingResistance = from.rollingResistance;
-  out.roughness = from.roughness;
-  out.wetness = from.wetness;
-  out.soft = from.soft;
-  out.n = from.n;
-  out.kc = from.kc;
-  out.kPhi = from.kPhi;
-  out.cohesion = from.cohesion;
-  out.tanFriction = from.tanFriction;
-  out.shearModulus = from.shearModulus;
-  out.maxSinkage = from.maxSinkage;
-}
-
 /** What a hard surface does to a tyre: friction on the reference curves, rolling resistance, ISO 8608 roughness (m RMS). */
 const HARD: Readonly<Record<number, readonly [number, number, number]>> = Object.freeze({
   [SurfaceMaterial.Asphalt]: [1, 0.012, 0],

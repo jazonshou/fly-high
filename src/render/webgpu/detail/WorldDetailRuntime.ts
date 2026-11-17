@@ -13,10 +13,12 @@ import type { PipelineWarmUp } from "@/src/render/webgpu/core/AsyncPipelineCompi
 import { createGuardedShadowDepthWrapper } from "@/src/render/webgpu/core/guardedShadowDepthWrapper";
 import type { WebGpuQualityProfile } from "@/src/render/webgpu/core/QualityProfile";
 import {
+  DETAIL_NEAR_SWITCH_INSET_METERS,
   RENDERED_DENSITY_LAWS,
   renderedShareAtDistance,
   type RenderedDensityLaw,
 } from "./renderedDensity";
+import { DETAIL_NO_CULL_BLOCKS, installDetailBlockFrustumTest } from "./blockFrustumTest";
 import { DetailGenerationClient } from "./DetailGenerationClient";
 import {
   DetailInstanceMaterialPlugin,
@@ -66,6 +68,8 @@ import {
   buildCrownFringePrototype,
   buildGrassPatchPrototype,
   buildRockPrototype,
+  buildShrubBodyFarPrototype,
+  buildShrubBodyPrototype,
   buildShrubPrototype,
   buildTreePrototype,
   SHRUB_VARIANT_COUNTS,
@@ -93,6 +97,7 @@ import {
   type DetailPresentationChunkCoordinates,
 } from "./spatialChunks";
 import { treePrototypeSpecies, treeTrunkTint } from "./treePrototypeFamily";
+import { packDetailCell, type PackedDetailCell } from "./packedCell";
 import {
   buildPresentationChunk,
   detailCellMinimumDistanceMeters,
@@ -104,10 +109,38 @@ import {
   DETAIL_MEMBERSHIP_SLACK_METERS,
   GROUND_COVER_EDGE_FADE_METERS,
   TREE_IMPOSTOR_PROTOTYPE_KEY,
+  groundObjectRangeCapMeters,
   type DetailPresentationBuildCatalog,
   type DetailPresentationChunkStatistics,
 } from "./presentationBuild";
 import { groundCoverHandoffRadiusMeters } from "./groundCoverLaw";
+import type { CloudShadowProjection } from "@/src/render/webgpu/clouds/CloudShadowReceiver";
+import {
+  TREE_GROUND_SHADOW_PROTOTYPE_BOUNDS,
+  TREE_GROUND_SHADOW_PROTOTYPE_KEY,
+} from "./treeGroundShadow";
+import {
+  GROUND_OBJECT_REACH_GROW_SHARE,
+  GROUND_OBJECT_REACH_METERS_PER_METER,
+  GROUND_OBJECT_REACH_START_SCALE,
+  SHRUB_BODY_CORE_GROW_SHARE,
+  SHRUB_BODY_CORE_REACH_METERS_PER_METER,
+  SHRUB_BODY_CORE_SCALE,
+  SHRUB_BODY_FAR_PROTOTYPE_KEY,
+  SHRUB_BODY_GRAIN_FREQUENCY,
+  SHRUB_BODY_GRAIN_NORMAL,
+  SHRUB_BODY_GRAIN_TONE_FLOOR,
+  SHRUB_BODY_GRAIN_TONE_SPAN,
+  SHRUB_BODY_HEIGHT_SHARE,
+  SHRUB_BODY_PROTOTYPE_KEY,
+  SHRUB_BODY_SWAP_METERS_PER_METER,
+  SHRUB_CARD_REACH_GROW_SHARE,
+  SHRUB_CARD_REACH_METERS_PER_METER,
+  SHRUB_CARD_REACH_START_SCALE,
+  SHRUB_OPEN_DRAWN_PER_HECTARE,
+  shrubOpenDrawnPerHectare,
+} from "./groundObjects";
+import { TreeGroundShadowMaterial } from "./TreeGroundShadowMaterial";
 import {
   DETAIL_PROTOTYPE_SEED,
   selectNearSolids,
@@ -134,7 +167,6 @@ import {
   type DetailLod,
   type GroundCoverArchetype,
   type DetailTerrainSampler,
-  type GeneratedDetailCell,
   type RockVariant,
   type ShrubSpecies,
   type TreeSpecies,
@@ -246,6 +278,13 @@ interface DetailBatch {
   filledRevision: number;
   /** Floating origin encoded into the currently uploaded instance records. */
   builtOrigin: { x: number; y: number; z: number };
+  /**
+   * The published records' culling blocks (`DetailInstanceBounds.blockExtents`,
+   * in the records' coordinates), which the mesh's frustum test reads after
+   * its whole-batch box passes: see `installDetailBlockFrustumTest`. Empty
+   * when unknown, and then the whole box decides alone.
+   */
+  cullBlocks: Float64Array;
   /** The chunk's first cell and its cell span, for the occupancy grid below. */
   readonly chunkMinCellX: number;
   readonly chunkMinCellZ: number;
@@ -306,7 +345,8 @@ interface PooledInstanceBuffers {
 
 interface DetailPrototype {
   readonly mesh: Mesh;
-  readonly material: PBRMaterial;
+  /** A PBR material for everything that is lit; the ground shadow's is a blend-only shader. */
+  readonly material: Material;
   readonly castsShadows: boolean;
   readonly boundKernel: DetailPrototypeBoundKernel;
 }
@@ -343,7 +383,8 @@ interface DetailPresentationChunk {
 /** CPU-only batch assembled while the previously published chunk stays live. */
 interface StagedDetailBatch {
   readonly prototypeKey: string;
-  readonly writer: DetailInstanceWriter;
+  /** Replaced, through the pool, when an inline build outgrows it. */
+  writer: DetailInstanceWriter;
   readonly bounds: DetailInstanceBounds;
   readonly prototypeBoundKernel: DetailPrototypeBoundKernel;
 }
@@ -475,7 +516,21 @@ export interface DetailPresentationRebuildDiagnostics {
   readonly workUnitsLastUpdate: number;
   readonly millisecondsLastUpdate: number;
   readonly stagedRecords: number;
+  /** Idle CPU writers held for reuse, and their bytes (bounded by the pool's cap). */
   readonly pooledCpuBatchStorage: number;
+  readonly pooledCpuBatchStorageBytes: number;
+  /** Lifetime totals: writers made because none pooled fit, served from the pool, dropped past the cap. */
+  readonly cpuWriterAllocations: number;
+  readonly cpuWriterPoolHits: number;
+  readonly cpuWriterPoolDrops: number;
+  /**
+   * Lifetime totals of inline staged writers moved to another writer (each
+   * also an allocation or a pool hit): one that filled, to one that holds
+   * twice its records; one left with four times its records or more once they
+   * were known, to one that fits.
+   */
+  readonly cpuWriterGrowths: number;
+  readonly cpuWriterRefits: number;
   readonly cancellations: number;
   readonly publications: number;
   readonly backloggedChunks: number;
@@ -577,7 +632,8 @@ interface ResidentCellBase {
 
 interface InlineResidentCell extends ResidentCellBase {
   readonly source: "inline";
-  readonly cell: GeneratedDetailCell;
+  /** Packed as the worker packs its retained cells (`packDetailCell`). */
+  readonly cell: PackedDetailCell;
   /** Canopy rank of each stem in `cell.trees`, in [0, 1). */
   readonly treeCanopyRank: Float32Array;
 }
@@ -688,6 +744,33 @@ export interface WorldDetailRuntimeOptions {
  * to have retired, at ~60 Hz.
  */
 export const DETAIL_INSTANCE_BUFFER_REUSE_GRACE_UPDATES = 8;
+
+/**
+ * Idle CPU writers kept for reuse are capped by bytes: 64 KiB per cell of the
+ * profile's cell budget, at most 16 MiB (8 MiB at Low's 128 cells, 16 MiB at
+ * Medium's 384 and High's 896). The pool only holds what releases outrun
+ * takes, so the cap is headroom rather than a size. Simulating the bench
+ * route (75 s, in-process worker), Low's pool averaged 3.2 MiB and dropped
+ * nothing, leaving 0.08 MiB/s of new long-lived writer bytes against 3.5 when
+ * every transferred buffer was kept; Medium's dropped nothing either (0.11
+ * against 9.1 MiB/s). Straight 60 s Low lines averaged 4.7-5.2 MiB; a 4 MiB
+ * cap kept 1.2-1.6 MiB less there but dropped 39-74 writers and made up to
+ * 0.016 MiB/s more, and at 3 MiB the bench route rose to 0.14.
+ */
+export const DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL = 64 * 1_024;
+export const DETAIL_CPU_WRITER_POOL_MAX_BYTES = 16 * 1_024 * 1_024;
+/**
+ * New writers hold a power of two of at least this many records, and a writer
+ * serves a batch only while that batch fills more than a quarter of it
+ * (batches under the minimum count as the minimum), so a small batch never
+ * keeps a large buffer alive. Requiring more than half made live writers
+ * smaller but moved the slack into the pool, as writers a batch no longer
+ * half filled sat there unused: within 0.1 MiB and 0.01 MiB/s on the
+ * simulated bench route, but 0.4-1.1 MiB more writer bytes retained and about
+ * 0.02 MiB/s more new long-lived ones on straight Low lines and on Medium.
+ */
+const DETAIL_CPU_WRITER_MIN_RECORDS = 32;
+const DETAIL_CPU_WRITER_MAX_OVERSIZE = 4;
 
 /**
  * 2-17 close: one chunk is rebuilt at a time, now across bounded update
@@ -877,6 +960,20 @@ function profileCellBudget(profile: WebGpuQualityProfile): number {
   return 896;
 }
 
+/** The power-of-two record capacity a new pooled CPU writer gets for `records`. */
+function detailCpuWriterCapacityRecords(records: number): number {
+  let capacity = DETAIL_CPU_WRITER_MIN_RECORDS;
+  while (capacity < records) capacity *= 2;
+  return capacity;
+}
+
+/** Writers of this many bytes or more are too large to hold `records`. */
+function detailCpuWriterOversizeBytes(records: number): number {
+  return DETAIL_CPU_WRITER_MAX_OVERSIZE
+    * Math.max(records, DETAIL_CPU_WRITER_MIN_RECORDS)
+    * DETAIL_INSTANCE_STRIDE_BYTES;
+}
+
 /**
  * Paged natural/settlement detail built entirely from Babylon meshes and thin
  * instances. Generation is incremental; normal per-frame updates become no-ops
@@ -889,11 +986,45 @@ export class WorldDetailRuntime {
   private readonly prototypes = new Map<string, DetailPrototype>();
   private readonly presentationChunks = new Map<string, DetailPresentationChunk>();
   /**
-   * One detached CPU writer/bounds pair per prototype at most. A staged build
-   * consumes it; commit returns the displaced live pair. This restores the
-   * pre-staging growable-buffer reuse without sharing storage with live data.
+   * Idle CPU writer/bounds pairs shared by every prototype, in release order,
+   * taken best-fit by capacity (`acquireDetailBuildStorage`) and capped by
+   * bytes (longest-idle dropped first). A worker batch is COPIED into one,
+   * so the buffer the worker transferred dies young rather than living,
+   * promoted, until a later publication displaces it.
+   *
+   * Lifetime rule: a writer comes here only once nothing can read its bytes
+   * again. GPU contents never alias a writer (`writeBuffer` copies at the
+   * call); the readers are Babylon's `Buffer._data` mirror of the allocation
+   * its batch uploaded into (`getData()`, context-restore `_rebuild`) and a
+   * publication upload's `packed` view while it streams. Every writer has one
+   * owner at a time (a build, a publication upload, a live or retired batch,
+   * or this pool), so none is released twice, and it is released only:
+   *  - from a build or publication that never reached a live mesh (cancel,
+   *    a rejected worker result, a `fits` upload whose batch vanished). A
+   *    staged allocation it streamed into is recycled first, dropping `_data`;
+   *  - as the displaced writer of an in-place `fits` flip, after `uploadBatch`
+   *    has pointed `_data` at the new writer (a staged writer always holds at
+   *    least one record, so that write always happens);
+   *  - from a retired batch in `disposeExpiredBatches`, after its mesh is
+   *    disposed and its allocation recycled, which drops `_data`.
+   * A live batch's writer is never written into, so its `_data` stays exact.
    */
-  private readonly detailBuildStoragePool = new Map<string, PooledDetailBuildStorage>();
+  private readonly detailBuildStoragePool: PooledDetailBuildStorage[] = [];
+  private detailBuildStoragePoolBytes = 0;
+  /** Set from the profile at every update; Low's cap until the first. */
+  private detailBuildStoragePoolByteCap =
+    128 * DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL;
+  private cpuWriterAllocations = 0;
+  private cpuWriterPoolHits = 0;
+  private cpuWriterPoolDrops = 0;
+  private cpuWriterGrowths = 0;
+  private cpuWriterRefits = 0;
+  /**
+   * Each prototype's record count in its latest staged batch: the size an
+   * inline build asks the pool for when the chunk has no live batch of that
+   * prototype to go by.
+   */
+  private readonly stagedRecordsByPrototype = new Map<string, number>();
   private readonly materials = new Set<PBRMaterial>();
   private readonly instancePlugins = new Set<DetailInstanceMaterialPlugin>();
   private readonly pluginByMaterial = new Map<PBRMaterial, DetailInstanceMaterialPlugin>();
@@ -919,6 +1050,40 @@ export class WorldDetailRuntime {
    * signatures so a tier change rebuilds the chunks the handoff moved.
    */
   private groundCoverFieldRadiusMeters = 0;
+  /**
+   * The ground shadow every drawn tree lays (`treeGroundShadow.ts`): one
+   * material for all of its per-chunk batches, fed the frame's light and the
+   * tier's law here. Its batches ride the ordinary record pipeline.
+   */
+  private treeGroundShadow: TreeGroundShadowMaterial | null = null;
+  /** The tier's shadow range the resident shadow records were built for. */
+  private treeGroundShadowRangeMeters = 0;
+  /** The tier's cap on a bush body's or a boulder's reach (`groundObjects.ts`). */
+  private groundObjectRangeMeters = 0;
+  /** The tier's tighter cap for boulders alone; equal to the above where it has none. */
+  private boulderRangeMeters = 0;
+  /**
+   * The tier's open-ground bush cap, per hectare (`shrubOpenDrawnPerHectare`).
+   * The reference cap until the first update supplies the tier's: a build
+   * issued before then must not read "draw none".
+   */
+  private shrubOpenDrawnPerHectare = SHRUB_OPEN_DRAWN_PER_HECTARE;
+  /** Materials drawn by the reach law, with the range per metre of height each takes. */
+  private readonly sizeRangePlugins: {
+    readonly plugin: DetailInstanceMaterialPlugin;
+    readonly metersPerMeter: number;
+    readonly growShare: number;
+    readonly startScale: number;
+    /** Leaf cards stop at the near radius, boulders at their own cap, the rest at the tier's. */
+    readonly cap: "near" | "tier" | "boulder";
+    /** A bush body shrinks to its core close to the camera. */
+    readonly core: boolean;
+    /**
+     * A stand-in draws from where the mesh it replaces starts to shrink
+     * away: that mesh's range per metre of height, and its grow share.
+     */
+    readonly inner: { readonly metersPerMeter: number; readonly growShare: number } | null;
+  }[] = [];
   /** Far impostors are baked from species variant 0 near geometry. */
   private readonly impostorRadialUnits = new Map<TreeSpecies, number>();
   /** Per-species shader frame for the one shared camera-facing impostor quad. */
@@ -967,6 +1132,11 @@ export class WorldDetailRuntime {
   private captureSuppressedChunks = 0;
   private captureStaleVisibleChunks = 0;
   private readonly presentationRebuildBudget: DetailPresentationRebuildBudget;
+  /**
+   * `DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE`; a field only so tests can
+   * stream a publication over many updates.
+   */
+  private readonly publicationStreamBytesPerUpdate = DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE;
   private readonly presentationNowMilliseconds: () => number;
   private presentationWorkUnitsLastUpdate = 0;
   private presentationMillisecondsLastUpdate = 0;
@@ -1716,6 +1886,29 @@ export class WorldDetailRuntime {
     for (const plugin of this.instancePlugins) plugin.setImpostorSeason(mix);
   }
 
+  /**
+   * Marks a material as drawn by the reach law (`groundObjects.ts`): each
+   * update hands its plugin the tier's cap.
+   */
+  private registerSizeRangeMaterial(
+    material: PBRMaterial,
+    metersPerMeter: number,
+    growShare: number,
+    startScale: number,
+    cap: "near" | "tier" | "boulder",
+    core = false,
+    inner: { readonly metersPerMeter: number; readonly growShare: number } | null = null,
+  ): void {
+    const plugin = this.materialPlugin(material);
+    if (!plugin) return;
+    this.sizeRangePlugins.push({
+      plugin, metersPerMeter, growShare, startScale, cap, core, inner,
+    });
+    // A placeholder cap until the first update supplies the tier's, so the
+    // material compiles the rule once rather than twice.
+    plugin.setSizeRange(metersPerMeter, cap === "near" ? 150 : 1_000, growShare, startScale);
+  }
+
   /** Marks a material's plugin as tree-band shader-faded (2-17 close). */
   private registerBandFadeMaterial(material: PBRMaterial): void {
     const plugin = this.materialPlugin(material);
@@ -1749,6 +1942,21 @@ export class WorldDetailRuntime {
     for (const plugin of this.instancePlugins) {
       plugin.setKeyLight(directionX, directionY, directionZ, radiance, strength);
     }
+    this.treeGroundShadow?.setSun(directionX, directionY, directionZ, radiance, strength);
+  }
+
+  /**
+   * The sky light's strength beside the key light's (both 1 at clear noon):
+   * the ground shadow removes the direct share of the ground's light, and
+   * that share is one against the other.
+   */
+  setSkylight(strength: number): void {
+    this.treeGroundShadow?.setSkylight(strength);
+  }
+
+  /** The cloud map the terrain reads: a crown under a cloud throws no shadow. */
+  setCloudShadow(projection: CloudShadowProjection | null): void {
+    this.treeGroundShadow?.setCloudShadow(projection);
   }
 
   /** Wave Q: forward the frame's CSM snapshot to the far-band receiver. */
@@ -1776,6 +1984,7 @@ export class WorldDetailRuntime {
     for (const plugin of this.instancePlugins) {
       plugin.setHorizonField(layerA, layerB, originX, originZ, spanMeters);
     }
+    this.treeGroundShadow?.setHorizonField(layerA, layerB, originX, originZ, spanMeters);
   }
 
   get statistics(): WorldDetailStatistics {
@@ -1840,7 +2049,13 @@ export class WorldDetailRuntime {
       workUnitsLastUpdate: this.presentationWorkUnitsLastUpdate,
       millisecondsLastUpdate: this.presentationMillisecondsLastUpdate,
       stagedRecords,
-      pooledCpuBatchStorage: this.detailBuildStoragePool.size,
+      pooledCpuBatchStorage: this.detailBuildStoragePool.length,
+      pooledCpuBatchStorageBytes: this.detailBuildStoragePoolBytes,
+      cpuWriterAllocations: this.cpuWriterAllocations,
+      cpuWriterPoolHits: this.cpuWriterPoolHits,
+      cpuWriterPoolDrops: this.cpuWriterPoolDrops,
+      cpuWriterGrowths: this.cpuWriterGrowths,
+      cpuWriterRefits: this.cpuWriterRefits,
       cancellations: this.presentationBuildCancellations,
       publications: this.presentationBuildPublications,
       backloggedChunks: this.presentationBacklogChunks,
@@ -1937,6 +2152,11 @@ export class WorldDetailRuntime {
     this.updateSequence += 1;
     this.excludeUpdateGapFromWorkerDeadlines();
     this.vegetationCastsShadows = profile.vegetationCastsShadows;
+    this.detailBuildStoragePoolByteCap = Math.min(
+      DETAIL_CPU_WRITER_POOL_MAX_BYTES,
+      profileCellBudget(profile) * DETAIL_CPU_WRITER_POOL_BYTES_PER_CELL,
+    );
+    this.trimDetailBuildStoragePool();
     this.disposeExpiredBatches();
     // Wind phase rides the caller's SIMULATION clock when provided (Z-1):
     // a wall-clock accumulator made every tree's sway phase depend on how
@@ -1973,6 +2193,7 @@ export class WorldDetailRuntime {
     for (const plugin of this.instancePlugins) {
       plugin.setWorldOrigin(floatingOrigin.x, floatingOrigin.z);
     }
+    this.treeGroundShadow?.setWorldOrigin(floatingOrigin.x, floatingOrigin.z);
     if (!Number.isFinite(profile.vegetationDistance) || profile.vegetationDistance <= 0) {
       throw new RangeError("Vegetation distance must be finite and greater than zero");
     }
@@ -2208,6 +2429,10 @@ export class WorldDetailRuntime {
             }
             : {}),
         });
+        // Packing and ranking are part of the cell's main-thread cost, so
+        // the credit is charged after them.
+        const packed = packDetailCell(cell);
+        const treeCanopyRank = detailTreeCanopyRankOrder(cell.trees);
         if (credit !== null) {
           recordInlineCellAfterWorkerFailure(credit, this.nowMilliseconds() - cellStartedAt);
         }
@@ -2217,10 +2442,10 @@ export class WorldDetailRuntime {
           cellX: cell.cellX,
           cellZ: cell.cellZ,
           cellSizeMeters: cell.cellSizeMeters,
-          cell,
+          cell: packed,
           generation: this.cellEpoch,
           revision: ++this.cellRevision,
-          treeCanopyRank: detailTreeCanopyRankOrder(cell.trees),
+          treeCanopyRank,
           lod: desired.lod,
           distance: desired.distance,
           invalidated: false,
@@ -2242,6 +2467,93 @@ export class WorldDetailRuntime {
         profile.renderedDensityLaw.impostorFloorShare,
       );
     }
+    const treeGroundShadowRangeMeters = this.treeGroundShadow
+      ? Math.max(0, profile.treeGroundShadowRangeMeters)
+      : 0;
+    if (treeGroundShadowRangeMeters !== this.treeGroundShadowRangeMeters) {
+      // The range decides which stems carry a shadow record at all.
+      this.treeGroundShadowRangeMeters = treeGroundShadowRangeMeters;
+      this.batchesDirty = true;
+    }
+    // Bushes and boulders reach as far as the tier draws ground shadows, and
+    // never past the mid radius (`groundObjectRangeCapMeters`): their
+    // shadows are in the tree shadow's batch and stop where it does.
+    const groundObjectRangeMeters = groundObjectRangeCapMeters(
+      treeGroundShadowRangeMeters,
+      profile.renderedDensityLaw,
+    );
+    if (groundObjectRangeMeters !== this.groundObjectRangeMeters) {
+      this.groundObjectRangeMeters = groundObjectRangeMeters;
+      this.batchesDirty = true;
+    }
+    const boulderRangeMeters = Math.min(
+      groundObjectRangeMeters,
+      Math.max(0, profile.boulderRangeMeters),
+    );
+    const openDrawnPerHectare = shrubOpenDrawnPerHectare(profile.vegetationDensity);
+    if (
+      boulderRangeMeters !== this.boulderRangeMeters
+      || openDrawnPerHectare !== this.shrubOpenDrawnPerHectare
+    ) {
+      this.boulderRangeMeters = boulderRangeMeters;
+      this.shrubOpenDrawnPerHectare = openDrawnPerHectare;
+      this.batchesDirty = true;
+    }
+    for (const entry of this.sizeRangePlugins) {
+      entry.plugin.setSizeRange(
+        entry.metersPerMeter,
+        entry.cap === "near"
+          ? profile.renderedDensityLaw.near.outerRadiusMeters
+          : entry.cap === "boulder" ? boulderRangeMeters : groundObjectRangeMeters,
+        entry.growShare,
+        entry.startScale,
+      );
+      if (entry.core) {
+        // The core's law, restated per metre of the body's own height.
+        entry.plugin.setSizeCore(
+          SHRUB_BODY_CORE_REACH_METERS_PER_METER / SHRUB_BODY_HEIGHT_SHARE,
+          profile.renderedDensityLaw.near.outerRadiusMeters,
+          SHRUB_BODY_CORE_GROW_SHARE,
+          SHRUB_BODY_CORE_SCALE,
+        );
+      }
+      if (entry.inner) {
+        entry.plugin.setSizeInner(
+          entry.inner.metersPerMeter,
+          groundObjectRangeMeters,
+          1 - entry.inner.growShare,
+        );
+      }
+    }
+    this.treeGroundShadow?.setGroundObjectReach(
+      GROUND_OBJECT_REACH_METERS_PER_METER,
+      groundObjectRangeMeters,
+      GROUND_OBJECT_REACH_GROW_SHARE,
+    );
+    this.treeGroundShadow?.setGroundObjectCore(
+      SHRUB_BODY_CORE_REACH_METERS_PER_METER / SHRUB_BODY_HEIGHT_SHARE,
+      profile.renderedDensityLaw.near.outerRadiusMeters,
+      SHRUB_BODY_CORE_GROW_SHARE,
+      SHRUB_BODY_CORE_SCALE,
+    );
+    this.treeGroundShadow?.setLaw({
+      nearRadiusMeters: profile.renderedDensityLaw.near.outerRadiusMeters,
+      rangeMeters: Math.min(
+        treeGroundShadowRangeMeters,
+        profile.renderedDensityLaw.mid.outerRadiusMeters,
+      ),
+      geometryFloorShare: profile.renderedDensityLaw.farFloorShare,
+      drawnFloorShare: profile.renderedDensityLaw.impostorFloorShare,
+      nearStemsPerHectare: profile.renderedDensityLaw.nearStemsPerHectare,
+      // Near trees cast real shadows out to where the near shells stop
+      // drawing (`detailBandWindowEmpty`'s near switch).
+      realShadowEdgeMeters: profile.vegetationCastsShadows
+        ? Math.max(
+            0,
+            profile.renderedDensityLaw.near.outerRadiusMeters - DETAIL_NEAR_SWITCH_INSET_METERS,
+          )
+        : 0,
+    });
     if (this.batchesDirty) {
       // Stays dirty while the amortized sweep has a backlog.
       this.batchesDirty = this.rebuildBatches(floatingOrigin, profile);
@@ -2541,7 +2853,9 @@ export class WorldDetailRuntime {
     this.cells.clear();
     this.desiredCells = [];
     this.desiredKeys.clear();
-    this.detailBuildStoragePool.clear();
+    this.detailBuildStoragePool.length = 0;
+    this.detailBuildStoragePoolBytes = 0;
+    this.stagedRecordsByPrototype.clear();
     for (const batch of this.batches.values()) {
       batch.mesh.dispose(false, false);
       batch.gpu?.shared.dispose();
@@ -2569,6 +2883,8 @@ export class WorldDetailRuntime {
     this.impostorAtlas = null;
     for (const material of this.materials) material.dispose(true, true);
     this.materials.clear();
+    this.treeGroundShadow?.dispose();
+    this.treeGroundShadow = null;
     this.statisticsValue = ZERO_STATISTICS;
   }
 
@@ -2747,6 +3063,10 @@ export class WorldDetailRuntime {
       profile.treePrototypeMode,
       profile.grassRadiusMeters,
       this.groundCoverFieldRadiusMeters,
+      this.treeGroundShadowRangeMeters,
+      this.groundObjectRangeMeters,
+      this.boulderRangeMeters,
+      this.shrubOpenDrawnPerHectare,
     ].join(":");
     const targets = new Map<string, DetailChunkBuildTarget>();
 
@@ -2767,6 +3087,10 @@ export class WorldDetailRuntime {
         profile.treePrototypeMode,
         profile.grassRadiusMeters,
         this.groundCoverFieldRadiusMeters,
+        this.treeGroundShadowRangeMeters,
+        this.groundObjectRangeMeters,
+        this.boulderRangeMeters,
+        this.shrubOpenDrawnPerHectare,
         // 2-17 close: the observer term applies ONLY to FRONTIER chunks —
         // those straddling a band or population edge, where memberships and
         // single-edge baked fades actually change with camera range. An
@@ -3106,6 +3430,10 @@ export class WorldDetailRuntime {
           grassRadiusMeters,
           groundCoverBladesActive: this.groundCoverBladesActive,
           groundCoverFieldRadiusMeters: this.groundCoverFieldRadiusMeters,
+          treeGroundShadowRangeMeters: this.treeGroundShadowRangeMeters,
+          groundObjectRangeMeters: this.groundObjectRangeMeters,
+          boulderRangeMeters: this.boulderRangeMeters,
+          shrubOpenDrawnPerHectare: this.shrubOpenDrawnPerHectare,
           observerX: this.observerX,
           observerZ: this.observerZ,
         },
@@ -3168,13 +3496,22 @@ export class WorldDetailRuntime {
           grassRadiusMeters,
           groundCoverBladesActive: this.groundCoverBladesActive,
           groundCoverFieldRadiusMeters: this.groundCoverFieldRadiusMeters,
+          treeGroundShadowRangeMeters: this.treeGroundShadowRangeMeters,
+          groundObjectRangeMeters: this.groundObjectRangeMeters,
+          boulderRangeMeters: this.boulderRangeMeters,
+          shrubOpenDrawnPerHectare: this.shrubOpenDrawnPerHectare,
           observerX: this.observerX,
           observerZ: this.observerZ,
         },
         this.presentationBuildCatalog,
         {
           appendInstance: (prototypeKey, record, billboardFrame) => {
-            const batch = this.getStagedBatch(prototypeKey, stagedBatches);
+            const batch = this.getStagedBatch(
+              prototypeKey,
+              target.coordinates.key,
+              stagedBatches,
+            );
+            if (batch.writer.full) this.growStagedWriter(batch);
             batch.writer.pushBounded(
               record,
               batch.bounds,
@@ -3366,11 +3703,13 @@ export class WorldDetailRuntime {
       + statistics.rockInstances
       + statistics.clutterInstances
       + statistics.groundCoverInstances;
-    // A stem carries at most seven records: three near parts, three mid
-    // parts, and (2026-09-13) one impostor coexisting with either.
-    const maximumPackedRecords = statistics.treeInstances * 7
-      + statistics.shrubInstances
-      + statistics.rockInstances
+    // A stem carries at most eight records: three near parts, three mid
+    // parts, (2026-09-13) one impostor coexisting with either, and its
+    // ground shadow. A bush carries at most four (its leaf cards, its body,
+    // the body's stand-in and its shadow) and a boulder two.
+    const maximumPackedRecords = statistics.treeInstances * 8
+      + statistics.shrubInstances * 4
+      + statistics.rockInstances * 2
       + statistics.clutterInstances
       + statistics.groundCoverInstances;
     let packedRecords = 0;
@@ -3398,6 +3737,16 @@ export class WorldDetailRuntime {
         throw new Error("Detail worker presentation batches must own unique transferred buffers");
       }
       transferredBuffers.add(batch.bytes.buffer);
+      // Checked before any storage is taken: the count sizes the copy.
+      if (
+        !Number.isSafeInteger(batch.count)
+        || batch.count <= 0
+        || batch.bytes.byteOffset !== 0
+        || batch.bytes.byteLength !== batch.count * DETAIL_INSTANCE_STRIDE_BYTES
+        || batch.bytes.buffer.byteLength !== batch.bytes.byteLength
+      ) {
+        throw new RangeError("Transferred detail instance bytes must be one exact packed buffer");
+      }
     }
 
     const stagedBatches = new Map<string, StagedDetailBatch>();
@@ -3410,20 +3759,21 @@ export class WorldDetailRuntime {
         if (!prototype) {
           throw new Error(`Detail worker presentation referenced unknown prototype ${batch.prototypeKey}`);
         }
+        // Copy into pooled storage and keep no reference to the transferred
+        // bytes, which then die young with the worker's message.
+        const storage = this.acquireDetailBuildStorage(batch.count);
         stagedBatches.set(batch.prototypeKey, {
           prototypeKey: batch.prototypeKey,
-          writer: DetailInstanceWriter.fromTransferredBytes(batch.bytes, batch.count),
-          bounds: DetailInstanceBounds.fromExtents(batch.minimum, batch.maximum),
+          writer: storage.writer,
+          bounds: storage.bounds,
           prototypeBoundKernel: prototype.boundKernel,
         });
+        storage.writer.copyPackedFrom(batch.bytes, batch.count);
+        storage.bounds.setExtents(batch.minimum, batch.maximum, batch.blocks);
       }
     } catch (error) {
       for (const staged of stagedBatches.values()) {
-        this.releaseDetailBuildStorage(
-          staged.prototypeKey,
-          staged.writer,
-          staged.bounds,
-        );
+        this.releaseDetailBuildStorage(staged.writer, staged.bounds);
       }
       throw error;
     }
@@ -3485,6 +3835,8 @@ export class WorldDetailRuntime {
     }
     const uploads: StagedDetailBatchUpload[] = [];
     for (const staged of build.stagedBatches.values()) {
+      this.refitStagedWriter(staged);
+      this.stagedRecordsByPrototype.set(staged.prototypeKey, staged.writer.count);
       const batchKey = `${staged.prototypeKey}@${build.coordinates.key}`;
       const live = this.batches.get(batchKey);
       const packed = staged.writer.finish();
@@ -3554,7 +3906,7 @@ export class WorldDetailRuntime {
     // Streaming phase: packed records flow into the disabled staged buffers
     // under the per-update byte budget. Nothing here is visible — the staged
     // meshes stay disabled until the flip.
-    let budget = DETAIL_PUBLICATION_STREAM_BYTES_PER_UPDATE;
+    let budget = this.publicationStreamBytesPerUpdate;
     for (const upload of publication.uploads) {
       if (upload.kind === "fits" || !upload.structuralDone) continue;
       const gpu = upload.stagedBatch?.gpu;
@@ -3617,7 +3969,7 @@ export class WorldDetailRuntime {
           // Defensive: `fits` implies a live batch existed at staging and
           // nothing removes one mid-publication; if that ever changes, the
           // staged writer must still return to the bounded pool.
-          this.releaseDetailBuildStorage(upload.prototypeKey, upload.writer, upload.bounds);
+          this.releaseDetailBuildStorage(upload.writer, upload.bounds);
           continue;
         }
         const displacedWriter = batch.writer;
@@ -3625,12 +3977,10 @@ export class WorldDetailRuntime {
         batch.writer = upload.writer;
         batch.bounds = upload.bounds;
         batch.filledRevision = nextRevision;
+        // Rewrites the allocation's `_data` to the new writer, so the
+        // displaced one is unreferenced once this returns.
         this.uploadBatch(batch, publication.recordOrigin, currentOrigin);
-        this.releaseDetailBuildStorage(
-          upload.prototypeKey,
-          displacedWriter,
-          displacedBounds,
-        );
+        this.releaseDetailBuildStorage(displacedWriter, displacedBounds);
       } else {
         const staged = upload.stagedBatch;
         if (!staged) continue;
@@ -3725,15 +4075,12 @@ export class WorldDetailRuntime {
       const staged = upload.stagedBatch;
       if (staged) {
         staged.mesh.dispose(false, false);
+        // Recycling drops the `_data` a streamed slice of this writer set.
         if (staged.gpu) this.recycleInstanceBuffers(staged.gpu);
         staged.gpu = null;
         this.revealRamps.delete(staged.mesh);
       }
-      this.releaseDetailBuildStorage(
-        upload.prototypeKey,
-        upload.writer,
-        upload.bounds,
-      );
+      this.releaseDetailBuildStorage(upload.writer, upload.bounds);
     }
     publication.uploads.length = 0;
     this.pendingPublication = null;
@@ -3754,6 +4101,7 @@ export class WorldDetailRuntime {
     const count = batch.writer.count;
     batch.mesh.forcedInstanceCount = 0;
     this.refreshImpostorOccupancy(batch, recordOrigin);
+    batch.cullBlocks = count === 0 ? DETAIL_NO_CULL_BLOCKS : batch.bounds.blockExtents();
     if (count === 0 || batch.gpu === null) {
       batch.mesh.setEnabled(false);
       return;
@@ -3862,13 +4210,20 @@ export class WorldDetailRuntime {
 
   private getStagedBatch(
     prototypeKey: string,
+    chunkKey: string,
     stagedBatches: Map<string, StagedDetailBatch>,
   ): StagedDetailBatch {
     const existing = stagedBatches.get(prototypeKey);
     if (existing) return existing;
     const prototype = this.prototypes.get(prototypeKey);
     if (!prototype) throw new Error(`Missing detail prototype ${prototypeKey}`);
-    const storage = this.acquireDetailBuildStorage(prototypeKey);
+    // Size it like the live batch it will replace or, for a new batch, like
+    // the prototype's latest; it grows through the pool if that was too few
+    // and is refit if it ends far too large (`createPendingPublication`).
+    const live = this.batches.get(`${prototypeKey}@${chunkKey}`);
+    const storage = this.acquireDetailBuildStorage(
+      live?.writer.count ?? this.stagedRecordsByPrototype.get(prototypeKey) ?? 0,
+    );
     const staged: StagedDetailBatch = {
       prototypeKey,
       writer: storage.writer,
@@ -3879,41 +4234,101 @@ export class WorldDetailRuntime {
     return staged;
   }
 
-  private acquireDetailBuildStorage(prototypeKey: string): PooledDetailBuildStorage {
-    const pooled = this.detailBuildStoragePool.get(prototypeKey);
-    if (pooled) {
-      this.detailBuildStoragePool.delete(prototypeKey);
-      pooled.writer.reset();
-      pooled.bounds.reset();
-      return pooled;
+  /**
+   * Takes the idle writer/bounds pair that best fits `minimumRecords` — the
+   * smallest writer that holds them in less than four times their bytes, the
+   * oldest of equals — or makes one with a power-of-two capacity, so released
+   * writers come in few sizes and match later batches. Pooled pairs were reset
+   * when released.
+   */
+  private acquireDetailBuildStorage(minimumRecords: number): PooledDetailBuildStorage {
+    const pool = this.detailBuildStoragePool;
+    const minimumBytes = minimumRecords * DETAIL_INSTANCE_STRIDE_BYTES;
+    let bestIndex = -1;
+    let bestBytes = detailCpuWriterOversizeBytes(minimumRecords);
+    for (let index = 0; index < pool.length; index += 1) {
+      const bytes = pool[index]!.writer.capacityBytes;
+      if (bytes < minimumBytes || bytes >= bestBytes) continue;
+      bestIndex = index;
+      bestBytes = bytes;
     }
+    if (bestIndex >= 0) {
+      // splice keeps the rest in release order for `trimDetailBuildStoragePool`.
+      const [pooled] = pool.splice(bestIndex, 1);
+      this.detailBuildStoragePoolBytes -= bestBytes;
+      this.cpuWriterPoolHits = addDiagnosticCount(this.cpuWriterPoolHits);
+      return pooled!;
+    }
+    this.cpuWriterAllocations = addDiagnosticCount(this.cpuWriterAllocations);
     return {
-      writer: new DetailInstanceWriter(),
+      writer: new DetailInstanceWriter(detailCpuWriterCapacityRecords(minimumRecords)),
       bounds: new DetailInstanceBounds(),
     };
   }
 
+  /**
+   * Moves a full inline staged writer's records into a pooled writer that
+   * holds twice as many and returns the outgrown one to the pool.
+   * `pushBounded` would double it in place instead, and as an inline build
+   * spans updates the dropped buffer was often promoted before it died.
+   * Nothing but the build reads a staged writer, so the swap is invisible.
+   */
+  private growStagedWriter(staged: StagedDetailBatch): void {
+    const outgrown = staged.writer;
+    const larger = this.acquireDetailBuildStorage(2 * outgrown.count);
+    larger.writer.copyPackedFrom(outgrown.finish(), outgrown.count);
+    staged.writer = larger.writer;
+    this.releaseDetailBuildStorage(outgrown, larger.bounds);
+    this.cpuWriterGrowths = addDiagnosticCount(this.cpuWriterGrowths);
+  }
+
+  /**
+   * An inline build sizes its writers before it knows their records, so a
+   * batch that shrank can end in a writer four times its records or more; that
+   * one is swapped for a writer that fits, as a pool hit would, before it is
+   * published, so no live writer keeps a large buffer for a few records. A
+   * worker batch is copied into a fitting writer from the start.
+   */
+  private refitStagedWriter(staged: StagedDetailBatch): void {
+    const writer = staged.writer;
+    const count = writer.count;
+    if (count === 0 || writer.capacityBytes < detailCpuWriterOversizeBytes(count)) return;
+    const fitted = this.acquireDetailBuildStorage(count);
+    fitted.writer.copyPackedFrom(writer.finish(), count);
+    staged.writer = fitted.writer;
+    this.releaseDetailBuildStorage(writer, fitted.bounds);
+    this.cpuWriterRefits = addDiagnosticCount(this.cpuWriterRefits);
+  }
+
+  /** Returns a pair nothing reads any more (see `detailBuildStoragePool`). */
   private releaseDetailBuildStorage(
-    prototypeKey: string,
     writer: DetailInstanceWriter,
     bounds: DetailInstanceBounds,
   ): void {
-    // One active staged chunk means one spare per prototype is sufficient.
-    // Refuse a second entry explicitly rather than letting structural churn
-    // turn this CPU-only pool into an unbounded cache.
-    if (this.detailBuildStoragePool.has(prototypeKey)) return;
     writer.reset();
     bounds.reset();
-    this.detailBuildStoragePool.set(prototypeKey, { writer, bounds });
+    this.detailBuildStoragePool.push({ writer, bounds });
+    this.detailBuildStoragePoolBytes += writer.capacityBytes;
+    this.trimDetailBuildStoragePool();
+  }
+
+  /**
+   * Drops the longest-idle writers until the pool is within its byte cap.
+   * Measured on a simulated Low flight, evicting the oldest cut the churn
+   * left at a 4 MiB cap to a sixth of evicting the largest.
+   */
+  private trimDetailBuildStoragePool(): void {
+    const pool = this.detailBuildStoragePool;
+    while (this.detailBuildStoragePoolBytes > this.detailBuildStoragePoolByteCap) {
+      const dropped = pool.shift()!;
+      this.detailBuildStoragePoolBytes -= dropped.writer.capacityBytes;
+      this.cpuWriterPoolDrops = addDiagnosticCount(this.cpuWriterPoolDrops);
+    }
   }
 
   private releaseStagedBuildStorage(build: PendingDetailChunkBuild): void {
     for (const staged of build.stagedBatches.values()) {
-      this.releaseDetailBuildStorage(
-        staged.prototypeKey,
-        staged.writer,
-        staged.bounds,
-      );
+      this.releaseDetailBuildStorage(staged.writer, staged.bounds);
     }
     build.stagedBatches.clear();
   }
@@ -3940,6 +4355,7 @@ export class WorldDetailRuntime {
     const count = batch.writer.count;
     batch.mesh.forcedInstanceCount = 0;
     this.refreshImpostorOccupancy(batch, recordOrigin);
+    batch.cullBlocks = count === 0 ? DETAIL_NO_CULL_BLOCKS : batch.bounds.blockExtents();
     if (count === 0) {
       batch.mesh.setEnabled(false);
       return;
@@ -4079,6 +4495,11 @@ export class WorldDetailRuntime {
 
   /** Returns an allocation to the pool; nothing is destroyed in flight. */
   private recycleInstanceBuffers(gpu: DetailInstanceGpuBuffers): void {
+    // Its contents are dead. Babylon's `_data` mirror would pin the previous
+    // owner's writer bytes and alias them once that writer is reused; a
+    // context-restore `_rebuild` without it recreates the buffer by capacity,
+    // and the next owner writes every byte it draws before it is enabled.
+    (gpu.shared as unknown as { _data: unknown })._data = null;
     this.instanceBufferPool.push({
       gpu,
       reusableAfterUpdate:
@@ -4236,6 +4657,9 @@ export class WorldDetailRuntime {
     // poisons the whole render bundle to a black frame.
     mesh.receiveShadows = prototype.mesh.receiveShadows;
     mesh.alwaysSelectAsActiveMesh = false;
+    if (prototypeKey === TREE_GROUND_SHADOW_PROTOTYPE_KEY) {
+      this.treeGroundShadow?.configureBatchMesh(mesh);
+    }
     mesh.setEnabled(false);
     mesh.metadata = {
       detailBatch: prototypeKey,
@@ -4252,12 +4676,14 @@ export class WorldDetailRuntime {
       detailReveal: 1,
     };
     this.captureCreatedBatches = addDiagnosticCount(this.captureCreatedBatches);
-    return {
+    const batch: DetailBatch = {
       mesh,
       castsShadows: prototype.castsShadows,
       prototypeKey,
       chunkKey: coordinates.key,
-      writer: new DetailInstanceWriter(),
+      // Placeholder: the flip installs the staged writer before this batch
+      // is ever live, so it never needs room for records.
+      writer: new DetailInstanceWriter(1),
       bounds: new DetailInstanceBounds(),
       prototypeBoundKernel: prototype.boundKernel,
       gpu: null,
@@ -4268,7 +4694,10 @@ export class WorldDetailRuntime {
       impostorBoundsPadding: [0, 0, 0],
       filledRevision: 0,
       builtOrigin: { x: 0, y: 0, z: 0 },
+      cullBlocks: DETAIL_NO_CULL_BLOCKS,
     };
+    installDetailBlockFrustumTest(mesh, batch);
+    return batch;
   }
 
   private retireBatch(batchKey: string): void {
@@ -4295,6 +4724,9 @@ export class WorldDetailRuntime {
         // PooledInstanceBuffers.
         if (retired.batch.gpu) this.recycleInstanceBuffers(retired.batch.gpu);
         retired.batch.gpu = null;
+        // The mesh is gone and recycling dropped `_data`: nothing reads these
+        // records again, so the writer goes back for reuse.
+        this.releaseDetailBuildStorage(retired.batch.writer, retired.batch.bounds);
         continue;
       }
       this.retiredBatches[writeIndex] = retired;
@@ -4619,11 +5051,22 @@ export class WorldDetailRuntime {
       material.backFaceCulling = false;
       material.twoSidedLighting = true;
       material.transparencyMode = Material.MATERIAL_ALPHATEST;
+      // The cards are the bush's surface up close and nothing past that: they
+      // reach a short way per metre of its height and grow out of the body.
+      this.registerSizeRangeMaterial(
+        material,
+        SHRUB_CARD_REACH_METERS_PER_METER,
+        SHRUB_CARD_REACH_GROW_SHARE,
+        SHRUB_CARD_REACH_START_SCALE,
+        "near",
+      );
       for (let variant = 0; variant < SHRUB_VARIANT_COUNTS[species]; variant += 1) {
         const prototype = buildShrubPrototype(species, variant, prototypeSeed);
+        // The cards stand on the bush's body, so their radial unit is the
+        // one the prototype declares for that, not their own extent.
         this.prototypeRadialUnits.set(
           `shrub-${species}-v${variant}`,
-          Math.max(prototype.boundingRadius, 0.05),
+          Math.max(prototype.radialUnit ?? prototype.boundingRadius, 0.05),
         );
         this.registerBatch(
           `shrub-${species}-v${variant}`,
@@ -4633,6 +5076,86 @@ export class WorldDetailRuntime {
           prototype.localBounds,
         );
       }
+    }
+
+    // The bush's solid body (`groundObjects.ts`): one mesh and one material
+    // for every species, on the trees' opaque crown path, so it is early-Z
+    // and back-face culled with no fragment discard. Its colour is the
+    // instance tint over the dense-crown layer; the albedo is the crowns', so
+    // a bush and the tree above it are lit as the same kind of surface.
+    // Two meshes: the body while its shape can be seen, and a stand-in from
+    // there to the bush's reach. They differ only in where they draw, which
+    // is a uniform, so each has its own material.
+    {
+      const createBodyMaterial = (name: string): PBRMaterial => {
+        const bodyMaterial = this.createMaterial(
+          name,
+          new Color3(...DETAIL_CROWN_ALBEDO),
+          0.9,
+          true,
+        );
+        this.materialPlugin(bodyMaterial)?.setOpaqueCrown(true);
+        this.materialPlugin(bodyMaterial)?.setClusterGrain(
+          SHRUB_BODY_GRAIN_FREQUENCY,
+          SHRUB_BODY_GRAIN_TONE_FLOOR,
+          SHRUB_BODY_GRAIN_TONE_SPAN,
+          SHRUB_BODY_GRAIN_NORMAL,
+        );
+        bodyMaterial.backFaceCulling = true;
+        bodyMaterial.twoSidedLighting = false;
+        bodyMaterial.transparencyMode = Material.MATERIAL_OPAQUE;
+        bodyMaterial.environmentIntensity = CANOPY_SURFACE_AMBIENT;
+        bodyMaterial.specularIntensity = CANOPY_SURFACE_SPECULAR;
+        return bodyMaterial;
+      };
+      const farMaterial = createBodyMaterial("detail-shrub-body-far-material");
+      this.registerSizeRangeMaterial(
+        farMaterial,
+        GROUND_OBJECT_REACH_METERS_PER_METER,
+        GROUND_OBJECT_REACH_GROW_SHARE,
+        GROUND_OBJECT_REACH_START_SCALE,
+        "tier",
+        false,
+        {
+          metersPerMeter: SHRUB_BODY_SWAP_METERS_PER_METER,
+          growShare: GROUND_OBJECT_REACH_GROW_SHARE,
+        },
+      );
+      const far = buildShrubBodyFarPrototype(prototypeSeed);
+      this.prototypeRadialUnits.set(
+        SHRUB_BODY_FAR_PROTOTYPE_KEY,
+        Math.max(far.boundingRadius, 0.05),
+      );
+      this.registerBatch(
+        SHRUB_BODY_FAR_PROTOTYPE_KEY,
+        this.buildPrototypeMesh("detail-shrub-body-far", far),
+        farMaterial,
+        false,
+        { ...far.localBounds, contractionPivotYUnit: 0.42 },
+      );
+      const bodyMaterial = createBodyMaterial("detail-shrub-body-material");
+      this.registerSizeRangeMaterial(
+        bodyMaterial,
+        SHRUB_BODY_SWAP_METERS_PER_METER,
+        GROUND_OBJECT_REACH_GROW_SHARE,
+        GROUND_OBJECT_REACH_START_SCALE,
+        "tier",
+        true,
+      );
+      const body = buildShrubBodyPrototype(prototypeSeed);
+      this.prototypeRadialUnits.set(
+        SHRUB_BODY_PROTOTYPE_KEY,
+        Math.max(body.boundingRadius, 0.05),
+      );
+      this.registerBatch(
+        SHRUB_BODY_PROTOTYPE_KEY,
+        this.buildPrototypeMesh("detail-shrub-body", body),
+        bodyMaterial,
+        false,
+        // The opaque crown path contracts a leafless broadleaf body about
+        // this height (`detailCrownPivot`), as it does a crown.
+        { ...body.localBounds, contractionPivotYUnit: 0.42 },
+      );
     }
 
     // 2-15: displaced-icosphere rocks — per-lithology normals live in the
@@ -4649,10 +5172,24 @@ export class WorldDetailRuntime {
         `rock-${variant}`,
         Math.max(prototype.boundingRadius, 0.05),
       );
+      const rockMaterial = this.createMaterial(
+        `detail-rock-material-${variant}`,
+        rockColors[variant],
+        0.94,
+      );
+      // A boulder is drawn while it is big enough to see, as a bush is, out
+      // to the cap the tier gives boulders.
+      this.registerSizeRangeMaterial(
+        rockMaterial,
+        GROUND_OBJECT_REACH_METERS_PER_METER,
+        GROUND_OBJECT_REACH_GROW_SHARE,
+        GROUND_OBJECT_REACH_START_SCALE,
+        "boulder",
+      );
       this.registerBatch(
         `rock-${variant}`,
         this.buildPrototypeMesh(`detail-rock-${variant}`, prototype),
-        this.createMaterial(`detail-rock-material-${variant}`, rockColors[variant], 0.94),
+        rockMaterial,
         false,
         prototype.localBounds,
       );
@@ -4711,6 +5248,20 @@ export class WorldDetailRuntime {
       );
     }
 
+    // The ground shadow every drawn tree lays. Registered directly rather
+    // than through `registerBatch`: its material is a blend-only shader, not
+    // PBR, and its quad neither receives shadows nor carries vertex colours.
+    this.treeGroundShadow = new TreeGroundShadowMaterial(this.scene);
+    const shadowQuad = this.treeGroundShadow.createPrototypeMesh();
+    shadowQuad.metadata = { detailPrototype: TREE_GROUND_SHADOW_PROTOTYPE_KEY };
+    // The record's radial lane is the crown radius over the tree's height.
+    this.prototypeRadialUnits.set(TREE_GROUND_SHADOW_PROTOTYPE_KEY, 1);
+    this.prototypes.set(TREE_GROUND_SHADOW_PROTOTYPE_KEY, {
+      mesh: shadowQuad,
+      material: this.treeGroundShadow.material,
+      castsShadows: false,
+      boundKernel: detailPrototypeBoundKernel(TREE_GROUND_SHADOW_PROTOTYPE_BOUNDS),
+    });
   }
 
 

@@ -458,8 +458,9 @@ describe("the WGSL twins carry the same dry laws", () => {
     expect(VEGETATION_DENSITY_FIELD_WGSL).toContain(
       "1.0 - VEG_PARKLAND_CLOSED_FOREST_CUT * parkland * (1.0 - riparianBand)");
     expect(VEGETATION_DENSITY_FIELD_WGSL).toContain("(1.0 + riparianBand * 0.65) * understoryKeep");
+    // Open ground's trees are open-grown too, so the two shares take one max.
     expect(VEGETATION_DENSITY_FIELD_WGSL).toContain(
-      "max(forestEdge, parkland * VEG_PARKLAND_OPEN_GROWN_EDGE)");
+      "max(parkland, openGrown) * VEG_PARKLAND_OPEN_GROWN_EDGE");
     for (const value of [
       PARKLAND_TREE_SHARE, DESERT_TREE_SHARE, DESERT_SHRUB_SHARE, PARKLAND_SHRUB_SHARE,
     ]) {

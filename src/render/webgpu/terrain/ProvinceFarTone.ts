@@ -10,7 +10,6 @@ import {
   tundraShare,
 } from "@/src/world/coldBiomes";
 import {
-  CANOPY_SURFACE_ALBEDO,
   dryProvinceAridShare,
   dryProvinceParklandShare,
 } from "@/src/render/webgpu/detail/densityField";
@@ -297,10 +296,3 @@ function wgslVec3(value: readonly [number, number, number]): string {
 export const TERRAIN_PROVINCE_CANOPY_DELTA_WGSL = wgslVec3(PROVINCE_FAR_CANOPY_PAINT_DELTA);
 /** `PROVINCE_FAR_CANOPY_TROPICAL_DELTA` as a WGSL literal, for the fragment. */
 export const TERRAIN_PROVINCE_TROPICAL_CANOPY_DELTA_WGSL = wgslVec3(PROVINCE_FAR_CANOPY_TROPICAL_DELTA);
-
-/** The canopy paint the far fallback uses at a province, for tests and audits. */
-export function provinceFarCanopyAlbedo(temperatureOffset: number, dryness: number): [number, number, number] {
-  const tone = provinceFarTone(temperatureOffset, dryness);
-  return [0, 1, 2].map((channel) =>
-    CANOPY_SURFACE_ALBEDO[channel]! * (1 + tone.canopy[channel]!)) as [number, number, number];
-}
