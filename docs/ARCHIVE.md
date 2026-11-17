@@ -76,6 +76,10 @@ Investigation write-ups, mostly September 2026.
 
 The dated decision log that ended `docs/architecture/ARCHITECTURE.md` (Gate A, Phases 4 to 7, the ocean correction, tree LOD and so on). Read it with `git show afa81e6:docs/architecture/ARCHITECTURE.md`.
 
+## Performance write-ups
+
+Until 2026-11-17 `docs/PERFORMANCE.md` also carried a dated write-up for every baseline promotion and every feature's measured cost: each promotion's gate failures and pixel tables, each feature's A/B runs, and investigations such as the Medium choppiness watchdog and the nose-down freeze. They are condensed into its "Rebaseline and draw-ceiling log" and "Measured costs" tables. Read the full text with `git show 70fb152:docs/PERFORMANCE.md`.
+
 ## Status (`docs/status/`)
 
 Snapshots from early September 2026, superseded by [OVERVIEW.md](OVERVIEW.md): `PROJECT_OVERVIEW.md`, `PROJECT_CLOSEOUT_2026_09_02.md`, `HANDOVER_2026_09_02.md`, `WHAT_CHANGED_2026_09_01.md`, `PHASE_6_OUTCOME.md`.
