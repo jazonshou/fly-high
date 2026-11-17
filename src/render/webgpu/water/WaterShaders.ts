@@ -194,6 +194,9 @@ export const WATER_SUN_IRRADIANCE_SCALE = PEAK_SUN_INTENSITY / Math.PI;
  */
 export const WATER_SKY_IRRADIANCE_FRACTION = 0.55;
 
+/** Rec. 709 luminance weights — used only to reduce a colour to one scalar. */
+export const WATER_LUMINANCE_WEIGHTS = Object.freeze([0.2126, 0.7152, 0.0722] as const);
+
 /**
  * The water path a backlit crest transmits through, metres. The crest tint is
  * `exp(-a * this)` normalised to unit luminance, so a peat-stained tarn glows

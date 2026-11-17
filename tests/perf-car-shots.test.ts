@@ -83,14 +83,17 @@ function feetOnGround(world: WorldDefinition, state: FlightVisualState, car: Car
 }
 
 describe("car shots", () => {
-  it("are four car views, the last shots of all", () => {
+  it("are four car views, after the boats, with only the walker after them", () => {
     expect(carShots.map((shot) => shot.name)).toEqual([
       "car-clearing-chase",
       "car-dune-cockpit",
       "car-ford-chase",
       "car-dust-chase",
     ]);
-    expect(PERF_CAPTURE_SHOTS.slice(-carShots.length).every((shot) => shot.car !== undefined)).toBe(true);
+    const firstCar = PERF_CAPTURE_SHOTS.findIndex((shot) => shot.car !== undefined);
+    const afterCars = PERF_CAPTURE_SHOTS.slice(firstCar + carShots.length);
+    expect(PERF_CAPTURE_SHOTS.slice(firstCar, firstCar + carShots.length).every((shot) => shot.car !== undefined)).toBe(true);
+    expect(afterCars.every((shot) => shot.walk !== undefined)).toBe(true);
     for (const shot of carShots) expect(shot.boat).toBeUndefined();
   });
 

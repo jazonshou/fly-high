@@ -131,10 +131,35 @@ const BLOCK_PHASE_LIMIT_RADIANS = 0.05;
 /** ...or once the focus has moved this many 1/k of its shortest wave from where it was built. */
 const BLOCK_REACH_LIMIT = 0.1;
 
+/**
+ * `surfacePointAt` takes another Newton step while its last one moved the
+ * label further than this, metres (the error left after a step is about the
+ * square of the step times a short wave's wavenumber)...
+ */
+const POINT_STEP_LIMIT_METERS = 0.1;
+
+/** ...up to this many steps (a point that jumped). */
+const POINT_NEWTON_LIMIT = 4;
+
 /** Exact resync covers every phasor once per this many seconds. */
 const PHASE_RESYNC_SECONDS = 1;
 
 const TAU = Math.PI * 2;
+
+/** The sea's surface over one point (`SeaTwin.surfacePointAt`); callers keep one and reuse it. */
+export interface SeaSurfacePoint {
+  /** World Y of the surface. */
+  height: number;
+  /** The surface's slope over the point, dY/dx and dY/dz. */
+  slopeX: number;
+  slopeZ: number;
+  /** How fast the surface over the (still) point rises, m/s. */
+  rate: number;
+}
+
+export function createSeaSurfacePoint(): SeaSurfacePoint {
+  return { height: 0, slopeX: 0, slopeZ: 0, rate: 0 };
+}
 
 export interface SeaTwinOptions {
   /** World Y of the still sea. */
@@ -800,6 +825,11 @@ export class SeaTwin implements HullWaterSampler {
   private shelterDiskRadiusSquared = 0;
   private readonly fields = createSeaFields();
   private readonly partial = createSeaFields();
+  // `surfacePointAt`: the label's offset from the point the last call found,
+  // which starts the next call's Newton steps.
+  private readonly pointFields = createSeaFields();
+  private pointOffsetX = 0;
+  private pointOffsetZ = 0;
 
   constructor(config: SpectralOceanConfig, options: SeaTwinOptions) {
     this.config = config;
@@ -897,6 +927,58 @@ export class SeaTwin implements HullWaterSampler {
     this.exactFieldsAt(labelX, labelZ, this.fields);
     const bed = this.bedHeight ? this.bedHeight(x, z) : Number.NEGATIVE_INFINITY;
     return this.finish(x, z, labelX, labelZ, this.fields, bed, out);
+  }
+
+  /**
+   * The sea's surface over one point within a few metres of the focus, for
+   * a caller that follows a single point a frame (the renderer's camera):
+   * the long cascades from the focus's expansion, and the hull-grid band
+   * summed directly at the label point, which Newton steps find from the
+   * label the last call found (one step a call while the point moves
+   * smoothly). No hull grid is built, so a call costs one pass over the
+   * 8-32 m band's waves, not the grid's rebuild that `sample` spreads over a
+   * hull's many points. Sheltered (the shelter's gradient left out, felt
+   * only on a basin's rim); no bed. Agrees with `sampleExact` to a few
+   * millimetres.
+   */
+  surfacePointAt(x: number, z: number, out: SeaSurfacePoint): SeaSurfacePoint {
+    this.ensureExpansion();
+    const fields = this.pointFields;
+    let labelX = x - this.pointOffsetX;
+    let labelZ = z - this.pointOffsetZ;
+    for (let iteration = 0; iteration < POINT_NEWTON_LIMIT; iteration += 1) {
+      this.pointFieldsAt(labelX, labelZ, fields);
+      const s = this.shelterFactorAt(labelX, labelZ);
+      // F(label) = label + s D(label) - point, and its Jacobian.
+      const rx = labelX + s * fields.dx - x;
+      const rz = labelZ + s * fields.dz - z;
+      const jxx = 1 + s * fields.dxx;
+      const jxz = s * fields.dxz;
+      const jzx = s * fields.dzx;
+      const jzz = 1 + s * fields.dzz;
+      const determinant = jxx * jzz - jxz * jzx;
+      const safe = Math.abs(determinant) > 0.05 ? determinant : (determinant < 0 ? -0.05 : 0.05);
+      const stepX = (jzz * rx - jxz * rz) / safe;
+      const stepZ = (jxx * rz - jzx * rx) / safe;
+      labelX -= stepX;
+      labelZ -= stepZ;
+      // Height carried to the new label along its gradient; the slope over
+      // the point is that gradient through the inverse Jacobian.
+      const hx = s * fields.hx;
+      const hz = s * fields.hz;
+      const slopeX = (hx * jzz - hz * jzx) / safe;
+      const slopeZ = (hz * jxx - hx * jxz) / safe;
+      out.height = this.seaLevel + s * fields.h - hx * stepX - hz * stepZ;
+      out.slopeX = slopeX;
+      out.slopeZ = slopeZ;
+      // The surface over a still point rises as its particle does, less the
+      // slope it carries past: w - grad(eta) . u.
+      out.rate = s * (fields.w - slopeX * fields.ux - slopeZ * fields.uz);
+      if (stepX * stepX + stepZ * stepZ <= POINT_STEP_LIMIT_METERS * POINT_STEP_LIMIT_METERS) break;
+    }
+    this.pointOffsetX = x - labelX;
+    this.pointOffsetZ = z - labelZ;
+    return out;
   }
 
   /**
@@ -1591,6 +1673,84 @@ export class SeaTwin implements HullWaterSampler {
     this.bedHalfLength = focus.halfLength;
     this.bedHalfBeam = focus.halfBeam;
     this.bedValid = true;
+  }
+
+  /**
+   * Height, displacement, their gradients and the particle's velocity at a
+   * label point, before shelter: the long cascades from the expansion about the focus, the
+   * hull-grid band by summing its waves.
+   */
+  private pointFieldsAt(labelX: number, labelZ: number, out: SeaFields): void {
+    const e = this.expansion;
+    const rx = labelX - this.expansionX;
+    const rz = labelZ - this.expansionZ;
+    const rxx = rx * rx;
+    const rxz = rx * rz;
+    const rzz = rz * rz;
+    const rx2 = 2 * rx;
+    const rz2 = 2 * rz;
+    let h = e[H]! + e[H + 1]! * rx + e[H + 2]! * rz + e[H + 3]! * rxx + e[H + 4]! * rxz + e[H + 5]! * rzz;
+    let hx = e[H + 1]! + e[H + 3]! * rx2 + e[H + 4]! * rz;
+    let hz = e[H + 2]! + e[H + 4]! * rx + e[H + 5]! * rz2;
+    let dx = e[DX]! + e[DX + 1]! * rx + e[DX + 2]! * rz + e[DX + 3]! * rxx + e[DX + 4]! * rxz + e[DX + 5]! * rzz;
+    let dxx = e[DX + 1]! + e[DX + 3]! * rx2 + e[DX + 4]! * rz;
+    let dxz = e[DX + 2]! + e[DX + 4]! * rx + e[DX + 5]! * rz2;
+    let dz = e[DZ]! + e[DZ + 1]! * rx + e[DZ + 2]! * rz + e[DZ + 3]! * rxx + e[DZ + 4]! * rxz + e[DZ + 5]! * rzz;
+    let dzx = e[DZ + 1]! + e[DZ + 3]! * rx2 + e[DZ + 4]! * rz;
+    let dzz = e[DZ + 2]! + e[DZ + 4]! * rx + e[DZ + 5]! * rz2;
+    let w = e[W]! + e[W + 1]! * rx + e[W + 2]! * rz + e[W + 3]! * rxx + e[W + 4]! * rxz + e[W + 5]! * rzz;
+    let ux = e[UX]! + e[UX + 1]! * rx + e[UX + 2]! * rz + e[UX + 3]! * rxx + e[UX + 4]! * rxz + e[UX + 5]! * rzz;
+    let uz = e[UZ]! + e[UZ + 1]! * rx + e[UZ + 2]! * rz + e[UZ + 3]! * rxx + e[UZ + 4]! * rxz + e[UZ + 5]! * rzz;
+    const set = this.grid;
+    const clockRe = set.clock.re;
+    const clockIm = set.clock.im;
+    const { kx: kxs, kz: kzs, chopX, chopZ, omega: omegas, omegaChopX, omegaChopZ, ix: ixs, iz: izs } = set;
+    for (let cascade = 0; cascade < this.exactPowers.length; cascade += 1) {
+      const first = set.start[cascade]!;
+      const last = set.start[cascade + 1]!;
+      if (first === last) continue;
+      const powers = this.exactPowers[cascade]!;
+      powers.setPosition(labelX, labelZ);
+      const { xRe, xIm, zRe, zIm } = powers;
+      for (let index = first; index < last; index += 1) {
+        const ix = ixs[index]!;
+        const iz = izs[index]!;
+        const pRe = xRe[ix]! * zRe[iz]! - xIm[ix]! * zIm[iz]!;
+        const pIm = xRe[ix]! * zIm[iz]! + xIm[ix]! * zRe[iz]!;
+        const tRe = clockRe[index]!;
+        const tIm = clockIm[index]!;
+        const a = tRe * pRe - tIm * pIm;
+        const b = tRe * pIm + tIm * pRe;
+        const kx = kxs[index]!;
+        const kz = kzs[index]!;
+        const cx = chopX[index]!;
+        const cz = chopZ[index]!;
+        h += a;
+        hx -= kx * b;
+        hz -= kz * b;
+        dx += cx * b;
+        dz += cz * b;
+        dxx += cx * kx * a;
+        dxz += cx * kz * a;
+        dzx += cz * kx * a;
+        dzz += cz * kz * a;
+        w -= omegas[index]! * b;
+        ux += omegaChopX[index]! * a;
+        uz += omegaChopZ[index]! * a;
+      }
+    }
+    out.h = h;
+    out.hx = hx;
+    out.hz = hz;
+    out.dx = dx;
+    out.dz = dz;
+    out.dxx = dxx;
+    out.dxz = dxz;
+    out.dzx = dzx;
+    out.dzz = dzz;
+    out.w = w;
+    out.ux = ux;
+    out.uz = uz;
   }
 
   /** Every field by summing every kept wave, before shelter. */

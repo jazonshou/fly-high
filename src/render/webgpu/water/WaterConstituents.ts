@@ -247,6 +247,32 @@ export const OCEAN_SURF_DEPTH_NEAR = 1.5;
 export const OCEAN_SURF_DEPTH_FAR = 14;
 
 /**
+ * The sea's chemistry on the CPU: the ocean fragment's `oceanConstituents`
+ * (`OCEAN_CONSTITUENTS_WGSL`), the same arithmetic in the same order, for the
+ * water around a camera under the sea. `productivity` and `runoff` are the
+ * environment field's first two channels at the point.
+ */
+export function oceanConstituents(
+  depthMeters: number,
+  productivity: number,
+  runoff: number,
+): WaterConstituents {
+  const coastal = smoothstepDown(OCEAN_COASTAL_DEPTH_NEAR, OCEAN_COASTAL_DEPTH_FAR, depthMeters);
+  const surf = smoothstepDown(OCEAN_SURF_DEPTH_NEAR, OCEAN_SURF_DEPTH_FAR, depthMeters);
+  const productive = smoothstepUp(OCEAN_PROVINCE_CONTRAST_LOW, OCEAN_PROVINCE_CONTRAST_HIGH, productivity);
+  const shed = smoothstepUp(OCEAN_PROVINCE_CONTRAST_LOW, OCEAN_PROVINCE_CONTRAST_HIGH, runoff);
+  return {
+    chlorophyll: (OCEAN_OPEN_CHLOROPHYLL + (OCEAN_COASTAL_CHLOROPHYLL - OCEAN_OPEN_CHLOROPHYLL) * coastal)
+      * (0.22 + 2.6 * productive * productive),
+    cdom440: (OCEAN_OPEN_CDOM + (OCEAN_COASTAL_CDOM - OCEAN_OPEN_CDOM) * coastal)
+      * (0.18 + 2.4 * shed * shed),
+    sediment: (OCEAN_COASTAL_SEDIMENT * coastal * coastal + OCEAN_SURF_SEDIMENT * surf * surf)
+      * (OCEAN_SEDIMENT_LOAD_BASE + OCEAN_SEDIMENT_LOAD_RUNOFF * shed * shed),
+    mineral: 0,
+  };
+}
+
+/**
  * `W-8` — INLAND chemistry, resolved once per lake or per river station at
  * mesh build and carried as a vertex attribute.
  *

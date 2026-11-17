@@ -122,6 +122,30 @@ describe("performance budget (1A-2)", () => {
     expect(small).toBeLessThan(profile.maxRenderPixels);
   });
 
+  it("counts the walker's three maps at each tier's size, mips included", () => {
+    // The macOS capture measured them: 16.0 MiB more texture lane at tier 1
+    // in every car and walk shot than on the land branch, which has no figure.
+    const expected: Readonly<Record<PerformanceTier, number>> = { 0: 4, 1: 16, 2: 4, 3: 64 };
+    for (const [quality, mode] of [
+      ["low", "performance"],
+      ["medium", "balanced"],
+      ["high", "balanced"],
+      ["high", "ultra"],
+    ] as const) {
+      const profile = resolveWebGpuQualityProfile(quality, mode);
+      const breakdown = estimateGpuMemoryBreakdown(profile, VIEWPORTS[1]!);
+      expect(breakdown.personFigureMiB, `tier ${profile.tier}`)
+        .toBeCloseTo(expected[profile.tier as PerformanceTier], 4);
+      // The row is in the total: other maps move the total by the row's change times the slack.
+      const smallest = estimateGpuMemoryBreakdown(
+        { ...profile, personFigureTextureSize: 512 as const },
+        VIEWPORTS[1]!,
+      );
+      expect(breakdown.totalMiB - smallest.totalMiB)
+        .toBeCloseTo((breakdown.personFigureMiB - smallest.personFigureMiB) * 1.15, 4);
+    }
+  });
+
   it("reports a breakdown whose parts sum to the total before slack", () => {
     const profile = resolveWebGpuQualityProfile("medium", "balanced");
     const breakdown = estimateGpuMemoryBreakdown(profile, VIEWPORTS[1]!);

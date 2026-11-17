@@ -24,5 +24,7 @@ export interface VehicleVisual {
   update(state: FlightVisualState, deltaSeconds: number): void;
   setLightState(state: AircraftLightState): void;
   setCockpitView(enabled: boolean): void;
+  /** How far the car's front doors stand open, 0 shut .. 1; the vehicles without doors leave it out. */
+  setDoors?(right: number, left: number): void;
   dispose(): void;
 }

@@ -68,14 +68,15 @@ export default defineConfig({
     // streaming dominates the run. Deliberately no count here: this comment
     // said "sixteen" against a list of 29, and a restated count goes stale on
     // the next append. `PERF_CAPTURE_SHOTS` is the authority.
-    // 50 minutes: the hosted macOS runner took 25.1-25.6 min for the full list
+    // 65 minutes: the hosted macOS runner took 25.1-25.6 min for the full list
     // (2026-09-24..29) and timed out at the old 25; by 2026-10-27 main's 43
     // shots took 27.9 min, and the land PR's 47 (four car shots, two of them
     // running 5 s of effects first, and every shot waiting for its roads)
-    // ran past 35. This must stay inside the job's 60-minute limit and
-    // scripts/decompose-draw-calls.sh's 55-minute watchdog, and match the
-    // capture test's own timeout argument.
-    testTimeout: 3_000_000,
+    // ran past 35. The walking PR's 53 took 33 min on one runner and ran
+    // past 50 at the 47th shot on a slower one (2026-10-28). This must stay
+    // inside the job's 80-minute limit and scripts/decompose-draw-calls.sh's
+    // 70-minute watchdog, and match the capture test's own timeout argument.
+    testTimeout: 3_900_000,
     hookTimeout: 120_000,
     browser: {
       enabled: true,

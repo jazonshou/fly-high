@@ -31,6 +31,7 @@ export const HARNESS_PATHS: readonly string[] = [
   "tests/perf/gpuPassTiming.ts",
   "tests/perf/gpuWorkCounters.ts",
   "tests/perf/shotPlacement.ts",
+  "tests/perf/walkShotState.ts",
 ];
 
 export function git(cwd: string, ...args: string[]): string {
